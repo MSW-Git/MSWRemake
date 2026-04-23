@@ -1,0 +1,140 @@
+@Component
+script AProjectileInfo extends Component
+
+	property string ProjOwnerID = ""
+
+	property Entity onwerUnit = nil
+
+	property Entity targetUnit = nil
+
+	property number projectile_speed = 1
+
+	property boolean Shots = false
+
+	property Vector2 moveVec = Vector2(0,0)
+
+	property number destroyTime = 0
+
+	property Vector2 setPos = Vector2(0,0)
+
+	property number TargetPosY = 0
+
+	property number AttackCount = 0
+
+	property number ShotTimer = 0
+
+	@ExecSpace("Server")
+	method void SetProjectile(Entity onwerUnit, Entity targetUnit, number speed, number scale, number vecY, number targetY)
+		-- 발사체를 설정하고 대상을 향해 이동시키며 충돌 시 데미지를 적용
+		self.Entity:SetEnable(true)
+		self.Shots = true
+		
+		self.onwerUnit = onwerUnit
+		self.targetUnit = targetUnit
+		self.projectile_speed = speed * _BTLogic_New.ASpeedValue
+		self.Entity.TransformComponent.Scale = Vector3(scale/2,scale/2,scale/2)
+		self.setPos = self.onwerUnit.UnitStatus.SetPos + Vector2(0, vecY)
+		self.TargetPosY = targetY
+		
+		local unitInfo = onwerUnit.UnitInfo
+		self:SetFlipX(onwerUnit, self.ProjOwnerID)
+		
+		local interval = 0.01
+		local function ShotsFnc()
+			self.destroyTime += interval
+			if self.destroyTime >= 10 then
+				_TimerService:ClearTimer(self.ShotTimer)
+				self:Destroy()
+				return
+			end
+			
+			if isvalid(self.onwerUnit) and isvalid(self.targetUnit) then
+				
+				-- 배틀 종료 여부
+				if not self.onwerUnit.UnitAIWanderComponent.setBattle then
+					_TimerService:ClearTimer(self.ShotTimer)
+					self:Destroy()
+				-- 타겟이 존재하는지
+				elseif not isvalid(self.targetUnit) then
+					_TimerService:ClearTimer(self.ShotTimer)
+					self:Destroy()
+				-- 적합한 타겟인지
+				elseif self.targetUnit.UnitStatus.HP <= 0 or (not self.targetUnit.Enable) then
+					_TimerService:ClearTimer(self.ShotTimer)
+					self:Destroy()
+				else
+					local selfVec2 = self.setPos
+					local targetVec2 = self.targetUnit.UnitStatus.SetPos + Vector2(0, self.TargetPosY)
+						
+					
+					if Vector2.Distance(targetVec2, selfVec2) <= 0.5 then
+						_TimerService:ClearTimer(self.ShotTimer)
+						if isvalid(self.onwerUnit.UnitInfo.AttackComponent) then
+							if self.AttackCount == 0 then
+								self.onwerUnit.UnitInfo.AttackComponent:SetDamage(self.targetUnit)
+							else
+								self.onwerUnit.UnitInfo.AttackComponent:SetDamage(self.targetUnit, self.AttackCount)
+							end
+						end
+						self:Destroy()
+					else
+						self.moveVec = Vector2.Normalize(targetVec2 - selfVec2)
+						
+						local zRotation = 0
+						if self.moveVec.y >= 0 then
+							zRotation = Vector2.Angle(Vector2(1,0), self.moveVec)
+						else
+							zRotation = - Vector2.Angle(Vector2(1,0), self.moveVec)
+						end
+						
+						local posX = selfVec2.x + (self.moveVec.x * self.projectile_speed * interval * 20)
+						local posY = selfVec2.y + (self.moveVec.y * self.projectile_speed * interval * 20)
+						self.setPos = Vector2(posX, posY)
+						self:SetPosition(posX, posY, zRotation, self.ProjOwnerID)
+					end
+				end
+			else
+				_TimerService:ClearTimer(self.ShotTimer)
+				self:Destroy()
+			end
+		end
+		
+		self.ShotTimer = _TimerService:SetTimerRepeat(ShotsFnc, interval, 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Destroy()
+		-- 발사체를 파괴하고 초기 상태로 되돌림
+		self.destroyTime = 0
+		self:SetPosition(999, 999, 0)
+		self.Shots = false
+		self.Entity:SetEnable(false)
+	end
+
+	@ExecSpace("Client")
+	method void SetPosition(number x, number y, number zR)
+		-- 발사체의 위치와 회전을 설정
+		self.Entity.TransformComponent.WorldPosition = Vector3(x,y,0)
+		self.Entity.TransformComponent.WorldZRotation = zR
+	end
+
+	@ExecSpace("Client")
+	method void SetFlipX(Entity onwerUnit)
+		-- 발사체의 스프라이트를 X축으로 뒤집기 설정
+		self.Entity.SpriteRendererComponent.FlipX = true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetOwnerID(string ownerID)
+		-- 발사체의 소유자 ID를 서버와 클라이언트에 설정
+		self.ProjOwnerID = ownerID
+		self:SetOwnerIDInClient(ownerID, self.ProjOwnerID)
+	end
+
+	@ExecSpace("Client")
+	method void SetOwnerIDInClient(string ownerID)
+		-- 클라이언트에서 발사체의 소유자 ID를 설정
+		self.ProjOwnerID = ownerID
+	end
+
+end

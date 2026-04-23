@@ -1,0 +1,493 @@
+@Logic
+script TrialLogic extends Logic
+
+	method string ReturnRandomRivalId(Entity player)
+		-- 플레이어가 선택한 직원과 중복되지 않는 랜덤한 라이벌 직원 ID를 반환하는 함수
+		local rivalPool = {}
+		for id, data in pairs(_EmployeeService.EmployeeData) do
+			---@type EmployeeData
+			local empData = data
+			
+			if not _UtilLogic:IsNilorEmptyString(player.PlayerTrial.SelectedEmployeeId) then
+				if id == player.PlayerTrial.SelectedEmployeeId then
+					continue
+				end
+			end
+			
+			if isvalid(player.PlayerTrial.CharacterData) then
+				local isSame = false
+				
+				for k, v in pairs(player.PlayerTrial.CharacterData) do
+					if v == id then
+						isSame = true
+						break
+					end
+				end
+				
+				if isSame then
+					continue
+				end
+			end
+			
+			table.insert(rivalPool, id)
+		end
+		
+		local randIndex = _UtilLogic:RandomIntegerRange(1, #rivalPool)
+		return rivalPool[randIndex]
+	end
+
+	method table ReturnRandomBurgerIngreList(integer grade, integer stack, string tag, Entity player)
+		-- Trial용 랜덤 버거 재료 리스트를 생성하여 반환하는 함수
+		
+		local ingreList = {}
+				
+		local bunGrade = self:ReturnIngreGradeByGrade(grade)
+		local bunId = _IngredientDataSetLogic:ReturnRandomBunOfGrade(bunGrade)
+		
+		local bottomBun = RecipeIngreDrawData()
+		bottomBun:Init(bunId, _RecipeIngreDrawEnum.Bun, "Bottom", false, nil)
+		ingreList[1] = bottomBun
+		
+		local topBun = RecipeIngreDrawData()
+		topBun:Init(bunId, _RecipeIngreDrawEnum.Bun, "Top", false, nil)
+		ingreList[stack] = topBun
+		
+		if stack <= 2 then
+			return ingreList
+		end
+		
+		local exclusiveIndex = _UtilLogic:RandomIntegerRange(2, stack-1)
+		
+		for j = 2, (stack-1) do
+			if _UtilLogic:IsNilorEmptyString(tag) then
+				local ingreGrade = self:ReturnIngreGradeByGrade(grade)
+				local ingreId = _IngredientDataSetLogic:ReturnRandomIngredientOfGrade(ingreGrade, tag, nil, true, true, player)
+				
+				local drawIngre = RecipeIngreDrawData()
+				drawIngre:Init(ingreId, _RecipeIngreDrawEnum.Ingredient, nil, false, nil)
+				ingreList[j] = drawIngre
+			else
+				if j == exclusiveIndex then
+					local exclusiveIngre = _IngredientDataSetLogic:ReturnExclusiveIngredientOfTag(tag, player)
+					local drawIngre = RecipeIngreDrawData()
+					drawIngre:Init(exclusiveIngre, _RecipeIngreDrawEnum.Ingredient, nil, false, nil)
+					ingreList[j] = drawIngre
+				else
+					local ingreGrade = self:ReturnIngreGradeByGrade(grade)
+					local ingreId = _IngredientDataSetLogic:ReturnRandomIngredientOfGrade(ingreGrade, tag, nil, true, true, player)
+					local drawIngre = RecipeIngreDrawData()
+					drawIngre:Init(ingreId, _RecipeIngreDrawEnum.Ingredient, nil, false, nil)
+					ingreList[j] = drawIngre
+				end
+			end	
+		end
+		
+		local name = ""
+		
+		return {ingreList, name}
+	end
+
+	method number ReturnUserStatByTrialInfo(string trialId, string employeeId, integer recipeId, Entity player)
+		-- Trial 정보와 플레이어 데이터를 기반으로 사용자의 스탯 값을 계산하여 반환하는 함수
+		---@type TrialData
+		local trialData = _TrialDataSetLogic.TrialData[trialId]
+		
+		local target = trialData.Target
+		local targetStat = trialData.TargetStat
+		
+		if target == "Employee" then
+			local employeeData = player.EmployeeManager:GetEmployeeDetail(employeeId)
+			return employeeData:ReturnStatLevelByStatType(targetStat)
+			
+		elseif target == "Recipe" then
+			if targetStat == "TasteScore" then
+				---@type RecipeData
+				local recipe = player.PlayerRecipe.Recipes[recipeId]
+				local score = recipe.TasteScore
+				
+				if isvalid(recipe.TrialSkillBonus) then
+					score = score * (1+ recipe.TrialSkillBonus)
+				end
+				return score
+			end
+		end
+	end
+
+	method integer ReturnIngreGradeByGrade(integer grade)
+		-- Trial 등급에 따라 사용할 재료의 등급을 랜덤하게 선택하여 반환하는 함수
+		if grade == 0 then
+			local pool = {1}
+			local randomIndex = _UtilLogic:RandomIntegerRange(1, #pool)
+			return pool[randomIndex]
+		elseif grade == 1 then
+			local pool = {1, 2}
+			local randomIndex = _UtilLogic:RandomIntegerRange(1, #pool)
+			return pool[randomIndex]
+		elseif grade == 2 then
+			local pool = {1, 2, 3}
+			local randomIndex = _UtilLogic:RandomIntegerRange(1, #pool)
+			return pool[randomIndex]	
+		elseif grade == 3 then
+			local pool = {2, 2, 3}
+			local randomIndex = _UtilLogic:RandomIntegerRange(1, #pool)
+			return pool[randomIndex]
+		end
+	end
+
+	method table ReturnUserRank(number stat, number requirement)
+		-- 사용자 스탯과 요구 스탯을 비교하여 Trial에서의 순위를 계산하는 함수
+		local statPerReq = stat/requirement
+		if statPerReq < 0.5 then
+			statPerReq = 0.5
+		elseif statPerReq > 1 then
+			statPerReq = 1
+		end
+		
+		
+		local weightData = _TrialDataSetLogic.WinningWeightData
+		
+		local lastSection
+		for i = 1, #weightData do
+			local key = weightData[i]["StatPerReq"]
+			if statPerReq > key then
+				lastSection = i
+			else
+				if i == #table.keys(weightData) or i == 1 then
+					if statPerReq == key then
+						lastSection = i
+					end
+				end
+				break
+			end
+		end
+		
+		local nextSection
+		for i = #weightData, 1 ,-1 do
+			local key = weightData[i]["StatPerReq"]
+			if statPerReq <= key then
+				nextSection = i
+			else
+				break
+			end
+		end
+		
+		local lastStatPerReq = weightData[lastSection]["StatPerReq"]
+		local nextStatPerReq = weightData[nextSection]["StatPerReq"]
+		
+		local sectionSub = nextStatPerReq - lastStatPerReq
+		local curPos = statPerReq - lastStatPerReq
+		local toSumRate = 0
+		if curPos ~= 0 then
+			toSumRate = curPos/sectionSub
+		end
+		
+		local weightTable = {}
+		local lastSectionData = weightData[lastSection]
+		local nextSectionData = weightData[nextSection]
+		
+		local weightTotal = 0
+		weightTable[0] = 1
+		for i = 1, _TrialSimpleRenderLogic.LayoutCount do
+			local lastSecRankData = lastSectionData[i]
+			local nextSecRankData = nextSectionData[i]
+			local rankDataSub = nextSecRankData - lastSecRankData
+			
+			local toSumValue = rankDataSub * toSumRate
+			local sumValue = lastSecRankData + toSumValue
+			weightTable[i] = sumValue
+			
+			weightTotal = weightTotal + sumValue
+		end
+		
+		local randomIndex = _UtilLogic:RandomIntegerRange(1, weightTotal)
+		local userRank = 0
+		local lastWeight = 0
+		local weight = 0
+		for i, v in pairs(weightTable) do
+			weight = weight + v
+			if randomIndex <= weight then
+				userRank = i
+				break
+			end
+		end
+		
+		return {userRank, toSumRate}
+	end
+
+	method integer ReturnTrialScore(integer rankIndex, number playerWeight)
+		-- 순위와 플레이어 가중치를 기반으로 Trial 점수를 계산하여 반환하는 함수
+		local startValue = 1
+		local endValue = 1
+		
+		if rankIndex == 1 then
+			startValue = 90
+			endValue = 100
+			
+		elseif rankIndex == 2 then
+			startValue = 70
+			endValue = 89
+			
+		elseif rankIndex == 3 then
+			startValue = 30
+			endValue = 69
+			
+		end
+		
+		local score
+		if playerWeight ~= nil then
+			local addAmount = (endValue-startValue)*playerWeight
+			score = startValue + addAmount
+		else
+			
+			score = _UtilLogic:RandomIntegerRange(startValue, endValue)
+		end
+		
+		return math.floor(score)
+		
+	end
+
+	method Vector2 ReturnStackPositionByGrid(Vector2 grid)
+		-- 그리드 좌표를 실제 UI 위치로 변환하여 스택 아이템의 배치 위치를 반환하는 함수
+		local xPosTable = {_UtilLogic:RandomIntegerRange(-600, -500)/10, _UtilLogic:RandomIntegerRange(-350, -250)/10, 
+			_UtilLogic:RandomIntegerRange(-50, 50)/10, _UtilLogic:RandomIntegerRange(250, 350)/10, _UtilLogic:RandomIntegerRange(500, 600)/10}
+		if grid.x == 0 then
+			grid.x = 5
+		end
+		local xPos = xPosTable[grid.x]
+		local yPosVariation = _UtilLogic:RandomIntegerRange(-100, 100)/100
+		local yPos = 10 + grid.y * 20 + yPosVariation
+		
+		return Vector2(xPos, yPos)
+	end
+
+	@ExecSpace("Client")
+	method string ReturnTrialName(string trialId, integer grade, integer difficulty)
+		-- Trial ID를 기반으로 현지화된 Trial 이름을 반환하는 클라이언트 전용 함수
+		local trialName = _GetLocalizationTextLogic:GetText(_TrialDataSetLogic:GetTrialData(trialId).Name)
+		
+		return trialName
+	end
+
+	method string ReturnUnofficialTrialProgress(string trialId, Entity player)
+		-- 플레이어의 능력치를 기반으로 비공식 Trial에서 도전 가능한 진행도를 계산하는 함수
+		local progress = "0-1"
+		
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		
+		if trialData.Target == "Employee" then
+			local bestLevel = _EmployeeService:ReturnBestLevelOfType(player, trialData.TargetStat, {})
+			
+			local grades = table.keys(trialData.GradeData)
+			table.sort(grades)
+			for i = 1, #grades do
+				local grade = grades[i]
+				local gradeData = trialData:GetGradeData(grade)
+				
+				local difficulties = table.keys(gradeData.DifficultyData)
+				table.sort(difficulties)
+				for i = 1, #difficulties do
+					local difficulty = difficulties[i]
+					local difficultyData = gradeData:GetDifficultyData(difficulty)
+					
+					if bestLevel >= difficultyData.Requirement then
+						progress = string.format("%d-%d", grade, difficulty)
+					end
+				end
+			end
+				
+		elseif trialData.Target == "Recipe" then
+			local bestTasteScore = _RecipeDataSetLogic:ReturnBestTasteScore(player, trialData.TargetType)
+			
+			local grades = table.keys(trialData.GradeData)
+			table.sort(grades)
+			for i = 1, #grades do
+				local grade = grades[i]
+				local gradeData = trialData:GetGradeData(grade)
+				
+				local difficulties = table.keys(gradeData.DifficultyData)
+				table.sort(difficulties)
+				for i = 1, #difficulties do
+					local difficulty = difficulties[i]
+					local difficultyData = gradeData:GetDifficultyData(difficulty)
+					
+					if bestTasteScore >= difficultyData.Requirement then
+						progress = string.format("%d-%d", grade, difficulty)
+					end
+				end
+			end
+		end
+		
+		local prevProgress = self:ReturnPreviousProgress(progress, trialId)
+		if prevProgress ~= nil then
+			local pool = {progress, prevProgress}
+			progress = pool[_UtilLogic:RandomIntegerRange(1, #pool)]
+		end
+		
+		
+		return progress
+	end
+
+	method string ReturnNextProgress(string nowProgress, string trialId)
+		-- 현재 진행도에서 다음 단계 진행도를 계산하여 반환하는 함수
+		if _UtilLogic:IsNilorEmptyString(nowProgress) then
+			nowProgress = "0-0"
+		end
+		
+		local splitData = _UtilLogic:Split(nowProgress, "-")
+		local nowGrade = tonumber(splitData[1])
+		local nowDifficulty = tonumber(splitData[2])
+		
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		local gradeData = trialData:GetGradeData(nowGrade)
+		if isvalid(gradeData:GetDifficultyData(nowDifficulty+1)) then
+			return string.format("%d-%d", nowGrade, nowDifficulty+1)
+		end
+		
+		if isvalid(trialData:GetGradeData(nowGrade+1)) then
+			return string.format("%d-%d", nowGrade+1, 1)
+		end
+		
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsTrialRecommended(Entity player, string trialId, TrialDifficultyData difficultyData)
+		-- 플레이어의 능력치를 기반으로 해당 Trial이 추천되는지 판단하는 클라이언트 전용 함수
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		
+		if trialData.Target == "Employee" then
+			local exceptions = {}
+			if _TrialUILogic.UITrialSelect.UITrialSelect.SelectTab == _TrialOfficialTypeEnum.Official then
+				local exEmployee = _TrialLogic:GetExEmployeeIdOfType(_UserService.LocalPlayer, _TrialDataSetLogic:GetTrialData(trialId).TargetStat)
+				if _UtilLogic:IsNilorEmptyString(exEmployee) == false then
+					table.insert(exceptions, exEmployee)
+				end
+			end	
+				
+			local bestLevel = _EmployeeService:ReturnBestLevelOfType(player, trialData.TargetStat, exceptions)
+			if bestLevel >= difficultyData.Requirement then
+				return true
+			end
+				
+		elseif trialData.Target == "Recipe" then
+			local bestTasteScore = _RecipeDataSetLogic:ReturnBestTasteScore(player, trialData.TargetType)
+			if bestTasteScore >= difficultyData.Requirement then
+				return true
+			end
+		
+		end
+		
+		return false
+	end
+
+	method string GetChallengingOfficialTrialProgress(string trialId, Entity player)
+		-- 공식 Trial에서 플레이어가 도전할 수 있는 다음 진행도를 반환하는 함수
+		local progress = player.PlayerTrial.TrialProgress[trialId]
+		local grade = 0
+		local difficulty = 0
+		if _UtilLogic:IsNilorEmptyString(progress) == false then
+			local splitInfo = _UtilLogic:Split(progress, "-")
+			grade = tonumber(splitInfo[1])
+			difficulty = tonumber(splitInfo[2])
+		end
+		
+		return _TrialLogic:ReturnNextProgress(progress, trialId)
+	end
+
+	method TrialDifficultyData GetChallengingTrialData(string trialId, Entity player, integer officialType)
+		-- Trial 타입에 따라 플레이어가 도전할 수 있는 난이도 데이터를 반환하는 함수
+		local progress
+		
+		if officialType == _TrialOfficialTypeEnum.Official then
+			progress = self:GetChallengingOfficialTrialProgress(trialId, player)
+			
+		elseif officialType == _TrialOfficialTypeEnum.Unofficial then
+			for key, isComplete in pairs(player.PlayerTrial.UnofficialTrials) do
+				local keyId = _UtilLogic:Split(key, "&")[1]
+				if keyId ~= trialId then
+					continue
+				end
+				
+				progress = _UtilLogic:Split(key, "&")[2]
+			end	
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(progress) then
+			return nil
+		end
+		
+		local splitInfo = _UtilLogic:Split(progress, "-")
+		local grade = tonumber(splitInfo[1])
+		local difficulty = tonumber(splitInfo[2])
+		
+		return _TrialDataSetLogic:GetTrialData(trialId):GetGradeData(grade):GetDifficultyData(difficulty)
+	end
+
+	method string GetExEmployeeIdOfType(Entity player, string empType)
+		-- 특정 직원 타입에 대해 제외된 직원 ID를 반환하는 함수
+		return player.PlayerTrial.ExEmployeeIds[empType]
+	end
+
+	method void PlayUIEmployeeAnim(Entity entity, string employeeId, string animType, boolean applyEquip, Entity player)
+		-- UI에서 직원의 애니메이션과 장비를 표시하는 함수
+		if isvalid(entity.SpriteGUIRendererComponent) == false then
+			return
+		end
+		
+		local empData = _EmployeeService:GetData(employeeId)
+		if isvalid(empData) == false then
+			return
+		end
+		
+		entity.SpriteGUIRendererComponent.ImageRUID = empData[animType.."RUID"]
+		
+		local userHasEquip = false
+		local employeeOutgameDetailData = player.EmployeeManager:GetEmployeeOutgameDetail(employeeId)
+		if employeeOutgameDetailData ~= nil then
+			if employeeOutgameDetailData.EquipLevel > -1 then
+				userHasEquip = true
+			end
+		end
+		
+		local equip = _UIEntityService:GetOrCreateClonedEntityByName(entity, "equip", entity)
+		for i, child in pairs(equip.Children) do
+			child.Enable = false
+		end
+		
+		equip.Enable = applyEquip and userHasEquip
+		
+		local equipRUID = empData["Equip"..animType.."RUID"]
+		if equipRUID == nil then
+			equipRUID = _StringUtilLogic.EmptyRUID
+		end
+		equip.SpriteGUIRendererComponent.Color.a = equipRUID == _StringUtilLogic.EmptyRUID and 0 or 1
+		equip.SpriteGUIRendererComponent.ImageRUID = equipRUID
+	end
+
+	method string ReturnPreviousProgress(string nowProgress, string trialId)
+		-- 현재 진행도에서 이전 단계 진행도를 계산하여 반환하는 함수
+		
+		if _UtilLogic:IsNilorEmptyString(nowProgress) then
+			nowProgress = "0-0"
+		end
+		
+		local splitData = _UtilLogic:Split(nowProgress, "-")
+		local nowGrade = tonumber(splitData[1])
+		local nowDifficulty = tonumber(splitData[2])
+		
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		local gradeData = trialData:GetGradeData(nowGrade)
+		if isvalid(gradeData:GetDifficultyData(nowDifficulty-1)) then
+			return string.format("%d-%d", nowGrade, nowDifficulty-1)
+		end
+		
+		if isvalid(trialData:GetGradeData(nowGrade-1)) then
+			local prevGradeData = trialData:GetGradeData(nowGrade-1)
+			local finalDiff = prevGradeData:ReturnMaxDifficulty()
+			return string.format("%d-%d", nowGrade-1, finalDiff)
+		end
+		
+		return nil
+	end
+
+end

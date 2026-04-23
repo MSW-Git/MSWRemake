@@ -1,0 +1,264 @@
+@Logic
+script GatchaLogic extends Logic
+
+	property table gatchaData = {}
+
+	property table pickedDecorations = {}
+
+	method void OnBeginPlay()
+		-- 가차 데이터 테이블을 로드하여 가차 정보 초기화
+		local data = _DataService:GetTable("GatchaData")
+		
+		for i = 1, data:GetRowCount() do
+			local gatchaData = {}
+			
+			gatchaData.id = data:GetCell(i, "id")
+			gatchaData.cashShopCategoryId = data:GetCell(i, "cashShopCategoryId")
+			gatchaData.name = data:GetCell(i, "name")
+			gatchaData.description = data:GetCell(i, "description")
+			gatchaData.gatchaType = data:GetCell(i, "gatchaType")
+			gatchaData.wealthType = data:GetCell(i, "wealthType")
+			gatchaData.price = tonumber(data:GetCell(i, "price"))
+			gatchaData.gatchaNum = tonumber(data:GetCell(i, "gatchaNum"))
+			
+			self.gatchaData[gatchaData.id] = gatchaData
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestGatcha(string gatchaId)
+		-- 클라이언트에서 가차 요청을 받아 처리
+		local gatchaData = self.gatchaData[gatchaId]
+		
+		if gatchaData == nil then
+			return
+		end
+		
+		if gatchaData.wealthType == "worldCoin" then
+			return
+		end
+		
+		self:DoGatcha(gatchaId, senderUserId, nil)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean DoGatcha(string gatchaId, string userId, table outFailInfo)
+		-- 실제 가차 실행 로직 (방어구, 캐릭터, 펫 등 타입별 처리)
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local gatchaData = self.gatchaData[gatchaId]
+		
+		table.clear(self.pickedDecorations)
+		
+		if not self:CheckPlayerWealth(gatchaData, player, outFailInfo) then
+			return false
+		end
+		
+		local result = {}
+		
+		if gatchaData.gatchaType == "armor" then
+			local isMultiGatcha = gatchaData.gatchaNum ~= 1
+		
+			if not _ArmorSystemLogic:CheckCanArmorGacha(userId, gatchaData.gatchaNum, outFailInfo) then
+				return false
+			end
+			
+			result = _ArmorSystemLogic:RequestArmorGacha(userId, isMultiGatcha)
+		
+		elseif gatchaData.gatchaType == "character" then
+			if gatchaData.gatchaNum == 1 then
+				result = _CharacterGachaLogic:GetCharacter(player, false, "Gatcha") 
+			else
+				result = _CharacterGachaLogic:GetCharacterMultiple(player, gatchaData.gatchaNum) 
+			end
+		elseif gatchaData.gatchaType == "pet" then
+			if not _PetLogic:CheckCanRandomPickPet(userId, gatchaData.gatchaNum, outFailInfo) then
+				return false
+			end
+			
+			result = _PetLogic:DoRandomPickPet(userId, gatchaData.gatchaNum)
+		elseif gatchaData.gatchaType == "nameTag" or gatchaData.gatchaType == "chatBalloon" or gatchaData.gatchaType == "damageSkin" then
+			if not self:CheckCanRandomPickDecoration(userId, gatchaData.gatchaNum, outFailInfo) then
+				return false
+			end
+			
+			self:DoRandomPickDecoration(userId, gatchaData.gatchaType, gatchaData.gatchaNum)
+		end
+		
+		if gatchaData.wealthType == "diamond" then
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, gatchaData.price, userId, "Gatcha")
+		end
+		
+		self:ShowGatchaScene(gatchaId, userId) 
+		_WorldLog:LogGatchaFlow(userId, gatchaData.gatchaType, gatchaId, "Shop", gatchaData.wealthType, result)
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantGatcha(string wealthType)
+		-- 가차 불가능 시 재화 부족 메시지 표시
+		if wealthType == "diamond" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast120"))
+		elseif wealthType == "worldCoin" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast119"))
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowGatchaScene(string gatchaId)
+		-- 가차 결과 화면 표시 (타입별 다른 연출)
+		local gatchaData = self.gatchaData[gatchaId]
+		
+		if gatchaData.gatchaType == "armor" then
+		elseif gatchaData.gatchaType == "character" then
+		elseif gatchaData.gatchaType == "pet" then
+		end
+	end
+
+	method boolean CheckPlayerWealth(table gatchaData, Entity playerEntity, table outFailInfo)
+		-- 플레이어의 재화가 가차 비용보다 충분한지 확인
+		local userId = playerEntity.PlayerComponent.UserId 
+		
+		if gatchaData.wealthType == "diamond" and not _CheckLogic:IsEnoughWealth(userId, _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, gatchaData.price) then
+			self:NoticeCantGatcha("diamond", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Not enough diamond for gatcha"
+			end
+			
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CheckCanGatchaOnClient(table gatchaData)
+		-- 클라이언트에서 가차 가능 여부 사전 검증
+		local playerEntity = _UserService.LocalPlayer
+		
+		if not self:CheckPlayerWealth(gatchaData, playerEntity, nil) then
+			return false
+		end
+		
+		local userId = playerEntity.PlayerComponent.UserId
+		
+		if gatchaData.gatchaType == "armor" then	
+			if not _ArmorSystemLogic:CheckCanArmorGacha(userId, gatchaData.gatchaNum, nil) then
+				return false
+			end
+		elseif gatchaData.gatchaType == "pet" then
+			if not _PetLogic:CheckCanRandomPickPet(userId, gatchaData.gatchaNum, nil) then
+				return false
+			end
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean DoGatchaCauseNotCashItem(string gatchaId, string userId, table outFailInfo, string sourceId)
+		-- 현금 아이템이 아닌 무료 가차 실행 (이벤트 등에서 사용)
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local gatchaData = self.gatchaData[gatchaId]
+		local result = {}
+		
+		if gatchaData.gatchaType == "armor" then
+			local isMultiGatcha = gatchaData.gatchaNum ~= 1
+		
+			if not _ArmorSystemLogic:CheckCanArmorGacha(userId, gatchaData.gatchaNum, outFailInfo) then
+				return false
+			end
+			
+			result = _ArmorSystemLogic:RequestArmorGacha(userId, isMultiGatcha)
+		
+		elseif gatchaData.gatchaType == "character" then
+			if gatchaData.gatchaNum == 1 then
+				result = _CharacterGachaLogic:GetCharacter(player, false, "Gatcha") 
+			else
+				result = _CharacterGachaLogic:GetCharacterMultiple(player, gatchaData.gatchaNum) 
+			end
+		elseif gatchaData.gatchaType == "pet" then
+			if not _PetLogic:CheckCanRandomPickPet(userId, gatchaData.gatchaNum, outFailInfo) then
+				return false
+			end
+			
+			result = _PetLogic:DoRandomPickPet(userId, gatchaData.gatchaNum)
+		end
+		
+		self:ShowGatchaScene(gatchaId, userId) 
+		_WorldLog:LogGatchaFlow(userId, gatchaData.gatchaType, gatchaId, "FreeGatcha", sourceId, result)
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PickRandomDecoration(string userId, string decorationType)
+		-- 장식 아이템 타입에 따라 랜덤 선택하여 플레이어에게 지급
+		local itemId = self:PickRandomDecorationId(decorationType)
+		local user = _UserService:GetUserEntityByUserId(userId)
+		user.PlayerStorageComponent:RequestAddItemFromServer(_GameUtil:CreateGUID(), 1, itemId, 1, userId,"DecorationGatcha","")
+		table.insert(self.pickedDecorations, itemId)
+	end
+
+	@ExecSpace("Client")
+	method void ShowResult(string convertedTable, integer count)
+		-- 가차 결과 아이템들을 토스트 메시지로 표시
+		local pickItems = _UtilLogic:StringToTable(convertedTable)
+		
+		for key, value in pairs(pickItems) do
+			local data = _ItemDataLogic.itemData[value]
+			
+			_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast121"), _LocalizeLogic:GetItemName(data.id)))
+		end
+	end
+
+	method boolean CheckCanRandomPickDecoration(string userId, integer count, table outFailInfo)
+		-- 장식 아이템 랜덤 선택 가능 여부 확인 (슬롯 부족 체크)
+		if not _CheckLogic:IsEnoughDecorationSlot(userId, count) then
+			_LocalizeLogic:ShowToast("toast118", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Consume slot is not enough to random pick. count: " .. tostring(count)
+			end
+			
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DoRandomPickDecoration(string userId, string gatchaType, integer count)
+		-- 장식 아이템 랜덤 선택 실행 (1개 또는 11개)
+		local user = _UserService:GetUserEntityByUserId(userId)
+		table.clear(self.pickedDecorations)
+		
+		if count == 1 then
+			self:PickRandomDecoration(userId, gatchaType)
+		elseif count == 11 then
+			for i = 1, 11 do
+				self:PickRandomDecoration(userId, gatchaType)
+			end
+		end
+		
+		self:ShowResult(_UtilLogic:TableToString(self.pickedDecorations), count, userId)
+		table.clear(self.pickedDecorations)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PickRandomDecorationId(string decorationType)
+		-- 장식 타입에 맞는 아이템 중에서 랜덤하게 ID 선택
+		local tempTable = {}
+		
+		for key, value in pairs(_ItemDataLogic.decorationData) do
+			if value.category == decorationType and _UtilLogic:IsNilorEmptyString(value.exception) then
+				table.insert(tempTable, value.id)
+			end
+		end
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, #tempTable)
+		
+		return tempTable[rand]
+	end
+
+end

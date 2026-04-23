@@ -1,0 +1,139 @@
+@Component
+script RC20012 extends RuneCardComponent
+
+	property number SetTakenHPPer = 0.15
+
+	property number SetStackPer = 0.5
+
+	@ExecSpace("ServerOnly")
+	method void StartBattleHandler(any event)
+		__base:StartBattleHandler(event)
+		
+		-- 전투 시작 시, 전장에 참여한 모든 아군 유닛이 스택당 0.5%의 최대 체력이 증가합니다.
+		-- 이후 전장에 참여한 모든 아군 유닛의 수만큼 스택이 쌓이며, 유닛들의 현재 체력 수치를 15%만큼 감소시킵니다.
+		---------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local units = {}
+		local enemy = {}
+		local prevvalue = 0
+		local value = 0
+		---------------------------------------------------------
+		if self.SetTeamType == "User" then
+			for _, unit in pairs(teamManager.OwnUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					_StatusChangeLogic:GetBuff(unit, "Multi_MaxHP", self.SetStackPer * self.RuneStack, -1)
+					_StatusChangeLogic:SetVariableStatus(unit, unit, "HP", -unit.UnitStatus.MaxHP * self.SetTakenHPPer, "rune")
+					table.insert(units, unit)
+				end
+			end
+			prevvalue = self.RuneStack
+			
+			if not self.Copied then
+				for _, unit in pairs(teamManager.OwnUnits) do
+					if unit.UnitAIWanderComponent.Enable then
+						self:SetRuneStackInfo(self.RuneStack + 1)
+						
+						if isvalid(self.CopiedComponent) then
+							self.CopiedComponent:SetRuneStackInfo(self.CopiedComponent.RuneStack + 1)
+						end
+					end
+				end
+				value = self.RuneStack
+			else
+				for _, unit in pairs(teamManager.OwnUnits) do
+					if unit.UnitAIWanderComponent.Enable then
+						self:SetRuneStackInfo(self.RuneStack + 1)
+						
+						if isvalid(self.CopiedComponent) then
+							self.CopiedComponent:SetRuneStackInfo(self.CopiedComponent.RuneStack + 1)
+						end
+					end
+				end
+				value = self.RuneStack
+			end
+		else
+			self.RuneStack = math.floor( ( (gameManager.Stage-1) * 3 + gameManager.Round ) * (gameManager.Stage+5)/2 )
+			
+			for _, unit in pairs(teamManager.EnemyUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					_StatusChangeLogic:GetBuff(unit, "Multi_MaxHP", self.SetStackPer * self.RuneStack, -1)
+					_StatusChangeLogic:SetVariableStatus(unit, unit, "HP", -unit.UnitStatus.MaxHP * self.SetTakenHPPer, "rune")
+					table.insert(enemy, unit)
+				end
+			end
+			prevvalue=self.RuneStack
+			for _, unit in pairs(teamManager.EnemyUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					self:SetRuneStackInfo(self.RuneStack + 1)
+					
+					if isvalid(self.CopiedComponent) then
+						self:SetRuneStackInfo(self.CopiedComponent.RuneStack + 1)
+					end
+				end
+			end
+			value = self.RuneStack
+		end
+		
+		units = _UtilLogic:TableToString(units)
+		enemy = _UtilLogic:TableToString(enemy)
+		self:PlayEffect(units, enemy, value, prevvalue, user.PlayerComponent.UserId)
+		
+		if isvalid(self.CopiedComponent) then
+			self:PlayEffect(units, enemy, value, prevvalue, user.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(string units, string enemy, integer value, integer prevvalue)
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		units = _UtilLogic:StringToTable(units)
+		enemy = _UtilLogic:StringToTable(enemy)
+		------------------------------------------------------------
+		--룬 카드 발동 연출
+		if #units > 0 then
+			local index = _RuneCardDirector:GetRuneCardIndex(self.Entity,false)
+			_RuneCardDirector:ShakingCard_Battle(index, false)
+			_RuneCardDirector:IconToastDirector_Battle(index, {_RuneCardDirectEnum.MaxHP, _RuneCardDirectEnum.HP}, {tostring(prevvalue*self.SetStackPer).."%", "-15%"}, false)
+			_RuneCardDirector.RuneCardManagingValue["RC20012"][self.Entity.Id] = value
+			_RuneCardDirector:CheckRuneCardManagingValue("RC20012", index)
+		end
+			
+		if #enemy > 0 then
+			local index = _RuneCardDirector:GetRuneCardIndex(self.Entity, true)
+			_RuneCardDirector:ShakingCard_Battle(index, true)
+			_RuneCardDirector:IconToastDirector_Battle(index, {_RuneCardDirectEnum.MaxHP, _RuneCardDirectEnum.HP}, {tostring(prevvalue*self.SetStackPer).."%", "-15%"}, true)
+		end
+		
+		--룬 카드 효과 연출
+		for i=1,#units do
+			units[i].UnitAnimationComponent:PlayHitDirection()
+		end
+			
+		for i=1,#enemy do
+			enemy[i].UnitAnimationComponent:PlayHitDirection()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InGameDataLoadHandler(any event)
+		__base:InGameDataLoadHandler(event)
+		----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		----------------------------------------------------------
+		self:SetDirectorValue(self.RuneStack, user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetDirectorValue(number stack)
+		--DB에서 값을 불러왔을 떄 연출용 값들을 세팅하는 함수입니다.
+		local runeindex = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+		_RuneCardDirector.RuneCardManagingValue["RC20012"][self.Entity.Id] = stack
+		_RuneCardDirector:CheckRuneCardManagingValue("RC20012", runeindex)
+	end
+
+end

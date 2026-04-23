@@ -1,0 +1,162 @@
+@Component
+script C10004_StoneSpirit_Skill extends Component
+
+	@Sync
+	property number skillAnimLength = 1.44
+
+	property string hitEffectRUID = "03d93f3572a84e8bb897a57e6649673d"
+
+	property Vector2 setVec = Vector2(0,0)
+
+	property boolean setAttack = false
+
+	property Entity target = nil
+
+	property Vector2 setPos = Vector2(0,0)
+
+	property Vector2 setVec2 = Vector2(0,0)
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength  * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local function SkillPlay()
+			self:SetSkillMotion(targetUnit)
+		end
+		
+		_TimerService:SetTimerOnce(SkillPlay, 0.23 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0061",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillMotion(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitTile = unitInfo.setTile
+		local unitStatus = myUnit.UnitStatus
+		local unitSprite = unitInfo.spriteRenderer
+		
+		
+		local selfVec2 = unitStatus.SetPos
+		local targetVec2 = targetUnit.UnitStatus.SetPos + Vector2(0, 0.5)
+		local tileVec2 = unitTile.TransformComponent.WorldPosition:ToVector2()
+		
+		self.setPos = selfVec2
+		self.setVec = targetVec2 - selfVec2
+		self.setVec2 = targetVec2 - tileVec2
+		
+		self.setAttack = true
+		self.target = targetUnit
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		
+		local callbackCount = 0
+		local function ActionFnc()
+			local posX = 0
+			local posY = 0
+			
+			selfVec2 = self.setPos
+			
+			callbackCount += 0.01
+			if callbackCount <= 0.4 then
+				posX = selfVec2.x + self.setVec.x * 0.01 * (1 / 0.4)
+				posY = selfVec2.y + self.setVec.y * 0.01 * (1 / 0.4)
+			elseif callbackCount <= 0.6 then
+				if self.setAttack then
+					self.setAttack = false
+					if not _BTLogic_New:CheckAttackAble(myUnit, self.target, "Skill") then
+						local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+						self.target = _BTLogic_New:getTarget(unitTile, checkEnemies, "Nearest")
+					end
+					
+					if isvalid(self.target) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+						self:SetSkillDamage(self.target)
+					end
+				end
+				posX = selfVec2.x - self.setVec2.x * 0.01 * (1 / 0.2)
+				posY = selfVec2.y - self.setVec2.y * 0.01 * (1 / 0.2)
+			else
+				if isvalid(unitTile) then
+					local tilePos = unitTile.TransformComponent.WorldPosition
+					posX = tilePos.x
+					posY = tilePos.y
+				end
+				_TimerService:ClearTimer(unitStatus.ActionTimer)
+				unitStatus.ActionTimer = 0
+			end
+			
+			self.setPos = Vector2(posX, posY)
+			self:SetPosition(posX, posY, 0, unitInfo.OwnerId)
+			unitStatus.SetPos = Vector2(posX, posY)
+		end
+		
+		_TimerService:ClearTimer(unitStatus.ActionTimer)
+		unitStatus.ActionTimer = _TimerService:SetTimerRepeat(ActionFnc, 0.01 / _BTLogic_New.SSpeedValue, 0)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		self:HitEffect(targetUnit, unitInfo.OwnerId)
+		
+		local magicalDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C10004_Active_SDamage_Magic[unitInfo.level]
+		
+		local damageInfo = _StatusChangeLogic:CheckDamage(magicalDamage, myUnit, targetUnit, 0, "Magical")
+		
+		_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+	end
+
+	@ExecSpace("Client")
+	method void SetPosition(number x, number y, number zR)
+		self.Entity.TransformComponent.WorldPosition = Vector3(x,y,0)
+		self.Entity.TransformComponent.WorldZRotation = zR
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+end

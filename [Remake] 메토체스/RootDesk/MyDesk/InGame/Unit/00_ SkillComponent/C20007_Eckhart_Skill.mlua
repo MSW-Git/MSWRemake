@@ -1,0 +1,124 @@
+@Component
+script C20007_Eckhart_Skill extends Component
+
+	property number skillAnimLength = 2.04
+
+	property Entity projectile = nil
+
+	property string attackProjectileRUID = "0adec415a8824769b92d1fd8c6987b86"
+
+	property string hitEffectRUID = "44bf51a4626e4f58989793923b48169c"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		-- projectile Spwan
+		local function ProjectileSpawn()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self.projectile = _UnitSetLogic_New:GetProjectileEntity(unitInfo.OwnerId, "Skill")
+				self.projectile:AddComponent(SkillProjectileInfo)
+				
+				self.projectile.SpriteRendererComponent.SpriteRUID = self.attackProjectileRUID
+				self.projectile.TransformComponent.Scale = unitInfo.spriteRenderer.TransformComponent.Scale
+				self.projectile.SpriteRendererComponent.FlipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+				self.projectile.SkillProjectileInfo:SetProjectile(self.Entity, targetUnit, 1.2, 2, 0)
+				_GeneralDirectorLogic:SetEffectAlpha(self.projectile,unitInfo.OwnerId)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(ProjectileSpawn, 0.84 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0072",self.Entity.UnitInfo.OwnerId)
+		
+		--그림자
+		self:SetShadow(2.04,self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C20007_Active_SDamage_Physic[unitInfo.level]
+									+ unitStatus.MagicalAttack * _S01_SkillDescLogic.C20007_Active_SDamage_Magic[unitInfo.level]
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Physical")
+			
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SetShadow(number time)
+		--그림자가 이동합니다
+		local pos = -0.3
+		if self.Entity.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX then
+			pos = 0.3
+		end
+		
+		local setpos = function()
+			self.Entity:GetChildByName("Shadow").TransformComponent.Position = Vector3(pos, 0, 0)
+		end
+		
+		_TimerService:SetTimerOnce(setpos, time*0.2/10)
+		
+		--그림자 원상복구
+		local init = function()
+			self.Entity:GetChildByName("Shadow").TransformComponent.Position = Vector3.zero
+		end
+		
+		_TimerService:SetTimerOnce(init, time*2.5/10)
+	end
+
+end

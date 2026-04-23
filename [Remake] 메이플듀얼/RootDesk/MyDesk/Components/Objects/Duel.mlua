@@ -1,0 +1,1187 @@
+@Component
+script Duel extends Object
+
+	property any mainModule = nil
+
+	property integer commandId = 0
+
+	property any objectComparer = nil
+
+	property integer objectId = 0
+
+	property table objectArray = {}
+
+	property table cardPool = {}
+
+	property table minionPool = {}
+
+	property table cardReserve = {}
+
+	property table minionReserve = {}
+
+	property integer beginDuelTimer = 0
+
+	property table playerArray = {}
+
+	property boolean isDueling = false
+
+	property Player ourPlayer = nil
+
+	property Player enemyPlayer = nil
+
+	property Notice notice = nil
+
+	property integer roundCount = 0
+
+	property Player roundPlayer = nil
+
+	property TurnSign turnSign = nil
+
+	property number turnTime = 0
+
+	property number countdownTime = 0
+
+	property integer turnCount = 0
+
+	property Player turnPlayer = nil
+
+	property integer turnTimer = 0
+
+	property any countdownTimer = nil
+
+	property boolean isWaitingExtraTime = false
+
+	property integer startingCardsCount = 0
+
+	property Minion placingMinion = nil
+
+	property integer showCardTimer = 0
+
+	property any showCardTweener = nil
+
+	property Card showingCard = nil
+
+	property Entity ourEndRoundSignEntity = nil
+
+	property Entity enemyEndRoundSignEntity = nil
+
+	property any backgroundTweener = nil
+
+	property any startDate = nil
+
+	property Tutorial tutorial = nil
+
+	property boolean isRandomBattle = nil
+
+	method table GetProperties()
+		local propertyTable = {
+			commandId = self.commandId,
+			objectId = self.objectId,
+			objectArray = self.objectArray,
+			isDueling = self.isDueling,
+			roundCount = self.roundCount,
+			roundPlayer = self.roundPlayer,
+			turnCount = self.turnCount,
+			turnPlayer = self.turnPlayer,
+			tutorial = self.tutorial,
+		}
+		
+		_Table:Assign(__base:GetProperties(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		__base:OnSyncProperties()
+		
+		if self.isDueling then
+			self:SetSides()
+			self:PlacePlayers()
+			self.turnSign:SetStateByTurnPlayer(self.turnPlayer)
+			self:DarkenBackground()
+		end
+	end
+
+	method void Clear()
+		self.isDueling = false
+		self.ourPlayer = nil
+		self.enemyPlayer = nil
+		self.roundCount = 0
+		self.roundPlayer = nil
+		self.turnCount = 0
+		self.turnPlayer = nil
+	end
+
+	method void OnBeginPlay()
+		self.objectComparer = function (left, right) return left.id < right.id end
+		self.playerArray = {
+			self.Entity:GetChildByName("Player_1").Player,
+			self.Entity:GetChildByName("Player_2").Player
+		}
+		
+		if self:IsServer() then
+			self.objectArray = {
+				self,
+				self.Entity:GetChildByName("Player_1").Player,
+				self.Entity:GetChildByName("Player_2").Player,
+				self.Entity:GetChildByName("Deck_1").Deck,
+				self.Entity:GetChildByName("Deck_2").Deck,
+				self.Entity:GetChildByName("Hand_1").Hand,
+				self.Entity:GetChildByName("Hand_2").Hand,
+				self.Entity:GetChildByName("Field_1").Field,
+				self.Entity:GetChildByName("Field_2").Field,
+				self.Entity:GetChildByName("History").History
+			}
+			self.objectId = #self.objectArray + 1
+		end
+		
+		self:SpawnAndSetShowingCard()
+	end
+
+	method void SetVariables(table variableTable)
+		__base:SetVariables(variableTable)
+		
+		local isRandomBattle = variableTable.isRandomBattle
+		if isRandomBattle ~= nil then
+			self:SetRandomBattle(isRandomBattle)
+		end
+	end
+
+	method void ClearVariables()
+		__base:ClearVariables()
+		
+		self.isRandomBattle = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Sync(string userId)
+		self:Invoke("SyncProperties", {userId})
+		self:Invoke("OnSyncProperties", {userId})
+	end
+
+	method void Sort(table objectArray)
+		table.sort(objectArray, self.objectComparer)
+	end
+
+	method void InsertObject(Object object)
+		object.id = self.objectId
+		self.objectId = self.objectId + 1
+		table.insert(self.objectArray, object)
+	end
+
+	method void RemoveObject(Object object)
+		_Table:Remove(self.objectArray, object)
+	end
+
+	method table Invoke(string methodName, table args)
+		local ret = {}
+		local objectArray = _Table:ShallowCopy(self.objectArray)
+		for _, object in ipairs(objectArray) do
+			ret[object] = _Util:Call(object, methodName, args)
+		end
+		
+		return ret
+	end
+
+	method table ShareAcquiredCards(integer count)
+		local cardArray = {}
+		for i = 1, count do
+			cardArray[i] = self:ShareAcquiredCard()
+		end
+		
+		return cardArray
+	end
+
+	method Card ShareAcquiredCard()
+		local card
+		if self:IsServer() then
+			card = self:AcquireCard()
+			self.commandManager:PushPackage(card)
+		else
+			card = self.commandManager:PopPackage()
+		end
+		card:SpawnAndSetActor()
+		self:InsertObject(card)
+		
+		return card
+	end
+
+	@ExecSpace("ServerOnly")
+	method Card AcquireCard()
+		local card
+		if _Table:IsEmpty(self.cardPool) then
+			card = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Card"), "Card", 
+				Vector3.zero, self.Entity.CurrentMap).Card
+		else
+			card = table.remove(self.cardPool)
+		end	
+		
+		return card
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReleaseCard(Card card)
+		table.insert(self.cardReserve, card)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecycleCards()
+		_Table:Append(self.cardPool, self.cardReserve)
+		table.clear(self.cardReserve)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetShowingCard()
+		self.showingCard = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Card"), "Card", 
+			Vector3.zero, self.Entity).Card
+		self.showingCard:SpawnAndSetActor()
+	end
+
+	method table ShareAcquiredMinions(integer count)
+		local minionArray = {}
+		for i = 1, count do
+			minionArray[i] = self:ShareAcquiredMinion()
+		end
+		
+		return minionArray
+	end
+
+	method Minion ShareAcquiredMinion()
+		local minion
+		if self:IsServer() then
+			minion = self:AcquireMinion()
+			self.commandManager:PushPackage(minion)
+		else
+			minion = self.commandManager:PopPackage()
+		end
+		minion:SpawnAndSetActor()
+		self:InsertObject(minion)
+		
+		return minion
+	end
+
+	@ExecSpace("ServerOnly")
+	method Minion AcquireMinion()
+		local minion
+		if _Table:IsEmpty(self.minionPool) then
+			minion = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Minion"), "Minion",
+				Vector3.zero, self.Entity.CurrentMap).Minion
+		else
+			minion = table.remove(self.minionPool)
+		end
+		
+		return minion
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReleaseMinion(Minion minion)
+		table.insert(self.minionReserve, minion)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecycleMinions()
+		_Table:Append(self.minionPool, self.minionReserve)
+		table.clear(self.minionReserve)
+	end
+
+	@ExecSpace("Multicast")
+	method void SetPlacingMinion(Minion minion)
+		self.placingMinion = minion
+		if self:IsClient() then
+			minion:SpawnAndSetActor()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnAndSetPlacingMinion()
+		local minion = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Minion"), "Minion",
+			Vector3.zero, self.Entity.CurrentMap).Minion
+		self:SetPlacingMinion(minion)
+	end
+
+	method Minion SharePlacingMinion()
+		local minion
+		if self:IsServer() then
+			minion = self.placingMinion
+			self.commandManager:PushPackage(minion)
+		else
+			minion = self.commandManager:PopPackage()
+		end
+		minion:SpawnAndSetActor()
+		self:InsertObject(minion)
+		
+		return minion
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DestroyPlacingMinion()
+		self.placingMinion:Destroy()
+		self.placingMinion = nil
+	end
+
+	method void UpdateEnchantments(table objectArray, string taskName, table args, table eachArgs)
+		self:Invoke("TryRemoveEnchantments", {objectArray, taskName, args, eachArgs})
+		self:ApplyAuras()
+	end
+
+	method void ApplyAuras()
+		self:Invoke("ClearAuraEnchantments", {})
+		
+		for _, object in ipairs(self.objectArray) do
+			if not object.auraNameArray then
+				continue
+			end
+			
+			for _, auraName in ipairs(object.auraNameArray) do
+				local targetArray = self.auraManager:GetTargets(object, auraName)
+				local auraEnchantmentArray = self.auraManager:GetEnchantments(object, auraName)
+				for _, target in ipairs(targetArray) do
+					target:InsertAuraEnchantments(auraEnchantmentArray)
+				end
+			end
+		end
+		
+		self:Invoke("ApplyEnchantments", {})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowCard(Card card)
+		self.showingCard:ClearBlueprint()
+		_TimerService:ClearTimer(self.showCardTimer)
+		if self.showCardTweener then
+			self.showCardTweener:Destroy()
+		end
+		
+		self.showingCard.auraEnchantmentArray = _Table:DeepCopy(card.auraEnchantmentArray)
+		self.showingCard:SetBlueprint(card:GetBlueprint())
+		
+		
+		local actor = self.showingCard.actor
+		local rendererArray = _Table:Concat(actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true), 
+			actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true))
+		for _, renderer in ipairs(rendererArray) do
+			renderer.SortingLayer = "Unit"
+			renderer.OrderInLayer = 0
+		end
+		local transform = actor.Entity.TransformComponent
+		transform.WorldPosition = Vector3(-4.35, 0.7, 1000)
+		transform.WorldZRotation = 0
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+		self.showCardTweener = _Tween:ScaleTo(actor.Entity, Vector2.one, 0.25, EaseType.CubicEaseOut)
+		self.showCardTimer = _TimerService:SetTimerOnce(function()
+				self.showCardTweener = _Tween:ScaleTo(actor.Entity, Vector2.zero, 0.25, EaseType.CubicEaseOut)
+				self.showCardTimer = _TimerService:SetTimerOnce(function()
+						self.showCardTweener:Destroy()
+						self.showingCard:ClearBlueprint()
+					end, 0.25)
+			end, 4)
+		
+		wait(0.75)
+	end
+
+	method Player GetWinner()
+		local winner
+		for _, player in ipairs(self.duel.playerArray) do
+			if player.isDead then
+				winner = player.opponent
+				if player.opponent.isDead then
+					winner = nil
+				end
+				
+				break
+			end
+		end
+		
+		return winner
+	end
+
+	method boolean HasDeadPlayer()
+		for _, player in ipairs(self.playerArray) do
+			if player.isDead then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	method boolean HasDeadMinion()
+		for _, player in ipairs(self.playerArray) do
+			if player.field:HasDeadMinion() then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	method table GetDeadMinions()
+		return _Table:Concat(self.playerArray[1].field:GetDeadMinions(), self.playerArray[2].field:GetDeadMinions())
+	end
+
+	method boolean HasBattler()
+		return self.playerArray[1].field:HasBattler() or self.playerArray[2].field:HasBattler()
+	end
+
+	method boolean HasBattlerBoth()
+		return self.playerArray[1].field:HasBattler() and self.playerArray[2].field:HasBattler()
+	end
+
+	method table GetFrontBattlers()
+		return {self.playerArray[1].field:GetFrontBattler(), self.playerArray[2].field:GetFrontBattler()}
+	end
+
+	method table GetDirectAttackers()
+		return _Table:Concat(self.playerArray[1].field:GetDirectAttackers(), self.playerArray[2].field:GetDirectAttackers())
+	end
+
+	method table GetMinions(any selector)
+		return _Table:Concat(self.playerArray[1].field:GetMinions(selector), self.playerArray[2].field:GetMinions(selector))
+	end
+
+	method table ShareRandomMinions(integer count, any selector)
+		return self.commandManager:ShareRandomPermutationInArray(_Table:Select(self:GetMinions(selector), self.taskManager.liveSelector), count)
+	end
+
+	method table GetUnits()
+		return _Table:Concat(self:GetPlayers(), self:GetMinions(nil))
+	end
+
+	method table ShareRandomUnits(integer count)
+		return self.commandManager:ShareRandomPermutationInArray(_Table:Select(self:GetUnits(), self.taskManager.liveSelector), count)
+	end
+
+	method table GetPlayers()
+		return _Table:ShallowCopy(self.playerArray)
+	end
+
+	method Player ShareRandomPlayer()
+		return self.commandManager:ShareRandomElementInArray(_Table:Select(self:GetPlayers(), self.taskManager.liveSelector))
+	end
+
+	method table GetCards(any selector)
+		return _Table:Concat(self.playerArray[1]:GetCards(selector), self.playerArray[2]:GetCards(selector))
+	end
+
+	method table GetDeckCards(any selector)
+		return _Table:Concat(self.playerArray[1].deck:GetCards(selector), self.playerArray[2].deck:GetCards(selector))
+	end
+
+	method table GetHandCards(any selector)
+		return _Table:Concat(self.playerArray[1].hand:GetCards(selector), self.playerArray[2].hand:GetCards(selector))
+	end
+
+	method table ShareRandomHandCards(integer count, any selector)
+		return self.commandManager:ShareRandomPermutationInArray(self:GetHandCards(selector), count)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBeginDuelTimer()
+		if self.playerArray[1].isServing and self.playerArray[2].isServing and
+			self.playerArray[1].isReady and self.playerArray[2].isReady then
+			self.beginDuelTimer = _TimerService:SetTimerOnce(function()
+					self:ClearBeginDuelTimer()
+					self.commandManager:RunCommand("BeginDuel", {}, {})
+				end, 4)
+			
+			for _, player in ipairs(self.playerArray) do
+				if isvalid(player.character) and player.character:IsUser() then
+					self:SetBeginDuelTimerInClient(player.character.Entity.Name)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetBeginDuelTimerInClient()
+		self.uiManager.ToastModule:ShowMessage(_LocalizationService:GetText("DuelWillStartSoon"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearBeginDuelTimer()
+		_TimerService:ClearTimer(self.beginDuelTimer)
+		
+		for _, player in ipairs(self.playerArray) do
+			if isvalid(player.character) and player.character:IsUser() then
+				self:ClearBeginDuelTimerInClient(player.character.Entity.Name)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ClearBeginDuelTimerInClient()
+		self.uiManager.ToastModule:Clear()
+	end
+
+	method void BeginDuel()
+		self.isDueling = true
+		if self:IsServer() then
+			self.startDate = DateTime.UtcNow:ToFormattedString("yyyy-MM-dd HH:mm:ss")
+		end
+		
+		self:SetName("Duel")
+		for _, player in ipairs(self.playerArray) do
+			player:SetName("Player")
+			player.deck:SetName("Deck")
+			player.hand:SetName("Hand")
+			player.field:SetName("Field")
+		end
+		
+		self:Invoke("Initialize", {})
+		
+		self:SetSides()
+		for _, player in ipairs(self.playerArray) do
+			player:SetServing(false)
+			player.cardBack = self.commandManager:ShareCardBack(player.character)
+			player.class = self.commandManager:ShareClass(player.character)
+			player:ShowClassTag()
+			player.deck:ShowDetails()
+		end
+		
+		if self:IsClient() then
+			if isvalid(self.mainModule) then
+				self.mainModule.panelEntity.Enable = false
+			end
+			self.uiManager:UpdateMobileUI()
+		end
+		self:DarkenBackground()
+		self:ShowIntro()
+		self:PutDeckCards()
+		for _, player in ipairs(self.playerArray) do
+			player:ShowDetails()
+			player:ShowFriendRequestButton()
+		end
+		if self:IsClient() and isvalid(_UserService.LocalPlayer.Character.player) and isvalid(self.uiManager.PlayerModule) then
+			self.uiManager.PlayerModule:Open()
+		end
+		self:DrawStartingCards()
+		
+		self:SpawnAndSetPlacingMinion()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSides()
+		self.ourPlayer = self.playerArray[1]
+		self.enemyPlayer = self.playerArray[2]
+		for i, player in ipairs(self.playerArray) do
+			local character = player.character
+			if isvalid(character) and character:IsOwner() then
+				self.ourPlayer = player
+				self.enemyPlayer = player.opponent
+			end
+		end
+		self.ourPlayer:SetSide(true)
+		self.enemyPlayer:SetSide(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlacePlayers()
+		self.ourPlayer.actor.Entity.TransformComponent.Position = Vector3.zero
+		self.enemyPlayer.actor.Entity.TransformComponent.Position = Vector3.zero
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowIntro()
+		self.notice:ShowText("VS")
+		
+		local emotionalTypeArray = {EmotionalType.Smile, EmotionalType.Chu, EmotionalType.Wink}
+		self.ourPlayer:PlayEmotion(_Table:GetRandomElement(emotionalTypeArray), 3)
+		self.enemyPlayer:PlayEmotion(_Table:GetRandomElement(emotionalTypeArray), 3)
+		self.ourPlayer:Animate("Alert")
+		self.enemyPlayer:Animate("Alert")
+		_TimerService:SetTimerOnce(function()
+				self.ourPlayer:Animate("Attack")
+				self.enemyPlayer:Animate("Attack")
+			end, 0.75)
+		_TimerService:SetTimerOnce(function()
+				self.ourPlayer:Animate("Idle")
+				self.enemyPlayer:Animate("Idle")
+			end, 3)
+		
+		_Tween:MoveTo(self.ourPlayer.actor.Entity, Vector2(-4.2, 0.1), 0.75, EaseType.CubicEaseOut, true)
+		_Tween:MoveTo(self.enemyPlayer.actor.Entity, Vector2(4.2, 0.1), 0.75, EaseType.CubicEaseOut, true)
+		_TimerService:SetTimerOnce(function() 
+				_Tween:MoveTo(self.ourPlayer.actor.Entity, Vector2(0, 0.1), 0.5, EaseType.CubicEaseIn, true)
+				_Tween:MoveTo(self.enemyPlayer.actor.Entity, Vector2(0, 0.1), 0.5, EaseType.CubicEaseIn, true)
+				_TimerService:SetTimerOnce(function()
+						_Tween:MoveTo(self.ourPlayer.actor.Entity, Vector2.zero, 0.75, EaseType.CubicEaseOut, false)
+						_Tween:MoveTo(self.enemyPlayer.actor.Entity, Vector2.zero, 0.75, EaseType.CubicEaseOut, false)
+					end, 0.5)
+			end, 1)
+		
+		local resource = self.resourceManager:GetResource("BeginDuel")
+		_TimerService:SetTimerOnce(function()
+				_Screen:PlayEffect(resource.animation, nil)
+				_TimerService:SetTimerOnce(function()
+						_SoundService:PlaySound(resource.sound, 2)
+					end, 0.84)
+			end, 0.83)
+	end
+
+	method void PutDeckCards()
+		for _, player in ipairs(self.playerArray) do
+			local blueprintArray = self.commandManager:SharePrivateBlueprints(player)
+			local cardArray = self.duel:ShareAcquiredCards(#blueprintArray)
+			for i, card in ipairs(cardArray) do
+				local blueprint = blueprintArray[i]
+				card:SetPlayer(player)
+				if self:IsServer() and not _Table:IsEmpty(blueprint) then
+					card:SetInfo(blueprint.info)
+					card.enchantmentArray = _Table:DeepCopy(blueprint.enchantmentArray)
+				end
+			end
+			if isvalid(self.tutorial) then
+				local duelId = self.tutorial.duelId
+				if duelId == 1 or duelId == 2 then
+					player.deck:InsertCardsWithoutShuffle(cardArray)
+				end
+			else
+				player.deck:InsertCards(cardArray)
+			end
+			
+			local delay = 0
+			local delta = 0.75 / #cardArray
+			local position = player.isOurs and Vector2(3.75, -6) or Vector2(-3.75, 6)
+			for i, card in ipairs(cardArray) do
+				card:Initialize()
+				
+				if self:IsClient() then
+					local transform = card.actor.Entity.TransformComponent
+					transform.WorldPosition.x = position.x
+					transform.WorldPosition.y = position.y
+					transform.WorldZRotation = -15
+					
+					_TimerService:SetTimerOnce(function()
+						_Tween:TransformTo(card.actor.Entity, Vector2.zero, 0, Vector2.one, 1, 
+							EaseType.CubicEaseIn, EaseType.ExpoEaseIn, EaseType.ExpoEaseIn, false)
+					
+						wait(1)
+					
+						player.deck:AddCardsCount(1)
+					end, delay)
+					delay = delay + delta
+		
+				end
+			end
+		end
+		
+		if self:IsClient() then
+			wait(2.75)
+		end
+	end
+
+	method void DrawStartingCards()
+		for _, player in ipairs(self.playerArray) do
+			local startingCardsCount
+			if isvalid(self.tutorial) then
+				local duelId = self.tutorial.duelId
+				if duelId == 1 then
+					startingCardsCount = 0
+				elseif duelId == 2 then
+					startingCardsCount = 2
+				end
+			else
+				startingCardsCount = self.startingCardsCount
+			end
+			local cardArray = player.deck:ShareTopCards(startingCardsCount)
+			player.deck:RemoveCards(cardArray)
+			player.hand:InsertCards(cardArray)
+			
+			local delay = 0
+			for i, card in ipairs(cardArray) do
+				card:PrivateOpen()
+				card:SetFace(false)
+				if self:IsClient() then
+					_TimerService:SetTimerOnce(function()
+							player.deck:AddCardsCount(-1)
+							card.actor.Entity.TransformComponent.Position.z = 0
+							_Tween:TransformTo(card.actor.Entity, Vector2.zero, 0, Vector2.one, 0.75, 
+								EaseType.CubicEaseOut, EaseType.ExpoEaseOut, EaseType.ExpoEaseOut, false)
+							card:SetFace(true)
+						end, delay)
+		
+					delay = delay + 0.1
+				end
+			end
+		end
+		
+		if self:IsClient() then
+			wait(2)
+		end
+	end
+
+	method void EndDuel(Player winner)
+		self:EndTurn(false)
+		self:EndRound(false)
+		
+		self:ShowOutro(winner)
+		self:ReturnEndingCards()
+		self:EraseDeckCards()
+		self:LightenBackground()
+		
+		if self:IsClient() then
+			if isvalid(self.mainModule) then
+				self.mainModule.panelEntity.Enable = true
+			end
+		end
+		
+		for _, player in ipairs(self.playerArray) do
+			player:SetServing(true)
+			player.cardBack = ""
+			player.class = ""
+			player:HideClassTag()
+			player:HideDetails()
+			player.deck:HideDetails()
+			player:HideFriendRequestButton()
+		end
+		
+		self:DestroyPlacingMinion()
+		
+		self.isDueling = false
+		
+		self:EndMatch(winner)
+		
+		self:Invoke("Clear", {})
+		
+		if self:IsServer() then
+			self.startDate = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowOutro(Player winner)
+		local text
+		if winner == nil then
+			text = "Draw"
+		elseif winner:IsOwner() then
+			text = "Win"
+		elseif winner.opponent:IsOwner() then
+			text = "Lose"
+		else
+			text = "End"
+		end
+		self.notice:ShowText(text)
+		
+		for _, player in ipairs(self.playerArray) do
+			if winner == nil then
+				player:PlayEmotion(_Table:GetRandomElement({EmotionalType.Bewildered, EmotionalType.Oops, EmotionalType.Vomit}), 3)
+				player:Animate("Idle")
+			elseif player == winner then
+				player:PlayEmotion(_Table:GetRandomElement({EmotionalType.Glitter, EmotionalType.Love, EmotionalType.Cheers}), 3)
+				player:Animate("Idle")
+			else
+				player:PlayEmotion(_Table:GetRandomElement({EmotionalType.Angry, EmotionalType.Pain, EmotionalType.Despair}), 3)
+				player:Animate("Dead")
+			end
+		end
+		
+		local resource = self.resourceManager:GetResource("EndDuel")
+		_TimerService:SetTimerOnce(function()
+				_Screen:PlayEffect(resource.animation, nil)
+				_TimerService:SetTimerOnce(function()
+						_SoundService:PlaySound(resource.sound, 2)
+					end, 0.84)
+			end, 0.83)
+	end
+
+	method void ReturnEndingCards()
+		for _, player in ipairs(self.playerArray) do
+			local cardArray = _Table:ShallowCopy(player.hand.cardArray)
+			player.hand:RemoveCards(cardArray)
+			player.deck:InsertCards(cardArray)
+		
+			if self:IsClient() then
+				local delay = 0
+				local delta = 0.5 / #cardArray
+				for i, card in ipairs(cardArray) do
+					_TimerService:SetTimerOnce(function()
+						_Tween:TransformTo(card.actor.Entity, Vector2.zero, 0, Vector2.one, 0.75, 
+								EaseType.CubicEaseIn, EaseType.ExpoEaseIn, EaseType.ExpoEaseIn, false)
+						
+						wait(0.75)
+						
+						player.deck:AddCardsCount(1)
+						if isvalid(card.deck) then
+							card:ClearBlueprint()
+						end
+					end, delay)
+					delay = delay + delta
+				end
+			end
+		end
+		
+		if self:IsClient() then
+			wait(1.5)
+		end
+	end
+
+	method void EraseDeckCards()
+		for _, player in ipairs(self.playerArray) do
+			local cardArray = _Table:ShallowCopy(player.deck.cardArray)
+			player.deck:RemoveCards(cardArray)
+			
+			local position = player.isOurs and Vector2(3.75, -6) or Vector2(-3.75, 6)
+			local delay = 0
+			local delta = 0.75 / #cardArray
+			for i, card in ipairs(cardArray) do
+				if self:IsClient() then
+					_TimerService:SetTimerOnce(function()
+							player.deck:AddCardsCount(-1)
+							_Tween:TransformTo(card.actor.Entity, position, 0, Vector2.one, 1, 
+									EaseType.CubicEaseOut, EaseType.ExpoEaseOut, EaseType.ExpoEaseOut, true)
+						end, delay)
+					delay = delay + delta
+				end
+			end
+		end
+		
+		if self:IsClient() then
+			wait(1.75)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndMatch(Player winner)
+		local winnerUserId = isvalid(winner) and winner.character.Entity.Name or ""
+		local home = self.Entity.CurrentMap.Home
+		local isRankedMatch = isvalid(home) and home.mode == "RankedMatch"
+		local rankedMatchResultTable
+		if isRankedMatch then
+			home.isEndMatch = true
+			rankedMatchResultTable = home:UpdateMatchResult(winnerUserId)
+			_TimerService:SetTimerOnce(function()
+				_TeleportService:WarpUsersToWorldAsync(_UserService.UserEntities.Keys, Environment.WorldId, "", function() end)
+			end, self.taskManager.delay + 6)
+		end
+		
+		local playerInfoTable = {}
+		for i = 1, 2 do
+			local userId
+			local character
+			local player
+			if isRankedMatch then
+				userId = _UserService:GetUserByProfileCode(home.matchUserInfos[i].ProfileCode).UserId
+				local userEntity = _UserService:GetUserEntityByUserId(userId)
+				if isvalid(userEntity) and isvalid(userEntity.Character.player) then
+					character = userEntity.Character
+					player = character.player
+				end
+			else
+				character = self.playerArray[i].character
+				if not isvalid(character) then
+					continue
+				end
+				player = character.player
+				userId = character.Entity.Name
+			end
+			
+			local playerInfo = {}
+			playerInfoTable[userId] = playerInfo
+			playerInfo.userId = userId
+			if isRankedMatch then
+				_Table:Assign(rankedMatchResultTable[userId], playerInfo)
+			end
+			
+			if not isvalid(character) then
+				continue
+			end
+			
+			playerInfo.deck = character:GetDeck()
+			playerInfo.mp = self.history:GetThisGameMp(player)
+			
+			if not character:IsUser() then
+				continue
+			end
+			
+			if isvalid(self.tutorial) then
+				continue
+			end
+			
+			local hotTime = false
+			local dateTime = _DateTime:KtcNow()
+			if dateTime.DayOfWeek == DayOfWeekType.Saturday or dateTime.DayOfWeek == DayOfWeekType.Sunday then
+				if (15 <= dateTime.Hour and dateTime.Hour < 18) or 21 <= dateTime.Hour then
+					hotTime = isRankedMatch
+				end
+			else
+				if (11 <= dateTime.Hour and dateTime.Hour < 13) or (19 <= dateTime.Hour and dateTime.Hour < 21) then
+					hotTime = isRankedMatch
+				end
+			end
+			
+			local F = 15
+			local M = F * math.min(self.history:GetThisGameMp(player) or 0, 30)
+			
+			local isPlayMesoEnded = character:GetDailyPlayMeso() >= 9000
+			local playMesoDelta = math.floor(math.min((hotTime and 1.5 or 1) * M, math.max(0, 9000 - character:GetDailyPlayMeso())))
+			character:AddDailyPlayMeso(playMesoDelta)
+			
+			local isRankedWinMesoEnded = character:GetDailyRankedWinMeso() >= 4500
+			local rankedWinMesoDelta
+			if isRankedMatch and player == winner then
+				rankedWinMesoDelta = math.floor(math.min((hotTime and 1.5 or 1) * 450, math.max(0, 4500 - character:GetDailyRankedWinMeso())))
+				character:AddDailyRankedWinMeso(rankedWinMesoDelta)
+			end
+			
+			local rankedPlayMesoDelta
+			local dailyRankedPlayCount
+			if isRankedMatch and self.startDate ~= nil and DateTime.UtcNow - DateTime(self.startDate) > TimeSpan(0, 1, 0) and self.history:GetThisGameMp(player) >= 6 then
+				character:IncreaseDailyRankedPlayCount()
+				dailyRankedPlayCount = character:GetDailyRankedPlayCount()
+				if dailyRankedPlayCount == 1 then
+					rankedPlayMesoDelta = 1000
+				elseif dailyRankedPlayCount == 3 then
+					rankedPlayMesoDelta = 2000
+				elseif dailyRankedPlayCount == 6 then
+					rankedPlayMesoDelta = 3000
+				end
+			end
+			
+			local rankMesoDelta
+			if isRankedMatch then
+				local rankPoint = character.rankPoint
+				local topRankPoint = character.topRankPoint
+				
+				local mesoArray = {500, 500, 500, 3000, 500, 500, 500, 5000, 1000, 1000, 1000, 10000, 1000, 1000, 1000, 20000, 3000, 3000, 3000, 40000}
+				for i, meso in ipairs(mesoArray) do
+					local hurdle = 500 + i * 100
+					if topRankPoint < hurdle and hurdle <= rankPoint then
+						rankMesoDelta = rankMesoDelta and rankMesoDelta + meso or meso
+					end
+				end
+		
+				if rankPoint > topRankPoint  then
+					character:SetTopRankPoint(rankPoint)
+				end
+			end
+			
+			local mesoDelta = playMesoDelta + (rankedWinMesoDelta or 0) + (rankedPlayMesoDelta or 0) + (rankMesoDelta or 0)
+			local rankPointDelta = rankedMatchResultTable and rankedMatchResultTable[userId].rankPoint or nil
+			
+			local befAsset = character.meso
+			character:AddMesoInServer(mesoDelta, self.Entity.CurrentMap.Map.mode)
+			local afterAsset = character.meso
+			
+			playerInfo.profileCode = character.profileCode
+			playerInfo.assetType = "Meso"
+			playerInfo.asset = afterAsset - befAsset
+			playerInfo.befAsset = befAsset
+			playerInfo.afterAsset = afterAsset
+			
+			_TimerService:SetTimerOnce(function()
+				if isvalid(character) then
+					character:SetRankInClient(character.rankPoint, character.ranking)
+					character:AddMesoInOwner(mesoDelta, userId)
+					self:ShowResult(playMesoDelta, isPlayMesoEnded, rankedWinMesoDelta, isRankedWinMesoEnded, rankPointDelta, winnerUserId, rankedPlayMesoDelta, dailyRankedPlayCount, rankMesoDelta, hotTime, userId)
+				end
+			end, self.taskManager.delay)
+		end
+		
+		if isvalid(self.tutorial) then
+			return
+		end
+		
+		local matchInfo = {
+			duelType = self.Entity.CurrentMap.Map.mode,
+			startDate = self.startDate,
+			endDate = DateTime.UtcNow:ToFormattedString("yyyy-MM-dd HH:mm:ss"),
+			winnerUserId = winnerUserId,
+			playerInfos = playerInfoTable
+		}
+	end
+
+	@ExecSpace("Client")
+	method void ShowResult(integer playMesoDelta, boolean isPlayMesoEnded, integer rankedWinMesoDelta, boolean isRankedWinMesoEnded, integer rankPointDelta, string winnerUserId, integer rankedPlayMesoDelta, integer dailyRankedPlayCount, integer rankMesoDelta, boolean hotTime)
+		local entityArray = {}
+		
+		if playMesoDelta then
+			local playMeso = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("PlayMeso"), "PlayMeso", Vector3(100, 100, 0), self.Entity.CurrentMap).PlayMeso
+			local transform = playMeso.Entity.TransformComponent
+			transform.Scale.x = 0
+			transform.Scale.y = 0
+			playMeso:Initialize(playMesoDelta, isPlayMesoEnded, hotTime)
+			table.insert(entityArray, playMeso.Entity)
+		end
+		
+		if rankedWinMesoDelta then
+			local rankedWinMeso = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("RankedWinMeso"), "RankedWinMeso", Vector3(100, 100, 0), self.Entity.CurrentMap).RankedWinMeso
+			local transform = rankedWinMeso.Entity.TransformComponent
+			transform.Scale.x = 0
+			transform.Scale.y = 0
+			rankedWinMeso:Initialize(rankedWinMesoDelta, isRankedWinMesoEnded, hotTime)
+			table.insert(entityArray, rankedWinMeso.Entity)
+		end
+		
+		if rankedPlayMesoDelta then
+			local rankedPlayMeso = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("RankedPlayMeso"), "RankedPlayMeso", Vector3(100, 100, 0), self.Entity.CurrentMap).RankedPlayMeso
+			local transform = rankedPlayMeso.Entity.TransformComponent
+			transform.Scale.x = 0
+			transform.Scale.y = 0
+			rankedPlayMeso:Initialize(rankedPlayMesoDelta, dailyRankedPlayCount)
+			table.insert(entityArray, rankedPlayMeso.Entity)
+		end
+		
+		if rankMesoDelta then
+			local rankMeso = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("RankMeso"), "RankMeso", Vector3(100, 100, 0), self.Entity.CurrentMap).RankMeso
+			local transform = rankMeso.Entity.TransformComponent
+			transform.Scale.x = 0
+			transform.Scale.y = 0
+			rankMeso:Initialize(rankMesoDelta)
+			table.insert(entityArray, rankMeso.Entity)
+		end
+		
+		if rankPointDelta then
+			local rankPoint = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("RankPoint"), "RankPoint", Vector3(100, 100, 0), self.Entity.CurrentMap).RankPoint
+			local transform = rankPoint.Entity.TransformComponent
+			transform.Scale.x = 0
+			transform.Scale.y = 0
+			rankPoint:Initialize(rankPointDelta, winnerUserId)
+			table.insert(entityArray, rankPoint.Entity)
+		end
+		
+		for i = #entityArray, 1, -1 do
+			local entity = entityArray[i]
+			local transform = entity.TransformComponent
+			transform.WorldPosition.x = -4.2
+			transform.WorldPosition.y = -0.7 + i * 0.4
+			local tweener = _Tween:ScaleTo(entity, Vector2.one, 0.125, EaseType.Linear)
+			_TimerService:SetTimerOnce(function()
+				tweener:Destroy()
+				tweener = _Tween:ScaleTo(entity, Vector2.zero, 0.125, EaseType.Linear)
+				_TimerService:SetTimerOnce(function()
+					tweener:Destroy()
+					entity:Destroy()
+				end, 0.125)
+			end, 5)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DarkenBackground()
+		local color = Color.black
+		self.backgroundTweener = _TweenLogic:PlayTween(1, 0.75, 0.25, EaseType.Linear, function(t)
+			color.r = t
+			color.g = t
+			color.b = t
+			_MaterialService:ChangeMaterialProperty(_EntryService:GetMaterialIdByName("Background"), {BlendColor = color})
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LightenBackground()
+		local color = Color.black
+		self.backgroundTweener = _TweenLogic:PlayTween(0.75, 1, 0.25, EaseType.Linear, function(t)
+			color.r = t
+			color.g = t
+			color.b = t
+			_MaterialService:ChangeMaterialProperty(_EntryService:GetMaterialIdByName("Background"), {BlendColor = color})
+		end)
+	end
+
+	method void EndRound(boolean isTimeout)
+		for _, player in ipairs(self.playerArray) do
+			player:SetEndRoundDeclared(false)
+			if self:IsClient() then
+				player:SetRoundPlayerSign(false)
+				player.endRoundSignEntity.Visible = false
+				player.hand:TransformToRest()
+			end
+		end
+		
+		self.roundPlayer = nil
+	end
+
+	method void BeginRound(Player roundPlayer)
+		self.roundCount = self.roundCount + 1
+		self.roundPlayer = roundPlayer
+		
+		if self:IsClient() then
+			for _, player in ipairs(self.playerArray) do
+				player:TransformAnchorToPlay()
+			end
+			
+			self.roundPlayer:SetRoundPlayerSign(true)
+			self.roundPlayer.opponent:SetRoundPlayerSign(false)
+			self.notice:ShowText("BeginRound")
+		
+			wait(2)
+		end
+	end
+
+	method void EndTurn(boolean isTimeout)
+		if self:IsServer() then
+			_TimerService:ClearTimer(self.turnTimer)
+			self:EndCountdown(isTimeout)
+		else
+			if isvalid(self.turnPlayer) and not self.turnPlayer.isEndRoundDeclared then
+				self.turnPlayer.hand:TransformToRest()
+			end
+			self.turnSign:SetState("Idle")
+		end
+		
+		self.turnPlayer = nil
+	end
+
+	method void BeginTurn(Player turnPlayer)
+		self.turnCount = self.turnCount + 1
+		self.turnPlayer = turnPlayer
+		
+		self.commandManager:InputGate()
+		
+		if self:IsServer() then
+			if isvalid(self.tutorial) then
+				local duelId = self.tutorial.duelId
+				if duelId == 1 or duelId == 2 then
+					return
+				end
+			end
+			
+			self.turnTimer = _TimerService:SetTimerOnce(function()
+					self:BeginCountdown()
+					self.turnTimer = _TimerService:SetTimerOnce(function()
+							self.commandManager:RunCommand("DeclareEndRound", {self.turnPlayer, true}, {})
+						end, self.countdownTime)
+				end, self.turnTime - self.countdownTime + self.taskManager.delay)
+		else
+			turnPlayer.hand:TransformToPlay()
+			self.turnSign:SetStateByTurnPlayer(turnPlayer)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void BeginCountdown()
+		self.turnSign:BeginCountdown(self.countdownTime, self.turnPlayer.isOurs)
+	end
+
+	@ExecSpace("Client")
+	method void EndCountdown(boolean isTimeout)
+		self.turnSign:EndCountdown(isTimeout)
+	end
+
+	method void BattlePhase()
+		
+	end
+
+	method void Battle(table minionArray)
+		
+	end
+
+	method void SetRandomBattle(boolean isRandomBattle)
+		if self.isRandomBattle == isRandomBattle then
+			return
+		end
+		
+		self.isRandomBattle = isRandomBattle
+	end
+
+	method void SetRandomBattleEnchantment(boolean isRandomBattle)
+		self.dependentVariableTable.isRandomBattle = isRandomBattle
+	end
+
+	method void InsertSetRandomBattleEnchantment(boolean isRandomBattle, table remover)
+		self:InsertEnchantment({methodName = "SetRandomBattleEnchantment", args = {isRandomBattle}, remover = _Table:DeepCopy(remover)})
+	end
+
+end

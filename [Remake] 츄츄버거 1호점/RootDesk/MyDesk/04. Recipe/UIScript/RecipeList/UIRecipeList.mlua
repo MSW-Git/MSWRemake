@@ -1,0 +1,304 @@
+@Component
+script UIRecipeList extends Component
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 레시피 리스트를 초기화하는 함수
+		self._T.recipeIdList = {}
+		
+		self.Entity.RecycleScrollView.onUpdateCell = function(i, e)
+			local recipeId = self._T.recipeIdList[i]
+			local nowSelected = _UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NowSelected
+			
+			e.UIRecipeBurgerSlot:Refresh(false, recipeId, recipeId == nowSelected, nil)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshDetail(integer recipeId)
+		-- 레시피 상세 정보를 새로고침하는 함수
+		local uiRecipeListHolder = _UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder
+		
+		
+		uiRecipeListHolder.NowSelected = recipeId
+		
+		if #self._T.recipeIdList > 0 then
+			for i, child in pairs(self.Entity.Children) do
+				child.UIRecipeBurgerSlot:SetSelected(child.UIRecipeBurgerSlot.RecipeId == recipeId)
+			end
+		end
+		
+		
+		uiRecipeListHolder:RefreshSetButton()
+		uiRecipeListHolder.ButtonArea[uiRecipeListHolder.NowKey].UIRecipeSetButtonArea:RefreshVIPOrderSelectBtnDim()
+		uiRecipeListHolder.ButtonArea[uiRecipeListHolder.NowKey].UIRecipeSetButtonArea:RefreshDeleteBtnDim()
+		
+		uiRecipeListHolder.RecipeDetail.UIRecipeListDetail:Refresh(recipeId)
+		
+		if uiRecipeListHolder.NowKey == "VIPOrder" then
+			uiRecipeListHolder.TopBar[uiRecipeListHolder.NowKey].UIRecipeSetTopBar:RefreshVIPOrderRequirements(uiRecipeListHolder.NowParams[1])
+		elseif uiRecipeListHolder.NowKey == "Trial" then
+			uiRecipeListHolder.TopBar[uiRecipeListHolder.NowKey].UIRecipeSetTopBar:SetTrialResultGuess()
+		end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshListByKey(string key, table params, integer recipeId, string sortKey)
+		-- 키에 따라 레시피 리스트를 새로고침하는 함수
+		for i = 1, #self.Entity.Children do
+			self.Entity.Children[i].Enable = false
+		end
+		
+		local filters = {}
+		if key == "Trial" then
+			local trialId = params[1]
+			local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+			
+			if trialData.Target == "Recipe" then
+				filters["Tag"] = trialData.TargetType
+			end
+		end
+		
+		local filtered = self:FilterRecipes(filters)
+		_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:SetButtonDim(#filtered == 0)
+		
+		if #filtered == 0 then
+			if key == "Recipe" then
+				_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NoRecipeText.TextComponent.Text = _GetLocalizationTextLogic:GetText("RecipeListEmptyMessage")
+			else
+				_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NoRecipeText.TextComponent.Text = _GetLocalizationTextLogic:GetText("RecipeListFilteredEmptyMessage")
+				_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NowSelected = 0
+			end
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(sortKey) then
+			sortKey = "Latest"
+			
+			if key == "Trial" then
+				sortKey = "TasteScore"
+			elseif key == "VIPOrder" then
+				sortKey = "VIPOrder"
+			end
+		end
+		
+		if key == "Recipe" then
+			local uiRecipeListHolder = _UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder
+			local topBar = uiRecipeListHolder.TopBar[key]
+			
+			_SelectDropDownLogic:RefreshSelected(topBar.UIRecipeSetTopBar.SortOptions, sortKey)
+		end
+		
+		local detailIndex = self:SortRecipes(sortKey, filtered, recipeId, key)
+		if detailIndex ~= nil then
+			self:RefreshDetail(detailIndex)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method table FilterRecipes(SyncTable<string, string> filters)
+		-- 필터 조건에 따라 레시피를 필터링하는 함수
+		local tag = filters["Tag"]
+		local reqIngre = tonumber(filters["ReqIngre"])
+		local orderSlot = tonumber(filters["VIPOrder"])
+		
+		local recipes = _UserService.LocalPlayer.PlayerRecipe.Recipes
+		local drawList = {}
+		for i = 1, #table.keys(recipes) do
+			---@type RecipeData
+			local recipeData = recipes[i]
+			local canDraw = true
+			if tag ~= nil then
+				local recipeTag = recipeData.Tag
+				if tag ~= recipeTag then
+					canDraw = false
+				end
+			end
+			
+			if reqIngre ~= nil then
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(reqIngre)
+				if ingreData ~= nil then
+					local isContained = _RecipeDataSetLogic:IsRecipeIncludeIngredient(recipeData.IngreList, reqIngre)
+					if isContained == false then
+						canDraw = false
+					end
+				end
+			end
+			
+			if orderSlot ~= nil then
+				canDraw = _VIPOrderDataSetLogic:IsRecipeCorrectForOrder(_UserService.LocalPlayer, orderSlot, recipeData)
+			end
+			
+			if canDraw then
+				table.insert(drawList, i)
+			end
+		end
+		
+		return drawList
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer SortRecipes(string sortKey, table recipes, integer recipeId, string listKey)
+		-- 정렬 키에 따라 레시피를 정렬하는 함수
+		if sortKey == "Latest" then
+			table.sort(recipes, function(a, b) return a > b end)
+			
+		elseif sortKey == "Cost" then
+			local player = _UserService.LocalPlayer
+			local playerRecipes = player.PlayerRecipe.Recipes
+			table.sort(recipes, function(a, b) 
+				---@type RecipeData
+				local aRecipe = playerRecipes[a]
+				local aCost = aRecipe.Cost
+				
+				---@type RecipeData
+				local bRecipe = playerRecipes[b]
+				local bCost = bRecipe.Cost
+				
+				if aCost == bCost then
+					return a > b
+				else
+					return aCost > bCost
+				end		
+				
+			end)
+			
+		elseif sortKey == "TasteScore" then
+			local player = _UserService.LocalPlayer
+			local playerRecipes = player.PlayerRecipe.Recipes
+			table.sort(recipes, function(a, b) 
+				---@type RecipeData
+				local aRecipe = playerRecipes[a]
+				local aScore = aRecipe.TasteScore
+				
+				---@type RecipeData
+				local bRecipe = playerRecipes[b]
+				local bScore = bRecipe.TasteScore
+				
+				if listKey == "Trial" then
+					if isvalid(aRecipe.TrialSkillBonus) then
+						aScore = aScore * (1+ aRecipe.TrialSkillBonus)
+					end
+					
+					if isvalid(bRecipe.TrialSkillBonus) then
+						bScore = bScore * (1+ bRecipe.TrialSkillBonus)
+					end			
+				end
+				
+				if aScore == bScore then
+					return a > b
+				else
+					return aScore > bScore
+				end
+						
+			end)
+			
+		elseif sortKey == "Tag" then
+			local player = _UserService.LocalPlayer
+			local playerRecipes = player.PlayerRecipe.Recipes
+			table.sort(recipes, function(a, b) 
+				---@type RecipeData
+				local aRecipe = playerRecipes[a]
+				local aTag = aRecipe.Tag
+				---@type RecipeTagData
+				local aTagData = _RecipeTagDataSetLogic.RecipeTagData[aTag]
+				local aSort = aTagData.SortIndex
+				
+				---@type RecipeData
+				local bRecipe = playerRecipes[b]
+				local bTag = bRecipe.Tag
+				---@type RecipeTagData
+				local bTagData = _RecipeTagDataSetLogic.RecipeTagData[bTag]
+				local bSort = bTagData.SortIndex
+				
+				if aSort == bSort then
+					return a > b
+				else
+					return aSort < bSort
+				end
+			end)
+			
+		elseif sortKey == "VIPOrder" then
+			local orderSlot = _UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NowParams[1]
+			local player = _UserService.LocalPlayer
+			local playerRecipes = player.PlayerRecipe.Recipes
+			
+			local corrects = {}
+			local wrongs = {}
+			for _, recipeId in pairs(recipes) do
+				---@type RecipeData
+				local recipeData = playerRecipes[recipeId]
+				local isCorrect = _VIPOrderDataSetLogic:IsRecipeCorrectForOrder(player, orderSlot, recipeData)
+				if isCorrect then
+					table.insert(corrects, recipeId)
+				else
+					table.insert(wrongs, recipeId)
+				end
+			end
+			
+			table.sort(corrects, function(a, b)
+				---@type RecipeData
+				local aRecipe = playerRecipes[a]
+				local aTasteScore = aRecipe.TasteScore
+				
+				---@type RecipeData
+				local bRecipe = playerRecipes[b]
+				local bTasteScore = bRecipe.TasteScore
+				
+				if aTasteScore == bTasteScore then
+					return a > b
+				else
+					return aTasteScore > bTasteScore
+				end		
+			end)
+			
+			table.clear(recipes)
+			for _, recipeId in pairs(corrects) do
+				table.insert(recipes, recipeId)
+			end
+			
+			for _, recipeId in pairs(wrongs) do
+				table.insert(recipes, recipeId)
+			end
+		end
+		
+		local isDetailIndexIncluded = false
+		local scrollIdx = 0
+		
+		table.initialize(self._T.recipeIdList, recipes)
+		for i = 1, #recipes do
+			if recipeId == recipes[i] then
+				isDetailIndexIncluded = true
+				scrollIdx = i-1
+				break
+			end
+		end
+		
+		if #recipes > 0 then
+			self.Entity.RecycleScrollView:SetTotalCount(#recipes)
+		
+			local scrollRow = math.floor(scrollIdx/self.Entity.RecycleScrollView.MaxColumnCount)+1
+			local maxRow = math.floor(self.Entity.RecycleScrollView.TotalCount / self.Entity.RecycleScrollView.MaxColumnCount)+1
+			if scrollRow >= maxRow then
+				scrollRow = maxRow + 999
+			end
+			self.Entity.RecycleScrollView:ScrollToIndex_Horizontal(scrollRow)
+		end
+		
+		if isDetailIndexIncluded == false then
+			recipeId = recipes[1]
+		end
+		
+		if #recipes <= 0 then
+			_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NoRecipeText.Enable = true
+			_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NowSelected = 0
+			recipeId = 0
+		else
+			_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NoRecipeText.Enable = false
+		end
+		
+		return recipeId
+	end
+
+end

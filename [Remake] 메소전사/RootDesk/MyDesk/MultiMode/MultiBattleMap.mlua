@@ -1,0 +1,396 @@
+@Component
+script MultiBattleMap extends BattleMap
+
+	property EntityRef tile = "4d590f52-8684-4cb1-8806-74bb04f174ca"
+
+	property RectTileMapComponentRef rectTile = "07b28ba7-cef9-45ff-9e80-c7f43af180df"
+
+	property RectTileMapComponentRef fenceRectTile = "e40774e0-c2b9-4bd8-b282-93a1e650b3a9"
+
+	property RectTileMapComponentRef fenceBottomRectTile = "92191634-c8ce-482d-ba5a-38d69a444032"
+
+	property MapLayerComponentRef playerLayer = "d2e1d29d-d490-4fce-a03e-c9c1d82b2b37"
+
+	property EntityRef mapEntities = "1cffc73e-18c9-45cc-bf5d-c7f4d83c0ccd"
+
+	property BackgroundComponentRef background = "ca9f87ac-93cc-45a3-9b05-485938da8b4f"
+
+	property TriggerComponentRef innerTrigger = "961e933c-a075-4eb8-b5bf-c6b8022ddf96"
+
+	property boolean isMultiMode = true
+
+	property table monsterGridTable = {}
+
+	property table usersGridTable = {}
+
+	property RectTileMapComponentRef pathTile = "ff2ca05b-714a-4b0c-980f-d99ce574166e"
+
+	property table pathInfo = {}
+
+	property table pathRectGroupInfo = {}
+
+	property table roomTile = {}
+
+	property number USER_COUNT = 0
+
+	property table visited = {}
+
+	property boolean initedRoomNumber = false
+
+	property number safeAreaRoom = 0
+
+	property Entity campFire = nil
+
+	method void Init()
+		-- 멀티 배틀 맵 초기화
+		if self:IsClient() then
+			self:SetTile()
+		end
+		
+		self.isAppearingBoss = false
+		self.isClear = false
+		self.isEnd = false
+		self.isBossDead = false
+		
+		
+		
+	end
+
+	method void SpawnMultiMonster()
+		-- 멀티 몬스터 스폰 (현재 비어있음)
+		
+			
+		
+		
+	end
+
+	method void OnBeginPlay()
+		-- 멀티 배틀 맵 시작 시 초기화 및 설정
+		if self:IsServer() then
+			_TimerService:SetTimerRepeat(function()
+				self.USER_COUNT = #_UserService:GetUsersByMapComponent(self.Entity.MapComponent)
+			 end,1,1)
+		else
+			
+		end
+		self.chapter = -1
+		_WaveLogic:SetChapter(-1)
+		
+		self.leftBottom = self.Entity.MapComponent.LeftBottom
+		self.rightTop = self.Entity.MapComponent.RightTop
+		
+		if self:IsClient() then
+			_UserService.LocalPlayer.MyPlayer:RefreshCameraBound(self.Entity)
+			_UserService.LocalPlayer.PlayerControllerComponent.Enable = false
+		end
+		
+		self.campFire = self.Entity:GetFirstChildComponentByTypeName("CampfireComponent").Entity
+		self:InitRoomId()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTile()
+		-- 맵별 배경음악 설정 및 재생
+		local soundComponent = self.Entity.SoundComponent
+		local currentMapName = self.Entity.Name
+		
+		if currentMapName == "MultiForest" then
+			soundComponent.AudioClipRUID = "7ca2c33f65204582959207ac4c7c9870"
+		elseif currentMapName == "MultiDesert" then
+			soundComponent.AudioClipRUID = "2dd03c76b331416bbf9752f6a897988e"
+		elseif currentMapName == "MultiPirate" then
+			soundComponent.AudioClipRUID = "bc60a5ce1e754011b22c1a29e938106c"
+		elseif currentMapName == "MultiFactory" then
+			soundComponent.AudioClipRUID = "87784fb48a1e435dad1c33f348322dc4"
+		elseif currentMapName == "MultiCookie" then
+			soundComponent.AudioClipRUID = "754991d9176c47ea9bda8929f4f3733f"
+		elseif currentMapName == "MultiWinter" then
+			soundComponent.AudioClipRUID = "3c7eac1135c54c06963e44aeea3306f7"
+		elseif currentMapName == "MultiTemple" then
+			soundComponent.AudioClipRUID = "b096f4699a334cdbb084d78bf7f590a5"
+		elseif currentMapName == "MultiHotSpring" then
+			soundComponent.AudioClipRUID = "729f9844bceb480089e5f1b2aed9fcb9"
+		end
+		
+		soundComponent.Loop = true
+		soundComponent:Play()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 클라이언트 업데이트 처리
+		__base:OnUpdate(delta)
+		
+		local _T = self._T
+		if _T.playerTransform == nil then
+			_T.playerTransform = _UserService.LocalPlayer.TransformComponent
+		end
+		local pos = _T.playerTransform.Position
+		local x = math.ceil(pos.x /2.56) - 10
+		local y = math.ceil(pos.y /2.56) - 10
+		
+		
+	end
+
+	method void SetTileInfo(Vector2 tileSize, Vector3 pos)
+		-- 타일 정보 설정
+		self.tile.SpriteRendererComponent.TiledSize = Vector2(20,20)
+		self.tile.TransformComponent.Position = Vector3.zero
+	end
+
+	method void InitPathTile()
+		-- 패스파인딩용 타일 초기화
+		self.playerLayer = self.Entity:GetChildByName("MapleMapLayer_2").MapLayerComponent
+		self.background = self.Entity:GetChildByName("Background").BackgroundComponent
+		self.pathTile = self.Entity:GetChildByName("RectTileMap_2").RectTileMapComponent
+		
+		local list = self.pathTile:GetAllTilePositions()
+		local minX = 0
+		local minY = 0
+		
+		local maxX = 0
+		local maxY = 0
+		
+		
+		for k,v in pairs(list) do
+			---@type RectTileInfo
+			local tileInfo = self.pathTile:GetTile(v)
+			self.pathInfo[v] = {RectGroup = {}, IsCollidable = tileInfo.IsCollidable}
+			minX = math.min(minX, v.x)
+			minY = math.min(minY, v.y)	
+			maxX = math.max(maxX, v.x)
+			maxY = math.max(maxY, v.y)	
+		end
+		
+		local rectGroupIndex = 1
+		
+		
+		local fill = function(x,y)
+			local i = 0
+			local j = 0
+			
+			 while(true) do
+				local cellPos = Vector2Int(x + i,y + j)
+				local info = self.pathInfo[cellPos]
+				if info ~= nil and info.IsCollidable then
+					break
+				else
+					
+				if info == nil then
+					self.pathInfo[cellPos] = {RectGroup = {}, IsCollidable = true}
+				end
+			
+				self.pathInfo[cellPos].RectGroup[rectGroupIndex] = true
+				
+				i = i + 1
+				
+				end
+			end
+			
+			
+		end
+		
+	end
+
+	method boolean IsConnectedTile(Vector2 fromWorld, Vector2 toWorld)
+		-- 두 월드 좌표 간의 타일 연결성 확인
+		local from = self.pathTile:ToCellPosition(fromWorld:ToVector3())
+		local to = self.pathTile:ToCellPosition(toWorld:ToVector3())
+		
+		local minX = math.tointeger(math.min(from.x,to.x))
+		local minY = math.tointeger(math.min(from.y,to.y))
+		
+		local maxX = math.tointeger(math.max(from.x,to.x))
+		local maxY = math.tointeger(math.max(from.y,to.y))
+		
+		local offsetX = 0
+		local offsetY = 0
+		
+		if minX == maxX and minY == maxY then
+			return true
+		end
+		
+		
+		while(true) do
+				
+		
+			local x = minX + offsetX
+			local y = minX + offsetY
+			local diffX = maxX - x
+			local diffY = maxY - y
+			
+			if diffX > diffX then
+				offsetX = offsetX + 1
+			else
+				offsetY = offsetY + 1
+			end
+			
+			x = minX + offsetX
+			y = minX + offsetY
+			
+			if x == maxX and y == maxY then
+				break
+			end
+			
+			local info = self.pathTile:GetTile(Vector2Int(x,y))
+			if info == nil then
+				return true
+			end
+			if info.IsCollidable then
+				return false
+			end
+			
+			
+			
+		end
+		
+		return true
+	end
+
+	method boolean IsRoomTile(Vector3 pos)
+		-- 지정된 위치가 방 타일인지 확인
+		local cellPos =self.pathTile:ToCellPosition(pos) 
+		if self.roomTile[cellPos] ~= nil then
+			return self.roomTile[cellPos]
+		end
+		local tile = self.pathTile:GetTile(cellPos)
+		if tile == nil then
+			return false
+		end
+		
+		local isRoom = tile.Name == "Name0"
+		self.roomTile[cellPos] = isRoom
+		return isRoom
+	end
+
+	method void OnChangeMonsterCount(any e)
+		-- 몬스터 수 변경 이벤트 처리 (현재 비어있음)
+		
+	end
+
+	method void InitRoomId()
+		-- 방 ID 초기화 및 플러드 필 알고리즘으로 방 영역 구분
+		local leftBottom = self.pathTile:ToCellPosition(self.Entity.MapComponent.LeftBottom:ToVector3())
+		local rightTop = self.pathTile:ToCellPosition(self.Entity.MapComponent.RightTop:ToVector3())
+		self._T.rightTopCellPos = rightTop
+		self._T.leftBottomCellPos = leftBottom
+		
+		local map = {}
+		
+		
+		
+		    for x = leftBottom.x, rightTop.x do
+		       	self.visited[x] = {}
+		        for y = leftBottom.y, rightTop.y do
+		             self.visited[x][y] = false
+		        end
+		    end
+		
+		
+		self._T.lastCheckTime = _UtilLogic.ElapsedSeconds
+		
+		local areaCount = 1 
+		for x = leftBottom.x, rightTop.x do
+		    for y = leftBottom.y, rightTop.y do
+				local tile = self.pathTile:GetTile(Vector2Int(x-1,y-1))
+		        if not self.visited[x][y] and tile ~= nil and tile.Name == "Name0"  then
+		         	self:FloodFill(x, y, areaCount)
+		            areaCount = areaCount + 1 
+					local deltaTime = _UtilLogic.ElapsedSeconds - self._T.lastCheckTime
+					if deltaTime > 3 then				
+						self._T.lastCheckTime = _UtilLogic.ElapsedSeconds
+						wait(0.01)
+					end
+		        end
+		    end
+			wait(0.01)
+			self._T.lastCheckTime = _UtilLogic.ElapsedSeconds
+		end
+		
+		
+		self.initedRoomNumber = true
+		
+		self.safeAreaRoom = self:GetRoomNumber(self.campFire.TransformComponent.WorldPosition + Vector3(0,-2,0))
+		
+		if self:IsClient() then
+		
+			_BattleUIManager.loadingUI:Hide(2,function()
+				_UserService.LocalPlayer.PlayerControllerComponent.Enable = true
+				_DecorationLogic:LoadOtherUsersDecoration(_UserService.LocalPlayer.PlayerComponent.UserId)
+				_UserService.LocalPlayer.MultiBattlePlayer:SetMovementSpeed(_UserService.LocalPlayer.MultiBattlePlayer:GetSpeed())
+			end,_UserService.LocalPlayer.PlayerComponent.UserId)
+		end
+	end
+
+	method void FloodFill(integer start_x, integer start_y, integer area_id)
+		-- 플러드 필 알고리즘으로 연결된 방 영역에 동일한 ID 할당
+		
+		    local queue = {} 
+		    table.insert(queue, {x = start_x, y = start_y}) 
+		
+		
+		    while #queue > 0 do
+		        local cell = table.remove(queue) 
+		        local x, y = cell.x, cell.y
+		
+			
+				local tile = self.pathTile:GetTile(Vector2Int(x,y))
+			
+		        if x < self._T.leftBottomCellPos.x or x > self._T.rightTopCellPos.x or y < self._T.leftBottomCellPos.y or y > self._T.rightTopCellPos.y 
+				or self.visited[x] == nil or self.visited[x][y] == nil or self.visited[x][y]
+				or (tile == nil or tile.Name ~= "Name0") then
+		        else
+					self.pathInfo[string.format("%d,%d",x,y)] = area_id
+		            self.visited[x][y] = true
+		
+		            table.insert(queue, {x = x + 1, y = y}) 
+		            table.insert(queue, {x = x - 1, y = y}) 
+		            table.insert(queue, {x = x, y = y + 1}) 
+		            table.insert(queue, {x = x, y = y - 1}) 
+		        end
+			
+				local deltaTime = _UtilLogic.ElapsedSeconds - self._T.lastCheckTime
+				if deltaTime > 3 then				
+					self._T.lastCheckTime = _UtilLogic.ElapsedSeconds
+					wait(0.01)
+				end
+		    end
+	end
+
+	method integer GetRoomNumber(Vector3 pos)
+		-- 지정된 위치의 방 번호 반환
+		if self.initedRoomNumber == false then
+			return -1
+		end
+		local cellPos =self.pathTile:ToCellPosition(pos) 
+		local key = string.format("%d,%d",cellPos.x,cellPos.y)
+		local roomNumber = self.pathInfo[key]
+		if roomNumber == nil then
+			roomNumber = -1
+		end
+		return roomNumber
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 맵 파괴 시 정리 작업 및 가비지 컬렉션
+		__base:OnDestroy()
+		collectgarbage()
+	end
+
+	@EventSender("Entity", "51164ab4-12fd-4a18-80da-1d716e6fb756")
+	handler HandleOnPopupHide(OnPopupHide event)
+		-- 팝업 숨김 이벤트 처리 시 무기 로드
+		local popup = event.popup
+		_UserService.LocalPlayer.MultiBattlePlayer:LoadWeapon()
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchEvent(ScreenTouchEvent event)
+		-- 화면 터치 이벤트 처리 (현재 비어있음)
+		
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+	end
+
+end

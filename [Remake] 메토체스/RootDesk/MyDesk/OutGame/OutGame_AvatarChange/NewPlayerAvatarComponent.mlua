@@ -1,0 +1,96 @@
+@Component
+script NewPlayerAvatarComponent extends Component
+
+	@Sync
+	property SyncTable<string, string> animSet
+
+	@Sync
+	property SyncTable<string, boolean> actionSet
+
+	@Sync
+	property string type = "IDLE"
+
+	method void ChangeCharacter_ON(string charID)
+		--------------------------------------------
+		-- func: 초기에 유저 입장 시, 로비에 이미 변신하고 있는 유저의 정보를 받아오기 위해 client에서도 실행될 수 있도록 변경하였습니다.
+		--------------------------------------------
+		
+		if charID == nil then
+			log(self.Entity.Parent.PlayerComponent.Nickname," : 변신 캐릭터 아이디가 없습니다.")
+			return
+		end
+		
+		-- 1. 원본 아바타 끄기 / 뉴 아바타 켜기
+		self.Entity.Parent.AvatarRendererComponent.Enable = false
+		self.Entity.Enable = true
+		
+		-- 2. State에 각각 데이터 입력
+		local data = _AvatarChangeDataLogic.AvatarChangeData[charID]
+		self.Entity.StateAnimationComponent:SetActionSheet("IDLE", data.RUID_IDLE)
+		self.Entity.StateAnimationComponent:SetActionSheet("MOVE", data.RUID_MOVE)
+		self.Entity.StateAnimationComponent:SetActionSheet("JUMP", data.RUID_JUMP)
+		self.Entity.StateAnimationComponent:SetActionSheet("ATTACK", data.RUID_ATTACK)
+		self.Entity.StateAnimationComponent:SetActionSheet("ATTACK_WAIT", data.RUID_ATTACK_WAIT)
+		
+		self.animSet["IDLE"] = data.RUID_IDLE
+		self.animSet["MOVE"] = data.RUID_MOVE
+		self.animSet["JUMP"] = data.RUID_JUMP
+		self.animSet["ATTACK"] = data.RUID_ATTACK
+		self.animSet["ATTACK_WAIT"] = data.RUID_ATTACK_WAIT
+		self.animSet["FALL"] = data.RUID_JUMP
+		
+		-- 3. 가능한 Action 범위 정의 (Parent)
+		
+		for k,v in pairs(self.animSet) do
+			if self.animSet[k] == "-" then
+				self.actionSet[k] = false
+			else
+				self.actionSet[k] = true
+			end
+		end
+		
+		self.Entity.Parent.PlayerAvatarChangeCompoenent:SetPossibleAction(tonumber(data.MoveSpeed), self.actionSet["JUMP"], self.actionSet["ATTACK"])
+		
+		-- 4. 초기 변신 상태 IDLE로 변경 / 방향 전환
+		self.Entity.SpriteRendererComponent.SpriteRUID = self.animSet["IDLE"]
+		self.Entity.SpriteRendererComponent.FlipX = not self.Entity.Parent.MovementComponent:IsFaceLeft()
+		
+		-- 5. 크기 변경
+		local scale = tonumber(data.Scale)
+		self.Entity.TransformComponent.Scale = Vector3(scale,scale,scale)
+		
+		-- 6. 반짝반짝 이펙트 크기 변경
+		local effect = self.Entity:GetChildByName("Efct_kirakira")
+		effect.TransformComponent.Scale = Vector3(1/scale, 1/scale, 1/scale)
+		
+	end
+
+	@ExecSpace("Client")
+	method void StateChange(string stateName)
+		-- 변신 아바타의 상태를 변경하고 해당 애니메이션을 적용
+		if self.animSet[self.type] == "-" then return end
+		
+		self.type = stateName
+		
+		self.Entity.SpriteRendererComponent.SpriteRUID = self.animSet[self.type]
+	end
+
+	@EventSender("Self")
+	handler HandleSpriteAnimPlayerEndFrameEvent(SpriteAnimPlayerEndFrameEvent event)
+		-- 애니메이션 종료 시 공격 상태에서 현재 상태로 전환
+		if self.type == "ATTACK" then
+			self:StateChange(self.Entity.StateComponent.CurrentStateName)
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleSpriteAnimPlayerStartEvent(SpriteAnimPlayerStartEvent event)
+		-- 애니메이션 시작 시 공격 상태에서만 플레이어 컨트롤러를 비활성화
+		if self.type == "ATTACK" then
+			self.Entity.Parent.PlayerControllerComponent.Enable = false
+		else
+			self.Entity.Parent.PlayerControllerComponent.Enable = true
+		end
+	end
+
+end

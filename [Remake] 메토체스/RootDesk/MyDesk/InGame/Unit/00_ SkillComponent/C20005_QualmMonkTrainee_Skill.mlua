@@ -1,0 +1,153 @@
+@Component
+script C20005_QualmMonkTrainee_Skill extends Component
+
+	property number skillAnimLength = 2.04
+
+	property string attackEffectRUID = "23ac9e7759a04ee9bf2a8db6515ab7ab"
+
+	property string hitEffectRUID = "7fa31885822643fabd1ff717f52fa47c"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		
+		local function attackEffect()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetAttackEffect(targetUnit, unitInfo.OwnerId)
+			end
+		end
+		
+		
+		
+		local function hitSkill()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				local enemies2 = {}
+				if unitInfo.TeamType == "Enemy" then
+					enemies2 = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+				elseif unitInfo.TeamType == "User" then
+					enemies2 = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+				end
+				
+				local attackEnemies = _BTLogic_New:getTargets(targetInfo.setTile, enemies2, "Around_0_1")
+			
+				if isvalid(attackEnemies) then
+					for _, enemy in pairs(attackEnemies) do
+						if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+							self:SetSkillDamage(enemy)
+						end
+					end
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(attackEffect, 1.7 / skillRate)
+		_TimerService:SetTimerOnce(hitSkill, 1.8 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0074",self.Entity.UnitInfo.OwnerId)
+		
+		--범위 연출
+		self:PlayRangeSkillEffect(1.8 / skillRate,targetUnit,targetUnit.UnitInfo.setTile,unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local skillSetDamage = _S01_SkillDescLogic.C20005_Active_SDamage_Magic[unitInfo.level] * unitStatus.MagicalAttack
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+			
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0014", 3)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1,["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.attackEffectRUID, targetUnit, Vector3(0, 0, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+		
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.5, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void PlayRangeSkillEffect(number time, Entity targetUnit, Entity Tile)
+		--범위 표시
+		local tiles = {}
+		if self.Entity.UnitInfo.TeamType == "User" then
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("User_Skill", 1, Tile)
+		else
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("Enemy_Skill", 1, Tile)
+		end
+		
+		local removetile = function()
+			for i = 1, #tiles do
+				tiles[i].Enable = false
+				_GeneralDirectorLogic:InsertRangeEntity(tiles[i])
+			end
+		end
+		
+		_TimerService:SetTimerOnce(removetile, time)
+	end
+
+end

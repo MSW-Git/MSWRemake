@@ -1,0 +1,415 @@
+@Component
+script PlayerAccessory extends Component
+
+	property SyncTable<string> haveItems
+
+	property SyncTable<number> equipedItemIdx
+
+	@Sync
+	property number Proficiency = 1
+
+	method void OnBeginPlay()
+		-- 장신구 컴포넌트 초기화 - 테이블 리스트와 타입 설정
+		self._T.tableList = { haveItems = self.haveItems,  
+								equipedItemIdx = self.equipedItemIdx,
+		}
+		
+		self._T.tableType = { haveItems = "string", 
+								equipedItemIdx = "number",
+		}
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 클라이언트로 테이블 데이터 전체 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		for i=#t, #tableValue+1, -1 do
+			table.remove(t)
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 클라이언트로 테이블의 특정 인덱스 값 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트에서 테이블을 초기값으로 모두 리셋
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 테이블 변경 시 장비 보관함 UI 새로고침
+		if name == "haveItems" then
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage").EquipmentStorageUI:RefreshUI()
+		elseif name == "equipedItemIdx" then
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage").EquipmentStorageUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void LoadedData(string haveItemsStr, string equipedItemStr, string Proficiency)
+		-- 데이터베이스에서 장신구 데이터 로드 후 완보 상태, 장착 인덱스, 숙련도 설정
+		if haveItemsStr == nil then
+		else 
+			local haveItems = _UtilLogic:StringToTable(haveItemsStr)
+			for i=1, #haveItems do
+				if haveItems[i] == nil then
+					self.haveItems[i] = ""
+				else 
+					self.haveItems[i] = haveItems[i]
+				end
+			end
+			
+			for i=#self.haveItems, 1, -1 do
+				if self.haveItems[i] == "" then
+					table.remove(self.haveItems, i)
+				end
+			end
+		end
+		----------------------------------------------------------------------
+		if equipedItemStr == nil then
+			for i=1, 3 do
+				self.equipedItemIdx[i] = 0
+			end
+		else 
+			local equipedTable = _UtilLogic:StringToTable(equipedItemStr)
+			for i=1, 3 do
+				self.equipedItemIdx[i] = equipedTable[i]
+			end
+		end
+		----------------------------------------------------------------------
+		if tonumber(Proficiency) == nil then
+			self.Proficiency = 1
+		else 
+			self.Proficiency = tonumber(Proficiency)
+		end
+		----------------------------------------------------------------------
+		-- 클라 동기화
+		self:SetTableClient("haveItems", _UtilLogic:TableToString(self.haveItems), self.Entity.OwnerId)
+		self:SetTableClient("equipedItemIdx", _UtilLogic:TableToString(self.equipedItemIdx), self.Entity.OwnerId)
+		----------------------------------------------------------------------
+	end
+
+	@ExecSpace("Server")
+	method void GetItems(number part, number grade, number set, number status)
+		-- 장신구 획득 - 부위/등급/세트/능력치 순으로 정렬하여 삽입
+		local itemCode = _AccessoryLogic:WrapAccessoryInfoToString(part, grade, set, status)
+		
+		-- 삽입할 위치 지정 : 파츠 > 등급 > 세트 > 능력치 순으로 정렬 (오름차순)
+		local haveItems = self.haveItems
+		local insertIdx = #haveItems+1
+		for i=1, #haveItems do
+			local itemData = _AccessoryLogic:GetAccessoryInfo(haveItems[i])
+			
+			if part < itemData[1] then
+				insertIdx = i
+				break
+			elseif part > itemData[1] then
+				goto cont
+			else -- 같은 파츠인 경우 
+				if grade < itemData[2] then
+					insertIdx = i
+					break
+				elseif grade > itemData[2] then
+					goto cont
+				else -- 같은 등급인 경우
+					if set < itemData[3] then
+						insertIdx = i
+						break
+					elseif set > itemData[3] then
+						goto cont
+					else -- 같은 세트인 경우
+						if status < itemData[4] then
+							insertIdx = i
+							break
+						elseif status > itemData[4] then
+							goto cont
+						else -- 능력치까지 같은 경우, 획득 순서대로 정렬
+							insertIdx = i+1
+							break
+						end
+					end
+				end
+			end
+			
+			::cont::
+		end
+		
+		table.insert(self.haveItems, insertIdx, itemCode)
+		
+		for i=1, 3 do
+			local equipedIdx = self.equipedItemIdx[i]
+			
+			if equipedIdx ~= nil and equipedIdx ~=0 and equipedIdx >= insertIdx then
+				self.equipedItemIdx[i] = self.equipedItemIdx[i] + 1
+			end
+		end
+		
+		-- 로그 
+		_UIGetLog:AddLog_Accessory(part, grade, set, self.Entity.OwnerId)
+		
+		-- 클라 동기화
+		self:SetTableClient("haveItems", _UtilLogic:TableToString(self.haveItems), self.Entity.OwnerId)
+		self:SetTableClient("equipedItemIdx", _UtilLogic:TableToString(self.equipedItemIdx), self.Entity.OwnerId)
+		
+		
+		-- 데이터 저장
+		self.Entity.PlayerData:SaveData(1)
+	end
+
+	@ExecSpace("Server")
+	method void EquipItem(number idx, boolean equip)
+		-- 장신구 장착/해제 - 능력치 적용 및 클라이언트 동기화
+		-- 검증
+		if self.haveItems[idx] == nil then
+			return
+		end
+		--------------------------------------------------
+		local itemKey = self.haveItems[idx]
+		local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey)
+		
+		if equip == true then
+			self.equipedItemIdx[itemData[1]] = idx
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_Equiped", self.Entity.OwnerId)
+		else 
+			self.equipedItemIdx[itemData[1]] = 0
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_Unequiped", self.Entity.OwnerId)
+		end
+		--------------------------------------------------
+		-- 능력치를 적용합니다.
+		self.Entity.PlayerData:ApplyPlayerStatus()
+		
+		-- 동기화
+		self:SetTableElementClient("equipedItemIdx", itemData[1], tostring(self.equipedItemIdx[itemData[1]]), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void UpgradeProficiency(string materialTableStr)
+		-- 장신구 숙련도 업그레이드 - 희귀등급 이상 3개 사용
+		local materialIdxs = _UtilLogic:StringToTable(materialTableStr)
+		------------------------------------------------------------------------------------
+		-- 검증
+		if #materialIdxs ~= 3 then
+			log("등록 재료 수가 3 미만입니다")
+			return
+		end
+		
+		for i=1, 3 do
+			if materialIdxs[i] < 1 or materialIdxs[i] > #self.haveItems then
+				log("wrong index : i=", i,",  ~[i] = ", materialIdxs[i])
+				return
+			end
+		
+			local itemKey = self.haveItems[materialIdxs[i]]
+			local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey)
+			
+			if itemData[2] < 4 then
+				log("희귀 미만인 아이템이 재료로 선택됐습니다.")
+				return
+			end
+		end
+		-------------------------------------------------------------------------------------
+		
+		--log("before #haveItem = ", #self.haveItems)
+		
+		-- 재료 인덱스를 내림차순으로 정렬합니다. (테이블 제거시 인덱싱 관련)
+		local temp = { }
+		for i=1, 3 do
+			local maxIdx = 1
+			for j=2, #materialIdxs do
+				if materialIdxs[j] > materialIdxs[maxIdx] then
+					maxIdx = j
+				end
+			end
+			
+			table.insert(temp, materialIdxs[maxIdx])
+			table.remove(materialIdxs, maxIdx)
+		end
+		
+		for i=1, 3 do
+			materialIdxs[i] = temp[i]
+		end
+		
+		--log("재료(내림차순) = ", materialIdxs[1], materialIdxs[2], materialIdxs[3])
+		
+		-- 재료로 쓴 아이템을 제거하고, 장착 정보를 변경합니다.
+		for i=1, 3 do
+			local removeIdx = materialIdxs[i]
+			table.remove(self.haveItems, removeIdx)
+			--log(i,"번째 제거 인덱스 = ", removeIdx)
+			
+			-- 만약 장착한 장비를 지운 경우
+			for j=1, 3 do
+				--log("장착한 장비 = ", self.equipedItemIdx[j])
+				if self.equipedItemIdx[j] == removeIdx then
+					self.equipedItemIdx[j] = 0
+					
+				elseif self.equipedItemIdx[j] > removeIdx then
+					self.equipedItemIdx[j] = self.equipedItemIdx[j] - 1
+				end
+			end
+		end
+		
+		-- 레벨을 올립니다.
+		self.Proficiency = self.Proficiency + 1
+		
+		
+		--log("after #haveItem = ", #self.haveItems)
+		
+		-------------------------------------------------------------------------------------
+		-- 능력치를 적용합니다.
+		self.Entity.PlayerData:ApplyPlayerStatus()
+		
+		-- 연출을 재생합니다.
+		self:PlayUpgradeProficiencyDirection(self.Proficiency, self.Entity.OwnerId)
+		
+		-- 클라 동기화
+		self:SetTableClient("haveItems", _UtilLogic:TableToString(self.haveItems), self.Entity.OwnerId)
+		self:SetTableClient("equipedItemIdx", _UtilLogic:TableToString(self.equipedItemIdx), self.Entity.OwnerId)
+		
+		-- 업적 : 장신구 숙련도 레벨 올리기
+		self.Entity.PlayerAchievementComponent:GetProgress(40, 1)
+	end
+
+	@ExecSpace("Client")
+	method void PlayUpgradeProficiencyDirection(number afterLevel)
+		-- 숙련도 업그레이드 연출 재생
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage").EquipmentStorageUI:PlayAccessoryGradeupDirection(afterLevel)
+	end
+
+	@ExecSpace("Server")
+	method void OpenAccessoryBox(number boxIdx)
+		-- 장신구 상자 열기 - 무작위 부위/등급/세트 생성
+		local part = _UtilLogic:RandomIntegerRange(1, 3)
+		------------------------------------------------------------------------
+		local grade = 1
+		local randValue = _UtilLogic:RandomIntegerRange(1, 100)
+		if randValue <= 30 then
+			grade = 2
+		elseif randValue <= 70 then
+			grade = 3
+		elseif randValue <= 95 then
+			grade = 4
+		elseif randValue <= 100 then
+			grade = 5
+		end
+		------------------------------------------------------------------------
+		local set = _UtilLogic:RandomIntegerRange(1, 5)
+		------------------------------------------------------------------------
+		-- 80% ~ 120% 범위 사이로 스탯값이 결정됩니다.
+		local status = _AccessoryLogic:SetStatus(part, grade)
+		------------------------------------------------------------------------
+		self:GetItems(part, grade, set, status)
+		self:PlayDirection_AccessoryBoxOpen(_AccessoryLogic:WrapAccessoryInfoToString(part, grade, set, status), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void PlayDirection_AccessoryBoxOpen(string itemKey)
+		-- 장신구 상자 열기 연출 재생
+		_EntityService:GetEntityByPath("/ui/InventoryGroup/Storage").StorageUI:PlayAccessoryBoxOpenDirection(itemKey)
+	end
+
+	@ExecSpace("Server")
+	method void MergeItems(string materialsStr)
+		-- 장신구 합성 - 2개 재료로 등급 1 높은 장신구 생성 (희귀미만)
+		local materials = _UtilLogic:StringToTable(materialsStr)
+		
+		-- 검증
+		if materials[1] > #self.haveItems or materials[2] > #self.haveItems then
+			log("보유 인덱스보다 높은값을 재료로 사용하려 했음")
+			return
+		end
+		
+		if materials[1] == materials[2] then
+			log("같은 인덱스를 재료 2개로 사용했음")
+			return
+		end
+		
+		
+		local itemData1 = _AccessoryLogic:GetAccessoryInfo(self.haveItems[materials[1]])
+		local itemData2 = _AccessoryLogic:GetAccessoryInfo(self.haveItems[materials[2]])
+		if itemData1[2] ~= itemData2[2] then
+			log("등급이 다른 두 아이템을 재료로 사용했음")
+			return
+		end
+		
+		if itemData1[2] >= 4 or itemData2[2] >= 4 then
+			log("희귀 이상 등급을 재료로 사용했음")
+			return
+		end
+		-------------------
+		if materials[1] < materials[2] then
+			local temp = materials[1]
+			materials[1] = materials[2]
+			materials[2] = temp
+		end
+		-------------------
+		-- 아이템 제거
+		for i=1, 2 do
+			local removeIdx = materials[i]
+			table.remove(self.haveItems, removeIdx)
+			
+			-- 만약 장착한 장비를 지운 경우
+			for j=1, 3 do
+				if self.equipedItemIdx[j] == removeIdx then
+					self.equipedItemIdx[j] = 0
+					
+				elseif self.equipedItemIdx[j] > removeIdx then
+					self.equipedItemIdx[j] = self.equipedItemIdx[j] - 1
+				end
+			end
+		end
+		-------------------
+		-- 아이템 생성
+		local part = _UtilLogic:RandomIntegerRange(1, 3)
+		local grade = itemData1[2] + 1
+		local set = _UtilLogic:RandomIntegerRange(1, 5)
+		local status = _AccessoryLogic:SetStatus(part, grade)
+		self:GetItems(part, grade, set, status) -- 여기서 동기화도 진행됨!
+		-------------------
+		-- 연출 재생
+		self:PlayMergeDirection(_AccessoryLogic:WrapAccessoryInfoToString(part, grade, set, status), self.Entity.OwnerId)
+		-------------------
+		-- 업적 : 장신구 합성하기
+		self.Entity.PlayerAchievementComponent:GetProgress(37, 1)
+	end
+
+	@ExecSpace("Client")
+	method void PlayMergeDirection(string resultKey)
+		-- 장신구 합성 연출 재생
+		_EntityService:GetEntityByPath("/ui/AccessoryMergeGroup/AccessoryMergeShop").AccessoryMergeShopUI:PlayDirection_Merge(resultKey)
+	end
+
+end

@@ -1,0 +1,1196 @@
+@Component
+script PlayerIngameData extends Component
+
+	@Sync
+	property number MiningPower = 0
+
+	@Sync
+	property number HPMax = 0
+
+	@Sync
+	property number MPMax = 0
+
+	@Sync
+	@Description("초당 마나 회복 비율입니다. 곱연산으로 적용되며, 기본값은 1입니다.")
+	property number MPRecover = 1
+
+	@Sync
+	@Description("마나 소모 비율입니다. 곱연산으로 적용되며, 기본값은 1입니다.")
+	property number MPUseRate = 1
+
+	@Sync
+	@Description("크리티컬 확률입니다. 0 이상 1 이하이며, 곱 연산으로 적용합니다.")
+	property number CriticalProb = 0
+
+	@Sync
+	@Description("크리티컬 발생 시 데미지 비율입니다. 기본값은 1.1이며, 곱연산으로 적용됩니다.")
+	property number CriticalDamageRate = 1.1
+
+	@Sync
+	@Description("다른 플레이어의 의자 군중버프 효과를 받았을 때 변경됩니다. 0 = 버프 없는 상태, 1~ = 버프 인덱스")
+	property number ChairBuffIdx = 0
+
+	@Sync
+	@Description("광산에서 초당 체력 소모량입니다. 현재 입장한 광산의 넘버링에 따라 테이블에서 값을 가져옵니다.")
+	property number HPUseAmountPerSec = 0
+
+	@Sync
+	property boolean IsAdministrator = false
+
+	property boolean isIngame = false
+
+	property number HP = 0
+
+	property number MP = 0
+
+	@Description("보호막 수량입니다. 보호막이 1개 이상이면 Hit( )을 실행할 때 피해를 받지 않고 보호막을 1개 차감한 뒤 return합니다.")
+	property number protector = 0
+
+	property number depth = 0
+
+	property number surviveTime = 0
+
+	property number blindSize = 0
+
+	property boolean IsNearBonfire = false
+
+	property SyncTable<string, number> lightsBrightness
+
+	property number depthRecordOnetime = 0
+
+	property Entity blindUI = "1d322d1e-c5d4-47a2-b045-0a9b9c0705ea"
+
+	property Entity UI_HPFill = "ae206d6f-9218-4c23-9125-f2f8ba602bdc"
+
+	@HideFromInspector
+	property Entity UI_HPText = "d69112ce-c6b8-47bd-b30b-1174cf230860"
+
+	property Entity UI_MPFill = "b9e6301a-bb78-421a-a7a2-68b1c02a1da8"
+
+	property Entity UI_MPText = "9b093693-e061-40d6-bf8a-70a753287e76"
+
+	property Entity UI_ProtectorIcon = "70297c45-a3da-451a-9977-0e94e01c72fc"
+
+	@HideFromInspector
+	property number OneSecCooldown = 0
+
+	property number OneSecCooldownForMP = 0
+
+	property boolean CompulsiveRigidbodyOff = false
+
+	property boolean UsingElectricWarp = false
+
+	@Sync
+	property number TempleFloor_Current = 0
+
+	property table EntranceTempleTable = {}
+
+	property string latestTempleName = ""
+
+	property number Void_RemainReviveCount = 0
+
+	property boolean inHadesTemple = false
+
+	@Sync
+	property number Construct_UsedPegasus = 0
+
+	property boolean entered = false
+
+	property string prevMapName = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnMapEnter(any enteredMap)
+		-- 맵 입장시 맵 유형별 초기화와 UI 업데이트, 신전 층수 관리
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		local TeleportButton = _EntityService:GetEntity("9d553af9-a3ee-43ff-8974-b8f6a9f953e6")
+		
+		if string.sub(enteredMap.Name, 1, 4) == "Town" then
+			self:CleanupIngameProperties()
+			self:PopupMapEnteringUI(string.sub(enteredMap.Name, -1, -1), "Map_Town")
+			--TeleportButton:SetEnable(true)
+			self.Entity.RigidbodyComponent.IsBlockVerticalLine = false -- 신전에서만 true처리
+			-- 맵 엔터 이벤트 발생시키기
+			local mapEnterEvent = LocalPlayerMapEnterEvent()
+			mapEnterEvent.EnteredMapType = "Town"
+			self.Entity:SendEvent(mapEnterEvent)
+			self.EntranceTempleTable = {}
+			self.latestTempleName = ""
+		
+		elseif string.sub(enteredMap.Name, 1, 4) == "Mine" or string.sub(enteredMap.Name, 1, 4) == "Temp" then
+			local map = self.Entity.Parent
+			local miningTargets = map:GetChildByName("MiningTargets")
+			local mapName = _EntityService:GetEntity("1442eab8-528f-4b60-8ce7-9af92ca79026")
+			local posBar = _EntityService:GetEntity("58e35187-1143-4012-91ed-4ec79eacc16e")
+			local pos1 = posBar:GetChildByName("Pos1")
+			local pos2 = posBar:GetChildByName("Pos2")
+			local pos3 = posBar:GetChildByName("Pos3")
+			local maxMap = 3
+			--TeleportButton:SetEnable(false)
+			
+			-- 맵 엔터 이벤트 발생시키기
+			local mapEnterEvent = LocalPlayerMapEnterEvent()
+			mapEnterEvent.EnteredMapType = "Mine"
+			self.Entity:SendEvent(mapEnterEvent)
+			
+			----------------------------------------
+			-- 광산 깊이를 나타내는 깜빡이 표시등 UI
+			local stageNum = string.sub(enteredMap.Name, -3, -3) 
+			local mapPosUI = _EntityService:GetEntityByPath("/ui/IngameGroup/Record/MapPos")
+		
+			local setMapPosBlindUI = function(maxMapNum)
+				
+				for i=5, 2, -1 do
+					mapPosUI:GetChildByName("PosBar_"..tostring(i)):SetEnable(false)
+					mapPosUI:GetChildByName("PosBar_"..tostring(i).."_blind"):SetEnable(false)
+				end
+				
+				local posBarUI = mapPosUI:GetChildByName("PosBar_"..tostring(math.floor(maxMapNum)))
+				local posBarBlindUI = mapPosUI:GetChildByName("PosBar_"..tostring(math.floor(maxMapNum)).."_blind")
+				posBarUI:SetEnable(true)
+				posBarBlindUI:SetEnable(true)
+				
+				local nowMapIndex = tonumber(string.sub(enteredMap.Name, -1, -1))
+				for i=1, nowMapIndex do
+					posBarBlindUI:GetChildByName("Pos"..tostring(i)).SpriteGUIRendererComponent.Color.a = 0
+				end
+				
+				for i=nowMapIndex+1, maxMapNum do
+					posBarBlindUI:GetChildByName("Pos"..tostring(i)).SpriteGUIRendererComponent.Color.a = 0.7
+				end
+			end
+		
+			-- 광산 6,7,8은 두개씩
+			if stageNum == "6" or stageNum == "7" or stageNum == "8" then 
+				setMapPosBlindUI(2)
+		
+			-- 유적은 5개
+			elseif stageNum == "9" then
+				setMapPosBlindUI(5)
+				
+			elseif string.sub(enteredMap.Name, 1, 4) == "Temp" then
+				self.Entity.PlayerStateAtStage:InitAllState(true)
+				self.Entity.RigidbodyComponent.IsBlockVerticalLine = true
+				if self.isIngame then
+					self:PopupMapEnteringUI(string.sub(self.Entity.CurrentMapName, -1, -1), "Map_Temple")
+				end
+				-- 신전은 설정 안함
+			else
+				setMapPosBlindUI(3)
+			end
+			----------------------------------------
+		end
+		
+		
+		if string.sub(enteredMap.Name, 1, 4) == "Town" then -- 마을에서 신전을 가는 것
+			self.entered = false -- 신전 입장 여부
+			self.prevMapName = enteredMap.Name
+		elseif string.sub(enteredMap.Name, 1, 4) == "Temp" then -- 신전에서 신전을 가는 것
+			if self.prevMapName ~= enteredMap.Name then
+				if self.entered then -- 신전에 이미 입장했으면 한 층씩만 올린다.
+					if not isvalid(self.Entity.CurrentMap.TempleHadesManager) then 
+						self:AddCurrentTempleFloor(1, false, self.Entity.PlayerComponent.UserId)
+					end 
+				else -- 신전에 최초 입장하는 것이면 시작층만큼 올린다.
+					local floorCount = self.Entity.PlayerConstruction.TempleStartingFloor
+					self:AddCurrentTempleFloor(floorCount, false, self.Entity.PlayerComponent.UserId)
+				end
+			end
+			self.entered = true -- 신전 최초 입장 성공
+			self.prevMapName = enteredMap.Name
+		end
+		
+		table.clear(self.lightsBrightness)
+	end
+
+	@ExecSpace("Client")
+	method void InitIngamePropertiesOnClient()
+		-- 인게임 시작 시 클라이언트 상태 초기화 및 UI 활성화
+		self.isIngame = true
+		self.HP = self.HPMax
+		self.MP = self.MPMax
+		self:SetHPandMPUI()
+		self.depthRecordOnetime = 0
+		self.Entity.ExtendPlayerControllerComponent.Enable = true
+		self.Void_RemainReviveCount = 1
+		
+		self:InitIngamePropertiesOnServer()
+		self:SetActivationIngameUI(true)
+	end
+
+	@ExecSpace("Server")
+	method void InitIngamePropertiesOnServer()
+		-- 던전에 진입하면 로딩이 끝난 후 실행하는 함수
+		self.isIngame = true
+		self.HP = self.HPMax
+		self.MP = self.MPMax
+		self.depthRecordOnetime = 0
+		self.Entity.ExtendPlayerControllerComponent.Enable = true
+		self.Construct_UsedPegasus = 0
+	end
+
+	@ExecSpace("Client")
+	method void CleanupIngameProperties()
+		-- 사망 후 부활하거나 게임을 처음 진입하면 마을에서 실행하는 함수
+		self.isIngame = false
+		self.HP = self.HPMax
+		self.MP = self.MPMax
+		self.protector = 0
+		
+		self.Entity.MovementComponent.Enable = true
+		self.Entity.RigidbodyComponent.Enable = true
+		
+		self.Entity.Visible = true
+		self.surviveTime = 0
+		
+		self.Entity.ExtendPlayerControllerComponent.Enable = true
+		
+		self.protector = 0
+		
+		self:SetHPandMPUI()
+		self:SetActivationIngameUI(false)
+		self:SetWarningUI(false)
+		
+		self:SetChairBuffIdx(0)
+		
+		self.Entity.PlayerStateAtStage:InitAllState(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임마다 MP 회복, HP 감소, 깊이 측정, 동굴 시야 캘기 처리
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		-- log("현재 맵"..self.Entity.CurrentMapName.."/현재 층:"..self.TempleFloor_Current.."/현재 체력 감소율"..self.HPUseAmountPerSec.."/현재 광맥내구도:"..700000000 + (self.TempleFloor_Current - 1) * 420000000)
+		
+		
+		-- MP 회복
+		if self.MP < self.MPMax then
+			self.OneSecCooldownForMP = self.OneSecCooldownForMP + delta
+		end
+		
+		if self.OneSecCooldownForMP >= 1 and self.MP < self.MPMax then
+			self.MP = self.MP + (0.2 * self.MPRecover)
+			if self.MP > self.MPMax then
+				self.MP = self.MPMax
+			end
+			self.OneSecCooldownForMP = self.OneSecCooldownForMP - 1
+			self:SetHPandMPUI()
+		end
+		
+		
+		if self.isIngame then
+			-- HP 감소
+			self.OneSecCooldown = self.OneSecCooldown + delta
+			if self.OneSecCooldown > 1 then
+				self.OneSecCooldown = 0
+				self:SetHPStausAtMine()
+				self:SetHPandMPUI()
+			end
+		
+			
+			----------------------
+			-- 시간 및 깊이 측정
+			self.surviveTime = self.surviveTime + delta
+		
+			-- 깊이 측정
+			self:UpdateDepthRecord()
+			
+			self:SetRecordUI()
+			----------------------
+			
+			-- 모닥불 근처라면
+			if self.IsNearBonfire then
+				self.HP = self.HP + delta
+			end
+			
+			-- 시야 밝기 결정
+			local minBrightness = 1
+			for k,v in pairs(self.lightsBrightness) do
+				if v < minBrightness then
+					minBrightness = v
+				end
+			end
+			
+			self:SetBlindRatio(minBrightness)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화 속성 변경시 관련 UI와 상태 업데이트
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		---------------------------------------------------
+		if name == "ChairBuffIdx" then
+			local buffIconUI = _EntityService:GetEntity("3c8c781e-a2f4-4c1f-b130-50a3bdcf1b5b")
+			local buffDescUI = _EntityService:GetEntity("eff872d2-1704-460b-a7c9-2a9472e2d8b9")
+			
+			if value == 0 then
+				buffIconUI.Enable = false
+				buffDescUI.Enable = false
+				return
+			else 
+				buffIconUI.Enable = true
+			end
+			
+			local chairTable = _DataService:GetTable("Chair")
+			
+			buffIconUI:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = chairTable:GetCell(value, 2)
+			local buffName = buffDescUI:GetChildByName("ChairName")
+			buffName.TextComponent.Text = _LocalizationService:GetText(chairTable:GetCell(value, 1)).." ".._LocalizationService:GetText("EquipedAbility_Title2")
+			for i=1, 2 do
+				local buffDesc = buffDescUI:GetChildByName("Option_"..tostring(i))
+				
+				local buffType = chairTable:GetCell(value, 2*i+16)
+				local amount = chairTable:GetCell(value, 2*i+17)
+				if buffType ~= "" and buffType ~= nil then
+					buffDesc.TextComponent.Text = _LocalizationService:GetText(buffType).." +"..amount.."%"
+				else 
+					buffDesc.TextComponent.Text = ""
+				end
+			end
+			
+			-- 얻는 즉시 4초간 설명 표시
+			buffDescUI.Enable = true
+			local disableUI = function()
+				buffDescUI.Enable = false
+			end
+			_TimerService:SetTimerOnce(disableUI, 4)
+			
+			-- 능력치 적용
+			self.Entity.PlayerData:ApplyPlayerStatus()
+		end
+		---------------------------------------------------
+		if name == "HPMax" or name == "MPMax" then
+			if string.sub(self.Entity.CurrentMapName, 1, 4) == "Town" then
+				self.HP = self.HPMax
+				self.MP = self.MPMax
+			end
+			
+			self:SetHPandMPUI()
+		end
+		
+		if name == "MiningPower" then
+			local HUDMiningPowerNumUI = _EntityService:GetEntity("1679c0f6-6b68-4657-a581-1628cdf52284")
+			HUDMiningPowerNumUI.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(self.MiningPower, nil)
+		end
+		
+		--if name == "TempleFloor_Current" then
+			-- self:SetHPUseAmount(300000 + (self.Entity.PlayerIngameData.TempleFloor_Current - 1) * 120000)
+			-- log("현재 층"..self.Entity.PlayerIngameData.TempleFloor_Current)
+		--end
+	end
+
+	@ExecSpace("Client")
+	method void SetHPStausAtMine()
+		-- 광산에서의 체력 감소 처리 (관리자와 하데스 신전에서는 예외)
+		----------------------------------------------------
+		-- 관리자인 경우 체력 감소 적용하지 않음
+		
+		if self.IsAdministrator == true or self.Entity.CurrentMapName == "Temple_Hades_8" then
+			--log("안 죽고 있는 중"..tostring(self.IsAdministrator))
+			goto cont
+		end
+		----------------------------------------------------
+		-- IsIngame == true인 경우 감소율에 맞춰 체력 감소
+		self.HP = self.HP - self.HPUseAmountPerSec
+		
+		if self.HPUseAmountPerSec == nil or self.HPUseAmountPerSec == 0 then
+			--log("체력감소하지 않는중"..self.HPUseAmountPerSec)
+		end
+		
+		-- 체력이 25% 이하일 때 경고문 표기
+		if self.HP <= 0.25*self.HPMax then
+			self:SetWarningUI(true)
+		else 
+			self:SetWarningUI(false)
+		end
+		
+		
+		if self.HP <= 0 then
+			-- 공허 아이템 효과 적용
+			local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[11] 
+			local voidItemTable = _DataService:GetTable("VoidItems")
+			if voidItemLv > 0 and self.Void_RemainReviveCount > 0 then
+				local initAbility = tonumber(voidItemTable:GetCell(11, "InitAbility"))
+				local levelAbility = tonumber(voidItemTable:GetCell(11, "AbilityPerLevel"))
+				local currentAbility = initAbility + levelAbility * voidItemLv
+				
+				local recoverAmount = self.HPMax * currentAbility / 100
+				
+				-- 체력을 회복합니다.
+				self:RecoverHP(recoverAmount)
+				_UIGetLog:PrintVoidItemLog(11)
+				
+				_EffectService:PlayEffectAttached("fbd4e091492a4acfadce64313dd64c12", self.Entity, Vector3.zero, 0, Vector3.one)
+				_SoundService:PlaySound("81317716c4d546488706fd357a1e25db", 1)
+				self.Void_RemainReviveCount = 0
+			else
+				if string.sub(self.Entity.CurrentMapName, 1, 4) == "Temp" and not isvalid(self.Entity.CurrentMap.TempleHadesManager) then
+					local randValue = _UtilLogic:RandomDouble()
+					if randValue <= 0.1 then -- 원래는 0.1 (하데스등장확률)
+						self.HP = self.HPMax
+						if self.Entity.Visible == false then
+							self.Entity.Visible = true
+						end
+		
+						if self.Entity.RigidbodyComponent.Enable == false then
+							self.Entity.RigidbodyComponent.Enable = true
+						end
+						
+						if self.Entity.MovementComponent.Enable == false then
+							self.Entity.MovementComponent.Enable = true
+						end
+						self.Entity.PlayerStateAtStage:InitAllState(true) -- 하데스 신전에서 리셋	
+						_TeleportService:TeleportToEntityPath(_UserService.LocalPlayer, "/maps/Temple_Hades_8/SpawnPoint")
+						self:SetWarningUI(false)
+					else
+						self:Die()
+						self.isIngame = false
+						self.HP = 0
+						self:SetWarningUI(false)
+					end
+				else
+					self:Die()
+					self.isIngame = false
+					self.HP = 0
+					self:SetWarningUI(false)
+				end
+			end
+		end
+			
+		
+		::cont::
+		----------------------------------------------------
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetHPandMPUI()
+		-- HP, MP UI와 보호막 아이콘을 현재 수치에 맞게 업데이트
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		-- 최초 접속시 컴포넌트 찾기 오류
+		if self.UI_HPFill.SpriteGUIRendererComponent == nil then
+			return
+		end
+		-------------------------------------------------------------------------------------
+		-- HP값이 변경될 때마다 UI에서 갱신해줌
+		self.UI_HPFill.UITransformComponent.RectSize = Vector2(308*self.HP/self.HPMax, 51)
+		self.UI_HPText.TextComponent.Text = 
+			_ThousandsSeparator:ConvertToMetricPrefixString(self.HP, nil)
+			.." / "..
+			_ThousandsSeparator:ConvertToMetricPrefixString(self.HPMax, nil)
+		--HPUI:GetChildByName("Ratio").TextComponent.Text = string.format("%d%%", self.HP/self.HPMax * 100)
+		-------------------------------------------------------------------------------------
+		-- MP값도 ui 갱신
+		self.UI_MPFill.UITransformComponent.RectSize = Vector2(308*self.MP/self.MPMax, 51)
+		self.UI_MPText.TextComponent.Text = 
+			_ThousandsSeparator:ConvertToMetricPrefixString(self.MP, nil)
+			.." / "..
+			_ThousandsSeparator:ConvertToMetricPrefixString(self.MPMax, nil)
+		--MPUI:GetChildByName("Ratio").TextComponent.Text = string.format("%d%%", self.MP/self.MPMax * 100)
+		-------------------------------------------------------------------------------------
+		-- 보호막
+		-- UI에 남은 수량 표시
+		local protectorUI = self.UI_ProtectorIcon
+		if self.protector > 0 then
+			protectorUI.Enable = true
+			protectorUI.TextComponent.Text = string.format("%d", self.protector)
+		else 
+			protectorUI.Enable = false
+		end
+		
+		-- 이펙트 표시 (개수 상관없이 이펙트는 하나만 표시)
+		if self.protector > 0 then
+			if self.Entity:GetChildByName("ProtectorEffect") == nil then
+				_SpawnService:SpawnByModelId("model://c2e3c928-9497-4e5c-8731-171ba6ba368e", "ProtectorEffect", 
+					Vector3(0, 0, 0), self.Entity)
+			end
+		else 
+			if self.Entity:GetChildByName("ProtectorEffect") == nil then
+				return 
+			else 
+				_EntityService:Destroy(self.Entity:GetChildByName("ProtectorEffect"))
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Die()
+		-- 플레이어 엔티티를 죽게 만듦
+		
+		self.Entity.PlayerComponent.RespawnTime = 9999999
+		self.Entity.PlayerComponent:ProcessDead()
+		
+		_UIToast:ShowMessage(_LocalizationService:GetText("Message_Tip_BuyWorkwear"))
+		
+		-- bgm off
+		_SoundService:StopBGM(true)
+		
+		-- movement off
+		self.Entity.MovementComponent.Enable = false
+		_UserService.LocalPlayer.PlayerRelic:SyncDirtyItem()
+		
+		-- 채광게임 UI 닫기
+		local miningGameUI = _EntityService:GetEntityByPath("/ui/MiningGameGroup/Mining")
+		miningGameUI.Enable = false
+		
+		
+		-- 사망 UI를 미리 갱신함
+		self:SetResultUI(true)
+		
+		-- 인벤토리 리셋
+		local inventoryReset = function()
+			self.Entity.PlayerBackpack:DiscardAllItem()
+			self.Entity.PlayerRelic:ClearDirtyItems()
+		end
+		_TimerService:SetTimerOnce(inventoryReset, 1)
+		
+		
+		-- 사망 UI 열기
+		local deadUIOn = function()
+			local resultUI = _EntityService:GetEntity("6c48ffaf-e988-463e-bdbc-355558626c06")
+			_SoundService:PlaySound("d7a5f5c767dc41bbb6437cfcff415ec9", 1)
+			resultUI:SetEnable(true)
+		end
+		
+		_TimerService:SetTimerOnce(deadUIOn, 2)
+	end
+
+	@ExecSpace("Client")
+	method void SetActivationIngameUI(boolean activate)
+		-- 인게임 상태에 따라 시야 어둠운 효과와 기록 UI 활성화/비활성화
+		if _UserService.LocalPlayer ~= self.Entity then
+			return
+		end
+		------------------------------------------
+		local blind = _EntityService:GetEntity("4980a1f7-46dd-4bdf-99e2-21466da5d2f4")
+		blind:SetEnable(activate)
+		
+		local recordUI = _EntityService:GetEntity("ba826265-7cb3-49a2-8bcc-94b128aa446d")
+		recordUI:SetEnable(activate)
+	end
+
+	@ExecSpace("Client")
+	method void SetResultUI(boolean isDead)
+		-- 사망 또는 탈출 시 결과창 UI 설정 (기록, 아이템 정보 표시)
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		self:SetWarningUI(false)
+		------------------------------------------
+		local resultUI = _EntityService:GetEntity("6c48ffaf-e988-463e-bdbc-355558626c06")
+		------------------------------------------
+		-- 사망 또는 탈출성공 여부에 따라 글씨를 다르게 표현
+		local titleUI = resultUI:GetChildByName("Title")
+		local descUI = resultUI:GetChildByName("Desc")
+		local backpackTitleUI = resultUI:GetChildByName("Backpack"):GetChildByName("Title")
+		local exitButtonUI = resultUI:GetChildByName("Button_Exit")
+		
+		local dieUI = _EntityService:GetEntity("d6982937-f94e-4701-994b-dde234ab899e")
+		local successUI = _EntityService:GetEntity("b216d0ac-28c3-447d-b6ab-37dd7176ee26")
+		
+		local dieExitBtn = resultUI:GetChildByName("Button_Exit_die")
+		local successExitBtn = resultUI:GetChildByName("Button_Exit_success")
+		
+		if isDead then
+			backpackTitleUI.TextComponent.Text = _LocalizationService:GetText("LoseItems") --"잃어버린 아이템들"
+			exitButtonUI = dieExitBtn
+			
+			dieUI.Enable = true
+			successUI.Enable = false
+			
+			dieExitBtn.Enable = true
+			successExitBtn.Enable = false
+		else 
+			backpackTitleUI.TextComponent.Text = _LocalizationService:GetText("GetItems") --"획득한 아이템들"
+			exitButtonUI = successExitBtn
+			
+			dieUI.Enable = false
+			successUI.Enable = true
+			
+			dieExitBtn.Enable = false
+			successExitBtn.Enable = true
+		end
+		------------------------------------------
+		-- 시간, 깊이 기록
+		
+		local floorPanel = _EntityService:GetEntityByPath("/ui/GameResult/GameResult/Record_Depth_Floor")
+		local depthPanel = _EntityService:GetEntityByPath("/ui/GameResult/GameResult/Record_Depth")
+		
+		if string.sub(self.Entity.CurrentMapName, 1, 4) == "Temp" then -- 신전일 경우
+			floorPanel.Enable = true
+			depthPanel.Enable = false
+			floorPanel:GetChildByName("Num").TextComponent.Text = tostring(math.floor(_UserService.LocalPlayer.PlayerIngameData.TempleFloor_Current))
+		else -- 그렇지 않을 경우
+			floorPanel.Enable = false
+			depthPanel.Enable = true
+		end
+		
+		local recordTimeText = _EntityService:GetEntity("e47b678b-1607-4dd4-9aa7-094cede34c7a")
+		local recordDepthText = _EntityService:GetEntity("cb8d9deb-ab2d-42cb-a998-9d5bcf812a04")
+		
+		local sec = math.floor(self.surviveTime % 60)
+		local min = math.floor(self.surviveTime / 60) % 60
+		local hour = math.floor(self.surviveTime / 3600)
+		recordTimeText.TextComponent.Text = string.format("%02d:%02d:%02d", hour, min, sec)
+		
+		recordDepthText.TextComponent.Text = tostring(math.floor(self.depthRecordOnetime)).." m"
+		------------------------------------------
+		-- '획득한(잃어버린) 광물들' 정보 업데이트
+		local listUI = _EntityService:GetEntityByPath("/ui/GameResult/GameResult/Backpack/ItemList")
+		local itemTable = _DataService:GetTable("DropItem")
+		local gradeTable = _DataService:GetTable("GradeIconback")
+		local itemNum = itemTable:GetRowCount()
+		
+		-- 광물
+		for i=1, itemNum do	
+			local slot = listUI:GetChildByName("Slot_"..tostring(i))
+			
+			local itemHavingAmount = _UserService.LocalPlayer.PlayerBackpack.storageList[i]
+			
+			if itemHavingAmount > 0 then
+				slot.Enable = true
+				
+				local iconUI = slot:GetChildByName("Icon")
+				local numUI = slot:GetChildByName("Num")
+				
+				local icon = itemTable:GetCell(i, 2)
+				local grade = tonumber(string.sub(itemTable:GetCell(i, 3), 7, -1))
+				local iconBack = gradeTable:GetCell(grade, 1)
+						
+				slot.SpriteGUIRendererComponent.ImageRUID = iconBack
+				iconUI.SpriteGUIRendererComponent.ImageRUID = icon
+				numUI.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(itemHavingAmount, nil)
+				slot.UIMouseHover.tenWordsText = itemTable:GetCell(i, 1)
+			else
+				slot.Enable = false
+			end
+		end 
+		
+		-- 유물
+		local relicTable = _DataService:GetTable("Relic")
+		local havingDirtyRelic = self.Entity.PlayerRelic.HavingDirtyItem
+		for i=itemNum+1, itemNum+relicTable:GetRowCount() do
+			local slot = listUI:GetChildByName("Slot_"..tostring(i))
+			local iconUI = slot:GetChildByName("Icon")
+			local numUI = slot:GetChildByName("Num")
+			
+			local relicIdx = i - itemNum
+			
+			if havingDirtyRelic[relicIdx] ~= nil and havingDirtyRelic[relicIdx] > 0 then
+				slot.Enable = true
+				
+				local grade = tonumber(string.sub(relicTable:GetCell(relicIdx, 4), 7, -1))
+				
+				slot.SpriteGUIRendererComponent.ImageRUID = gradeTable:GetCell(grade, "iconback")
+				iconUI.SpriteGUIRendererComponent.ImageRUID = relicTable:GetCell(relicIdx, 2)
+				numUI.TextComponent.Text = string.format("%d", havingDirtyRelic[relicIdx])
+				slot.UIMouseHover.tenWordsText = relicTable:GetCell(relicIdx, 1)
+			else 
+				slot.Enable = false
+			end
+		end
+		------------------------------------------
+		-- 버튼 잠금 후 3초뒤 개방
+		exitButtonUI.ButtonComponent.Enable = false
+		
+		local exitButtonSetEnable = function() 
+			exitButtonUI.ButtonComponent.Enable = true
+		end
+		_TimerService:SetTimerOnce(exitButtonSetEnable, 1.2)
+	end
+
+	@ExecSpace("Client")
+	method void SetRecordUI()
+		-- 인게임 중 상단에 표시되는 생존 시간과 깊이(또는 층수) 정보 업데이트
+		local recordUI = _EntityService:GetEntity("ba826265-7cb3-49a2-8bcc-94b128aa446d")
+		
+		local timeText = recordUI:GetChildByName("Time"):GetChildByName("Num")
+		local sec = math.floor(self.surviveTime % 60)
+		local min = math.floor(self.surviveTime / 60) % 60
+		timeText.TextComponent.Text = string.format("%02d:%02d", min, sec)
+		
+		local depthText = _EntityService:GetEntity("1442eab8-528f-4b60-8ce7-9af92ca79026") -- 뎁스 미터
+		
+		if string.sub(_UserService.LocalPlayer.CurrentMapName, 1, 4) == "Temp" then
+			depthText.TextComponent.Text = _LocalizationService:GetTextFormat("Floor", tostring(math.floor(self.TempleFloor_Current)))
+			--tostring(math.floor(self.TempleFloor_Current)).._LocalizationService:GetText("Floor")
+		else
+			depthText.TextComponent.Text = tostring(math.floor(self.depth)).." m"
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetBlindRatio(number brightness)
+		-- 동굴 내 빛 세기에 따른 화면 어두운 정도 설정
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		------------------------------------------
+		self.blindUI.SpriteGUIRendererComponent.Color.a = brightness
+	end
+
+	@ExecSpace("Client")
+	method void Hit(number damage)
+		-- 피해를 입을 때 보호막 사용 및 체력 감소 처리
+		if self.IsAdministrator == true then return end
+		if self.protector > 0 then
+			self.protector = self.protector - 1
+			
+			_DamageSkinService:Play(self.Entity, "5577a2fd5c25463a85683f7fc4b94ecb", 0.01, 
+				{0}, DamageSkinTweenType.Default, false)
+			return
+		end
+		
+		local currentStage = tonumber(string.sub(self.Entity.CurrentMapName, 5, 5))
+		if currentStage == 9 and damage >= self.HPMax * 0.05 then -- 최대 체력의 5% 이상 피해 입으면 디버프 추가
+			self.Entity.PlayerStateAtStage:GetCurseStack()
+		end
+		
+		self.HP = self.HP - damage
+		if self.HP <= 0 then
+			self.HP = 0
+		end
+		
+		self:SetHPandMPUI()
+		
+		-- damage skin
+		_DamageSkinService:Play(self.Entity, "5577a2fd5c25463a85683f7fc4b94ecb", 0.01, 
+				{damage}, DamageSkinTweenType.Default, false)
+		
+		-- 6스테이지에서 피격 시 별가루 개수 초기화
+		if self.Entity.PlayerStateAtStage.StageNum == 6 then
+			self.Entity.PlayerStateAtStage:LoseMaterial(1, true)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void FinishAdventure()
+		-- 모험 종료 시 인게임 상태와 컴트롤 비활성화
+		self.isIngame = false
+		self.Entity.ExtendPlayerControllerComponent.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void SetNearBonfire(boolean activate)
+		-- 모닥불 근처 여부 설정 (모닥불 근처에서는 체력 회복)
+		self.IsNearBonfire = activate
+	end
+
+	@ExecSpace("Client")
+	method void UpdateDepthRecord()
+		-- 현재 위치를 이용해 침탐 깊이를 계산하고 기록 업데이트
+		local depthStandardEntity = _EntityService:GetEntity("f564182c-76f4-4ec3-8fd7-540a25a6577a")
+		local depthBonus = 0
+		
+		local enteredMapName = self.Entity.Parent.Name
+		 
+		if enteredMapName == "Mine1_1" then
+			depthBonus = 0
+			depthStandardEntity = _EntityService:GetEntity("ae791836-3191-401b-9d32-df0750746712") -- 시작 지점의 포털
+		
+		elseif enteredMapName == "Mine1_2" then
+			depthBonus = 42
+			depthStandardEntity = _EntityService:GetEntity("b613f507-aa84-485d-85d0-0cf0d0947d38")
+		
+		elseif enteredMapName == "Mine1_3" then
+			depthBonus = 42 + 34
+			depthStandardEntity = _EntityService:GetEntity("60990d5d-ccdf-474c-a927-34d7feb0d407")
+			
+		elseif enteredMapName == "Mine2_1" then
+			depthBonus = 42 + 34 + 35
+			depthStandardEntity = _EntityService:GetEntity("aa2fc013-6d57-465a-a069-bd037f4c07e1")
+		
+		elseif enteredMapName == "Mine2_2" then
+			depthBonus = 42 + 34 + 35 + 29
+			depthStandardEntity = _EntityService:GetEntity("a10d77f8-9009-4a6c-839a-67d37550e714")
+		
+		elseif enteredMapName == "Mine2_3" then
+			depthBonus = 42 + 34 + 35 + 29 + 38
+			depthStandardEntity = _EntityService:GetEntity("aedbc317-aeb2-4c7b-9e6d-9194010ccabb")
+		
+		elseif enteredMapName == "Mine3_1" then
+			depthBonus =  42 + 34 + 35 + 29 + 38 + 43
+			depthStandardEntity = _EntityService:GetEntity("c05d3d5a-db89-4541-96e9-7625336bbfe1")
+		
+		elseif enteredMapName == "Mine3_2" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45
+			depthStandardEntity = _EntityService:GetEntity("925478ca-4b59-475b-b64e-56cb0d92435e")
+		
+		elseif enteredMapName == "Mine3_3" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78
+			depthStandardEntity = _EntityService:GetEntity("f5ee939c-297b-4b94-ac80-a56911561f4d")
+		
+		elseif enteredMapName == "Mine4_1" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42
+			depthStandardEntity = _EntityService:GetEntity("cf6b03eb-e1b2-4192-ad85-fe7f097b5d7b")
+		
+		elseif enteredMapName == "Mine4_2" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42
+			depthStandardEntity = _EntityService:GetEntity("39f173fe-51d9-4cab-8494-fb51b870136f")
+		
+		elseif enteredMapName == "Mine4_3" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26
+			depthStandardEntity = _EntityService:GetEntity("9dd63efa-d13e-402c-885d-13dfe146cd49")
+			
+		elseif enteredMapName == "Mine5_1" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33
+			depthStandardEntity = _EntityService:GetEntity("780f32ef-4e76-4303-abe4-5e97c22820e6")
+		
+		elseif enteredMapName == "Mine5_2" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33 + 24
+			depthStandardEntity = _EntityService:GetEntity("4f63b1ff-a633-4cf6-b7e9-811dfe4616ed")
+		
+		elseif enteredMapName == "Mine5_3" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33 + 24 + 26
+			depthStandardEntity = _EntityService:GetEntity("be8bca1a-51cf-4cba-a84b-80b2acb2eb64")
+			
+		elseif enteredMapName == "Mine6_1" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33 + 24 + 26 + 21
+			depthStandardEntity = _EntityService:GetEntity("019dadcb-21bb-491a-8150-5f9bf8a02867")
+		
+		elseif enteredMapName == "Mine6_2" then
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33 + 24 + 26 + 21 + 35
+			depthStandardEntity = _EntityService:GetEntity("c637b79b-d2ac-4ed7-9895-d923df544781")
+		
+		elseif enteredMapName == "Mine7_1" then -- 보너스 값 60
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33 + 24 + 26 + 21 + 35 + 37
+			depthStandardEntity = _EntityService:GetEntity("dbf2bd20-497f-45b7-a672-4e939d0381dc")
+			
+		elseif enteredMapName == "Mine7_2" then -- 보너스 값 40
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33 + 24 + 26 + 21 + 35 + 37 + 50 
+			depthStandardEntity = _EntityService:GetEntity("637e0ff5-4bd8-4967-8438-27915defd108")
+		
+		elseif enteredMapName == "Mine8_1" then -- 보너스 값 40
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33 + 24 + 26 + 21 + 35 + 37 + 50 + 32
+			depthStandardEntity = _EntityService:GetEntity("d8162d29-386e-47f9-9b50-1860c43887ab")
+		
+		elseif enteredMapName == "Mine8_2" then -- 보너스 값 40
+			depthBonus = 42 + 34 + 35 + 29 + 38 + 43 + 45 + 78 + 42 + 42 + 26 + 33 + 24 + 26 + 21 + 35 + 37 + 50 + 32 + 44
+			depthStandardEntity = _EntityService:GetEntity("62d15726-fd9a-43ea-b0a7-53dc80bf9ff8")
+		
+		elseif enteredMapName == "Mine9_1" then -- 보너스 값 40
+			depthBonus = 0
+			depthStandardEntity = _EntityService:GetEntity("e025931b-6e8a-42c3-974f-034ea3f1a663")
+		
+		elseif enteredMapName == "Mine9_2" then -- 보너스 값 40
+			depthBonus = 39
+			depthStandardEntity = _EntityService:GetEntity("5d25cdf9-ce28-4d15-ae95-25f07304d025")
+		
+		elseif enteredMapName == "Mine9_3" then -- 보너스 값 40
+			depthBonus = 39 + 34
+			depthStandardEntity = _EntityService:GetEntity("4c4f23e2-69e4-4639-b89f-bbc10a79068d")
+		
+		elseif enteredMapName == "Mine9_4" then -- 보너스 값 40
+			depthBonus = 39 + 34 + 43
+			depthStandardEntity = _EntityService:GetEntity("6975676b-d567-4fb7-a202-83c5fb8b5d7f")
+		
+		elseif enteredMapName == "Mine9_5" then -- 보너스 값 40
+			depthBonus = 39 + 34 + 43 + 33
+			depthStandardEntity = _EntityService:GetEntity("fb224f26-7af0-43ae-8753-26d6cb38bd50")
+			
+		else 
+			return
+		end
+		
+		
+		-- 기준 엔티티와 좌표 비교
+		if depthStandardEntity == nil then
+			return
+		end
+		
+		self.depth = math.abs(self.Entity.TransformComponent.WorldPosition.y 
+			- depthStandardEntity.TransformComponent.WorldPosition.y) + depthBonus
+		
+		-- 최고기록 갱신 (단일게임)
+		if self.depth >= self.depthRecordOnetime then
+			self.depthRecordOnetime = self.depth
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UnprotectedHit(number damage)
+		-- 보호막을 적용하지 않는 데미지일 경우 이 함수 사용 (중독 데미지 등)
+		self.HP = self.HP - damage
+		
+		-- damage skin
+		_DamageSkinService:Play(self.Entity, "5577a2fd5c25463a85683f7fc4b94ecb", 0.01, 
+				{damage}, DamageSkinTweenType.Default, false)
+	end
+
+	@ExecSpace("Client")
+	method void PopupMapEnteringUI(string enteredMapName, string tableName)
+		-- 맵 입장시 맵 이름과 설명을 페이드 인/아웃 애니메이션과 함께 표시
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		---------------------------------
+		local dataIdx = 0
+		if enteredMapName == "1_1" then
+			dataIdx = 1 
+		elseif enteredMapName == "2_1" then
+			dataIdx = 5 
+		elseif enteredMapName == "3_1" then
+			dataIdx = 9 
+		elseif enteredMapName == "4_1" then
+			dataIdx = 13
+		elseif enteredMapName == "5_1" then
+			dataIdx = 17 
+		elseif enteredMapName == "6_1" then
+			dataIdx = 21 
+		elseif enteredMapName == "7_1" then
+			dataIdx = 25 
+		elseif enteredMapName == "8_1" then
+			dataIdx = 29
+		elseif enteredMapName == "9_1" then
+			dataIdx = 33
+		elseif enteredMapName == "0_1" then
+			dataIdx = 37 
+			
+		-- 아래서부턴 마을	
+		elseif enteredMapName == "n" or enteredMapName == "1" then
+			dataIdx = 1  
+		elseif enteredMapName == "2" then
+			dataIdx = 2  
+		elseif enteredMapName == "3" then
+			dataIdx = 3  
+		elseif enteredMapName == "4" then
+			dataIdx = 4  
+		elseif enteredMapName == "5" then
+			dataIdx = 5  
+		elseif enteredMapName == "6" then
+			dataIdx = 6  
+		elseif enteredMapName == "7" then
+			dataIdx = 7  
+		elseif enteredMapName == "8" then
+			dataIdx = 8  
+		elseif enteredMapName == "9" then
+			dataIdx = 9  
+		elseif enteredMapName == "0" then
+			dataIdx = 10  
+		else 
+			return
+		end
+		
+		local dataTable = _DataService:GetTable(tableName)
+		local mapName = dataTable:GetCell(dataIdx, 2)
+		local desc = dataTable:GetCell(dataIdx, 4)
+		---------------------------------
+		local ui = _EntityService:GetEntity("8857739f-64d7-4e38-a37d-cba79172fb7d")
+		local mapNameUI = ui:GetChildByName("Panel"):GetChildByName("MapName")
+		local descUI = ui:GetChildByName("Panel"):GetChildByName("Desc")
+		---------------------------------
+		mapNameUI.TextComponent.Text = _LocalizationService:GetText(mapName)
+		descUI.TextComponent.Text = _LocalizationService:GetText(desc)
+		---------------------------------
+		ui.Enable = true
+		local alpha = 0
+		
+		local setColorUp = function()
+			alpha = alpha + 1/30
+		
+			for i=1, #ui.Children do
+				ui.Children[i].SpriteGUIRendererComponent.Color.a = alpha
+			end
+				
+			mapNameUI.TextComponent.FontColor.a = alpha
+			descUI.TextComponent.FontColor.a = alpha
+		end
+		
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setColorUp, i/30)
+		end
+		---------------------------------
+		local alphaDown = 1
+		local setColorDown = function()
+			alphaDown = alphaDown - 1/30
+		
+			for i=1, #ui.Children do
+				ui.Children[i].SpriteGUIRendererComponent.Color.a = alphaDown
+			end
+			
+			mapNameUI.TextComponent.FontColor.a = alphaDown
+			descUI.TextComponent.FontColor.a = alphaDown
+		end
+		
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setColorDown, i/30+2.5)
+		end
+		---------------------------------
+		local disable = function()
+			ui.Enable = false
+		end
+		
+		_TimerService:SetTimerOnce(disable, 4)
+		
+		log("popup map entering")
+	end
+
+	@ExecSpace("Client")
+	method void SetWarningUI(boolean enable)
+		-- 체력이 25% 이하일 때 경고 UI 표시/비표시
+		if _UserService.LocalPlayer ~= self.Entity then
+			return
+		end
+		
+		local warningUI = _EntityService:GetEntity("880adfef-9ed3-450e-98d6-ad15faf2338a")
+		warningUI:SetEnable(enable)
+	end
+
+	@ExecSpace("Client")
+	method void UseMP(number amount)
+		-- 대쉬 등에서 MP 사용시 호출되는 함수
+		self.MP = self.MP - amount*self.MPUseRate	
+		
+		if self.MP < 0 then
+		 	self.MP = 0
+		end
+		
+		self:SetHPandMPUI()
+	end
+
+	@ExecSpace("Client")
+	method void GetProtector()
+		-- 보호막 개수를 1개 증가
+		self.protector = self.protector + 1
+	end
+
+	@ExecSpace("Server")
+	method void SetHPUseAmount(number amount)
+		-- 현재 광산/신전의 초당 HP 감소량 설정
+		self.HPUseAmountPerSec = amount
+		--log("현재 층"..self.TempleFloor_Current.."/".."현재 초당 데미지:"..self.HPUseAmountPerSec.."/".."현재 광맥 내구도:".. 700000000 + (self.TempleFloor_Current - 1) * 420000000 .."/".."현재 맵:"..self.Entity.CurrentMapName)
+	end
+
+	@ExecSpace("Server")
+	method void CleanupIngamePropertiesOnServer()
+		-- 서버에서 인게임 상태 정리 (현재 비어있음)
+		
+	end
+
+	@ExecSpace("Server")
+	method void SetChairBuffIdx(number idx)
+		-- 의자 군중버프 인덱스 설정
+		self.ChairBuffIdx = idx
+	end
+
+	@ExecSpace("Client")
+	method string InitTempleTable()
+		-- 신전 목록 초기화 및 최근 방문 신전을 제외한 랜덤 신전 선택
+		self.EntranceTempleTable = {"Zeus_1", "Poseidon_2", "Apollon_3", "Athena_4", "Artemis_5", "Aphrodite_6", "Demeter_7"}
+		local randIdx = _UtilLogic:RandomIntegerRange(1, #self.EntranceTempleTable)
+		
+		if self.latestTempleName == self.EntranceTempleTable[randIdx] then
+			if randIdx == #self.EntranceTempleTable then
+				randIdx = _UtilLogic:RandomIntegerRange(1, #self.EntranceTempleTable - 1) -- 7이면 1
+			else
+				randIdx = randIdx + 1 -- 1이면 2, 6이면 7
+			end
+			self.latestTempleName = self.EntranceTempleTable[randIdx]
+			table.remove(self.EntranceTempleTable, randIdx)
+			return self.latestTempleName
+		else
+			self.latestTempleName = self.EntranceTempleTable[randIdx]
+			table.remove(self.EntranceTempleTable, randIdx)
+			return self.latestTempleName
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method string GetTempleTable()
+		-- 남은 신전 목록에서 랜덤으로 선택하여 반환
+		local randIdx = _UtilLogic:RandomIntegerRange(1, #self.EntranceTempleTable)
+		self.latestTempleName = self.EntranceTempleTable[randIdx]
+		table.remove(self.EntranceTempleTable, randIdx)
+		
+		
+		return self.latestTempleName
+		
+	end
+
+	@ExecSpace("Client")
+	method void RecoverHP(number amount)
+		-- HP를 지정된 양만큼 회복 (최대치 초과 방지)
+		self.HP = self.HP + amount
+		
+		if self.HP > self.HPMax then
+			self.HP = self.HPMax
+		end
+		
+		self:SetHPandMPUI()
+	end
+
+	@ExecSpace("Server")
+	method void AddCurrentTempleFloor(number amount, boolean reset, string id)
+		-- 신전 에서 상위 층으로 나아갈 때 또는 층수 리셋 수행
+		if self.Entity.PlayerComponent.UserId ~= id then
+			return
+		end
+		
+		if reset then
+			self.TempleFloor_Current = 0
+		else
+			self.TempleFloor_Current = self.TempleFloor_Current + amount
+			self:SetHPUseAmount(300000 + (self.Entity.PlayerIngameData.TempleFloor_Current - 1) * 120000)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void resetPlayerSpeed(number speed, string id)
+		-- 하데스 신전 등에서 플레이어 이동 속도 원복
+		if self.Entity.PlayerComponent.UserId == id then
+			self.Entity.MovementComponent.InputSpeed = speed
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerStayEvent(TriggerStayEvent event)
+		-- 조명 오브젝트와 모닥불에 닿았을 때 빛 밝기/체력 회복 처리
+		-- Parameters
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		--------------------------------------------------------
+		if TriggerBodyEntity.TagComponent and TriggerBodyEntity.TagComponent.Tags[1] == "light" then
+			
+			local playerPos = Vector2(self.Entity.TransformComponent.WorldPosition.x, self.Entity.TransformComponent.WorldPosition.y)
+			local lightPos = Vector2(TriggerBodyEntity.TransformComponent.WorldPosition.x, TriggerBodyEntity.TransformComponent.WorldPosition.y)
+			local distance = math.abs(Vector2.Distance(playerPos, lightPos))
+			
+			local brightness = distance / (TriggerBodyEntity.TriggerComponent.BoxSize.x / 2)
+			
+			self.lightsBrightness[TriggerBodyEntity.Id] = brightness 
+		end
+		
+		if TriggerBodyEntity.TagComponent and TriggerBodyEntity.TagComponent.Tags[2] == "bonfire" then
+			self:SetNearBonfire(true)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerLeaveEvent(TriggerLeaveEvent event)
+		-- Parameters
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		--------------------------------------------------------
+		if TriggerBodyEntity.TagComponent and TriggerBodyEntity.TagComponent.Tags[1] == "light" then
+			self.lightsBrightness[TriggerBodyEntity.Id] = 1
+		end
+		
+		if TriggerBodyEntity.TagComponent and TriggerBodyEntity.TagComponent.Tags[2] == "bonfire" then
+			self:SetNearBonfire(false)
+		end
+	end
+
+end

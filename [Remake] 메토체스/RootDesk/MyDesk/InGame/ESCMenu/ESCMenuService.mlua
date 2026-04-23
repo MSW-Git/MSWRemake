@@ -1,0 +1,452 @@
+@Logic
+script ESCMenuService extends Logic
+
+	property Entity UI_MenuGroup = "6088e343-c577-4747-88cd-e52a84459736"
+
+	property Entity UI_Background = "8b2a163b-b6d4-49bb-a5bc-b49d059d7a85"
+
+	property Entity UI_ESCMenu = "59a1c1e7-c88d-4e90-8dd8-0b7280470052"
+
+	property Entity UI_Setting = "02c9fa36-3a03-4605-ac02-82a0e7a23cfd"
+
+	property Entity UI_GameModeInfo = "3ab6f3a7-752a-4f43-9886-42e3b87ddba2"
+
+	property Entity UI_PreferencePage = "5cd9b65a-fc39-4f30-abba-5d20b003c182"
+
+	property Entity UI_ConfirmPopup = "414d9d3a-2c7c-42b8-9860-6079cbb7c26d"
+
+	property Entity UI_ShortcutPopup = "a57dcc4d-3178-4622-aea0-6ea1374af6a0"
+
+	property boolean ItsOn = false
+
+	property number skillEffectAlpha = 100
+
+	property string Setting_ShowingCategory = "ShortcutKey"
+
+	property boolean Open = false
+
+	property Entity UI_QuickRestartButton = "487884a0-81ca-46ef-ab2c-c463c075a136"
+
+	@ExecSpace("ClientOnly")
+	method void SetAchievementPopUp(boolean trueOrFalse)
+		if trueOrFalse then
+			_UI_AchievementPopup.isActivated = true
+		else
+			_UI_AchievementPopup.isActivated = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitPreferenceList()
+		local prefDataset = _DataService:GetTable("PreferenceList")
+		local prefList = _EntityService:GetEntityByPath("/ui/ESCMenu/Panel_Setting/Panel/Panel_SettingPage/Page_Preference/List")
+		
+		for i=1, prefDataset:GetRowCount() do
+			local optionName = prefDataset:GetRow(i):GetItem("Act")
+			local optionType = prefDataset:GetRow(i):GetItem("Type")
+			local TorF = prefDataset:GetRow(i):GetItem("DefaultSet")
+			if TorF == "true" then
+				TorF = true
+			else
+				TorF = false
+			end
+			
+			-- 각 옵션의 타입을 확인하고 맞춰 추가하기
+			---@type Entity
+			local optionEntity = prefList:GetChildByName(string.format("Option_%d", i))
+			------------------------------------------------
+			-- CheckBox 타입인 경우
+			if optionType == "CheckBox" then
+				local checkbox = optionEntity:GetChildByName("CheckBox")
+				
+				if TorF == true then
+					checkbox.SpriteGUIRendererComponent.ImageRUID = "b84c0a94f4e7f13478fb731495ae84ad"
+				else
+					checkbox.SpriteGUIRendererComponent.ImageRUID = "9fd67813972dc5642b6563c6903583c8"
+				end
+				
+				-- 버튼 클릭 이벤트와 연결합니다.
+				checkbox:ConnectEvent(ButtonClickEvent,function(event)
+					---@type Entity
+					local button = event.Entity
+					local activated = false
+					if optionName == "AchievementPopup" then
+						--업적 팝업 활성화
+						_UI_AchievementPopup.isActivated = not _UI_AchievementPopup.isActivated
+						activated = _UI_AchievementPopup.isActivated
+					elseif optionName == "BattleWaitingTime" then
+						-- 전투 대기시간 생략
+						local battleStartButton = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/DefaultPanel/Button_StartBattle")
+						battleStartButton.ArenaUI_BattleStartButton.SkipWaitingTime = not battleStartButton.ArenaUI_BattleStartButton.SkipWaitingTime
+						activated = battleStartButton.ArenaUI_BattleStartButton.SkipWaitingTime
+					elseif optionName == "CoinObtainEffect" then
+						--코인 획득 애니메이션 활성
+						_GeneralDirectorLogic.IsCoinAnimationOn = not _GeneralDirectorLogic.IsCoinAnimationOn
+						activated = _GeneralDirectorLogic.IsCoinAnimationOn
+					end
+					
+					-- 버튼(체크박스) 이미지를 변경합니다.
+					if activated == true then
+						button.SpriteGUIRendererComponent.ImageRUID = "b84c0a94f4e7f13478fb731495ae84ad"
+					else
+						button.SpriteGUIRendererComponent.ImageRUID = "9fd67813972dc5642b6563c6903583c8"
+					end		
+				end)
+			------------------------------------------------
+			-- Slider 타입인 경우
+			elseif optionType == "Slider" then
+				local slideBar =  optionEntity:GetChildByName("SlideBar")
+				if optionName == "SkillEffectOpacity" then
+					slideBar:ConnectEvent(SliderValueChangedEvent, function(event)
+						self.skillEffectAlpha = slideBar.SliderComponent.Value
+					end)
+				elseif optionName == "BGMVolume" then
+					slideBar:ConnectEvent(SliderValueChangedEvent, function(event)
+						_PlaySoundLogic.BGMVolume = slideBar.SliderComponent.Value
+					end)
+				elseif optionName == "SFXVolume" then
+					slideBar:ConnectEvent(SliderValueChangedEvent, function(event)
+						_PlaySoundLogic.SFXVolume = slideBar.SliderComponent.Value
+					end)
+					
+				end
+		
+			end
+			optionEntity:GetChildByName("Title").TextComponent.Text  = _LocalizationService:GetText("Preference_"..optionName)
+			
+			
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SaveAndQuit()
+		local user = _UserService.LocalPlayer
+		local gameManager = user.GameManager
+		local ui_escMenuGroup = _EntityService:GetEntityByPath("/ui/ESCMenu")
+		---------------------------------------------------------
+		if gameManager.PhaseType ~= "End" then
+			self.Open = false
+			self.UI_QuickRestartButton.ButtonComponent.Enable = true
+			ui_escMenuGroup.Enable = false
+			self:OpenESCMenu(false)
+		
+			if gameManager.ModeType == "Tutorial" then
+				_UI_TutorialLogic:DeactivateAllTutorialUI()
+			end
+			user.LoadingManager:SetEnableUI(true)
+			_TimerService:SetTimerOnce(function()
+				gameManager:MoveToLobby("SaveAndExit")
+			end, 1)
+		
+		else
+			--_UIToast:ShowMessage("지금 저장할 수 없는 상태입니다.")
+			_UIToast:ShowMessageByLocalizingKey("Toast_SaveError")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetSetting()
+		--설정한 내용을 초기화합니다.
+		local prefDataset = _DataService:GetTable("PreferenceList")
+		local prefList = _EntityService:GetEntityByPath("/ui/ESCMenu/Panel_Setting/Panel/Panel_SettingPage/Page_Preference/List")
+		for i=1, prefList.Children.Count do
+			local dataRow = prefDataset:GetRow(i)
+			local TorF = dataRow:GetItem("DefaultSet")
+			if TorF == "true" then
+				TorF = true
+			else
+				TorF = false
+			end
+			
+			-- 각 옵션의 타입을 확인하고 맞춰 추가하기
+			local ui_line = prefList.Children[i]
+			local optionName = dataRow:GetItem("Act")
+			
+			local checkBoxSpriteRUID = {
+				[true] = "b84c0a94f4e7f13478fb731495ae84ad",
+				[false] = "9fd67813972dc5642b6563c6903583c8"
+			}
+					
+			if optionName == "AchievementPopup" then
+				--업적 팝업 활성화
+				ui_line:GetChildByName("CheckBox").SpriteGUIRendererComponent.ImageRUID = checkBoxSpriteRUID[TorF]
+				_UI_AchievementPopup.isActivated = TorF
+				
+			elseif optionName == "BattleWaitingTime" then
+				-- 전투 대기시간 생략
+				ui_line:GetChildByName("CheckBox").SpriteGUIRendererComponent.ImageRUID = checkBoxSpriteRUID[TorF]
+				
+				local battleStartButton = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/DefaultPanel/Button_StartBattle")
+				battleStartButton.ArenaUI_BattleStartButton.SkipWaitingTime = TorF
+				
+			elseif optionName == "CoinObtainEffect" then
+				--코인 획득 애니메이션 (비)활성화
+				ui_line:GetChildByName("CheckBox").SpriteGUIRendererComponent.ImageRUID = checkBoxSpriteRUID[TorF]
+				_GeneralDirectorLogic.IsCoinAnimationOn = TorF
+				
+			elseif optionName == "SkillEffectOpacity" then
+				ui_line:GetChildByName("SlideBar").SliderComponent.Value = 100
+				
+			elseif optionName == "BGMVolume" then
+				ui_line:GetChildByName("SlideBar").SliderComponent.Value = 1
+				_PlaySoundLogic.BGMVolume = 1
+				
+			elseif optionName == "SFXVolume" then
+				ui_line:GetChildByName("SlideBar").SliderComponent.Value = 1
+				_PlaySoundLogic.SFXVolume = 1
+			end
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenESCMenu(boolean enable)
+		-- ESC 메뉴를 열 때 연출을 재생하는 함수
+		--------------------------------------------------------------------------------
+		self.Open = enable
+		--------------------------------------------------------------------------------
+		if self._T.TimerID ~= 0 then
+			_TimerService:ClearTimer(self._T.TimerID)
+		end
+		--------------------------------------------------------------------------------
+		-- 켜기
+		if enable == true then
+			self.UI_MenuGroup.Enable = true
+			local t = 0
+			local move = function()
+				if t > 1 then
+					_TimerService:ClearTimer(self._T.TimerID)
+					self._T.TimerID = 0
+				end
+				
+				t += 1/40
+				self.UI_ESCMenu.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(1200, 0, 1, EaseType.BackEaseOut, t)		
+			end
+				
+			self._T.TimerID = _TimerService:SetTimerRepeat(move, 1/80, 0)
+			
+			_TimerService:SetTimerOnce(function()
+				
+			end, 1/40)
+			
+			
+			-- 게임 모드에 따라, '다시하기' 메뉴의 메세지 변경
+			if string.sub(_UserService.LocalPlayer.GameManager.ModeType, 1, 9) == "Challenge" then
+				local text = _LocalizationService:GetText("QuickRestart_Message").._LocalizationService:GetText("QuickRestart_Message2")
+				self.UI_ConfirmPopup:GetChildByName("Popup"):GetChildByName("Text_Desc").TextComponent.Text = text
+			else
+				self.UI_ConfirmPopup:GetChildByName("Popup"):GetChildByName("Text_Desc").TextComponent.Text = "QuickRestart_Message"
+			end
+		--------------------------------------------------------------------------------	
+		-- 끄기
+		else
+			local t = 0
+			local move = function()
+				if t > 1 then
+					self.UI_MenuGroup.Enable = false
+					
+					_TimerService:ClearTimer(self._T.TimerID)
+					self._T.TimerID = 0
+				end
+				
+				t += 1/40
+				self.UI_ESCMenu.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(0, 1200, 1, EaseType.BackEaseOut, t)		
+			end
+			
+			self._T.TimerID = _TimerService:SetTimerRepeat(move, 1/80, 0)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		self._T.TimerID = 0 
+	end
+
+	@ExecSpace("Client")
+	method void SetESCMenuFromServer(boolean onOff)
+		self.Open = onOff
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- Parameters
+		-- local key = event.key
+		---------------------------------------------------------
+		if self.ItsOn == false then
+			self.ItsOn = true
+			self:InitPreferenceList()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "4db14751-970c-46b3-a376-38ba54365709")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		_UI_AchievementService:RequestSetAchieveData("1", _UserService.LocalPlayer)
+		
+		self.UI_MenuGroup.Enable = false
+		self.Open = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "2dab7f4b-6274-4336-b55d-60cac9247208")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		self.UI_MenuGroup.Enable = false
+		self.Open = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "64edc0ff-b1ab-4185-860a-867864ecf546")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		local user = _UserService.LocalPlayer
+		
+		-- 예외 처리 : 챌린지 모드이고, 남은 도전 횟수가 없을 때
+		if string.sub(user.GameManager.ModeType, 1, 9) == "Challenge" then
+			local leftTryCount = user.PlayerDataComponent.ChallengeMode_LeftTryCount
+			if leftTryCount < 1 then
+				self.UI_ConfirmPopup.Enable = false
+				_UIToast:ShowMessageByLocalizingKey("ExhaustAllTryChange")
+				return
+			end
+		end
+		
+		user.GameManager:RestartArena()
+		
+		self.UI_ConfirmPopup.Enable = false
+		self.UI_MenuGroup.Enable = false
+		
+		-- Progress UI의 트윈스케일 값을 변경합니다.
+		local ui_progressBar = _EntityService:GetEntityByPath("/ui/Arena_Default/Progress")
+		local ui_progressBarPanel = ui_progressBar:GetChildByName("Panel")
+		
+		
+		ui_progressBar.UITransformComponent.RectSize.x = 650
+		ui_progressBarPanel.UITransformComponent.RectSize.x = 650
+		
+		ui_progressBar.UITweenScale.from.x = 650
+		ui_progressBar.UITweenScale.to.x = 650
+		
+		ui_progressBarPanel.UITweenScale.from.x = 650
+		ui_progressBarPanel.UITweenScale.to.x = 650
+			
+		ui_progressBar.UITweenScale.duration = 0.2
+		ui_progressBarPanel.UITweenScale.duration = 0.2
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "2fc665de-25b3-4f14-9c81-5a7458b2981b")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		-- Parameters
+		self:SaveAndQuit()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "87402196-6fb6-4344-a34f-d61944de194d")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		self:ResetSetting()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "2d273fb1-9e46-474d-a1e9-ccd99d2b8a18")
+	handler HandleTabChangedEvent(TabChangedEvent event)
+		-- Parameters
+		local ChangedIdx = event.ChangedIdx
+		---------------------------------------------------------
+		-- [설정]에서 카테고리(단축키, 게임 설정 등)를 바꿨을 때 실행합니다.
+		--------------------------------------------------------------------
+		local settingCategory = {
+			[1] = "ShortcutKey",
+			[2] = "Preference",
+		}
+		self.Setting_ShowingCategory = settingCategory[ChangedIdx]
+		
+		-- 탭 목록을 갱신합니다. (현재 눌린 탭은 buttonCompo를 끕니다)
+		local ui_tab = _EntityService:GetEntityByPath("/ui/ESCMenu/Panel_Setting/Panel/List_Categories")
+		for i=1, #ui_tab.Children do
+			local ui_button = ui_tab.Children[i]
+			
+			if i == ChangedIdx then
+				ui_button.ButtonComponent.Enable = false
+			else
+				ui_button.ButtonComponent.Enable = true
+			end
+		end
+		
+		-- 보고 있는 페이지를 변경합니다.
+		local settingPage = _EntityService:GetEntityByPath("/ui/ESCMenu/Panel_Setting/Panel/Panel_SettingPage")
+		local idx = event.ChangedIdx
+		for _, page in pairs(settingPage.Children) do
+			if page.Name == "Page_"..self.Setting_ShowingCategory then
+				page.Enable = true
+			else
+				page.Enable = false
+			end	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "db99d852-5f89-454f-b3d0-377dd2adf804")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		local currentMapName = _UserService.LocalPlayer.CurrentMapName
+		
+		
+		if currentMapName == "Lobby" then
+			self.UI_MenuGroup.Enable = false
+			self.UI_Background.Enable = true
+			self.UI_ESCMenu.Enable = true
+		elseif _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == true then
+			self.UI_MenuGroup.Enable = true
+			self.UI_Background.Enable = true
+			self.UI_ESCMenu.Enable = true
+			self.UI_ESCMenu.Visible = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "7e49626a-e9ad-4743-9c42-1728c3e25ba0")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		local currentMapName = _UserService.LocalPlayer.CurrentMapName
+		
+		if _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == true then
+			self.UI_MenuGroup.Enable = true
+			self.UI_Background.Enable = true
+			self.UI_ESCMenu.Enable = true
+		elseif currentMapName == "Lobby" then
+			self.UI_MenuGroup.Enable = false
+			self.UI_Background.Enable = true
+			self.UI_ESCMenu.Enable = true
+		end
+	end
+
+end

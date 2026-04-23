@@ -1,0 +1,143 @@
+@Component
+script C20004_DanceswithBalrog_Skill extends Component
+
+	property number skillAnimLength = 0.6
+
+	property number setReflection = 0
+
+	property string buffEffectRUID = "f6618cf8b19d4c0ba4365673c985e3cb"
+
+	property string HitReflectionEffectRUID = "4ac3fdb0dced44bea6591c9c733cce29"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		self:SetBuffEffect(unitInfo.OwnerId)
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		local function GetBuff()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetBuff()
+			end
+		end
+		
+		_TimerService:SetTimerOnce(GetBuff, 0.3 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0171",unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBuff()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- 최대 체력 증가
+		local getMaxHP = unitStatus.MaxHP * _S01_SkillDescLogic.C20004_Active_GetMaxHP_MaxHPPer[unitInfo.level] +
+						 unitStatus.MagicalAttack * _S01_SkillDescLogic.C20004_Active_GetMaxHP_Magic[unitInfo.level]
+		_StatusChangeLogic:GetBuff(myUnit, "Add_MaxHP", getMaxHP, -1)
+		
+		local setTime = tonumber(_S01_SkillDescLogic.C20004_Active_BuffTime_Int[unitInfo.level])
+		
+		-- 데미지 무효화 
+		-- _StatusChangeLogic:GetBuff(myUnit, "DamageDecrease_Magic", _S01_SkillDescLogic.C20004_Active_MirrorDamage_Magic[unitInfo.level], setTime)
+		
+		-- 피해량 반사
+		self.setReflection += 1
+		
+		local function reflectionOff()
+			self.setReflection -= 1
+		end
+		
+		
+		_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0018", setTime)
+		_TimerService:SetTimerOnce(reflectionOff, setTime)
+	end
+
+	@ExecSpace("Server")
+	method void Reflection(Entity targetUnit, table damageInfo)
+		-- 예외 처리
+		if isvalid(targetUnit) == false then
+			return
+		end
+		-----------------------------------------------
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local totalDamage = damageInfo[1] + damageInfo[2] + damageInfo[3]
+		
+		local refPer = unitStatus.MagicalAttack * _S01_SkillDescLogic.C20004_Active_MirrorDamage_Magic[unitInfo.level]
+		
+		local finalDamage = totalDamage * ( refPer/100 )
+		
+		local finalDamageInfo = _StatusChangeLogic:CheckDamage(finalDamage, myUnit, targetUnit, 0, "Physical")
+		_StatusChangeLogic:HitDamage(myUnit, targetUnit, finalDamageInfo[1], 0, finalDamageInfo[2], "reflection")
+		
+		--피격 연출
+		self:HitEffect(targetUnit,unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		self.setReflection = 0
+	end
+
+	@ExecSpace("Client")
+	method void SetBuffEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Buff Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.buffEffectRUID, myUnit, Vector3(0, 0, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetunit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = not filpX,["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.HitReflectionEffectRUID, targetunit, Vector3(0, 0, 0), 0, Vector3.one*0.7, false, options)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleAttacked(Attacked event)
+		-- Parameters
+		local Attacker = event.Attacker
+		local Target = event.Target
+		local InitialDamages = event.InitialDamages
+		local FinalDamages = event.FinalDamages
+		local IsCritical = event.IsCritical
+		local AttackType = event.AttackType
+		---------------------------------------------------------
+		if self.setReflection > 0 and AttackType ~= "reflection" then
+			self:Reflection(Attacker, InitialDamages)
+		end
+	end
+
+end

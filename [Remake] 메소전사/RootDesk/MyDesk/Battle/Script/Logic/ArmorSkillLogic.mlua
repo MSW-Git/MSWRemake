@@ -1,0 +1,360 @@
+@Logic
+script ArmorSkillLogic extends Logic
+
+	property table fxTable = {}
+
+	property table originalFxTable = {}
+
+	property table birdEyeTargets = {}
+
+	property number bossShieldTimer = 0
+
+	@ExecSpace("Client")
+	method void Init()
+		-- 방어구 스킬 관련 변수들을 초기화
+		self._T.enableInvincible = true
+		self._T.lastEvadeExtraRate = 0
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 방어구 스킬 로직 초기화
+		self:Init()
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(string text, string effect, Vector3 pos, Entity target, number rotation, Vector3 scale)
+		-- 텍스트 메시지와 이펙트를 동시에 재생
+		
+		_UIToast:ShowMessage(text)
+		_EffectService:PlayEffect(effect, target, pos, rotation, scale)
+	end
+
+	@ExecSpace("Client")
+	method void ExcuteWarriorHelmet(Entity player)
+		-- 전사 헬멧 스킬 실행 (체력에 따른 회피율 증가 및 무적 효과)
+		if player.BattlePlayer.armorSkillEnable == false then
+			return
+		end
+		local hpRate = player.BattlePlayer.hp / player.BattlePlayer.maxHp
+		
+		if _BuffLogic.appliedBuff.helmetWarriorLevel >= 3 then
+			if hpRate < 0.7  then
+				_BuffLogic.appliedBuff.evadeExtraRate = 0.1
+				if hpRate < 0.5 then
+					_BuffLogic.appliedBuff.evadeExtraRate = 0.25
+					if hpRate < 0.25  then
+						_BuffLogic.appliedBuff.evadeExtraRate = 0.4
+					end
+				end
+			else
+				_BuffLogic.appliedBuff.evadeExtraRate = 0
+			end
+			
+			if self._T.lastEvadeExtraRate ~= _BuffLogic.appliedBuff.evadeExtraRate then
+				player:SendEvent(ChangeEvadeEvent())
+			end
+			self._T.lastEvadeExtraRate = _BuffLogic.appliedBuff.evadeExtraRate
+		end
+			
+				
+		if _BuffLogic.appliedBuff.helmetWarriorLevel >= 1 then
+			local str = ""
+			
+			if hpRate < 0.1 and self._T.enableInvincible then
+				self._T.enableInvincible = false
+				
+				
+		
+		
+				if hpRate > 0 then 
+					
+					str = string.format(_LocalizeLogic:GetText("ArmorSkillLogic_Text_1"))
+					player.PlayerArmorSkillComponent:CallSystemMessage(str, "equ")
+				else
+			
+					str = string.format(_LocalizeLogic:GetText("ArmorSkillLogic_Text_2"))
+					player.PlayerArmorSkillComponent:CallSystemMessage(str, "equ")
+				end
+				player.BattlePlayer:ApplyInvincible(7)
+				
+				if _BuffLogic.appliedBuff.helmetWarriorLevel >= 2 then
+					_TimerLogic:SetTimerOnce(function() 
+					player.BattlePlayer:SetHP(player.BattlePlayer.hp + (player.BattlePlayer.maxHp * 0.1)) 
+					str = string.format(_LocalizeLogic:GetText("ArmorSkillLogic_Text_3"))
+					_SystemMessageLogic:ShowMessage(str,"equ")  end, 
+					7, "ArmorSKillLogic.ExcuteWarriorHelmet_healing")
+				end
+				
+				_TimerLogic:SetTimerOnce(function() 
+					self._T.enableInvincible = true end, 
+				180, "ArmorSKillLogic.ExcuteWarriorHelmet_invincibleCooltimeReset")
+			end
+		end
+		
+	end
+
+	method void ExcuteSharkHelmet(Entity player)
+		-- 상어 헬멧 스킬 실행 (킬 수에 따른 체력 회복 및 상어 소환)
+		if player.BattlePlayer.armorSkillEnable == false then
+			return
+		end
+		local killCount = player.BattlePlayer.killCount
+		
+		local spawnShark = function()
+			_SoundService:PlaySound("9f0269c3e2be44d7a103f6fc8c3d1fee", 1.2)
+			local trans = player.TransformComponent.WorldPosition
+			local spec = _MySpecLogic.mySpec
+			
+			local effect1 = _PoolingLogic:SpawnModel("model://9b588cc6-7023-49ac-891c-1de0df2f5005",  Vector3(trans.x + 0.5, trans.y ,0), player.CurrentMap)
+		
+			effect1.CollisionDamageComponent:Init(0 , 3, 1, player)
+			
+			local effect2 = _PoolingLogic:SpawnModel("model://b1322e7c-1401-4d97-9bc8-4396ca0111c1",  Vector3(trans.x - 0.5, trans.y ,0), player.CurrentMap)
+		
+			effect2.CollisionDamageComponent:Init(0, 3, -1, player)
+		end
+		
+		if killCount % 50 == 0 and _BuffLogic.appliedBuff.helmetSharkLevel >= 1 then
+		
+			local recoverRate = 0.01
+		
+			if _BuffLogic.appliedBuff.helmetSharkLevel >= 3 then
+				recoverRate = 0.02
+		
+				_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("ArmorSkillLogic_Text_4"), "equ")
+			else
+		
+				_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("ArmorSkillLogic_Text_5"), "equ")
+			end
+			player.BattlePlayer:SetHP(player.BattlePlayer.hp + player.BattlePlayer.maxHp * recoverRate)
+		end
+		
+		if killCount % 50 == 0 and _BuffLogic.appliedBuff.helmetSharkLevel >= 2 then
+		
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("ArmorSkillLogic_Text_6"), "equ")
+			spawnShark()
+		end
+	end
+
+	method number ExcuteMartialSuit(Entity player, number originCalc)
+		-- 무술 슈트 스킬 실행 (데미지 감소 및 보스 실드 파괴)
+		if not isvalid(player.BattlePlayer) then
+			return originCalc
+		end
+		
+		if player.BattlePlayer.armorSkillEnable == false then
+			return originCalc
+		end
+		
+		if _BuffLogic.appliedBuff.suitMartialLevel >= 2 then  
+			if player.BattlePlayer.getBossShield == true then 
+				player.BattlePlayer:DestroyBossShield() 
+				return 0
+			end
+		end
+		
+		if _BuffLogic.appliedBuff.suitMartialLevel == 1 then
+			
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("ArmorSkillLogic_Text_7"), "equ")
+			return originCalc - (originCalc * 0.2) 
+		
+		elseif _BuffLogic.appliedBuff.suitMartialLevel == 3 then
+		
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("ArmorSkillLogic_Text_8"), "equ")
+			return originCalc - (originCalc * 0.3) 
+		else
+			return originCalc
+		end
+	end
+
+	method void ExcutePoorSuit(Entity player)
+		-- 가난한 슈트 스킬 실행 (독 영역 생성)
+		if player.BattlePlayer.armorSkillEnable == false then
+			return
+		end
+		
+		if _BuffLogic.appliedBuff.suitPoorLevel >= 1 and isvalid(player.BattlePlayer) then
+			local poisonedArea = _SpawnService:SpawnByModelId("model://8b385c33-102c-4c51-b00a-c048f358cbed", "PoisonedArea", Vector3(0,0,0), player.CurrentMap)
+			poisonedArea.MonsterSlowTrigger:Init(player, _BuffLogic.appliedBuff.suitPoorLevel)
+		end
+	end
+
+	method void ExcuteChickenSuit(Entity player)
+		-- 치킨 슈트 스킬 실행 (체력, 속도, 총 데미지 영구 증가)
+		if player.BattlePlayer.armorSkillEnable == false then
+			return
+		end
+		
+		
+		local level = _BuffLogic.appliedBuff.suitChickenLevel
+		
+		if level >= 1 then 
+			
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("ArmorSkillLogic_Text_9"), "equ")
+			_BuffLogic.appliedBuff.maxHp = _BuffLogic.appliedBuff.maxHp + 0.01
+			player:SendEvent(ChangeMaxHpEvent())
+			
+		end
+		
+		if level >= 2 then 
+			
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("ArmorSkillLogic_Text_10"), "equ")
+			_BuffLogic.appliedBuff.speed = _BuffLogic.appliedBuff.speed + 0.005
+			player:SendEvent(ChangeSpeedEvent())
+		end
+		
+		if level >= 3 then 
+			
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("ArmorSkillLogic_Text_11"), "equ")
+			_BuffLogic.appliedBuff.totalDamage = _BuffLogic.appliedBuff.totalDamage + 0.005
+			player:SendEvent(ChangeTotalDamageEvent())
+		end
+	end
+
+	method void ExcuteWingGlove(Entity player)
+		-- 날개 장갑 스킬 실행 (레벨에 따른 체력 회복)
+		if player.BattlePlayer.armorSkillEnable == false then
+			return
+		end
+		
+		local rate = 0
+		local colorCode = ""
+		local str = ""
+		
+		if _BuffLogic.appliedBuff.gloveWingLevel == 1 then
+			rate = 0.05
+			
+			str = string.format(_LocalizeLogic:GetText("ArmorSkillLogic_Text_12"), math.floor(rate * 100))
+			_SystemMessageLogic:ShowMessage(str, "equ")
+		elseif _BuffLogic.appliedBuff.gloveWingLevel== 2 then
+			rate = 0.1
+		
+			str = string.format(_LocalizeLogic:GetText("ArmorSkillLogic_Text_13"), math.floor(rate * 100))
+			_SystemMessageLogic:ShowMessage(str, "equ")
+		elseif _BuffLogic.appliedBuff.gloveWingLevel== 3 then
+			rate = 0.15
+		
+			str = string.format(_LocalizeLogic:GetText("ArmorSkillLogic_Text_14"), math.floor(rate * 100))
+			_SystemMessageLogic:ShowMessage(str, "equ")
+		end
+		
+		
+		player.BattlePlayer:SetHP(player.BattlePlayer.hp + (player.BattlePlayer.maxHp * rate))
+			
+	end
+
+	method void ExcuteWeaponGlove(Entity player)
+		-- 무기 장갑 스킬 실행 (폭격 타워 소환)
+		if player.BattlePlayer.armorSkillEnable == false then
+			return
+		end
+		
+		if _BuffLogic.appliedBuff.gloveWeaponLevel >= 1 then
+			local destroyable = true
+			local waveData = _WaveLogic.chapterData[_WaveLogic.currentChapter]
+			local averageMonster = _WaveLogic:GetAverageWave().monster
+			local hp = 0
+			
+			if isvalid(_MonsterLogic.monsterData[averageMonster]) then
+				hp = _MonsterLogic.monsterData[averageMonster].hp
+			else
+				hp = averageMonster.hp
+			end
+			local damage = hp * 0.2
+			
+		
+			if isvalid(player) then
+				if isvalid(player.CurrentMap.RandomBossMapComponent) then 
+					damage = damage / 10 
+				end
+			end
+			
+			local targetCount = 5
+			
+			if _BuffLogic.appliedBuff.gloveWeaponLevel >= 2 then
+				destroyable = false
+				
+				if _BuffLogic.appliedBuff.gloveWeaponLevel >= 3 then
+					targetCount = 10
+				end
+			end
+			
+			local bombardTower = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Model_BombardTower"), player.TransformComponent.Position, player.Parent)
+		
+			bombardTower.BombardTowerComponent:Init(30, 3, targetCount, 15, damage, destroyable)
+		end
+	end
+
+	method void SpawnMartialShield()
+		-- 무술 슈트 레벨 2 이상일 때 보스 실드 생성
+		if _UserService.LocalPlayer.BattlePlayer.armorSkillEnable == false then
+			return
+		end
+		
+		if isvalid(_BuffLogic.appliedBuff.suitMartialLevel) then	
+		 	if _BuffLogic.appliedBuff.suitMartialLevel >= 2 then
+			local spawnBossShield = function()
+				_UserService.LocalPlayer.BattlePlayer:ApplyBossShield()
+			end
+				 _TimerLogic:SetTimerOnce(spawnBossShield, 30, "ArmorSKillLogic.WaveStartEvent")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "WaveLogic")
+	handler HandleWaveStartEvent(WaveStartEvent event)
+		-- 기본 모드에서 보스 웨이브 시작 시 무술 실드 생성
+		
+		local isBossWave = event.isBossWave
+		local waveNum = event.waveNum
+		
+		if _GameSettingLogic.mode ~= _GameConfig:GetConfig().GAMEMODE_BASIC then return end
+		
+		if isBossWave == true then
+			self:SpawnMartialShield()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "WaveLogic")
+	handler HandleWaveEndEvent(WaveEndEvent event)
+		-- 기본 모드에서 웨이브 종료 시 날개 장갑 스킬 실행
+		if _GameSettingLogic.mode ~= _GameConfig:GetConfig().GAMEMODE_BASIC then return end
+		
+		if _BuffLogic.appliedBuff.gloveWingLevel >= 1 then 
+			self:ExcuteWingGlove(_UserService.LocalPlayer)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "LimitLandWaveLogic")
+	handler HandleWaveStartEvent2(WaveStartEvent event)
+		-- 리미트랜드 모드에서 보스 웨이브 시작 시 무술 실드 생성
+		
+		local isBossWave = event.isBossWave
+		local waveNum = event.waveNum
+		
+		if _GameSettingLogic.mode ~= _GameConfig:GetConfig().GAMEMODE_LIMITLAND then return end
+		
+		if isBossWave == true then
+			self:SpawnMartialShield()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "LimitLandWaveLogic")
+	handler HandleWaveEndEvent2(WaveEndEvent event)
+		-- 리미트랜드 모드에서 웨이브 종료 시 날개 장갑 스킬 실행
+		
+		if _GameSettingLogic.mode ~= _GameConfig:GetConfig().GAMEMODE_LIMITLAND then return end
+		
+		if _BuffLogic.appliedBuff.gloveWingLevel >= 1 then
+			self:ExcuteWingGlove(_UserService.LocalPlayer)
+		end
+		
+	end
+
+end

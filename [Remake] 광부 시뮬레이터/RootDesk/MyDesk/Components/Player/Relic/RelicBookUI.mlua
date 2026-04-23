@@ -1,0 +1,750 @@
+@Component
+script RelicBookUI extends Component
+
+	property number ShowingRegistSetIdx = 0
+
+	property number ShowingRegistSlotIdx = 0
+
+	property number filterIdx = 1
+
+	property number showingPage = 1
+
+	property boolean IsFilteredByRegistable = false
+
+	property SyncTable<number> registableSetIdxTable
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 유물북 UI 초기 설정 및 로커라이제이션 텍스트 적용
+		self:SetFilterIdx(1)
+		_EntityService:GetEntity("0524947d-57f9-41d0-960b-92b9fbf85e93").TextComponent.Text = string.format("%d / %d", 1, 33)
+		------------------------------------------------------------
+		------------------------------------------------------------
+		-- localization
+		_EntityService:GetEntityByPath("/ui/RelicBookGroup/RelicBook/Panel/RegistrationPopup/RegistButton").TextComponent.Text = _LocalizationService:GetText("Regist")
+		_EntityService:GetEntityByPath("/ui/RelicBookGroup/RelicBook/Panel/PageNavigator/FilterButton/ButtonDesc").TextComponent.Text = _LocalizationService:GetText("RelicBook_FilterBtnDesc")
+		
+		local filterList = _EntityService:GetEntityByPath("/ui/RelicBookGroup/RelicBook/Panel/FilterList")
+		for i=1, 4 do
+			local filterBtn = filterList:GetChildByName("Filter_"..tostring(i))
+			filterBtn.TextComponent.Text = _LocalizationService:GetText("Grade_"..tostring(math.floor(i+1)))
+		end
+		
+		local bookList = _EntityService:GetEntityByPath("/ui/RelicBookGroup/RelicBook/Panel/BookList")
+		for i=1, 4 do
+			local slot = bookList:GetChildByName("Slot_"..tostring(i))
+			for j=1, 4 do
+				local registSlot = slot:GetChildByName("Regist_Slot_"..tostring(j))
+				registSlot:GetChildByName("CanRegist").TextComponent.Text = _LocalizationService:GetText("RegistrationAvailable")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- UI 새로고침 플래그 처리 및 지연 업데이트 처리
+		if self._T.refreshUI then
+			self:RefreshUI_Inner()
+			self._T.refreshUI = false
+		end
+		if self._T.refreshStatusUI then
+			self:RefreshStatusUI_Inner()
+			self._T.refreshStatusUI = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI()
+		-- UI 새로고침 플래그 설정
+		self._T.refreshUI = true
+	end
+
+	@ExecSpace("Client")
+	method void RefreshStatusUI()
+		-- 상태 UI 새로고침 플래그 설정
+		self._T.refreshStatusUI = true
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_Inner()
+		-- 유물북 전체 UI를 새로고침하고 등록 정보에 따른 시각적 상태 업데이트
+		local isFilteredIcon = _EntityService:GetEntityByPath("/ui/RelicBookGroup/RelicBook/Panel/PageNavigator/FilterButton/CheckIcon")
+		if self.IsFilteredByRegistable == true then
+			isFilteredIcon.Enable = true
+			self:RefreshUI_Inner_FilteredByRegistable()
+			return
+		else
+			isFilteredIcon.Enable = false
+		end
+		--------------------------------------------------------------------------------
+		local bookList = _EntityService:GetEntity("008cf8f6-47f6-409d-a06e-57638b06829d")
+		local registInfo = _UserService.LocalPlayer.PlayerRelic.RegistrationInfo
+		local relicTable = _DataService:GetTable("Relic")
+		local relicSetTable = _DataService:GetTable("RelicSet")
+		--------------------------------------------------------------------------------
+		-- 필터와 페이지 넘버에 맞춰 인덱싱
+		for i=1, 4 do
+			local slot = bookList:GetChildByName("Slot_"..tostring(i))
+			
+			local setIdx = 4*(self.showingPage-1) + i
+			if self.filterIdx == 1 then
+				if setIdx >129 then
+					slot.Enable = false
+					goto cont
+				else 
+					slot.Enable = true
+				end
+			elseif self.filterIdx == 2 then
+				setIdx = setIdx + 129
+				if setIdx >186 then
+					slot.Enable = false
+					goto cont
+				else 
+					slot.Enable = true
+				end
+			elseif self.filterIdx == 3 then
+				setIdx = setIdx + 186
+				if setIdx >243 then
+					slot.Enable = false
+					goto cont
+				else 
+					slot.Enable = true
+				end
+			elseif self.filterIdx == 4 then
+				setIdx = setIdx + 243
+				if setIdx >345 then
+					slot.Enable = false
+					goto cont
+				else 
+					slot.Enable = true
+				end
+				
+			end
+		
+			
+			
+			-- 기본 정보 갱신
+			slot:GetChildByName("SetName").TextComponent.Text = _LocalizationService:GetText(string.format("%d", 1010000+setIdx))
+			
+			local abilityType = {relicSetTable:GetCell(setIdx, 10), relicSetTable:GetCell(setIdx, 12)}
+			local abilityAmount = {relicSetTable:GetCell(setIdx, 11), relicSetTable:GetCell(setIdx, 13)}
+			
+			for j=1, 2 do
+				local optionSlot = slot:GetChildByName("Option_"..tostring(j))
+				
+				if abilityType[j] == "8004" then
+					optionSlot.TextComponent.Text = _LocalizationService:GetText(abilityType[j]).." +"..abilityAmount[j].."%"
+				elseif abilityType[j] ~= "" then
+					optionSlot.TextComponent.Text = _LocalizationService:GetText(abilityType[j]).." +".._ThousandsSeparator:ConvertToMetricPrefixString(tonumber(abilityAmount[j]), nil)
+				else 
+					optionSlot.TextComponent.Text = ""
+				end
+				
+			end
+			
+			
+			
+			-- 등록 슬롯에 관한 정보 갱신
+			local isFullRegisted = true
+			for j=1, 4 do
+				local registSlot = slot:GetChildByName("Regist_Slot_"..tostring(j))
+				local registMaterialIdx = relicSetTable:GetCell(setIdx, 2*j)
+				
+				if registMaterialIdx == nil or registMaterialIdx =="" then
+					registSlot.Enable = false
+				else
+					registSlot.Enable = true
+					
+					if self.filterIdx == 1 then
+						registSlot.SpriteGUIRendererComponent.ImageRUID = "d5f72796e87647fab528eeec3b04805e"
+					elseif self.filterIdx == 2 then
+						registSlot.SpriteGUIRendererComponent.ImageRUID = "db5d4ddb2d3f4c659fcb160df0fb1cab"
+					elseif self.filterIdx == 3 then
+						registSlot.SpriteGUIRendererComponent.ImageRUID = "23df4a65508f42afacec3fb533735e80"
+					elseif self.filterIdx == 4 then
+						registSlot.SpriteGUIRendererComponent.ImageRUID = "3065e9c1bc364495bf1ce2abc2e78dcd"
+					end
+					
+					registSlot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = relicTable:GetCell(tonumber(registMaterialIdx), 2)
+					registSlot:GetChildByName("Upgrade").TextComponent.Text = "×"..relicSetTable:GetCell(setIdx, 2*j+1)
+					
+					local isRegisted = registInfo[(setIdx-1)*4+j]
+					
+					if isRegisted == true then
+						registSlot:GetChildByName("Icon").SpriteGUIRendererComponent.Color = Color(1,1,1,1)
+						--log("white")
+						registSlot:GetChildByName("Upgrade").TextComponent.FontColor = Color.FromHexCode("#FFD128")
+						registSlot:GetChildByName("CanRegist").Enable = false
+					else 
+						registSlot:GetChildByName("Icon").SpriteGUIRendererComponent.Color = Color(0, 0, 0, 0.4)
+						--log("black")
+						registSlot:GetChildByName("Upgrade").TextComponent.FontColor = Color.white
+						
+						-- 등록 가능한 상태라면 '등록 가능' 텍스트 표시
+						local targetRelicIdx = tonumber(relicSetTable:GetCell(setIdx, 2*j))
+						local targetRelicAmount = tonumber(relicSetTable:GetCell(setIdx, 2*j+1))
+						
+						if _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem[targetRelicIdx] ~= nil
+						and _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem[targetRelicIdx] >= targetRelicAmount then
+							registSlot:GetChildByName("CanRegist").Enable = true
+						else 
+							registSlot:GetChildByName("CanRegist").Enable = false
+						end
+						
+						isFullRegisted = false
+					end
+				end
+			end
+			
+			-- 모든 슬롯이 등록된 경우, 세트명 및 옵션 텍스트의 색을 활성화
+			if isFullRegisted == true then
+				slot:GetChildByName("SetName").TextComponent.FontColor = Color.FromHexCode("#FFE398")
+				slot:GetChildByName("Option_1").TextComponent.FontColor = Color.FromHexCode("#CFE41C")
+				slot:GetChildByName("Option_2").TextComponent.FontColor = Color.FromHexCode("#CFE41C")
+			-- 아닌 경우 비활성화
+			else 
+				slot:GetChildByName("SetName").TextComponent.FontColor = Color.FromHexCode("#402818")
+				slot:GetChildByName("Option_1").TextComponent.FontColor = Color.FromHexCode("#402818")
+				slot:GetChildByName("Option_2").TextComponent.FontColor = Color.FromHexCode("#402818")
+			end
+			
+			::cont::
+		end
+		--------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("Client")
+	method void ShowRegistrationPopup(number slotIdx, number registIdx)
+		-- slotIdx : 현재 페이지에서의 표시 순서 인덱스
+		-- registIdx : 등록 재료 인덱스 (1~4)
+		----------------------------------------------------------------------------------------
+		local popup = _EntityService:GetEntity("6462ce6f-b255-4e52-81b0-3966fd6db95e")
+		local relicSetTable = _DataService:GetTable("RelicSet")
+		local relicTable = _DataService:GetTable("Relic")
+		
+		
+		local nameUI = popup:GetChildByName("Name")
+		local iconBackUI = popup:GetChildByName("IconBack")
+		local iconUI = iconBackUI:GetChildByName("Icon")
+		local upgradeUI = popup:GetChildByName("IconBack"):GetChildByName("Upgrade")
+		local flavorTextUI = popup:GetChildByName("FlavorText")
+		----------------------------------------------------------------------------------------
+		if self.IsFilteredByRegistable == false then
+			self.ShowingRegistSetIdx = (self.showingPage-1)*4 + slotIdx
+			if self.filterIdx == 2 then
+				self.ShowingRegistSetIdx = self.ShowingRegistSetIdx + 129 
+			elseif self.filterIdx == 3 then
+				self.ShowingRegistSetIdx = self.ShowingRegistSetIdx + 186
+			elseif self.filterIdx == 4 then
+				self.ShowingRegistSetIdx = self.ShowingRegistSetIdx + 243
+			end
+			
+			self.ShowingRegistSlotIdx = registIdx
+			
+			
+		else 
+			-- '등록가능한 목록만 보기' 필터가 켜진 상태라면, 현재 보고있는 각 슬롯의 도감인덱스가 self.registableSetIdxTable 안에 담겨있음
+			local intableIdx = (self.showingPage-1)*4 + slotIdx
+			self.ShowingRegistSetIdx = self.registableSetIdxTable[intableIdx]
+			self.ShowingRegistSlotIdx = registIdx
+			
+		end
+		----------------------------------------------------------------------------------------
+		local relicIdx = tonumber(relicSetTable:GetCell(self.ShowingRegistSetIdx, registIdx*2))
+		
+		
+		if self.filterIdx == 1 then
+			iconBackUI.SpriteGUIRendererComponent.ImageRUID = "d5f72796e87647fab528eeec3b04805e"
+		elseif self.filterIdx == 2 then
+			iconBackUI.SpriteGUIRendererComponent.ImageRUID = "db5d4ddb2d3f4c659fcb160df0fb1cab"
+		elseif self.filterIdx == 3 then
+			iconBackUI.SpriteGUIRendererComponent.ImageRUID = "23df4a65508f42afacec3fb533735e80"
+		elseif self.filterIdx == 4 then
+			iconBackUI.SpriteGUIRendererComponent.ImageRUID = "3065e9c1bc364495bf1ce2abc2e78dcd"
+		end
+		
+		
+		nameUI.TextComponent.Text = _LocalizationService:GetText(relicTable:GetCell(relicIdx, 1))
+		iconUI.SpriteGUIRendererComponent.ImageRUID = relicTable:GetCell(relicIdx, 2)
+		local upgradeNum = relicSetTable:GetCell(self.ShowingRegistSetIdx, registIdx*2+1)
+		if upgradeNum == "0" then
+			upgradeUI.TextComponent.Text = ""
+		else 
+			upgradeUI.TextComponent.Text = string.format("×%d", relicSetTable:GetCell(self.ShowingRegistSetIdx, registIdx*2+1))
+		end
+		flavorTextUI.TextComponent.Text = _LocalizationService:GetText(relicTable:GetCell(relicIdx, 3))
+		
+		-- 등록 여부에 따라 버튼 (비)활성화
+		if _UserService.LocalPlayer.PlayerRelic.RegistrationInfo[(self.ShowingRegistSetIdx - 1)*4+registIdx] == true then
+			popup:GetChildByName("RegistButton").Enable = false
+		else
+			popup:GetChildByName("RegistButton").Enable = true 
+			
+			-- 보유 수량에 따라 버튼 비활성화
+			if _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem[relicIdx] >= tonumber(upgradeNum) then
+				popup:GetChildByName("RegistButton").ButtonComponent.Enable = true
+				popup:GetChildByName("RegistButton").TextComponent.Text = _LocalizationService:GetText("Regist")
+				popup:GetChildByName("RegistButton").TextComponent.FontColor = Color.FromHexCode("#303F23")
+			else 
+				popup:GetChildByName("RegistButton").ButtonComponent.Enable = false
+				popup:GetChildByName("RegistButton").TextComponent.Text = _LocalizationService:GetText("LackOfAmount")
+				popup:GetChildByName("RegistButton").TextComponent.FontColor = Color.FromHexCode("#434343")
+				
+				
+				_UIToast:ShowMessage(_LocalizationService:GetTextFormat("Message_noEnoughRelics", upgradeNum))
+		--			string.format(_LocalizationService:GetText("Message_noEnoughRelics"), tonumber(upgradeNum)))
+			end
+		end
+		popup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void SetFilterIdx(number idx)
+		-- 유물 등급 필터 인덱스 설정 및 페이지 초기화
+		self.filterIdx = idx
+		self.showingPage = 1
+		
+		local filterListUI = _EntityService:GetEntity("213e8c8a-ff96-4cb0-829b-3da899586620")
+		for i=1, 4 do
+			local filterBtn = filterListUI:GetChildByName("Filter_"..tostring(i))
+			
+			if i == self.filterIdx then
+				filterBtn.ButtonComponent.Enable = false
+				filterBtn.SpriteGUIRendererComponent.ImageRUID = "c8cb26245a8e48e5b3a22a34eb18e2c6"
+				filterBtn.TextComponent.FontColor = Color.FromHexCode("#653122")
+			else 
+				filterBtn.ButtonComponent.Enable = true
+				filterBtn.SpriteGUIRendererComponent.ImageRUID = "7f87468876754d86b1aa0da6f288c839"
+				filterBtn.TextComponent.FontColor = Color.FromHexCode("#FFE398")
+			end
+		end
+		
+		self:RefreshUI()
+		self:SetPageNavInfo()
+	end
+
+	@ExecSpace("Client")
+	method void RefreshStatusUI_Inner()
+		-- 유물 등록 상태에 따른 총 능력치 계산 및 달성률 표시
+		local relicSetTable = _DataService:GetTable("RelicSet")
+		local relicSetAbilityTable = _DataService:GetTable("RelicSetAbility")
+		local registInfo = _UserService.LocalPlayer.PlayerRelic.RegistrationInfo
+		local abilityTable = {}
+		------------------------------------------------------------
+		-- Init table
+		local needRegistNum = 0
+		local registedNum = 0
+		for i=1, relicSetAbilityTable:GetRowCount() do
+			table.insert(abilityTable, 0)
+		end
+		------------------------------------------------------------
+		-- 등록 여부 검토하여 테이블에 등록
+		for i=1, relicSetTable:GetRowCount() do
+			
+			local isFullRegisted = true
+			for j=1, 4 do
+				
+				local needIdx = relicSetTable:GetCell(i, 2*j)
+				
+				-- 등록 가능한 슬롯이라면, 
+				if needIdx ~= nil and needIdx ~= "" then
+					
+					needRegistNum = needRegistNum + 1 --(전체수량)에 더함
+					
+					-- 등록되지 않았다면
+					if registInfo[(i-1)*4+j] == false then
+						isFullRegisted = false 
+						
+					-- 등록되어 있다면 (등록수량)에 더함
+					else 
+						registedNum = registedNum + 1
+					end
+				else
+					break
+				end
+			end
+			
+			if isFullRegisted == true then
+				for j=1, 2 do
+					local abilityType = relicSetTable:GetCell(i, 2*j+8)
+					local abilityNum = relicSetTable:GetCell(i, 2*j+9)
+					
+					if abilityType == nil or abilityType == "" then
+						goto continue2
+					end
+					
+					for k=1, relicSetAbilityTable:GetRowCount() do
+						if abilityType == relicSetAbilityTable:GetCell(k, 1) then
+							abilityTable[k] = abilityTable[k] + tonumber(abilityNum)
+							goto continue2
+						end
+					end
+					
+					::continue2::
+					
+				end
+			end
+		end
+		------------------------------------------------------------
+		-- 능력치 UI에 반영
+		local abilityListEntity = _EntityService:GetEntity("d323b841-0227-4df8-b11c-cf511b364b89")
+		for i=1, relicSetAbilityTable:GetRowCount() do
+			local slot = abilityListEntity:GetChildByName("Slot_"..tostring(i))
+			
+			local abilityType = relicSetAbilityTable:GetCell(i, 1)
+			
+			local nameUI = slot:GetChildByName("Name")
+			local numUI = slot:GetChildByName("Num")
+			
+			nameUI.TextComponent.Text = _LocalizationService:GetText(abilityType)
+			
+			if abilityTable[i] > 0 then
+				if abilityType == "8004" then
+					numUI.TextComponent.Text = string.format("+%.2f%%",abilityTable[i])
+				else 
+					numUI.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(abilityTable[i], nil)
+				end
+				
+				numUI.TextComponent.FontColor = Color.FromHexCode("#B5F043")
+				nameUI.TextComponent.FontColor = Color.FromHexCode("#B5F043")
+				numUI.TextComponent.OutlineColor = Color.FromHexCode("#1e470e")
+				nameUI.TextComponent.OutlineColor = Color.FromHexCode("#1e470e")
+				numUI.TextComponent.OutlineColor.a = 0.75
+				nameUI.TextComponent.OutlineColor.a = 0.75
+				numUI.TextComponent.UseOutLine = true
+				nameUI.TextComponent.UseOutLine = true
+				numUI.TextComponent.OutlineWidth = 1.8
+				nameUI.TextComponent.OutlineWidth = 1.8
+			else
+				if abilityType == "8004" then
+					numUI.TextComponent.Text = string.format("+%.2f%%",abilityTable[i])
+				else 
+					numUI.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(abilityTable[i], nil)
+				end
+				numUI.TextComponent.FontColor = Color.FromHexCode("#653122")
+				nameUI.TextComponent.FontColor = Color.FromHexCode("#653122")
+				numUI.TextComponent.UseOutLine = false
+				nameUI.TextComponent.UseOutLine = false
+			end
+		end
+		------------------------------------------------------------
+		_EntityService:GetEntity("2ca91b4b-5e11-4a77-9c04-ff36ea3d9084").TextComponent.Text 
+			= string.format(_LocalizationService:GetText("RegistrationAchievementRate").." : %d%%", (registedNum / needRegistNum)*100)
+	end
+
+	@ExecSpace("Client")
+	method void SetPageNavInfo()
+		-- 현재 필터와 등록 가능 여부에 따른 페이지 네비게이션 정보 설정
+		local lastPage = 33
+		if self.IsFilteredByRegistable == false then
+			
+			if self.filterIdx == 1 then
+				lastPage = 33
+			elseif self.filterIdx == 2 or self.filterIdx == 3 then
+				lastPage = 15
+			elseif self.filterIdx == 4 then
+				lastPage = 26
+			end
+			
+		else 
+			lastPage = math.ceil(#self.registableSetIdxTable / 4)
+			
+			if lastPage == 0 then
+				lastPage = 1
+			end
+			
+			if self.showingPage > lastPage then
+				self.showingPage = lastPage
+			end
+		end
+		
+		
+		_EntityService:GetEntity("0524947d-57f9-41d0-960b-92b9fbf85e93").TextComponent.Text = string.format("%d / %d", self.showingPage, lastPage)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_Inner_FilteredByRegistable()
+		-- 등록 가능한 유물 만 필터링하여 UI에 표시
+		local haveRelic = _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem
+		local registInfo = _UserService.LocalPlayer.PlayerRelic.RegistrationInfo
+		local relicTable = _DataService:GetTable("Relic")
+		local relicSetTable = _DataService:GetTable("RelicSet")
+		----------------------------------------------------------------------------------------------------------------
+		-- 데이터 정돈
+		----------------------------------------------------------------------------------------------------------------
+		table.clear(self.registableSetIdxTable)
+		for i=1, relicSetTable:GetRowCount() do
+			local setGrade = tonumber(string.sub(relicSetTable:GetCell(i, 14), 7, -1)) - 1
+			
+			-- 현재 필터 등급과 일치한다면, 검사
+			if setGrade == self.filterIdx then
+		
+				for j=1, 4 do
+					local targetRelicIdx = tonumber(relicSetTable:GetCell(i, 2*j))
+					local targetRelicAmount = tonumber(relicSetTable:GetCell(i, 2*j+1))
+					
+					-- 등록 가능한 상태라면 등록가능한 목록에 삽입
+					if targetRelicIdx ~= nil and haveRelic[targetRelicIdx] >= targetRelicAmount and registInfo[4*(i-1)+j] == false then
+						table.insert(self.registableSetIdxTable, i)
+						break
+					end
+				end
+			end
+		end
+		
+		----------------------------------------------------------------------------------------------------------------
+		-- 정돈된 데이터를 바탕으로 총 페이지 수와 현재 페이지에 표시할 세트 인덱스 결정
+		----------------------------------------------------------------------------------------------------------------
+		self:SetPageNavInfo()
+		----------------------------------------------------------------------------------------------------------------
+		-- 현재 필터 및 페이지에 맞춰...
+		----------------------------------------------------------------------------------------------------------------
+		local listPanel = _EntityService:GetEntityByPath("/ui/RelicBookGroup/RelicBook/Panel/BookList")
+		-- UI에 반영
+		for i=1, 4 do
+			local slot = listPanel:GetChildByName("Slot_"..tostring(i))
+			local currentTableIdx = (self.showingPage-1)*4 + i
+				
+			if self.registableSetIdxTable[currentTableIdx] == nil or self.registableSetIdxTable[currentTableIdx] == 0 then
+				slot.Enable = false
+			else 
+				slot.Enable = true
+				
+				local setIdx = self.registableSetIdxTable[currentTableIdx]
+				
+				-- 기본 정보 갱신
+				slot:GetChildByName("SetName").TextComponent.Text = _LocalizationService:GetText(string.format("%d", 1010000+setIdx))
+				
+				local abilityType = {relicSetTable:GetCell(setIdx, 10), relicSetTable:GetCell(setIdx, 12)}
+				local abilityAmount = {relicSetTable:GetCell(setIdx, 11), relicSetTable:GetCell(setIdx, 13)}
+				
+				for j=1, 2 do
+					local optionSlot = slot:GetChildByName("Option_"..tostring(j))
+					
+					if abilityType[j] == "8004" then
+						optionSlot.TextComponent.Text = _LocalizationService:GetText(abilityType[j]).." +"..abilityAmount[j].."%"
+					elseif abilityType[j] ~= "" then
+						optionSlot.TextComponent.Text = _LocalizationService:GetText(abilityType[j]).." +".._ThousandsSeparator:ConvertToMetricPrefixString(tonumber(abilityAmount[j]), nil)
+					else 
+						optionSlot.TextComponent.Text = ""
+					end
+					
+				end
+				
+				-- 등록 슬롯에 관한 정보 갱신
+				local isFullRegisted = true
+				for j=1, 4 do
+					local registSlot = slot:GetChildByName("Regist_Slot_"..tostring(j))
+					local registMaterialIdx = relicSetTable:GetCell(setIdx, 2*j)
+					
+					if registMaterialIdx == nil or registMaterialIdx =="" then
+						registSlot.Enable = false
+					else
+						registSlot.Enable = true
+						
+						if self.filterIdx == 1 then
+							registSlot.SpriteGUIRendererComponent.ImageRUID = "d5f72796e87647fab528eeec3b04805e"
+						elseif self.filterIdx == 2 then
+							registSlot.SpriteGUIRendererComponent.ImageRUID = "db5d4ddb2d3f4c659fcb160df0fb1cab"
+						elseif self.filterIdx == 3 then
+							registSlot.SpriteGUIRendererComponent.ImageRUID = "23df4a65508f42afacec3fb533735e80"
+						elseif self.filterIdx == 4 then
+							registSlot.SpriteGUIRendererComponent.ImageRUID = "3065e9c1bc364495bf1ce2abc2e78dcd"
+						end
+						
+						registSlot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = relicTable:GetCell(tonumber(registMaterialIdx), 2)
+						registSlot:GetChildByName("Upgrade").TextComponent.Text = "×"..relicSetTable:GetCell(setIdx, 2*j+1)
+						
+						local isRegisted = registInfo[(setIdx-1)*4+j]
+						
+						if isRegisted == true then
+							registSlot:GetChildByName("Icon").SpriteGUIRendererComponent.Color = Color(1,1,1,1)
+							registSlot:GetChildByName("Upgrade").TextComponent.FontColor = Color.FromHexCode("#FFD128")
+							registSlot:GetChildByName("CanRegist").Enable = false
+						else 
+							registSlot:GetChildByName("Icon").SpriteGUIRendererComponent.Color = Color(0,0,0,0.4)
+							registSlot:GetChildByName("Upgrade").TextComponent.FontColor = Color.white
+							
+							-- 등록 가능한 상태라면 '등록 가능' 텍스트 표시
+							local targetRelicIdx = tonumber(relicSetTable:GetCell(setIdx, 2*j))
+							local targetRelicAmount = tonumber(relicSetTable:GetCell(setIdx, 2*j+1))
+							
+							if _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem[targetRelicIdx] ~= nil
+							and _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem[targetRelicIdx] >= targetRelicAmount then
+								registSlot:GetChildByName("CanRegist").Enable = true
+							else 
+								registSlot:GetChildByName("CanRegist").Enable = false
+							end
+							
+							isFullRegisted = false
+						end
+					end
+				end
+				
+				-- 모든 슬롯이 등록된 경우, 세트명 및 옵션 텍스트의 색을 활성화
+				if isFullRegisted == true then
+					slot:GetChildByName("SetName").TextComponent.FontColor = Color.FromHexCode("#FFE398")
+					slot:GetChildByName("Option_1").TextComponent.FontColor = Color.FromHexCode("#CFE41C")
+					slot:GetChildByName("Option_2").TextComponent.FontColor = Color.FromHexCode("#CFE41C")
+				-- 아닌 경우 비활성화
+				else 
+					slot:GetChildByName("SetName").TextComponent.FontColor = Color.FromHexCode("#402818")
+					slot:GetChildByName("Option_1").TextComponent.FontColor = Color.FromHexCode("#402818")
+					slot:GetChildByName("Option_2").TextComponent.FontColor = Color.FromHexCode("#402818")
+				end
+			end
+		end
+	end
+
+	@EventSender("Entity", "5d2ac015-4300-44f9-89e1-36bd159f19e5")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 유물북 페이지 이동 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		local registInfo = _UserService.LocalPlayer.PlayerRelic.RegistrationInfo
+		local idx = (self.ShowingRegistSetIdx-1)*4 + self.ShowingRegistSlotIdx
+		
+		if registInfo[idx] == true then
+			_UIToast:ShowMessage(_LocalizationService:GetText("Message_AlreadyRegistedSlot"))
+			return
+		end
+		
+		local message = _LocalizationService:GetText("Message_Registed")
+		
+		_UserService.LocalPlayer.PlayerRelic:RegisterToBook(idx, message)
+		
+		-- 팝업 닫기
+		Entity.Parent.Enable = false
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- ESC 키를 눌러 유물북 팝업을 닫는 이벤트 처리
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if self.Entity.Parent.Enable == true and key == KeyboardKey.Escape then
+			self.Entity.Parent.Enable = false
+		end
+	end
+
+	@EventSender("Entity", "849623fc-12ca-4dec-9349-c72b3a52b1ba")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 유물 등급 필터 1(일반) 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetFilterIdx(1)
+	end
+
+	@EventSender("Entity", "243976c9-3eef-49c0-949a-78ccda0475bd")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 유물 등급 필터 2(고급) 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetFilterIdx(2)
+		
+	end
+
+	@EventSender("Entity", "032fe0e2-b436-40b7-9f84-cfeceb9abdc9")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 유물 등급 필터 3(희귀) 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetFilterIdx(3)
+	end
+
+	@EventSender("Entity", "0778360f-4ceb-4bee-8694-d2c84a8009a7")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 유물 등급 필터 4(전설) 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetFilterIdx(4)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "a847412f-99c9-4e62-93f0-a7ec1fa43254")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 유물북 다음 페이지 이동 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		local lastPage = 33
+		if self.IsFilteredByRegistable == false then
+			
+			if self.filterIdx == 1 then
+				lastPage = 33
+			elseif self.filterIdx == 2 or self.filterIdx == 3 then
+				lastPage = 15
+			elseif self.filterIdx == 4 then
+				lastPage = 26
+			end
+			
+		else 
+			lastPage = math.ceil(#self.registableSetIdxTable / 4)
+			
+			if lastPage == 0 then
+				lastPage = 1
+			end
+		end
+		
+		if self.showingPage < lastPage then
+			self.showingPage = self.showingPage + 1
+			self:RefreshUI()
+		else 
+			_UIToast:ShowMessage(_LocalizationService:GetText("Message_LastPage"))
+		end
+		
+		
+		self:SetPageNavInfo()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "5d755076-e0bd-4fe1-b91b-957cf79e1372")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 유물북 이전 페이지 이동 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		if self.showingPage > 1 then
+			self.showingPage = self.showingPage - 1
+			self:RefreshUI()
+		else 
+			_UIToast:ShowMessage(_LocalizationService:GetText("Message_FirstPage"))
+		end
+		
+		self:SetPageNavInfo()
+	end
+
+	@EventSender("Entity", "27cd2181-531f-48ab-b223-df34a32f18d2")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- 등록 가능한 유물만 보기 필터 토글 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		if self.IsFilteredByRegistable == true then
+			self.IsFilteredByRegistable = false
+			self.showingPage = 1
+			self:RefreshUI()
+		else
+			self.IsFilteredByRegistable = true
+			self.showingPage = 1
+			self:RefreshUI()
+		end
+	end
+
+	@EventSender("Entity", "1666adce-1708-425b-b606-6b7f5467263d")
+	handler HandleButtonClickEvent9(ButtonClickEvent event)
+		-- 유물북 초기화 버튼 클릭 이벤트 처리 (필터 해제하고 1등급으로 리셋)
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		self.IsFilteredByRegistable = false
+		self:SetFilterIdx(1)
+	end
+
+end

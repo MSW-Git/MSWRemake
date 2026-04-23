@@ -1,0 +1,283 @@
+@Logic
+script StoreRankingDataSetLogic extends Logic
+
+	property SyncTable<integer, string> StoreNameData
+
+	property integer MinIdx = 1
+
+	property integer MaxIdx = 10000
+
+	property Entity UIStoreRanking = "f03af721-25b0-4cdf-8dd6-50786a6156c9"
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 상점 랭킹 데이터셋을 로드하는 함수
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- CSV에서 상점 이름 데이터를 읽어와 메모리에 로드하는 함수
+		table.clear(self.StoreNameData)
+		local storeNameData = _DataService:GetTable("StoreRankingNameData")
+		
+		for i = 1, storeNameData:GetRowCount() do
+			local row = storeNameData:GetRow(i)
+			local index = tonumber(row:GetItem("Index"))
+			local name = row:GetItem("NameKey")
+			self.StoreNameData[index] = name
+		end
+	end
+
+	method string ReturnRandomStoreNameOfGrade(integer grade, table samePool, Entity player)
+		-- 특정 등급에 맞는 랜덤 상점 이름을 반환하는 함수 (중복 제외)
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local gradeTotalCount = #stageData.StageRankingData
+		local index = gradeTotalCount - grade 
+		
+		local gap = 10
+		local startIndex = 1 + gap*index
+		local endIndex = gap*(index+1)
+		
+		local storePools = {}
+		for i, string in pairs(self.StoreNameData) do
+			if i < startIndex then
+				continue
+			end
+			
+			local isSame = false
+			for j = 1, #samePool do
+				if string == samePool[j] then
+					isSame = true
+					break
+				end
+			end
+			
+			if isSame == true then
+				continue
+			end
+			
+			if i > endIndex then
+				break
+			end
+			
+			table.insert(storePools, string)
+		end
+		
+		local randomIndex = _UtilLogic:RandomIntegerRange(1, #storePools)
+		local randomName = storePools[randomIndex]
+		
+		
+		return randomName
+	end
+
+	method table ReturnIndexsByRanking(integer ranking)
+		-- 랭킹을 기준으로 표시할 랭킹 범위의 시작과 끝 인덱스를 반환하는 함수
+		if ranking == 0 then
+			ranking = self.MaxIdx
+		end
+		
+		if self.MaxIdx - ranking < 2 then
+			local startIdx = self.MaxIdx-4
+			local endIdx = self.MaxIdx
+			return {startIdx, endIdx}
+		end
+		
+		if ranking - self.MinIdx < 2 then
+			local startIdx = self.MinIdx
+			local endIdx = self.MinIdx+4
+			return {startIdx, endIdx}
+		end
+		
+		local startIdx = ranking-2
+		local endIdx = ranking+2
+		return {startIdx, endIdx}
+	end
+
+	method integer ReturnPlayerUserRankingScore(Entity player)
+		-- 플레이어의 랭킹 점수(최고 수익)를 반환하는 함수
+		local userBestEarning = player.PlayerSettlement.BestRecipeEarnings
+		return userBestEarning
+	end
+
+	method integer ReturnPlayerUserRankingByScore(integer score, Entity player)
+		-- 점수를 기준으로 플레이어의 예상 랭킹을 계산하여 반환하는 함수
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		
+		local lastSection
+		for i = #stageData.StageRankingData, 1, -1 do
+			local data = stageData:GetStageRankingData(i)
+			if data.Score <= score then
+				lastSection = i
+			else
+				break
+			end
+		end
+		
+		local nextSection = lastSection - 1
+		if nextSection <= 0 then
+			nextSection = 1
+		end
+		
+		
+		local lastSectionData = stageData:GetStageRankingData(lastSection)
+		local lastSectionScore = lastSectionData.Score
+		
+		local nextSectionData = stageData:GetStageRankingData(nextSection)
+		local nextSectionScore = nextSectionData.Score
+		
+		local sectionSub = nextSectionScore - lastSectionScore
+		local curPos = score - lastSectionScore
+		local toSumRate = 0
+		if sectionSub ~= 0 then
+			toSumRate = curPos/sectionSub
+		end
+		
+		local nextSectionRanking = nextSectionData.Ranking
+		local lastSectionRanking = lastSectionData.Ranking
+		local rankingSub = nextSectionRanking - lastSectionRanking
+		local toSumValue = rankingSub * toSumRate
+		
+		
+		local ranking = lastSectionRanking + math.ceil(toSumValue)
+		
+		if ranking > 10000 then
+			ranking = 10000
+			
+		elseif ranking < 1  then
+			ranking = 1
+		end
+		
+		return ranking
+	end
+
+	method StoreRankingRewardData ReturnRewardDataByRanking(integer ranking, Entity player)
+		-- 랭킹에 따른 보상 데이터를 반환하는 함수
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		
+		---@type StoreRankingRewardData
+		local rewardData
+		for i = #stageData.StageRankingData, 1, -1 do
+			local data = stageData:GetStageRankingData(i)
+			
+			if data.Ranking >= ranking then
+				rewardData = data
+			else
+				break
+			end
+		end
+		
+		return rewardData
+	end
+
+	method integer ReturnScoreByRanking(integer ranking, Entity player)
+		-- 랭킹을 기준으로 해당 랭킹에 필요한 점수를 계산하여 반환하는 함수
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		
+		local lastSection
+		for i = #stageData.StageRankingData, 1, -1 do
+			local data = stageData:GetStageRankingData(i)
+			
+			if data.Ranking >= ranking then
+				lastSection = i
+			else
+				break
+			end
+		end
+		
+		local nextSection = lastSection - 1
+		if nextSection <= 0 then
+			nextSection = 1
+		end
+		
+		local lastSectionData = stageData:GetStageRankingData(lastSection)
+		local lastSectionScore = lastSectionData.Score
+		local lastSectionRanking = lastSectionData.Ranking
+		
+		local nextSectionData = stageData:GetStageRankingData(nextSection)
+		local nextSectionScore = nextSectionData.Score
+		local nextSectionRanking = nextSectionData.Ranking
+		
+		local sectionSub = nextSectionRanking - lastSectionRanking
+		local curPos = ranking - lastSectionRanking
+		local toSumRate = 0
+		if sectionSub ~= 0 then
+			toSumRate = curPos/sectionSub
+		end
+		
+		local scoreSub = nextSectionScore - lastSectionScore
+		local toSumValue = scoreSub * toSumRate
+		
+		local score = math.floor(lastSectionScore + toSumValue)
+		
+		if score < 0 then
+			score = 0
+		end
+		
+		return score
+	end
+
+	@ExecSpace("Client")
+	method void ResetRankingSpeechText(Entity player)
+		-- 플레이어의 랭킹 코멘트 텍스트를 UI에 재설정하는 함수
+		local lastText = player.PlayerManagement.RankingSpeech
+		
+		self.UIStoreRanking.UIStoreRanking.FeedbackText.TextComponent.Text = lastText
+		self.UIStoreRanking.UIStoreRanking.FeedbackText.TextInputComponent.Text = lastText
+	end
+
+	method string GetRankFlowType(integer newRanking, integer lastRanking)
+		-- 랭킹 변화 유형을 문자열로 반환하는 함수 (1위, 상승, 동일, 하락)
+		local flowType = ""
+		if newRanking == 1 then
+			flowType = "1"
+		else
+			if lastRanking == 0 then
+				lastRanking = _StoreRankingDataSetLogic.MaxIdx
+			end
+			
+			if newRanking < lastRanking then
+				flowType = "3"
+			
+			elseif newRanking == lastRanking then
+				flowType = "4"
+				
+			else
+				flowType = "5"
+		
+			end
+		end
+		
+		return flowType
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRankingRedDot()
+		-- 랭킹 재심사 가능 여부에 따라 레드닷을 표시하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local result = false
+		if player.PlayerStage.NowStage > 1 then
+			if player.PlayerManagement.StoreRanking ~= 1 then
+				local stageRank1Score = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage):GetStageRankingData(1).Score
+				if player.PlayerSettlement.BestRecipeEarnings >= stageRank1Score then
+					result = true
+				end
+			end
+		end
+		
+		_MainMenuRedDotManager:EnableRankingRedDot(result)
+	end
+
+	method integer GetRankingReexamCost(Entity player)
+		-- 플레이어의 현재 랭킹에 따른 재심사 비용을 반환하는 함수
+		local ranking = player.PlayerManagement.StoreRanking == nil and self.MaxIdx or player.PlayerManagement.StoreRanking
+		local rewardData = self:ReturnRewardDataByRanking(ranking, player)
+		return rewardData.ReexamCost
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleBestEarningRecordChangedEvent(BestEarningRecordChangedEvent event)
+		-- 최고 수익 기록이 변경될 때 랭킹 레드닷을 갱신하는 이벤트 핸들러
+		self:RefreshRankingRedDot()
+	end
+
+end

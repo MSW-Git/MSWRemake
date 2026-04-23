@@ -1,0 +1,713 @@
+@Logic
+script UI_UnitInfoPopup extends Logic
+
+	property Entity ConnectedEntity = nil
+
+	property string ConnectedEntityID = ""
+
+	property any CharcterInfoTable = nil
+
+	property any CharacterSynergyTable = nil
+
+	property any SynergyTable = nil
+
+	property any ColorTable = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 유닛 정보 팝업 초기화 및 데이터셋 로드
+		self.CharcterInfoTable = _DataService:GetTable("CharacterInfo")
+		self.CharacterSynergyTable = _DataService:GetTable("CharacterSynergy")
+		self.SynergyTable = _DataService:GetTable("SynergyInfo")
+		self.ColorTable = _DataService:GetTable("GradeColor")
+	end
+
+	@ExecSpace("Client")
+	method void ConnectToSelectedUnit(Entity selectEntity)
+		-- 우클릭한 엔티티를 연결된 엔티티로 합니다.
+		-- UI에는 연결된 엔티티의 정보를 표시하고, 업데이트합니다.
+		------------------------------------------------------
+		self.ConnectedEntity = selectEntity
+		self.ConnectedEntityID = selectEntity.Id
+		
+		self:UI_Init()
+		self:UI_Update(selectEntity.UnitStatus, "All")
+		
+		--유닛 하단 정보 타일을 킵니다.
+		local check=function()
+			selectEntity:GetChildByName("InfoTile").Enable=true
+			selectEntity:GetChildByName("InfoTile").InfoTileComponent.TileCheck=true
+		end
+			
+		_TimerService:SetTimerOnce(check,0.01)
+	end
+
+	@ExecSpace("Client")
+	method void UI_Close()
+		-- 팝업을 닫을 때, 유닛과의 연결을 끊습니다.
+		------------------------------------------------
+		self.ConnectedEntity = nil
+		self.ConnectedEntityID = ""
+		
+		_EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo").Enable = false
+		_EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Tooltip_CoachInfo").Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void UI_Init()
+		-- 연결된 유닛의 기본 정보를 기반으로 UI를 초기화합니다.
+		if self.ConnectedEntity == nil then
+			log_error("엔티티와 연결되지 못했습니다.")
+			return
+		end
+		------------------------------------------------------
+		---@type MODUserDataSet
+		local charInfoTable = self.CharcterInfoTable
+		
+		
+		---@type MODUserDataSet
+		local charSynergyTable = self.CharacterSynergyTable
+		
+		---@type MODUserDataSet
+		local synergyTable = self.SynergyTable
+		------------------------------------------------------
+		-- 연결된 캐릭터의 정보를 가져옵니다.
+		local unitInfo = self.ConnectedEntity.UnitInfo
+		local unitStatus = self.ConnectedEntity.UnitStatus
+		
+		local charId = unitInfo.charID
+		local charInfoRow = charInfoTable:FindRow("CharID", charId)
+		local charSynergyRow = charSynergyTable:FindRow("CharID", charId)
+		
+		local defaultCost = tonumber(charInfoRow:GetItem("Cost"))		-- 구매 가격 (1성 기준, 캐릭터의 기본 등급을 나타냄)
+		local resellCost = defaultCost 									-- 판매 가격 (별 등급 적용)
+		if unitInfo.level > 1 then
+			resellCost = defaultCost * unitInfo.level - 1
+			if resellCost < 0 then
+				resellCost = 0
+			end
+		end
+		
+		local spriteRUID = charInfoRow:GetItem("IdleRUID")
+		local role = charInfoRow:GetItem("Role")
+		
+		if _UtilLogic:IsNilorEmptyString(role) == false then
+			role = _LocalizationService:GetText("CharacterRole_"..role)
+		end
+		
+		---@type table<string>
+		local synergyID = {} 											-- 보유한 시너지 정보
+		for i=1, 3 do
+			synergyID[i] = charSynergyRow:GetItem(string.format("Synergy_%d", i))
+		end
+		
+		-- Portrait 관련 예외 처리
+		if charId == "C00002" and unitInfo.level == 3 then
+			spriteRUID = charInfoTable:FindRow("CharID", "C00002_2"):GetItem("IdleRUID")
+		end
+		------------------------------------------------------
+		-- 가져온 정보를 바탕으로 UI를 갱신합니다.
+		local Popup_UnitInfo = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+		
+		local portrait = Popup_UnitInfo:GetChildByName("Portrait")
+		
+		local unitSprite = portrait:GetChildByName("Sprite_UnitImage")
+		local text_sellCost = Popup_UnitInfo:GetChildByName("Text_SellCost")
+		local text_role = Popup_UnitInfo:GetChildByName("Text_Role")
+		local text_name = Popup_UnitInfo:GetChildByName("Text_Name")
+		local list_synergy = Popup_UnitInfo:GetChildByName("List_Synergy")
+		local list_items = Popup_UnitInfo:GetChildByName("List_Items")
+		
+		
+		self:UI_Update_StarInfo()
+		----------------
+		-- 캐릭터 이미지를 갱신합니다.
+		unitSprite.SpriteGUIRendererComponent.ImageRUID = spriteRUID
+		local resourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(spriteRUID)
+		unitSprite.SpriteGUIRendererComponent.LocalScale = resourceInfo["scale"]
+		unitSprite.SpriteGUIRendererComponent.LocalPosition = resourceInfo["pos"]
+		----------------
+		-- 기본 등급에 따라 필요한 정보를 갱신합니다.
+		local ui_topPanel = Popup_UnitInfo:GetChildByName("Panel")
+		ui_topPanel.SpriteGUIRendererComponent.Color = _UI_Color.CharCost[defaultCost]
+		----------------
+		-- 역할군 및 이름을 갱신합니다.
+		text_role.TextComponent.Text = role
+		text_name.TextComponent.Text = _LocalizationService:GetText(charId.."_Name")
+		----------------
+		-- 판매 가격을 갱신합니다.
+		text_sellCost.TextComponent.Text = string.format("%d", resellCost)
+		----------------
+		-- 시너지 정보를 갱신합니다.
+		for i=1, 3 do
+			local synergyUI = list_synergy:GetChildByName(string.format("Synergy_%d", i))
+			
+			if synergyID[i] ~= "" then
+				synergyUI.Enable = true
+				local row = synergyTable:FindRow("SynergyID", synergyID[i])
+				synergyUI:GetChildByName("Name").TextComponent.Text = _LocalizationService:GetText(synergyID[i].."_Name")  -- row:GetItem("Name")
+				synergyUI:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = row:GetItem("IconRUID")
+				
+				synergyUI.UI_UnitInfo_HoverSynergy.ConnectedSynergyID = synergyID[i]
+			else
+				synergyUI.Enable = false
+			end
+		end
+		----------------
+		-- 추천 아이템 툴팁을 갱신합니다.
+		local mainStats = _UtilLogic:Split(charInfoRow:GetItem("MainStats"), ",")
+		local recItemDataset = _DataService:GetTable("CharMostItemSet")
+		local recItemsRow = recItemDataset:FindRow("CharID", charId)
+		local recItems = {}
+		
+		if isvalid(recItemsRow) == true then
+			for i=1, 8 do
+				table.insert(recItems, recItemsRow:GetItem(string.format("ItemID_%d", i)))
+			end
+		end
+		
+		-- 스킬 보기 버튼 / 추천 아이템 버튼을 활성화합니다.
+		Popup_UnitInfo:GetChildByName("Button_SkillInfo").Enable = true
+		Popup_UnitInfo:GetChildByName("Button_RecommendedItems").Enable = true
+		
+		
+			-- 이름 및 역할군 갱신
+		local ui_recItemsTooltip = _EntityService:GetEntityByPath("/ui/HoverPopupGroup/TooltipUI_RecommendedItems")
+		
+		
+		ui_recItemsTooltip:GetChildByName("Text_Name").TextComponent.Text = _LocalizationService:GetText(charId.."_Name") 
+		ui_recItemsTooltip:GetChildByName("Text_Role").TextComponent.Text = role
+		
+			-- 주력 스탯 정보 갱신
+		local ui_recItemButton = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo/Button_RecommendedItems")
+		local mainStatText = _LocalizationService:GetText("MainStat")..": "
+		for i=1, #mainStats do
+			if i ~= 1 then
+				mainStatText = mainStatText .. ", "
+			end
+			mainStatText = mainStatText.._LocalizationService:GetText(mainStats[i])
+		end
+		ui_recItemsTooltip:GetChildByName("Text_MainStat").TextComponent.Text = mainStatText
+		
+			-- 추천 아이템 목록 갱신
+		if #recItems > 0 then
+			ui_recItemButton.Enable = true
+			
+			local itemTable = _DataService:GetTable("ItemStatus")
+			local ui_list = ui_recItemsTooltip:GetChildByName("List_RecItems")
+			for i=1, 8 do
+				local ui_slot = ui_list:GetChildByName(string.format("Slot_%d", i))
+				local ui_recItemIcon = ui_slot:GetChildByName("Item_OutlineBG"):GetChildByName("Icon")
+				local ui_recItemName = ui_slot:GetChildByName("Name")
+				local ui_matItem1Icon = ui_slot:GetChildByName("MatItem1_OutlineBG"):GetChildByName("Icon")
+				local ui_matItem2Icon = ui_slot:GetChildByName("MatItem2_OutlineBG"):GetChildByName("Icon")
+				
+				local materialItems = _ItemCombineService:GetMaterialItemIDsByNormalItemID(recItems[i])	-- 재료 아이디
+				
+				ui_recItemIcon.SpriteGUIRendererComponent.ImageRUID = itemTable:FindRow("ItemID", recItems[i]):GetItem("RUID")
+				ui_recItemName.TextComponent.Text = _LocalizationService:GetText("Item_"..recItems[i].."_Name")
+				ui_matItem1Icon.SpriteGUIRendererComponent.ImageRUID = itemTable:FindRow("ItemID", materialItems[1]):GetItem("RUID")
+				ui_matItem2Icon.SpriteGUIRendererComponent.ImageRUID = itemTable:FindRow("ItemID", materialItems[2]):GetItem("RUID")
+			end
+		else
+			ui_recItemButton.Enable = false
+		end
+		------------------------------------------------------
+		for i=1, #Popup_UnitInfo.Parent.Children do
+			Popup_UnitInfo.Parent.Children[i].Enable = false
+		end
+		
+		Popup_UnitInfo.Parent.Enable = true
+		Popup_UnitInfo.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_Update(UnitStatus status, string updatedDataName)
+		-- 유닛 스탯 정보를 받아 정보 창을 업데이트하는 함수입니다.
+		-- status : 유닛 스탯 정보 (컴포넌트)
+		-- updatedData : 업데이트된 프로퍼티. "HP", "MP", Stat", "Item", "All"
+		------------------------------
+		local charID = status.Entity.UnitInfo.charID
+		local level = status.Entity.UnitInfo.level 
+		
+		---@type CharDictionaryData
+		local charData = _DictionaryDataManager.CharDataList[status.Entity.UnitInfo.charID]
+		------------------------------
+		local mpUI = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo/StatInfo_MP")
+		local statList = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo/List_Stat")
+		local itemList = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo/List_Items")
+		------------------------------
+		-- HP창 갱신
+		if updatedDataName == "HP" or updatedDataName == "All" then
+			local hpUI = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo/StatInfo_HP")
+			
+			hpUI:GetChildByName("Text").TextComponent.Text = string.format("%d / %d", status.HP + status.Shield, status.MaxHP)
+		
+			if status.Shield <= 0 then
+				hpUI:GetChildByName("Guage_Shield").SpriteGUIRendererComponent.FillAmount = 0
+				hpUI:GetChildByName("Guage").SpriteGUIRendererComponent.FillAmount = status.HP / status.MaxHP
+					
+			else 
+				if (status.HP + status.Shield) > status.MaxHP then
+					hpUI:GetChildByName("Guage").SpriteGUIRendererComponent.FillAmount = status.HP / (status.HP + status.Shield)
+					hpUI:GetChildByName("Guage_Shield").SpriteGUIRendererComponent.FillAmount = 1
+				else
+					hpUI:GetChildByName("Guage").SpriteGUIRendererComponent.FillAmount = status.HP / status.MaxHP
+					hpUI:GetChildByName("Guage_Shield").SpriteGUIRendererComponent.FillAmount = (status.HP + status.Shield) / status.MaxHP
+				end
+			end
+			
+			hpUI.UI_UnitInfo_HoverStat.DefaultStat = tonumber(charData.Status_MaxHP[status.Entity.UnitInfo.level])
+			hpUI.UI_UnitInfo_HoverStat.CurrentStat = status.MaxHP
+		end
+		------------------------------
+		-- MP창 갱신
+		if updatedDataName == "MP" or updatedDataName == "All" then
+			if status.MaxMP == 0 then
+				mpUI:GetChildByName("Guage").SpriteGUIRendererComponent.FillAmount = status.MP / 1
+			else
+				mpUI:GetChildByName("Guage").SpriteGUIRendererComponent.FillAmount = status.MP / status.MaxMP
+			end
+			mpUI:GetChildByName("Text").TextComponent.Text = string.format("%d / %d", status.MP , status.MaxMP)
+			
+			mpUI.UI_UnitInfo_HoverStat.DefaultStat = tonumber(charData.Status_MaxMP)
+			mpUI.UI_UnitInfo_HoverStat.CurrentStat = status.MaxMP
+		end
+		------------------------------
+		-- 스탯 갱신
+		if updatedDataName == "Stat" or updatedDataName == "All" then
+			---@type table<number>
+			local transferedStats = {
+				status.PhysicalAttack,
+				status.MagicalAttack,
+				status.AttackSpeed,
+				
+				status.Defence,
+				status.MagicalResistance,
+				status.AttackRange,
+				
+				status.CriticalPercent,
+				status.CriticalDamagePercent,
+				status.BloodAbsorptionPercent,
+				
+				status.MoveSpeed * 100,
+				status.DealingDamageRate - 100,
+				status.DamageDecrease["Per"],
+			}
+			
+			local textFormat = {
+				"%d",			-- 공격력
+				"%d",			-- 마력
+				"%.2f",			-- 공격속도
+				"%d",			-- 물리 방어력
+				"%d",			-- 마법 방어력
+				"%d",			-- 공격 사거리
+				"%d%%",			-- 크리티컬 확률
+				"%d%%",			-- 크리티컬 데미지
+				"%d%%",			-- 흡혈률
+				"%d%%",			-- 이동속도
+				"%d%%",			-- 가해량 증가(%)
+				"%d%%",			-- 피해량 감소(%)
+			}
+			
+			-- 캐릭터에 할당된 기본 스탯
+			local defaultStatus = {
+				tonumber(charData.Status_PhysicalAttack[level]),
+				tonumber(charData.Status_MagicalAttack[level]),
+				tonumber(charData.Status_AttackSpeed),
+				
+				tonumber(charData.Status_Defence),
+				tonumber(charData.Status_MagicalResistance),
+				tonumber(charData.Status_AttackRange),
+				
+				10,
+				140,
+				0,
+				
+				100,
+				0,
+				0,	
+			}
+			
+			for i=1, 12 do
+				local statUI = statList:GetChildByName(string.format("Stat_%d", i))
+				
+				statUI:GetChildByName("Num").TextComponent.Text = string.format(textFormat[i], transferedStats[i])
+				statUI.UI_UnitInfo_HoverStat.CurrentStat = transferedStats[i]
+				statUI.UI_UnitInfo_HoverStat.DefaultStat = defaultStatus[i]
+			end
+		end
+		------------------------------
+		-- 아이템 갱신
+		local itemEquippable = status.Entity.UnitInfo.IsItemEquippable
+		
+		if updatedDataName == "Item" or updatedDataName == "All" then
+			local itemTable = _DataService:GetTable("ItemStatus")
+			local itemUITable = _DataService:GetTable("ItemUI_Background")
+			for i=1, 3 do
+				local itemUI = itemList:GetChildByName(string.format("Item_%d", i))
+				
+				if status.EquippedItemIDList[i] ~= nil and status.EquippedItemIDList[i] ~= "" then
+					local ub_s, ub_e = string.find(status.EquippedItemIDList[i], "_")
+					local itemID = _UtilLogic:Split(status.EquippedItemIDList[i], "_")[1]
+					
+					local itemInfoRow = itemTable:FindRow("ItemID", itemID)
+					local itemRUID = itemInfoRow:GetItem("RUID")
+					local type = itemInfoRow:GetItem("Type")	
+					
+					local backgroundRUID = _UI_Inventory.TypeBackgroundRUID[type]
+					
+					itemUI.SpriteGUIRendererComponent.ImageRUID = backgroundRUID
+					itemUI.UI_UnitInfo_ItemSlot.itemID = _UtilLogic:Split(status.EquippedItemIDList[i], "_")[1]
+					itemUI:GetChildByName("Icon").SpriteGUIRendererComponent.Color.a = 1
+					itemUI:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = itemRUID
+				else
+					
+					itemUI.UI_UnitInfo_ItemSlot.itemID = ""
+					itemUI:GetChildByName("Icon").SpriteGUIRendererComponent.Color.a = 0
+					
+					if itemEquippable == true then
+						itemUI.SpriteGUIRendererComponent.ImageRUID = "696b848aaaea4cecb750aa19feaecf73"
+					elseif itemEquippable == false then
+						itemUI.SpriteGUIRendererComponent.ImageRUID = "3467a0d1960149b69bb18e71666330d8"
+					end
+				end
+				
+			end
+		end
+		------------------------------	
+		if updatedDataName == "Level" or updatedDataName == "All" then
+			self:UI_Update_StarInfo()
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void UI_Update_WhenMerged(string MergedUnitTable_str)
+		-- 캐릭터 병합 시, 병합된 캐릭터가 우클릭으로 보고 있던 캐릭터였다면 정보를 갱신해주는 함수
+		
+		-- mergedUnitTable[1]은 별 등급이 오르는 캐릭터, [2]와 [3]은 삭제되는 캐릭터입니다.
+		-- 		따라서 현재 보고 있던 유닛이 [2]~[3]이라면 [1]로 연결 정보를 변경해줍니다.
+		--		그리고 연결된 캐릭터의 정보로 갱신을 요청합니다.
+		--------------------------------------------------------------------
+		local mergedUnitTable = _UtilLogic:StringToTable(MergedUnitTable_str)
+		
+		for i = 2, #mergedUnitTable do
+			if isvalid(self.ConnectedEntityID) then
+			    if self.ConnectedEntityID == mergedUnitTable[i] then
+			        self.ConnectedEntity = _EntityService:GetEntity(mergedUnitTable[1])
+			        self.ConnectedEntityID = mergedUnitTable[1]
+			    end
+			end
+		end
+		
+		if isvalid(self.ConnectedEntity) then
+			self:UI_Init()
+			self:UI_Update(self.ConnectedEntity.UnitStatus, "All")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UI_Update_StarInfo()
+		-- 현재 보고 있는 유닛의 별 등급과 관련된 정보를 업데이트합니다.
+		------------------------------------------------
+		if isvalid(self.ConnectedEntity) == false then
+			self:UI_Close()
+			return
+		end
+		------------------------------------------------
+		local Popup_UnitInfo = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+		local unitImage = Popup_UnitInfo:GetChildByName("UnitImage")
+		local unitInfo = self.ConnectedEntity.UnitInfo
+		local text_sellCost = Popup_UnitInfo:GetChildByName("Text_SellCost")
+		------------------------------------------------
+		---@type MODUserDataSet
+		local charInfoTable = self.CharcterInfoTable
+		local charId = unitInfo.charID
+		local charInfoRow = charInfoTable:FindRow("CharID", charId)
+		------------------------------------------------
+		local defaultCost = tonumber(charInfoRow:GetItem("Cost"))		-- 구매 가격 (1성 기준, 캐릭터의 기본 등급을 나타냄)
+		local resellCost = defaultCost * 3^(unitInfo.level-1) 			-- 판매 가격 (별 등급 적용)
+		if unitInfo.level > 1 then
+			resellCost = defaultCost * 3^(unitInfo.level - 1) - 1		-- 2코 이상인 경우는 판매 가격 -1
+			
+			if resellCost < 0 then
+				resellCost = 0
+			end
+		end
+		------------------------------------------------
+		-- 현재 별 등급에 따라, 별 등급을 표시하는 엔티티를 켭/끕니다.
+		for i=1, 3 do
+			local starInfoChild = text_sellCost:GetChildByName(string.format("Star_%d", i))
+			
+			if i <= unitInfo.level then
+				starInfoChild.Enable = true
+			else
+				starInfoChild.Enable = false
+			end
+		end
+		
+		text_sellCost.UITransformComponent.RectSize.x = 60 + 16*unitInfo.level
+		------------------------------------------------
+		-- 판매 가격을 갱신합니다.
+		text_sellCost.TextComponent.Text = string.format("%d", resellCost)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_MoveOnPhaseChanged(string phaseType)
+		-- 페이즈가 바뀜 때 UI 위치를 옮깁니다.
+		-- 페이즈가 바뀔 때 UI 위치를 옮깁니다.
+		return
+		
+		--local ui = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+		--
+		--if phaseType == "Ready" then
+		--    ui.UITransformComponent.anchoredPosition.x = -540
+		--else
+		--    ui.UITransformComponent.anchoredPosition.x = 0
+		--end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_ShowCoachInfoTooltip(string coachID)
+		-- 코치 정보 툴팁을 표시합니다.
+		local ui_coachInfoTooltip = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Tooltip_CoachInfo")
+		
+		local ui_image = ui_coachInfoTooltip:GetChildByName("CoachSprite_BG"):GetChildByName("CoachSprite")
+		local ui_name = ui_coachInfoTooltip:GetChildByName("Name")
+		local ui_desc = ui_coachInfoTooltip:GetChildByName("Desc")
+		
+		local data = _CoachService:GetCoachInfo(coachID)
+		
+		ui_image.SpriteGUIRendererComponent.ImageRUID = data.ProfileRUID
+		local resourceData = _LoadResourcesInfo:GetUILocalPositionScale(data.ProfileRUID)
+		ui_image.SpriteGUIRendererComponent.LocalScale = resourceData["scale"] 
+		ui_image.SpriteGUIRendererComponent.LocalPosition = resourceData["pos"]
+		ui_name.TextComponent.Text = data.Name
+		ui_desc.TextComponent.Text = data.Desc --_LocalizationService:GetText(coachID.."_Desc")
+		
+		local uiPos = _Util:ScreenPostoUIPos(_InputService:GetCursorPosition())
+		-- 화면 밖으로 나가지 않도록 보정
+		if uiPos.x < 0 then 
+			uiPos.x = 0 
+		end
+		if uiPos.y > (1080 - ui_coachInfoTooltip.UITransformComponent.RectSize.y -10) then 
+			uiPos.y = (1080 - ui_coachInfoTooltip.UITransformComponent.RectSize.y - 10) 
+		end
+		
+		ui_coachInfoTooltip.UITransformComponent.anchoredPosition = uiPos 
+		ui_coachInfoTooltip.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void UI_ShowFromCharacterShop(boolean enable, string charID)
+		-- 캐릭터 상점에서 각 상품에 우클릭하면, 해당 캐릭터의 상세 정보를 띠웁니다.
+		-- 캐릭터 상점에서 각 상품에 우클릭하면, 해당 캐릭터의 상세 정보를 띄웁니다.
+		-- 띄우는 기준은 1레벨입니다.
+		
+		local ui_tooptip = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+		
+		if enable == true then
+			
+			local characterInfo = _DataService:GetTable("CharacterInfo")
+			local charInfoRow = characterInfo:FindRow("CharID", charID)
+			
+			local characterSynergyInfo = _DataService:GetTable("CharacterSynergy")
+			local charSynergyRow = characterSynergyInfo:FindRow("CharID", charID)
+			
+			local synergyInfo = _DataService:GetTable("SynergyInfo")
+			
+			local characterStatusInfo = _DataService:GetTable("CharacterStatus")
+			local charStatRow = characterStatusInfo:FindRow("SetID", charID.."1") 
+			
+			-- 초상화 갱신
+			local ui_portrait = ui_tooptip:GetChildByName("Portrait"):GetChildByName("Sprite_UnitImage")
+			local spriteRUID = charInfoRow:GetItem("IdleRUID")		
+			ui_portrait.SpriteGUIRendererComponent.ImageRUID = spriteRUID
+			local resourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(spriteRUID)
+			ui_portrait.SpriteGUIRendererComponent.LocalScale = resourceInfo["scale"]
+			ui_portrait.SpriteGUIRendererComponent.LocalPosition = resourceInfo["pos"]
+			
+			-- 판매 가격 및 별 등급 정보 갱신
+			local cost = charInfoRow:GetItem("Cost")
+			local ui_sellCost = ui_tooptip:GetChildByName("Text_SellCost")
+			ui_sellCost.TextComponent.Text = cost
+			ui_sellCost:GetChildByName("Star_1").Enable = true
+			ui_sellCost:GetChildByName("Star_2").Enable = false
+			ui_sellCost:GetChildByName("Star_3").Enable = false
+			ui_sellCost.UITransformComponent.RectSize.x = 76
+			
+			-- 역할군 및 이름 갱신
+			ui_tooptip:GetChildByName("Text_Role").TextComponent.Text = _LocalizationService:GetText("CharacterRole_"..charInfoRow:GetItem("Role"))
+			ui_tooptip:GetChildByName("Text_Name").TextComponent.Text = _LocalizationService:GetText(charID.."_Name")
+			
+			-- 보유 시너지 정보 갱신
+			local ui_synergies = ui_tooptip:GetChildByName("List_Synergy")
+			for i=1, 3 do
+				local findingKey = string.format("Synergy_%d", i)
+				local synergyID = charSynergyRow:GetItem(findingKey)
+				local ui_synergy = ui_synergies:GetChildByName(findingKey)
+				
+				if _UtilLogic:IsNilorEmptyString(synergyID) == false and synergyID ~= "-" then
+					local synergyRow = synergyInfo:FindRow("SynergyID", synergyID)
+					ui_synergy:GetChildByName("Name").TextComponent.Text = _LocalizationService:GetText(synergyID.."_Name")
+					ui_synergy:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = synergyRow:GetItem("IconRUID")
+					ui_synergy.Enable = true
+				else
+					ui_synergy.Enable = false
+				end
+			end
+			
+			-- 체력 정보 갱신
+			local ui_hp = ui_tooptip:GetChildByName("StatInfo_HP")
+			ui_hp:GetChildByName("Guage_Shield").SpriteGUIRendererComponent.FillAmount = 0
+			ui_hp:GetChildByName("Guage").SpriteGUIRendererComponent.FillAmount = 1
+			ui_hp:GetChildByName("Text").TextComponent.Text = charStatRow:GetItem("MaxHP").." / "..charStatRow:GetItem("MaxHP")
+			
+			-- MP 정보 갱신
+			local ui_mp = ui_tooptip:GetChildByName("StatInfo_MP")
+			local startingMP = tonumber(charStatRow:GetItem("MP"))
+			local mpMax = tonumber(charStatRow:GetItem("MaxMP"))
+			if mpMax == 0 then
+				ui_mp:GetChildByName("Guage").SpriteGUIRendererComponent.FillAmount = 0
+				ui_mp:GetChildByName("Text").TextComponent.Text = "0 / 0"
+			else
+				ui_mp:GetChildByName("Guage").SpriteGUIRendererComponent.FillAmount = startingMP / mpMax
+				ui_mp:GetChildByName("Text").TextComponent.Text = string.format("%d / %d", startingMP, mpMax)
+			end
+			
+			-- 아이템 정보 갱신
+			local ui_items = ui_tooptip:GetChildByName("List_Items")
+			for i=1, 3 do
+				local ui_item = ui_items:GetChildByName(string.format("Item_%d", i))
+				ui_item.SpriteGUIRendererComponent.ImageRUID = "696b848aaaea4cecb750aa19feaecf73"
+				
+				local ui_item_icon = ui_item:GetChildByName("Icon")
+				ui_item_icon.SpriteGUIRendererComponent.ImageRUID = ""
+				ui_item_icon.SpriteGUIRendererComponent.Color.a = 0
+			end
+			
+			-- 스탯 정보 갱신
+			local stats = {
+				charStatRow:GetItem("PhysicalAttack"),
+				charStatRow:GetItem("MagicalAttack"),
+				charStatRow:GetItem("AttackSpeed"),
+				
+				charStatRow:GetItem("Defence"),
+				charStatRow:GetItem("MagicalResistance"),
+				charStatRow:GetItem("AttackRange"),
+				
+				"10%",	-- 크리티컬 확률
+				"140%",	-- 크리티컬 데미지
+				"0%",	-- 흡혈
+				
+				"100%",	-- 이동속도
+				"0%",	-- 가해량 증가
+				"0%",	-- 피해량 감소
+			}
+			local ui_stats = ui_tooptip:GetChildByName("List_Stat")
+			for i=1, 12 do
+				local ui_stat = ui_stats:GetChildByName(string.format("Stat_%d", i))
+				ui_stat:GetChildByName("Num").TextComponent.Text = stats[i]
+			end
+			
+			-- 스킬 보기 버튼 / 추천 아이템 버튼을 비활성화합니다.
+			ui_tooptip:GetChildByName("Button_SkillInfo").Enable = false
+			ui_tooptip:GetChildByName("Button_RecommendedItems").Enable = false
+			
+		end
+		
+		ui_tooptip.Enable = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 키보드/마우스 입력 처리
+		---- Parameters
+		--local key = event.key
+		-----------------------------------------------------------
+		--if (key == KeyboardKey.Mouse0 and Environment:IsMobilePlatform())
+		--or (key == KeyboardKey.Mouse1 and Environment:IsPCPlatform()) then
+		--
+		--    local simulator = _CollisionService:GetSimulator(_UserService.LocalPlayer.CurrentMapName)
+		--    local worldpoint=_InputService:GetCursorPosition()
+		--    worldpoint=_UILogic:ScreenToWorldPosition(worldpoint)
+		--    local components=simulator:OverlapPointAll(CollisionGroups.TriggerBox,worldpoint)
+		--    
+		--    local isConnected = false
+		--    for i=1, #components do
+		--        local entity = components[i].Entity
+		--        
+		--        if isvalid(entity) and isvalid(entity.UnitInfo) and entity.Visible then
+		--            self:ConnectToSelectedUnit(entity)
+		--            self.ConnectedEntity.UnitStatus:SetUniInfoPopup("All")
+		--            isConnected = true
+		--            
+		--            break
+		--        elseif isvalid(entity) and isvalid(entity.CoachIngameComponent) and entity.Visible then
+		--            local coachID = entity.CoachIngameComponent.CoachID
+		--            if _UtilLogic:IsNilorEmptyString(coachID) == false then
+		--                self:UI_ShowCoachInfoTooltip(coachID)
+		--            end
+		--            break
+		--        end
+		--    end
+		--    
+		--    --if isConnected == false then
+		--    --    self:UI_Close()
+		--    --end
+		--end
+		--
+		--if key == KeyboardKey.Mouse0 then
+		--    if _InputService:IsPointerOverUI() == false then
+		--        self:UI_Close()
+		--    end
+		--end
+	end
+
+	@EventSender("Entity", "5356ff10-6b06-4843-8e20-5e94a2326b43")
+	handler HandleButtonStateChangeEvent(ButtonStateChangeEvent event)
+		-- 스킬 정보 버튼 호버 상태 변경 처리
+		-- Parameters
+		local state = event.state
+		local Entity = _UI_Tooltip.UI_SkillInfoFromUnitInfo
+		---------------------------------------------------------
+		if state == ButtonState.Hover then
+			_UI_Tooltip:SetSkillInfo(true, "unitInfo", _UI_UnitInfoPopup.ConnectedEntity.UnitInfo.charID)
+			_UI_Tooltip:SetMouseHoveredUI(Entity)
+			
+			if Environment:IsPCPlatform() then
+				if _InputService:IsPointerOverUI() == true then
+					return
+				else
+					_UI_Tooltip:SetSkillInfo(false, "unitInfo", _UI_UnitInfoPopup.ConnectedEntity.UnitInfo.charID)
+					_UI_Tooltip:SetMouseHoveredUI(nil)
+				end
+			end
+			
+		else
+			_UI_Tooltip:SetSkillInfo(false, "unitInfo", _UI_UnitInfoPopup.ConnectedEntity.UnitInfo.charID)
+			_UI_Tooltip:SetMouseHoveredUI(nil)
+		end
+	end
+
+	@EventSender("Entity", "17aec8b5-3ecc-4068-ac5c-1f7010607b40")
+	handler HandleButtonStateChangeEvent2(ButtonStateChangeEvent event)
+		-- 추천 아이템 버튼 호버 상태 변경 처리
+		-- Parameters
+		local state = event.state
+		local Entity = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo/Button_SkillInfo")
+		---------------------------------------------------------
+		if state == ButtonState.Hover then
+			_UI_Tooltip.UI_RecommendItemInfo.Enable = true
+			_UI_Tooltip.RealtimeUpdateTargetUI = _UI_Tooltip.UI_RecommendItemInfo
+			--_UI_Tooltip:SetMouseHoveredUI(_UI_Tooltip.UI_RecommendItemInfo)
+			
+		else
+			_UI_Tooltip.UI_RecommendItemInfo.Enable = false
+			_UI_Tooltip.RealtimeUpdateTargetUI = nil
+		end
+	end
+
+end

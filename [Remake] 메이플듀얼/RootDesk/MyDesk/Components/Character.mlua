@@ -1,0 +1,2574 @@
+@Component
+script Character extends Component
+
+	property BotManager botManager = "383a452f-0ea6-43ba-a738-725a001906a9"
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property CardBackManager cardBackManager = "d31aa203-b026-4ad8-b8d3-1d8cea99398c"
+
+	property CardPackManager cardPackManager = "fe274865-e1d4-4ece-a185-40d5bf7865e3"
+
+	property DeckManager deckManager = "e920267e-c338-457c-af06-67081552ceca"
+
+	property EmoteManager emoteManager = "0102c2b9-1758-453a-a6c6-6b7fa04d88d1"
+
+	property RankManager rankManager = "84709e8b-278d-431c-bc06-a7fe8874ca23"
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property Player player = nil
+
+	property NameTagComponent classTag = nil
+
+	property integer maxDeckCount = 10
+
+	property boolean isMatching = false
+
+	property boolean isLoaded = false
+
+	property table temp = nil
+
+	property integer meso = nil
+
+	@TargetUserSync
+	property integer dailyRankedWinMeso = nil
+
+	@TargetUserSync
+	property integer dailyRankedWinMesoKey = nil
+
+	@TargetUserSync
+	property integer dailyPlayMeso = nil
+
+	@TargetUserSync
+	property integer dailyPlayMesoKey = nil
+
+	@TargetUserSync
+	property integer dailyRankedPlayCount = 0
+
+	@TargetUserSync
+	property integer dailyRankedPlayCountKey = 0
+
+	property table cardTable = nil
+
+	property table newCardTable = {}
+
+	property table cardBackTable = {}
+
+	property table newCardBackTable = {}
+
+	property string cardBack = nil
+
+	property table deckArray = nil
+
+	property integer deckIndex = nil
+
+	property table friendTable = nil
+
+	property table friendRequestArray = {}
+
+	property table unfriendArray = {}
+
+	property integer rankPoint = nil
+
+	property integer ranking = nil
+
+	property integer topRankPoint = nil
+
+	property boolean finishedTutorial = nil
+
+	property string profileCode = ""
+
+	property string nickname = ""
+
+	property string firstWorldEnterDate = ""
+
+	property string lastWorldEnterDate = ""
+
+	property string lastWorldExitDate = ""
+
+	property string banStartDate = ""
+
+	property string banEndDate = ""
+
+	property string banReason = ""
+
+	property boolean isMatchUser = nil
+
+	property boolean isMatchUserWaiting = true
+
+	property table cardPackData = nil
+
+	property table emoteArray = {}
+
+	property Entity emoteEntity = nil
+
+	property any emoteTweener = nil
+
+	property integer emoteTimer = 0
+
+	property integer emoteSortTimer = 0
+
+	property boolean isSynced = false
+
+	property any dateTime = nil
+
+	method void OnMapEnter(Entity enteredMap)
+		if self:IsServer() and self:IsUser() then
+			local home = enteredMap.Home
+			if isvalid(home) then
+				if Environment:IsPublishedPlay() then
+					
+					while _UserService.Users[self.Entity.Name] == nil do
+						wait(0.1)
+					end
+					
+		            local profileCode = _UserService.Users[self.Entity.Name].ProfileCode
+					
+					if _Table:IsEmpty(home.matchUserInfos) then
+						local resultCode, matchUserInfos = _MatchmakingService:GetMatchUserInfosAndWait(profileCode)
+						self.isMatchUserWaiting = false
+						if resultCode == MatchmakingResultCode.Ok then
+							self.isMatchUser = true
+							home.matchUserInfos = matchUserInfos
+						elseif resultCode == MatchmakingResultCode.NotMatched then
+							self.isMatchUser = false
+						else
+							_UIToast:ShowMessage(tostring(resultCode), 50)
+							self.isMatchUser = false
+							return
+						end
+					else
+						self.isMatchUserWaiting = false
+						self.isMatchUser = false
+						for i = 1, 2 do
+							if home.matchUserInfos[i].ProfileCode == profileCode then
+								self.isMatchUser = true
+							end
+						end
+					end
+				else
+					self.isMatchUserWaiting = false
+					self.isMatchUser = false
+				end
+				
+				home:Initialize(self.isMatchUser)
+			else
+				self.isMatchUserWaiting = false
+				self.isMatchUser = false
+			end
+			
+			enteredMap.Map:Sync(self.Entity.Name)
+		end
+	end
+
+	method void OnBeginPlay()
+		if self:IsServer() then
+			if not self:IsUser() then
+				self:Load(nil)
+			end
+		else
+			self:SpawnClassTag()
+			self:SpawnEmoteEffect()
+			if self:IsOwner() then
+				_Server:Request(self, "Load", {_LocalizationService.CurrentLocaleId})
+			end
+		end
+	end
+
+	method table GetProperties()
+		local propertyTable = {
+			rankPoint = self.rankPoint,
+			ranking = self.ranking,
+			isMatchUser = self.isMatchUser,
+		}
+		
+		return propertyTable
+	end
+
+	method void SetProperties(table propertyTable)
+		for propertyName, propertyValue in pairs(propertyTable) do
+			self[propertyName] = propertyValue
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetPropertiesInClient(table propertyTable)
+		self:SetProperties(propertyTable)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SyncProperties(string userId)
+		self:SetPropertiesInClient(self:GetProperties(), userId)
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		self:SetNameTag()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Sync(string userId)
+		self:SyncProperties(userId)
+		self:OnSyncProperties(userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Clear(string localeId)
+		self:SetTemp({})
+		self:SetMeso(0)
+		self.dailyRankedWinMesoKey = 0
+		self:SetDailyRankedWinMeso(0)
+		self.dailyPlayMesoKey = 0
+		self:SetDailyPlayMeso(0)
+		self:SetCards(self.cardManager:GetStarterCollection())
+		self:SetCardBacks(self.cardBackManager:GetStarterCardBacks())
+		self:SetCardBack("OrangeMushroom")
+		self:SetDecks({
+			self.deckManager:GetWarriorStarterDeck(localeId),
+			self.deckManager:GetMagicianStarterDeck(localeId),
+			self.deckManager:GetBowmanStarterDeck(localeId),
+			self.deckManager:GetThiefStarterDeck(localeId),
+			self.deckManager:GetPirateStarterDeck(localeId)
+		})
+		self:SetDeckIndex(1)
+		self:SetFriends({})
+		self:SetRank(500, 0)
+		self:SetTopRankPoint(500)
+	end
+
+	method void LoadServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Load(string localeId)
+		if self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		if not self:IsUser() then
+			self.isLoaded = true
+			
+			local data = self.botManager:GetData(self.Entity.Bot.name)
+			self.cardBack = data.cardBack
+			self.deckArray = data.deckArray
+			self.deckIndex = data.deckIndex
+			
+			return
+		end
+		
+		local warpRecord = _TeleportService:GetWarpRecord(self.Entity.Name)
+		if warpRecord ~= nil and not _UtilLogic:IsNilorEmptyString(warpRecord.Data) and not _RoomService:IsInstanceRoom() then
+			local friend = _MSON:FastStringToAny(warpRecord.Data)
+			local room = friend.location.room
+			if _RoomService.InstanceRooms[room.key] then
+				_RoomService:MoveUserToInstanceRoom(room.key, self.Entity.Name)
+				
+				return
+			end
+		end
+		
+		while not self.isSynced do
+			wait(0.01)
+		end
+		local sortableDataStorage = _DataStorageService:GetSortableDataStorage("Ranking")
+		if sortableDataStorage == nil then
+			return
+		end
+		
+		local userDataStorage = _DataStorageService:GetUserDataStorage(self.Entity.Name)
+		if userDataStorage == nil then
+			return
+		end
+		local keys = {
+			"temp", 
+			"meso", 
+			"dailyRankedWinMeso", 
+			"dailyRankedWinMesoKey", 
+			"dailyPlayMeso", 
+			"dailyPlayMesoKey", 
+			"dailyRankedPlayCount",
+			"dailyRankedPlayCountKey",
+			"cardTable",
+			"newCardTable",
+			"cardBackTable",
+			"newCardBackTable",
+			"cardBack", 
+			"deckArray", 
+			"deckIndex", 
+			"friendTable",
+			"unfriendArray",
+			"rankPoint",
+			"topRankPoint",
+			"finishedTutorial",
+			
+			"profileCode",
+			"nickName",
+			"firstWorldEnterDate",
+			"lastWorldEnterDate",
+			"lastWorldExitDate",
+			"banStartDate",
+			"banEndDate",
+			"banReason"
+		}
+		userDataStorage:BatchGetAsync(keys, function(resultCode, keys, pages)
+			if resultCode ~= 0 then
+				log(resultCode)
+				return
+			end
+			
+			local isFirstWorldEnter
+			
+			local temp
+			local meso
+			local dailyRankedWinMeso
+			local dailyRankedWinMesoKey
+			local dailyPlayMeso
+			local dailyPlayMesoKey
+			local dailyRankedPlayCount
+			local dailyRankedPlayCountKey
+			local cardTable
+			local newCardTable
+			local cardBackTable
+			local newCardBackTable
+			local cardBack
+			local deckArray
+			local deckIndex
+			local friendTable
+			local unfriendArray
+			local rankPoint
+			local ranking
+			local topRankPoint
+			local finishedTutorial
+			
+			local profileCode
+			local nickname
+			local firstWorldEnterDate
+			local lastWorldEnterDate
+			local lastWorldExitDate
+			local banStartDate
+			local banEndDate
+			local banReason
+			
+			ranking = 0
+			if Environment:IsPublishedPlay() then
+				local sortedPages
+				resultCode, sortedPages = sortableDataStorage:GetSortedAndWait(SortDirection.Descending, 0, 100000)
+				if resultCode ~= 0 then
+					log(resultCode)
+					return
+				end
+				
+				local count = 1
+				while true do
+				    local datas = sortedPages:GetCurrentPageDatas()
+				    for _, data in pairs(datas) do
+						local userId = data.KeyInfo.Key
+						if self.Entity.Name == userId then
+							ranking = count
+							break
+						end
+						count += 1
+						if count > 1 then
+							break
+						end
+				    end
+					if count > 1 or ranking > 0 then
+						break
+					end
+					
+				    if sortedPages.IsLastPage == true then
+				        break
+				    end
+				    
+				    sortedPages:MoveToNextPageAndWait()
+				end
+			end
+			
+			while true do
+				local datas = pages:GetCurrentPageDatas()
+				for _, data in pairs(datas) do
+					local key = data.KeyInfo.Key
+					local str = data.Value
+					local value = str and _MSON:FastStringToAny(str)
+					
+					if key == "temp" then
+						temp = value or {}
+					elseif key == "meso" then
+						meso = value or 0
+					elseif key == "dailyRankedWinMeso" then
+						dailyRankedWinMeso = value or 0
+					elseif key == "dailyRankedWinMesoKey" then
+						dailyRankedWinMesoKey = value or 0
+					elseif key == "dailyPlayMeso" then
+						dailyPlayMeso = value or 0
+					elseif key == "dailyPlayMesoKey" then
+						dailyPlayMesoKey = value or 0
+					elseif key == "dailyRankedPlayCount" then
+						dailyRankedPlayCount = value or 0
+					elseif key == "dailyRankedPlayCountKey" then
+						dailyRankedPlayCountKey = value or 0
+					elseif key == "cardTable" then
+						cardTable = value or self.cardManager:GetStarterCollection()
+					elseif key == "newCardTable" then
+						newCardTable = value or _Table:DeepCopy(cardTable)
+					elseif key == "cardBackTable" then
+						cardBackTable = value or self.cardBackManager:GetStarterCardBacks()
+					elseif key == "newCardBackTable" then
+						newCardBackTable = value or _Table:DeepCopy(cardBackTable)
+					elseif key == "cardBack" then
+						cardBack = value or "OrangeMushroom"
+					elseif key == "deckArray" then
+						deckArray = value or {
+							self.deckManager:GetWarriorStarterDeck(localeId),
+							self.deckManager:GetMagicianStarterDeck(localeId),
+							self.deckManager:GetBowmanStarterDeck(localeId),
+							self.deckManager:GetThiefStarterDeck(localeId),
+							self.deckManager:GetPirateStarterDeck(localeId)
+						}
+					elseif key == "deckIndex" then
+						deckIndex = value or 1
+					elseif key == "friendTable" then
+						friendTable = value or {}
+					elseif key == "unfriendArray" then
+						unfriendArray = value or {}
+					elseif key == "rankPoint" then
+						rankPoint = value or 500
+					elseif key == "topRankPoint" then
+						topRankPoint = value or 500
+					elseif key == "finishedTutorial" then
+						finishedTutorial = value or false
+					elseif key == "profileCode" then
+						profileCode = _UserService.Users[self.Entity.Name].ProfileCode 
+					elseif key == "nickName" then
+						nickname = _UserService.Users[self.Entity.Name].Nickname
+					elseif key == "firstWorldEnterDate" then
+						firstWorldEnterDate = value or _DateTime:KtcNow():ToFormattedString("yyyy-MM-dd HH:mm:ss")
+					elseif key == "lastWorldEnterDate" then
+						lastWorldEnterDate = _DateTime:KtcNow():ToFormattedString("yyyy-MM-dd HH:mm:ss")
+					elseif key == "lastWorldExitDate" then
+						lastWorldExitDate = value
+					elseif key == "banStartDate" then
+						banStartDate = value
+					elseif key == "banEndDate" then
+						banEndDate = value
+					elseif key == "banReason" then
+						banReason = value
+					end
+				end
+				
+				if pages.IsLastPage == true then
+					break
+				end
+				
+				local loadResultCode = pages:LoadNextPageAndWait()
+				if loadResultCode ~= 0 then
+					break
+				end
+				
+				pages:MoveToNextPageAndWait()
+			end
+			
+			self:SetBanned(banStartDate, banEndDate, banReason)
+			if self:IsBanned() then
+				return
+			end
+			
+			self.isLoaded = true
+			self:SetLoadedInOwner(self.Entity.Name)
+			
+			self:SetTemp(temp)
+			self:SetMeso(meso)
+			self.dailyRankedWinMesoKey = dailyRankedWinMesoKey
+			self:SetDailyRankedWinMeso(dailyRankedWinMeso)
+			self.dailyPlayMesoKey = dailyPlayMesoKey
+			self:SetDailyPlayMeso(dailyPlayMeso)
+			self.dailyRankedPlayCountKey = dailyRankedPlayCountKey
+			self:SetDailyRankedPlayCount(dailyRankedPlayCount)
+			self:SetCards(cardTable)
+			self:SetNewCards(newCardTable)
+			self:SetCardBacks(cardBackTable)
+			self:SetNewCardBacks(newCardBackTable)
+			self:SetCardBack(cardBack)
+			self:SetDecks(deckArray)
+			self:SetDeckIndex(deckIndex)
+			self.unfriendArray = unfriendArray
+			self:SetFriends(friendTable)
+			self:SetTopRankPoint(topRankPoint)
+			self:SetRank(rankPoint, ranking)
+			self:SetEmotes({"PinkBeanMelong", "PinkBeanLove", "PinkBeanEat", "PinkBeanSleep", "PinkBeanCry", "PinkBeanStunned"})
+			self.finishedTutorial = finishedTutorial
+			
+			self.profileCode = profileCode
+			self.nickname = nickname
+			self.firstWorldEnterDate = firstWorldEnterDate
+			self.lastWorldEnterDate = lastWorldEnterDate
+			self.lastWorldExitDate = lastWorldExitDate
+		
+			self:RankedMatchReady()
+			
+			if not self.isMatchUser then
+				self.Entity.RigidbodyComponent.Enable = true
+				self.Entity.RigidbodyComponent:SetWorldPosition(Vector2(_UtilLogic:RandomDouble() * 10 - 5, 4))
+			end
+			
+			local memory
+			resultCode, memory = _WorldInstanceService:GetSharedMemory("User")
+			if resultCode ~= SharedMemoryResultCode.OK then
+				log(resultCode)
+				return
+			end
+		
+			local location
+			local map = self.Entity.CurrentMap.Map
+			local mode = map.mode
+			if mode == "Lobby" then
+				local home = self.Entity.CurrentMap.Home
+				location = {
+					mode = mode,
+					channel = home.channel
+				}
+			elseif mode == "RankedMatch" then
+				location = {
+					mode = mode,
+					worldInstanceKey = _WorldInstanceService.WorldInstanceId
+				}
+			elseif mode == "FriendlyMatch" then
+				local room = self.Entity.CurrentMap.Room
+				location = {
+					mode = mode,
+					room = room.room
+				}
+			elseif mode == "Practice" then
+				local room = self.Entity.CurrentMap.Room
+				location = {
+					mode = mode,
+					room = room.room
+				}
+			elseif mode == "Tutorial" then
+				local room = self.Entity.CurrentMap.Room
+				location = {
+					mode = mode,
+					room = room.room
+				}
+			end
+			
+			memory:SetVariableAndWait(self.Entity.Name, _MSON:AnyToString({
+				profileCode = self.profileCode,
+				nickname = self.nickname,
+				majorRank = self:GetMajorRank(),
+				location = location,
+			}))
+			
+			if mode == "Lobby" and not self.finishedTutorial then
+				local home = self.Entity.CurrentMap.Home
+				
+				home:BeginTutorial(self)
+			end
+		end)
+	end
+
+	@ExecSpace("Client")
+	method void SetLoadedInOwner()
+		self.isLoaded = true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RankedMatchReady()
+		while self.isMatchUserWaiting do
+			wait(0.01)
+		end
+		
+		if self.isMatchUser then
+			local duel = self.Entity.CurrentMap.Map.duel
+			for _, player in ipairs(duel.playerArray) do
+				if player.isReady then
+					continue
+				end
+				
+				player:Ready(self)
+				break
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnClassTag()
+		self.classTag = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("ClassTag"), 
+			"ClassTag", Vector3.zero, self.Entity).NameTagComponent
+		self.classTag.Entity.Enable = false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetTemp(table temp)
+		self.temp = temp
+		
+		local dateTime = _DateTime:KtcNow()
+		local days = _DateTime:KtcNowDays()
+		
+		if dateTime < DateTime(2024, 12, 13) then
+			if temp.openEventCardPackCountKey == nil then
+				temp.openEventCardPackCountKey = _DateTime:KtcNowDays()
+				temp.openEventCardPackCount = 3
+			end
+		elseif DateTime(2024, 12, 13) <= dateTime and dateTime < DateTime(2024, 12, 20) then
+			if temp.openEventCardPackCountKey == nil or temp.openEventCardPackCountKey < (DateTime(2024, 12, 13) - DateTime.MinValue).Days then
+				temp.openEventCardPackCountKey = _DateTime:KtcNowDays()
+				temp.openEventCardPackCount = 3
+			end
+		elseif DateTime(2024, 12, 20) <= dateTime and dateTime < DateTime(2024, 12, 27) then
+			if temp.openEventCardPackCountKey == nil or temp.openEventCardPackCountKey < (DateTime(2024, 12, 20) - DateTime.MinValue).Days then
+				temp.openEventCardPackCountKey = _DateTime:KtcNowDays()
+				temp.openEventCardPackCount = 2
+			end
+		else
+			temp.openEventCardPackCount = nil
+			temp.openEventCardPackCountKey = nil
+		end
+		
+		if dateTime < DateTime(2025, 6, 11) then
+			if temp.specialEventAttendanceCountkey ~= days then
+				temp.showedEvent = nil
+				
+				temp.specialEventAttendanceCountkey = days
+				temp.specialEventAttendanceCount = (temp.specialEventAttendanceCount or 0) + 1
+			end
+		end
+		
+		if self:IsUser() then
+			self:SetTempInOwner(temp, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetTempInOwner(table temp)
+		self.temp = temp
+		
+		self.Entity:SendEvent(SetOpenEventCardPackCount())
+	end
+
+	method integer GetOpenEventCardPackCount()
+		local key = self.temp.openEventCardPackCountKey
+		if key == nil then
+			return 0
+		end
+		
+		local dateTime = _DateTime:KtcNow()
+		
+		if DateTime(2024, 12, 27) <= dateTime then
+			return 0
+		elseif key < (DateTime(2024, 12, 20) - DateTime.MinValue).Days and DateTime(2024, 12, 20) <= dateTime and dateTime < DateTime(2024, 12, 27) then
+			return 2
+		elseif key < (DateTime(2024, 12, 13) - DateTime.MinValue).Days and DateTime(2024, 12, 13) <= dateTime and dateTime < DateTime(2024, 12, 20) then
+			return 3
+		else
+			return self.temp.openEventCardPackCount
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DecreaseOpenEventCardPackCount()
+		local key = self.temp.openEventCardPackCountKey
+		if key == nil then
+			return
+		end
+		
+		local dateTime = _DateTime:KtcNow()
+		local days = _DateTime:KtcNowDays()
+		if DateTime(2024, 12, 27) <= dateTime then
+			self.temp.openEventCardPackCount = nil
+			self.temp.openEventCardPackCountKey = nil
+		elseif key < (DateTime(2024, 12, 20) - DateTime.MinValue).Days and DateTime(2024, 12, 20) <= dateTime and dateTime < DateTime(2024, 12, 27) then
+			self.temp.openEventCardPackCount = 1
+			self.temp.openEventCardPackCountKey = days
+		elseif key < (DateTime(2024, 12, 13) - DateTime.MinValue).Days and DateTime(2024, 12, 13) <= dateTime and dateTime < DateTime(2024, 12, 20) then
+			self.temp.openEventCardPackCount = 2
+			self.temp.openEventCardPackCountKey = days
+		else
+			self.temp.openEventCardPackCount -= 1
+			self.temp.openEventCardPackCountKey = days
+		end
+		
+		self:DecreaseOpenEventCardPackCountInOwner(self.temp.openEventCardPackCount, self.temp.openEventCardPackCountKey, self.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void DecreaseOpenEventCardPackCountInOwner(integer openEventCardPackCount, integer openEventCardPackCountKey)
+		self.temp.openEventCardPackCount = openEventCardPackCount
+		self.temp.openEventCardPackCountKey = openEventCardPackCountKey
+		
+		self.Entity:SendEvent(SetOpenEventCardPackCount())
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetMeso(integer meso)
+		self.meso = math.max(0, meso)
+		
+		if self:IsUser() then
+			self:SetMesoInOwner(meso, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetMesoInOwner(integer meso)
+		self.meso = meso
+		
+		self.Entity:SendEvent(SetMeso())
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddMeso(integer delta, string source)
+		self:AddMesoInServer(delta, source)
+		
+		if self:IsUser() then
+			self:AddMesoInOwner(delta, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddMesoInServer(integer delta, string source)
+		local meso = math.max(0, self.meso + delta)
+		
+		local befAsset = self.meso
+		local afterAsset = meso
+		local asset = math.abs(afterAsset - befAsset)
+		
+		self.meso = meso
+	end
+
+	@ExecSpace("Client")
+	method void AddMesoInOwner(integer delta)
+		self.meso = math.max(0, self.meso + delta)
+		
+		self.Entity:SendEvent(SetMeso())
+	end
+
+	method integer GetDailyRankedWinMeso()
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyRankedWinMesoKey then
+			return self.dailyRankedWinMeso
+		else
+			return 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDailyRankedWinMeso(integer dailyRankedWinMeso)
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyRankedWinMesoKey then
+			self.dailyRankedWinMeso = dailyRankedWinMeso
+		else
+			self.dailyRankedWinMeso = 0
+			self.dailyRankedWinMesoKey = days
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddDailyRankedWinMeso(integer delta)
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyRankedWinMesoKey then
+			self.dailyRankedWinMeso += delta
+		else
+			self.dailyRankedWinMeso = delta
+			self.dailyRankedWinMesoKey = days
+		end
+	end
+
+	method integer GetDailyPlayMeso()
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyPlayMesoKey then
+			return self.dailyPlayMeso
+		else
+			return 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDailyPlayMeso(integer dailyPlayMeso)
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyPlayMesoKey then
+			self.dailyPlayMeso = dailyPlayMeso
+		else
+			self.dailyPlayMeso = 0
+			self.dailyPlayMesoKey = days
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddDailyPlayMeso(integer delta)
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyPlayMesoKey then
+			self.dailyPlayMeso += delta
+		else
+			self.dailyPlayMeso = delta
+			self.dailyPlayMesoKey = days
+		end
+	end
+
+	method integer GetDailyRankedPlayCount()
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyRankedPlayCountKey then
+			return self.dailyRankedPlayCount
+		else
+			return 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDailyRankedPlayCount(integer dailyRankedPlayCount)
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyRankedPlayCountKey then
+			self.dailyRankedPlayCount = dailyRankedPlayCount
+		else
+			self.dailyRankedPlayCount = 0
+			self.dailyRankedPlayCountKey = days
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void IncreaseDailyRankedPlayCount()
+		local days = _DateTime:KtcNowDays()
+		if days == self.dailyRankedPlayCountKey then
+			self.dailyRankedPlayCount += 1
+		else
+			self.dailyRankedPlayCount = 1
+			self.dailyRankedPlayCountKey = days
+		end
+	end
+
+	method integer GetCardCount(table info)
+		local name = info.name
+		local variant = info.variant
+		local quality = info.quality
+		
+		if self.cardTable ~= nil and self.cardTable[name] ~= nil and self.cardTable[name][variant] ~= nil and self.cardTable[name][variant][quality] ~= nil then
+			return self.cardTable[name][variant][quality]
+		else
+			return 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCards(table cardTable)
+		self.cardTable = cardTable
+		
+		if self:IsUser() then
+			self:SetCardsInOwner(cardTable, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetCardsInOwner(table cardTable)
+		self.cardTable = cardTable
+	end
+
+	method void GainCards(table infoArray, string source)
+		for _, info in ipairs(infoArray) do
+			local name = info.name
+			local variant = info.variant
+			local quality = info.quality
+			
+			self.cardTable[name] = self.cardTable[name] or {}
+			self.cardTable[name][variant] = self.cardTable[name][variant] or {}
+			self.cardTable[name][variant][quality] = self.cardTable[name][variant][quality] or 0
+			
+			if source ~= "BuyCard" then
+				self.newCardTable[name] = self.newCardTable[name] or {}
+				self.newCardTable[name][variant] = self.newCardTable[name][variant] or {}
+				self.newCardTable[name][variant][quality] = self.newCardTable[name][variant][quality] or 0
+			end
+			
+			local befItemCount = self.cardTable[name][variant][quality]
+			local afterItemCount = befItemCount + 1
+			self.cardTable[name][variant][quality] += 1
+			if source ~= "BuyCard" then
+				self.newCardTable[name][variant][quality] += 1
+			end
+			
+		end
+	end
+
+	method void LoseCards(table infoArray, string source)
+		for _, info in ipairs(infoArray) do
+			local name = info.name
+			local variant = info.variant
+			local quality = info.quality
+			
+			local count = self.cardTable[name][variant][quality]
+			local befItemCount = count
+			local afterItemCount = count - 1
+			self.cardTable[name][variant][quality] = count > 1 and count - 1 or nil
+			local t2 = self.cardTable[name][variant]
+			if _Table:IsEmpty(t2) then
+				self.cardTable[name][variant] = nil
+			end
+			local t1 = self.cardTable[name]
+			if _Table:IsEmpty(t1) then
+				self.cardTable[name] = nil
+			end
+			
+		end
+	end
+
+	method void BuySingleCardPackServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean BuySingleCardPack(string cardPackName)
+		if not self.isLoaded then
+			return false
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return false
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local befAsset
+		local afterAsset
+		local success = false
+		local currency = self.cardPackManager:GetCurrency(cardPackName)  
+		local price = self.cardPackManager:GetSinglePrice(cardPackName)
+		if currency == "Meso" then
+			if self.meso >= price then
+				befAsset = self.meso
+				self:AddMeso(-price, "BuyCardPack")
+				afterAsset = self.meso
+				
+				success = true
+			end
+		elseif currency == "WorldCoin" then
+			success = true
+		end
+		
+		local infoArray
+		if success then
+			local productType = "SingleCardPack"
+			local productId = cardPackName .. productType
+			
+			infoArray = self.cardPackManager:GetInfos(cardPackName)
+			self:GainCards(infoArray, "OpenCardPack")
+			
+			self.cardPackData = {
+				name = cardPackName,
+				infos = {infoArray},
+				index = 1,
+			}
+		end
+		
+		if self:IsUser() then
+			self:BuySingleCardPackInOwner(cardPackName, success, infoArray, self.Entity.Name)
+		end
+		
+		return success
+	end
+
+	@ExecSpace("Client")
+	method void BuySingleCardPackInOwner(string cardPackName, boolean success, table infoArray)
+		if not success then
+			self.uiManager.PopupModule:Open("NotEnoughMeso", true, nil, nil)
+			
+			return
+		end
+		
+		self:GainCards(infoArray, nil)
+		self.uiManager.CardPackModule:Open(cardPackName, 1)
+	end
+
+	method void BuySingleCardPackByOpenEventServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuySingleCardPackByOpenEvent(string cardPackName)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local success = false
+		local dateTime = _DateTime:KtcNow()
+		local openEventCardPackCount = self:GetOpenEventCardPackCount()
+		if ((cardPackName == "ClassicUnique" and dateTime < DateTime(2024, 12, 20)) or
+			(cardPackName == "ClassicLegendary" and DateTime(2024, 12, 20) <= dateTime and dateTime < DateTime(2024, 12, 27))) and openEventCardPackCount > 0 then
+			self:DecreaseOpenEventCardPackCount()
+			
+			success = true
+		end
+		
+		local infoArray
+		if success then
+			local productType = "SingleCardPack"
+			local productId = cardPackName .. productType
+			
+			infoArray = self.cardPackManager:GetInfos(cardPackName)
+			self:GainCards(infoArray, "OpenCardPack")
+			
+			self.cardPackData = {
+				name = cardPackName,
+				infos = {infoArray},
+				index = 1,
+			}
+		end
+		
+		if self:IsUser() then
+			self:BuySingleCardPackByOpenEventInOwner(cardPackName, success, infoArray, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void BuySingleCardPackByOpenEventInOwner(string cardPackName, boolean success, table infoArray)
+		if not success then
+			self.uiManager.PopupModule:Open("NotEventPeriod", true, nil, nil)
+			
+			return
+		end
+		
+		self:GainCards(infoArray, nil)
+		self.uiManager.CardPackModule:Open(cardPackName, 1)
+	end
+
+	method void BuyMultipleCardPacksServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean BuyMultipleCardPacks(string cardPackName)
+		if not self.isLoaded then
+			return false
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return false
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local befAsset
+		local afterAsset
+		local success = false
+		local currency = self.cardPackManager:GetCurrency(cardPackName)  
+		local price = self.cardPackManager:GetMultiplePrice(cardPackName)
+		if currency == "Meso" then
+			if self.meso >= price then
+				befAsset = self.meso
+				self:AddMeso(-price, "BuyCardPack")
+				afterAsset = self.meso
+				
+				success = true
+			end
+		elseif currency == "WorldCoin" then
+			success = true
+		end
+		
+		local infos
+		if success then
+			local productType = "MultipleCardPack"
+			local productId = cardPackName .. productType
+			
+			infos = {}
+			for i = 1, 5 do
+				local infoArray = self.cardPackManager:GetInfos(cardPackName)
+				self:GainCards(infoArray, "OpenCardPack")
+				table.insert(infos, infoArray)
+			end
+			
+			self.cardPackData = {
+				name = cardPackName,
+				infos = infos,
+				index = 1,
+			}
+		end
+		
+		if self:IsUser() then
+			self:BuyMultipleCardPacksInOwner(cardPackName, success, infos, self.Entity.Name)
+		end
+		
+		return success
+	end
+
+	@ExecSpace("Client")
+	method void BuyMultipleCardPacksInOwner(string cardPackName, boolean success, table infos)
+		local currency = self.cardPackManager:GetCurrency(cardPackName)  
+		local price = self.cardPackManager:GetMultiplePrice(cardPackName)
+		
+		if not success then
+			if currency == "Meso" then
+				self.uiManager.PopupModule:Open("NotEnoughMeso", true, nil, nil)
+			end
+			
+			return
+		end
+		
+		for _, infoArray in ipairs(infos) do
+			self:GainCards(infoArray, nil)
+		end
+		self.uiManager.CardPackModule:Open(cardPackName, 5)
+	end
+
+	method boolean HasCardBack(string cardBack)
+		return self.cardBackTable[cardBack] == true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCardBacks(table cardBackTable)
+		self.cardBackTable = cardBackTable
+		
+		if self:IsUser() then
+			self:SetCardBacksInOwner(cardBackTable, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetCardBacksInOwner(table cardBackTable)
+		self.cardBackTable = cardBackTable
+	end
+
+	method void SetCardBackServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCardBack(string cardBack)
+		if not self.isLoaded then
+			return
+		end
+		
+		if not self:HasCardBack(cardBack) then
+			return
+		end
+		
+		if isvalid(self.player) or self.isMatching then
+			return
+		end
+		
+		if self.cardBack == cardBack then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		self.cardBack = cardBack
+		
+		if self:IsUser() then
+			self:SetCardBackInOwner(cardBack, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetCardBackInOwner(string cardBack)
+		self.cardBack = cardBack
+		self.Entity:SendEvent(SetCardBack())
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDecks(table deckArray)
+		for _, deck in ipairs(deckArray) do
+			if deck.cardTable ~= nil then
+				for name, t1 in pairs(deck.cardTable) do
+					for variant, t2 in pairs(t1) do
+						for quality, count in pairs(t2) do
+							local ownCount = self:GetCardCount({name = name, variant = variant, quality = quality})
+							if ownCount <= count then
+								t2[quality] = ownCount
+							end
+						end
+					end
+				end
+			end
+		end
+		
+		self.deckArray = deckArray
+		
+		if self:IsUser() then
+			self:SetDecksInOwner(deckArray, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetDecksInOwner(table deckArray)
+		self.deckArray = deckArray
+	end
+
+	method void CreateDeckServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CreateDeck(string class, string localeId)
+		if not self.isLoaded then
+			return
+		end
+		
+		if not (class == "Warrior" or class == "Magician" or class == "Bowman" or class == "Thief" or class == "Pirate") then
+			return
+		end
+		
+		if #self.deckArray >= self.maxDeckCount then
+			return
+		end
+		
+		if isvalid(self.player) or self.isMatching then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local deck = self.deckManager:GetNewDeck(class, localeId)
+		table.insert(self.deckArray, deck)
+		self.deckIndex = #self.deckArray
+		
+		if self:IsUser() then
+			self:CreateDeckInOwner(deck, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void CreateDeckInOwner(table deck)
+		table.insert(self.deckArray, deck)
+		self.deckIndex = #self.deckArray
+		self.Entity:SendEvent(CreateDeck())
+		self.Entity:SendEvent(SetDeckIndex())
+	end
+
+	method void FinishDeckServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FinishDeck(table deck)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Table:IsEmpty(self:GetDeck()) then
+			return
+		end
+		
+		if not self.deckManager:IsDeckValid(deck) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		if deck.cardTable ~= nil then
+			for name, t1 in pairs(deck.cardTable) do
+				for variant, t2 in pairs(t1) do
+					for quality, count in pairs(t2) do
+						if self:GetCardCount({name = name, variant = variant, quality = quality}) < count then
+							return
+						end
+					end
+				end
+			end
+		end
+		
+		if isvalid(self.player) or self.isMatching then
+			return
+		end
+		
+		self.deckArray[self.deckIndex] = deck
+		
+		if self:IsUser() then
+			self:FinishDeckInOwner(deck, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void FinishDeckInOwner(table deck)
+		self.deckArray[self.deckIndex] = deck
+		self.Entity:SendEvent(FinishDeck())
+	end
+
+	method void SaveDeckServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveDeck(table deck)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Table:IsEmpty(self:GetDeck()) then
+			return
+		end
+		
+		if not self.deckManager:IsDeckValid(deck) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		if deck.cardTable ~= nil then
+			for name, t1 in pairs(deck.cardTable) do
+				for variant, t2 in pairs(t1) do
+					for quality, count in pairs(t2) do
+						if self:GetCardCount({name = name, variant = variant, quality = quality}) < count then
+							return
+						end
+					end
+				end
+			end
+		end
+		
+		if isvalid(self.player) or self.isMatching then
+			return
+		end
+		
+		self.deckArray[self.deckIndex] = deck
+		
+		if self:IsUser() then
+			self:SaveDeckInOwner(deck, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SaveDeckInOwner(table deck)
+		self.deckArray[self.deckIndex] = deck
+		self.Entity:SendEvent(SaveDeck())
+	end
+
+	method void DeleteDeckServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DeleteDeck()
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Table:IsEmpty(self:GetDeck()) then
+			return
+		end
+		
+		if isvalid(self.player) or self.isMatching then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		table.remove(self.deckArray, self.deckIndex)
+		self.deckIndex = math.min(self.deckIndex, #self.deckArray)
+		
+		if self:IsUser() then
+			self:DeleteDeckInOwner(self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DeleteDeckInOwner()
+		table.remove(self.deckArray, self.deckIndex)
+		self.deckIndex = math.min(self.deckIndex, #self.deckArray)
+		self.Entity:SendEvent(DeleteDeck())
+		self.Entity:SendEvent(SetDeckIndex())
+	end
+
+	method void SetDeckIndexServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDeckIndex(integer deckIndex)
+		if not self.isLoaded then
+			return
+		end
+		
+		if #self.deckArray == 0 then
+			if deckIndex ~= 1 then
+				return
+			end
+		elseif deckIndex <= 0 or #self.deckArray < deckIndex then
+			return
+		end
+		
+		if isvalid(self.player) or self.isMatching then
+			return
+		end
+		
+		if self.deckIndex == deckIndex then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		self.deckIndex = deckIndex
+		
+		if self:IsUser() then
+			self:SetDeckIndexInOwner(deckIndex, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetDeckIndexInOwner(integer deckIndex)
+		self.deckIndex = deckIndex
+		self.Entity:SendEvent(SetDeckIndex())
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetRank(integer rankPoint, integer ranking)
+		self:SetRankInServer(rankPoint, ranking)
+		
+		self:SetRankInClient(rankPoint, ranking)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetRankInServer(integer rankPoint, integer ranking)
+		self.rankPoint = rankPoint
+		self.ranking = ranking
+	end
+
+	@ExecSpace("Client")
+	method void SetRankInClient(integer rankPoint, integer ranking)
+		self.rankPoint = rankPoint
+		self.ranking = ranking
+		
+		self:SetNameTag()
+		if self:IsOwner() then
+			self.Entity:SendEvent(SetRank())
+		end
+	end
+
+	method void BuyCardServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuyCard(table info)
+		if not self.isLoaded then
+			return
+		end
+		
+		if not (self.cardManager:GetRarity(info.name) == "Normal" and info.quality == "Gold" and self:GetCardCount(info) < 2) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local befAsset
+		local afterAsset
+		local success = false
+		local price = 100000
+		if self.meso >= price then
+			befAsset = self.meso
+			self:AddMeso(-price, "BuyCard")
+			afterAsset = self.meso
+			
+			success = true
+		end
+		
+		if success then
+			local productType = "Card"
+			local productId = string.format("%s%s%s%s", info.name, info.variant, info.quality, productType)
+			
+			self:GainCards({info}, "BuyCard")
+		end
+		
+		if self:IsUser() then
+			self:BuyCardInOwner(info, success, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void BuyCardInOwner(table info, boolean success)
+		if not success then
+			self.uiManager.PopupModule:Open("NotEnoughMeso", true, nil, nil)
+			
+			return
+		end
+		
+		self.uiManager.PopupModule:Open("SuccessBuyCard", true, nil, nil)
+		self:GainCards({info}, "BuyCard")
+		self.Entity:SendEvent(_Event:BuyCard(info))
+	end
+
+	method void SellCardServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SellCard(table info)
+		if not self.isLoaded then
+			return
+		end
+		
+		if self:GetCardCount(info) <= 2 then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local price = self.cardManager:GetSellPrice(self.cardManager:GetRarity(info.name))
+		self:AddMeso(price, "SellCard")
+		
+		self:LoseCards({info}, "SellCard")
+		
+		if self:IsUser() then
+			self:SellCardInOwner(info, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SellCardInOwner(table info)
+		self.uiManager.PopupModule:Open("SuccessSellCard", true, nil, nil)
+		self:LoseCards({info}, nil)
+		self.Entity:SendEvent(_Event:SellCard(info))
+	end
+
+	method boolean IsUser()
+		return self.Entity.Model.Name == "DefaultPlayer"
+	end
+
+	method boolean IsOwner()
+		return self.Entity == _UserService.LocalPlayer
+	end
+
+	method boolean IsAlly()
+		return self:IsClient() and _UserService.LocalPlayer.Character:IsAllyWith(self)
+	end
+
+	method boolean IsAllyWith(Character character)
+		if isvalid(self.player) and self.player.opponent.character == character then
+			return false
+		end
+		
+		return self == character or self:IsFriendWith(character)
+	end
+
+	method boolean IsFriendWith(Character character)
+		return self:IsUser() and self.friendTable[character.Entity.Name] ~= nil
+	end
+
+	method boolean IsAbleToMatch()
+		return self.isLoaded and not _UtilLogic:IsNilorEmptyString(self.cardBack) and not _Table:IsEmpty(self:GetDeck()) and self.deckManager:IsDeckComplete(self:GetDeck())
+	end
+
+	method boolean IsAbleToReady()
+		if self.Entity.CurrentMap.Map.mode == "Tutorial" then
+			return self.isLoaded
+		else
+			return self.isLoaded and not _UtilLogic:IsNilorEmptyString(self.cardBack) and not _Table:IsEmpty(self:GetDeck()) and self.deckManager:IsDeckComplete(self:GetDeck())
+		end
+	end
+
+	method table GetDeck()
+		local tutorial = self.Entity.CurrentMap.Map.tutorial
+		if isvalid(tutorial) then
+			if self:IsUser() then
+				if tutorial.duelId == 1 then
+					return self.deckManager:GetTutorialPlayerDeck_1()
+				elseif tutorial.duelId == 2 then
+					return self.deckManager:GetTutorialPlayerDeck_2()
+				end
+			else
+				if tutorial.duelId == 1 then
+					return self.deckManager:GetTutorialBotDeck_1()
+				elseif tutorial.duelId == 2 then
+					return self.deckManager:GetTutorialBotDeck_2()
+				end
+			end
+		else
+			return self.deckArray[self.deckIndex]
+		end
+	end
+
+	method string GetMajorRank()
+		return self.rankManager:GetMajorRank(self.rankPoint, self.ranking)
+	end
+
+	method integer GetMinorRank()
+		return self.rankManager:GetMinorRank(self.rankPoint)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetRankName()
+		return self.rankManager:GetRankName(self.rankPoint, self.ranking)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetRankPoint()
+		return self.rankManager:GetRankPoint(self.rankPoint)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetNameTag()
+		if self.rankPoint == nil or self.ranking == nil then
+			return
+		end
+		
+		local resource = self.resourceManager:GetResource("NameTag")
+		local majorRank = self:GetMajorRank()
+		self.Entity.NameTagComponent.NameTagRUID = resource[majorRank]
+	end
+
+	method void OpenCardPackServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OpenCardPack(string cardPackName)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Table:IsEmpty(self.cardPackData) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local name = self.cardPackData.name
+		local infos = self.cardPackData.infos
+		local index = self.cardPackData.index
+		
+		local infoArray = infos[index]
+		self.cardPackData.index += 1
+		if self.cardPackData.index > #infos then
+			self.cardPackData = nil
+		end
+		
+		self:OpenCardPackInClient(name, infoArray)
+	end
+
+	@ExecSpace("Client")
+	method void OpenCardPackInClient(string cardPackName, table infoArray)
+		if self:IsOwner() then
+			self.uiManager.CardPackModule:OpenCardPack(infoArray)
+		end
+		
+		self.cardPackManager:OpenCardPack(self, cardPackName, infoArray)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetFriends(table friendTable)
+		for _, userId in ipairs(self.unfriendArray) do
+			friendTable[userId] = nil
+		end
+		
+		local userDataStorage = _DataStorageService:GetUserDataStorage(self.Entity.Name)
+		if userDataStorage ~= nil then
+			while true do
+				local resultCode, value = userDataStorage:GetAndWait("unfriendArray")
+				if resultCode == 0 then
+					if value == nil then
+						userDataStorage:SetAndWait("unfriendArray", "{}")
+						break
+					else
+						local unfriendArray = _MSON:FastStringToAny(value)
+						for _, userId in ipairs(self.unfriendArray) do
+							_Table:Remove(unfriendArray, userId)
+						end
+						resultCode, value = userDataStorage:UpdateAndWait("unfriendArray", value, _MSON:FastAnyToString(unfriendArray))
+						if resultCode == 0 then
+							break
+						elseif resultCode == 2000000 then
+							continue
+						else
+							log(resultCode)
+							break
+						end
+					end
+				else
+					log(resultCode)
+					break
+				end
+			end
+		end
+		
+		self.friendTable = friendTable
+		
+		if self:IsUser() then
+			self:SetFriendsInOwner(friendTable, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetFriendsInOwner(table friendTable)
+		self.friendTable = friendTable
+		
+		local duel = self.Entity.CurrentMap.Map.duel
+		if isvalid(duel) and duel.isDueling then
+			for _, player in ipairs(duel.playerArray) do
+				player:ShowFriendRequestButton()
+			end
+		end
+	end
+
+	method void SendFriendRequestServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SendFriendRequest(Character other)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local result
+		if not isvalid(other) or not other.isLoaded then
+			result = "UserNotFound"
+		elseif _Table:Contains(other.friendRequestArray, self) then
+			result = "Pending"
+		elseif self:IsFriendWith(other) then
+			result = "FriendAlready"
+		else
+			result = "Success"
+		end
+		
+		if result == "Success" then
+			table.insert(other.friendRequestArray, self)
+			self:SendFriendRequestInOther(other.Entity.Name)
+		end
+		
+		self:SendFriendRequestInOwner(result, self.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void SendFriendRequestInOther()
+		local other = _UserService.LocalPlayer.Character
+		
+		if #other.friendRequestArray == 0 then
+			self.uiManager.SocialModule:ShowPopup(self)
+		end
+		table.insert(other.friendRequestArray, self)
+	end
+
+	@ExecSpace("Client")
+	method void SendFriendRequestInOwner(string result)
+		self.uiManager.PopupModule:Open("SendFriendRequest" .. result, true, nil, nil)
+		self.uiManager.InteractionModule:Close()
+	end
+
+	method void RefuseFriendRequestServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefuseFriendRequest(Character sender)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		_Table:Remove(self.friendRequestArray, sender)
+		for i = #self.friendRequestArray, 1, -1 do
+			if not isvalid(self.friendRequestArray[i]) then
+				table.remove(self.friendRequestArray, i)
+			end
+		end
+		
+		self:RefuseFriendRequestInOwner(sender, self.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void RefuseFriendRequestInOwner(Character sender)
+		_Table:Remove(self.friendRequestArray, sender)
+		for i = #self.friendRequestArray, 1, -1 do
+			if not isvalid(self.friendRequestArray[i]) then
+				table.remove(self.friendRequestArray, i)
+			end
+		end
+		
+		if isvalid(self.friendRequestArray[1]) then
+			self.uiManager.SocialModule:ShowPopup(self.friendRequestArray[1])
+		else
+			self.uiManager.SocialModule:HidePopup()
+		end
+	end
+
+	method void AcceptFriendRequestServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AcceptFriendRequest(Character sender)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		_Table:Remove(self.friendRequestArray, sender)
+		for i = #self.friendRequestArray, 1, -1 do
+			if not isvalid(self.friendRequestArray[i]) then
+				table.remove(self.friendRequestArray, i)
+			end
+		end
+		
+		local result
+		if not isvalid(sender) or not sender.isLoaded then
+			result = "UserNotFound"
+		elseif self:IsFriendWith(sender) then
+			result = "FriendAlready"
+		else
+			result = "Success"
+		end
+		
+		if result == "Success" then
+			self.friendTable[sender.Entity.Name] = {profileCode = sender.profileCode, nickname = sender.nickname}
+			sender.friendTable[self.Entity.Name] = {profileCode = self.profileCode, nickname = self.nickname}
+			self:AcceptFriendRequestInSender(sender.Entity.Name)
+			
+			if isvalid(self.player) and not isvalid(sender.player) and self.player.duel.isDueling then
+				self.player.commandManager:SetWatching(sender, self.player)
+			end
+			if isvalid(sender.player) and not isvalid(self.player) and sender.player.duel.isDueling then
+				sender.player.commandManager:SetWatching(self, sender.player)
+			end
+		end
+		self:AcceptFriendRequestInOwner(sender, result, self.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void AcceptFriendRequestInOwner(Character sender, string result)
+		_Table:Remove(self.friendRequestArray, sender)
+		for i = #self.friendRequestArray, 1, -1 do
+			if not isvalid(self.friendRequestArray[i]) then
+				table.remove(self.friendRequestArray, i)
+			end
+		end
+		
+		if isvalid(self.friendRequestArray[1]) then
+			self.uiManager.SocialModule:ShowPopup(self.friendRequestArray[1])
+		else
+			self.uiManager.SocialModule:HidePopup()
+		end
+		
+		if result == "Success" then
+			local user = _UserService.Users[sender.Entity.Name]
+			self.friendTable[sender.Entity.Name] = {profileCode = user.ProfileCode, nickname = user.Nickname}
+		else
+			self.uiManager.PopupModule:Open("AcceptFriendRequest" .. result, true, nil, nil)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void AcceptFriendRequestInSender()
+		local sender = _UserService.LocalPlayer.Character
+		local user = _UserService.Users[self.Entity.Name]
+		sender.friendTable[self.Entity.Name] = {profileCode = user.ProfileCode, nickname = user.Nickname}
+	end
+
+	method void UnfriendServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Unfriend(string userId)
+		if not self.isLoaded then
+			return
+		end
+		
+		if not self.friendTable[userId] then
+			self:UnfriendInOwner(userId, self.Entity.Name)
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(userEntity) and userEntity.Character.isLoaded then
+			local other = userEntity.Character
+			self.friendTable[userId] = nil
+			other.friendTable[self.Entity.Name] = nil
+			
+			if isvalid(self.player) and not isvalid(other.player) and self.player.duel.isDueling then
+				self.player.commandManager:SetWatching(other, self.player)
+			end
+			if isvalid(other.player) and not isvalid(self.player) and other.player.duel.isDueling then
+				other.player.commandManager:SetWatching(self, other.player)
+			end
+			
+			self:UnfriendInOther(userId)
+		else
+			self.friendTable[userId] = nil
+			
+			local userDataStorage = _DataStorageService:GetUserDataStorage(userId)
+			if userDataStorage ~= nil then
+				while true do
+					local resultCode, value = userDataStorage:GetAndWait("unfriendArray")
+					if resultCode == 0 then
+						if value == nil then
+							userDataStorage:SetAndWait("unfriendArray", "{}")
+							break
+						else
+							local unfriendArray = _MSON:FastStringToAny(value)
+							table.insert(unfriendArray, self.Entity.Name)
+							resultCode, value = userDataStorage:UpdateAndWait("unfriendArray", value, _MSON:FastAnyToString(unfriendArray))
+							if resultCode == 0 then
+								break
+							elseif resultCode == 2000000 then
+								continue
+							else
+								log(resultCode)
+								break
+							end
+						end
+					else
+						log(resultCode)
+						break
+					end
+				end
+			end
+		end
+		
+		self:UnfriendInOwner(userId, self.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void UnfriendInOther()
+		local other = _UserService.LocalPlayer.Character
+		other.friendTable[self.Entity.Name] = nil
+		
+		other.Entity:SendEvent(_Event:Unfriend(self.Entity.Name))
+	end
+
+	@ExecSpace("Client")
+	method void UnfriendInOwner(string userId)
+		self.friendTable[userId] = nil
+		
+		self.uiManager.InteractionModule:Close()
+		
+		self.Entity:SendEvent(_Event:Unfriend(userId))
+	end
+
+	method integer GetFriendCount()
+		return _Table:GetSize(self.friendTable)
+	end
+
+	method boolean IsBanned()
+		if _UtilLogic:IsNilorEmptyString(self.banStartDate) or _UtilLogic:IsNilorEmptyString(self.banEndDate) then
+			return false
+		end
+		
+		return DateTime(self.banStartDate) <= _DateTime:KtcNow() and _DateTime:KtcNow() <= DateTime(self.banEndDate)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBanned(string banStartDate, string banEndDate, string banReason)
+		self.banStartDate = banStartDate
+		self.banEndDate = banEndDate
+		self.banReason = banReason
+		
+		if self:IsUser() then
+			self:SetBannedInOwner(banStartDate, banEndDate, banReason, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetBannedInOwner(string banStartDate, string banEndDate, string banReason)
+		self.banStartDate = banStartDate
+		self.banEndDate = banEndDate
+		self.banReason = banReason
+		
+		if self:IsBanned() then
+		
+			self.uiManager.PopupModule:ShowBanMessage(banStartDate, banEndDate, banReason)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetEmotes(table emoteArray)
+		self.emoteArray = emoteArray
+		
+		if self:IsUser() then
+			self:SetEmotesInOwner(emoteArray, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetEmotesInOwner(table emoteArray)
+		self.emoteArray = emoteArray
+	end
+
+	method void PlayEmoteServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayEmote(integer index)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		self:PlayEmoteInClient(self.emoteArray[index])
+	end
+
+	@ExecSpace("Client")
+	method void PlayEmoteInClient(string emote)
+		if self:IsOwner() then
+			self.uiManager.EmoteModule:Close()
+		end
+		
+		self.Entity.AvatarRendererComponent:PlayEmotion(self.emoteManager:GetEmotionalType(emote), 3)
+		
+		local spriteRenderer = self.emoteEntity.SpriteRendererComponent
+		spriteRenderer.SpriteRUID = ""
+		spriteRenderer.SpriteRUID = self.resourceManager:GetResource("Emote")[emote]
+		local transform = self.emoteEntity.TransformComponent
+		transform.Position.x = 0
+		transform.Position.y = 0
+		transform.Position.z = 0
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+		
+		if self.emoteTweener then
+			self.emoteTweener:Destroy()
+		end
+		_TimerService:ClearTimer(self.emoteSortTimer)
+		_TimerService:ClearTimer(self.emoteTimer)
+		self.emoteTweener = _Tween:MoveAndScaleTo(self.emoteEntity, Vector2(0, 0.75), 2 * Vector2.one, 0.125, EaseType.Linear, EaseType.Linear, false)
+		self.emoteSortTimer = _TimerService:SetTimerRepeat(function()
+			spriteRenderer.SortingLayer = self.Entity.AvatarRendererComponent.SortingLayer
+			spriteRenderer.OrderInLayer = 5
+		end, 0.01)
+		self.emoteTimer = _TimerService:SetTimerOnce(function()
+			self.emoteTweener:Destroy()
+			_TimerService:ClearTimer(self.emoteSortTimer)
+			self.emoteTweener = _Tween:ScaleTo(self.emoteEntity, Vector2.zero, 0.125, EaseType.Linear)
+		end, 2.875)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnEmoteEffect()
+		self.emoteEntity = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Effect"), "Effect", Vector3(100, 100, 0), self.Entity)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetNewCards(table newCardTable)
+		self.newCardTable = newCardTable
+		
+		if self:IsUser() then
+			self:SetNewCardsInOwner(newCardTable, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetNewCardsInOwner(table newCardTable)
+		self.newCardTable = newCardTable
+	end
+
+	method boolean IsNewCard(table info)
+		local name = info.name
+		local variant = info.variant
+		local quality = info.quality
+		
+		if self.newCardTable ~= nil and self.newCardTable[name] ~= nil and self.newCardTable[name][variant] ~= nil and self.newCardTable[name][variant][quality] then
+			return true
+		else
+			return false
+		end
+	end
+
+	method void RemoveNewCardsServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveNewCards(table infoArray)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		for _, info in ipairs(infoArray) do
+			if not self:IsNewCard(info) then
+				continue
+			end
+			
+			local name = info.name
+			local variant = info.variant
+			local quality = info.quality
+			
+			local count = self.newCardTable[name][variant][quality]
+			if count ~= nil then
+				self.newCardTable[name][variant][quality] = nil
+			end
+			local t2 = self.newCardTable[name][variant]
+			if _Table:IsEmpty(t2) then
+				self.newCardTable[name][variant] = nil
+			end
+			local t1 = self.newCardTable[name]
+			if _Table:IsEmpty(t1) then
+				self.newCardTable[name] = nil
+			end
+		end
+		
+		self:RemoveNewCardsInOwner(infoArray, self.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void RemoveNewCardsInOwner(table infoArray)
+		for _, info in ipairs(infoArray) do
+			if not self:IsNewCard(info) then
+				continue
+			end
+			
+			local name = info.name
+			local variant = info.variant
+			local quality = info.quality
+			
+			local count = self.newCardTable[name][variant][quality]
+			if count ~= nil then
+				self.newCardTable[name][variant][quality] = nil
+			end
+			local t2 = self.newCardTable[name][variant]
+			if _Table:IsEmpty(t2) then
+				self.newCardTable[name][variant] = nil
+			end
+			local t1 = self.newCardTable[name]
+			if _Table:IsEmpty(t1) then
+				self.newCardTable[name] = nil
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetNewCardBacks(table newCardBackTable)
+		self.newCardBackTable = newCardBackTable
+		
+		if self:IsUser() then
+			self:SetNewCardBacksInOwner(newCardBackTable, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetNewCardBacksInOwner(table newCardBackTable)
+		self.newCardBackTable = newCardBackTable
+	end
+
+	method boolean IsNewCardBack(string cardBack)
+		return self.newCardBackTable[cardBack] == true
+	end
+
+	method void RemoveNewCardBacksServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveNewCardBacks(table cardBackArray)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		for _, cardBack in ipairs(cardBackArray) do
+			self.newCardBackTable[cardBack] = nil
+		end
+		
+		self:RemoveNewCardBacksInOwner(cardBackArray, self.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void RemoveNewCardBacksInOwner(table cardBackArray)
+		for _, cardBack in ipairs(cardBackArray) do
+			self.newCardBackTable[cardBack] = nil
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetTopRankPoint(integer topRankPoint)
+		self.topRankPoint = topRankPoint
+		
+		if self:IsUser() then
+			self:SetTopRankPointInOwner(topRankPoint, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetTopRankPointInOwner(integer topRankPoint)
+		self.topRankPoint = topRankPoint
+	end
+
+	method void FinishTutorialServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FinishTutorial()
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		self.finishedTutorial = true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void IncreaseSpecialEventAttendanceCount()
+		local key = self.temp.specialEventAttendanceCountKey
+		
+		local dateTime = _DateTime:KtcNow()
+		local days = _DateTime:KtcNowDays()
+		if dateTime < DateTime(2025, 6, 11) then
+			if self.temp.specialEventAttendanceCountkey ~= days then
+				self.temp.specialEventAttendanceCountkey = days
+				self.temp.specialEventAttendanceCount = (self.temp.specialEventAttendanceCount or 0) + 1
+			end
+		end
+		
+		self:IncreaseSpecialEventAttendanceCountInOwner(self.temp.specialEventAttendanceCount, self.temp.specialEventAttendanceCountkey, self.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void IncreaseSpecialEventAttendanceCountInOwner(integer specialEventAttendanceCount, integer specialEventAttendanceCountKey)
+		self.temp.specialEventAttendanceCount = specialEventAttendanceCount
+		self.temp.specialEventAttendanceCountKey = specialEventAttendanceCountKey
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		if not self:IsUser() or not self.isLoaded then
+			return
+		end
+		
+		local dateTime = _DateTime:KtcNow()
+		if dateTime ~= nil and self.dateTime ~= nil and self.dateTime.Day + 1 == dateTime.Day then
+			self:IncreaseSpecialEventAttendanceCount()
+		end
+		
+		self.dateTime = dateTime
+	end
+
+	method void ReceiveCardPacksBySpecialEventServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReceiveCardPacksBySpecialEvent(integer index)
+		if not self.isLoaded then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local success = false
+		local dateTime = _DateTime:KtcNow()
+		if dateTime < DateTime(2025, 6, 11) then
+			if self.temp.specialEventReceiveTable == nil then
+				self.temp.specialEventReceiveTable = {}
+			end
+			if not self.temp.specialEventReceiveTable[string.format("Day%d", index)] then
+				self.temp.specialEventReceiveTable[string.format("Day%d", index)] = true
+				
+				success = true
+			end
+		end
+		
+		local cardPackName
+		local count
+		if index == 1 then
+			cardPackName = "ClassicEpic"
+			count = 5
+		elseif index == 2 then
+			cardPackName = "NautilusEpic"
+			count = 5
+		elseif index == 3 then
+			cardPackName = "ClassicUnique"
+			count = 5
+		elseif index == 4 then
+			cardPackName = "NautilusUnique"
+			count = 5
+		elseif index == 5 then
+			cardPackName = "ClassicLegendary"
+			count = 10
+		elseif index == 6 then
+			cardPackName = "NautilusEpic"
+			count = 10
+		elseif index == 7 then
+			cardPackName = "ClassicEpic"
+			count = 10
+		elseif index == 8 then
+			cardPackName = "NautilusUnique"
+			count = 5
+		elseif index == 9 then
+			cardPackName = "ClassicUnique"
+			count = 10
+		elseif index == 10 then
+			cardPackName = "NautilusLegendary"
+			count = 10
+		end
+		
+		local infos
+		if success then
+			infos = {}
+			for i = 1, count do
+				local infoArray = self.cardPackManager:GetInfos(cardPackName)
+				self:GainCards(infoArray, "OpenCardPack")
+				table.insert(infos, infoArray)
+			end
+			
+			self.cardPackData = {
+				name = cardPackName,
+				infos = infos,
+				index = 1,
+			}
+		end
+		
+		if self:IsUser() then
+			self:ReceiveCardPacksBySpecialEventInOwner(cardPackName, count, index, success, infos, self.Entity.Name)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ReceiveCardPacksBySpecialEventInOwner(string cardPackName, integer count, integer index, boolean success, table infos)
+		if not success then
+			return
+		end
+		
+		if self.temp.specialEventReceiveTable == nil then
+			self.temp.specialEventReceiveTable = {}
+		end
+		self.temp.specialEventReceiveTable[string.format("Day%d", index)] = true
+		for _, infoArray in ipairs(infos) do
+			self:GainCards(infoArray, nil)
+		end
+		self.uiManager.CardPackModule:Open(cardPackName, count)
+		self.uiManager.EventModule:ReceiveCardPacksBySpecialEvent(index)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchEvent(TouchEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: TouchReceiveComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local TouchId = event.TouchId
+		-- local TouchPoint = event.TouchPoint
+		---------------------------------------------------------
+		
+		if not _UserService.LocalPlayer.Character.isLoaded or _Server:IsRequesting() then
+			return
+		end
+		
+		_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+		
+		if self:IsOwner() then
+			self.uiManager.EmoteModule:Open()
+		else
+			self.uiManager.InteractionModule:Open(self)
+		end
+		
+	end
+
+	@EventSender("Service", "UserService")
+	handler HandleUserLeaveEvent(UserLeaveEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: UserService
+		-- Space: Server
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local ProfileCode = event.ProfileCode
+		local UserId = event.UserId
+		---------------------------------------------------------
+		
+		if self.Entity.Name ~= UserId then
+			return
+		end
+		
+		local home = self.Entity.CurrentMap.Home
+		if isvalid(home) then
+			home:CancelMatching(self)
+		end
+		
+		local duel = self.Entity.CurrentMap.Map.duel
+		if isvalid(duel) and duel.isDueling and isvalid(self.player) then
+			local winner = self.player.opponent
+			duel.commandManager:RunCommand("EndDuel", {winner}, {})
+		end
+		
+		if isvalid(self.player) then
+			duel:ClearBeginDuelTimer()
+			self.player.character = nil
+			self.player.isReady = false
+			self.player.isServing = true
+		end
+		
+		if self.Entity.Name == UserId and self.isLoaded then
+			self.lastWorldExitDate = _DateTime:KtcNow():ToFormattedString("yyyy-MM-dd HH:mm:ss")
+			
+			local userDataStorage = _DataStorageService:GetUserDataStorage(self.Entity.Name)
+			userDataStorage:BatchSetAndWait({
+				temp = _MSON:FastAnyToString(self.temp),
+				meso = _MSON:FastAnyToString(self.meso),
+				dailyRankedWinMeso = _MSON:FastAnyToString(self.dailyRankedWinMeso),
+				dailyRankedWinMesoKey = _MSON:FastAnyToString(self.dailyRankedWinMesoKey),
+				dailyPlayMeso = _MSON:FastAnyToString(self.dailyPlayMeso),
+				dailyPlayMesoKey = _MSON:FastAnyToString(self.dailyPlayMesoKey),
+				dailyRankedPlayCount = _MSON:FastAnyToString(self.dailyRankedPlayCount),
+				dailyRankedPlayCountKey = _MSON:FastAnyToString(self.dailyRankedPlayCountKey),
+				cardTable = _MSON:FastAnyToString(self.cardTable),
+				newCardTable = _MSON:FastAnyToString(self.newCardTable),
+				cardBackTable = _MSON:FastAnyToString(self.cardBackTable),
+				newCardBackTable = _MSON:FastAnyToString(self.newCardBackTable),
+				cardBack = _MSON:FastAnyToString(self.cardBack),
+				deckArray = _MSON:FastAnyToString(self.deckArray),
+				deckIndex = _MSON:FastAnyToString(self.deckIndex),
+				friendTable = _MSON:FastAnyToString(self.friendTable),
+				topRankPoint = _MSON:FastAnyToString(self.topRankPoint),
+				finishedTutorial = _MSON:FastAnyToString(self.finishedTutorial),
+				
+				profileCode = _MSON:FastAnyToString(self.profileCode),
+				nickname = _MSON:FastAnyToString(self.nickname),
+				firstWorldEnterDate = _MSON:FastAnyToString(self.firstWorldEnterDate),
+				lastWorldEnterDate = _MSON:FastAnyToString(self.lastWorldEnterDate),
+				lastWorldExitDate = _MSON:FastAnyToString(self.lastWorldExitDate),
+			})
+			
+			local resultCode, memory = _WorldInstanceService:GetSharedMemory("User")
+			if resultCode ~= SharedMemoryResultCode.OK then
+				log(resultCode)
+				return
+			end
+			
+			memory:DeleteVariableAndWait(UserId)
+		end
+	end
+
+end

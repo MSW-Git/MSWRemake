@@ -1,0 +1,160 @@
+@Component
+script C50002_Zakum_Skill extends Component
+
+	property number skillAnimLength = 0.72
+
+	property string BuffEffectRUID = "e07a739f28794a6ba87a5a98d30c0a21"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		--------------------------------------------------
+		-- 가장 낮은 체력 유닛(인원은 레벨에 따라)을 찾아 회복합니다.
+		--------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		local myTeams = {}
+		if unitInfo.TeamType == "User" then
+			myTeams = teamManager.OwnUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			myTeams = teamManager.EnemyUnits
+		end
+		
+		local checkMyTeams = _BTLogic_New:getEntities(myTeams, "Alive")
+		
+		for idx, unit in pairs(checkMyTeams) do
+			if unit == myUnit then
+				table.remove(checkMyTeams, idx)
+				break
+			end
+		end
+		
+		local invincibleUnitCount = _S01_SkillDescLogic.C50002_Active_InvincibleCount_Int[unitInfo.level]
+		local getBuffTeams = _BTLogic_New:getTargets(unitInfo.setTile, checkMyTeams, "HPper_Low_" .. math.floor(invincibleUnitCount))
+		
+		local getDefandMr = unitStatus.MaxHP * _S01_SkillDescLogic.C50002_Active_GetDefAndMr_MaxHPPer[unitInfo.level]
+		local invincibleTime = tonumber(_S01_SkillDescLogic.C50002_Active_InvincibleTime_Int[unitInfo.level])
+		
+		
+		for _, unit in pairs(getBuffTeams) do
+			if _BTLogic_New:CheckAttackAble(myUnit, unit, "Skill") then
+				self:SetBuffEffect(unit, unitInfo.OwnerId)
+			end
+		end
+		
+		local function setBuffFnc()
+			for _, unit in pairs(getBuffTeams) do
+				if _BTLogic_New:CheckAttackAble(myUnit, unit, "Skill") then
+					_StatusChangeLogic:GetBuff(unit, "Add_Defence", getDefandMr, -1)
+					_StatusChangeLogic:GetBuff(unit, "Add_MagicalResistance", getDefandMr, -1)
+					_StatusChangeLogic:SetStatus(myUnit, unit, "SE0001", invincibleTime)
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(setBuffFnc, 0.56 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0134",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetBuffEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		local scale = 1
+		if targetUnit == myUnit and unitInfo.unitPhaseNumber == 2 then
+			scale = 1.7
+		end
+		
+		-- buffeffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.BuffEffectRUID, targetUnit, Vector3.zero, 0, Vector3.one * 0.5 * scale, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void PhaseChange()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		-----------------------------------------------------
+		-- 4초간 무적/행동불가 및 회복
+		_StatusChangeLogic:SetStatus(myUnit, self.Entity, "SE0001", 1.6)
+		self.Entity.UnitAIWanderComponent.setBattle = false
+		unitStatus:SetProperty("state", "Idle", "")
+		
+		-- 페이즈 변경
+		unitInfo:SetPropertyToServer("unitPhaseNumber", 2, nil, true)
+		
+		-- 보호막 획득
+		local getShieldAmount = unitStatus.MaxHP - unitStatus.HP
+		_StatusChangeLogic:SetShield(myUnit, myUnit, getShieldAmount, -1, "Skill")
+		
+		-- 사거리 증가
+		_StatusChangeLogic:GetBuff(myUnit, "Add_AttackRange", 997, -1)
+		
+		-- 1.6초 후, 다시 전투 참여
+		local function ChangedFnc()
+			self.Entity.UnitAIWanderComponent.setBattle = true
+		end
+		
+		_TimerService:SetTimerOnce(ChangedFnc, 1.6)
+		
+		-- 페이즈 변경 애니메이션
+		-- unitStatus:SetProperty("state", "SetMotion", "")
+		self:PhaseChangeAnimationSet(unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void PhaseChangeAnimationSet()
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local spriteRenderer = unitInfo.spriteRenderer
+		local spriteRUID = "6ef9e77de7e94bb2900d93888e597534"
+		
+		-- changeeffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached("95c249b02c2147a59c1705c1aa035e77", unit, Vector3(0, 0, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+		
+		
+		if isvalid(unitInfo.spriteRenderer) then
+			spriteRenderer.SpriteRendererComponent.PlayRate = 1
+			spriteRenderer.SpriteRendererComponent.SpriteRUID = spriteRUID
+		end
+	end
+
+	@ExecSpace("Server")
+	method void Reset()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local animComponent = myUnit.UnitAnimationComponent
+		
+		-- 페이즈 변경
+		unitInfo:SetPropertyToServer("unitPhaseNumber", 1, nil, true)
+		animComponent:PlayAnimation(1, "Idle", myUnit, unitInfo.OwnerId)
+	end
+
+end

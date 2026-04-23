@@ -1,0 +1,567 @@
+@Logic
+script CollectionLogic extends Logic
+
+	property table equipCollectionSet = {}
+
+	property UIEquipCollectionPopup EquipCollectionPopup = "b46c296b-b750-4418-89c7-566ef8a6454e"
+
+	property string selectedListId = ""
+
+	property string selectedMaterialId = ""
+
+	property number selectedMaterialSlotNum = 0
+
+	property table selectedUniqueKey = {}
+
+	property table statusTable = {}
+
+	property integer maxCollectionSize = 0
+
+	method void OnBeginPlay()
+		-- 컬렉션 데이터를 로드하고 초기화
+		local data = _DataService:GetTable("EquipCollectionSetList")
+		
+		for i = 1, data:GetRowCount() do
+			local equipSet = {}
+			equipSet.id = data:GetCell(i, "id")
+			equipSet.materialTypeCount = tonumber(data:GetCell(i, "materialTypeCount"))
+			equipSet.name = data:GetCell(i, "name")
+			equipSet.material1_id = data:GetCell(i, "material_1")
+			equipSet.material2_id = data:GetCell(i, "material_2")
+			equipSet.material3_id = data:GetCell(i, "material_3")
+			equipSet.material4_id = data:GetCell(i, "material_4")
+			equipSet.material5_id = data:GetCell(i, "material_5")
+			
+			equipSet.material1_count = tonumber(data:GetCell(i, "count_1"))
+			equipSet.material2_count = tonumber(data:GetCell(i, "count_2"))
+			equipSet.material3_count = tonumber(data:GetCell(i, "count_3"))
+			equipSet.material4_count = tonumber(data:GetCell(i, "count_4"))
+			equipSet.material5_count = tonumber(data:GetCell(i, "count_5"))
+			
+			equipSet.status_id = data:GetCell(i, "status_Id_1")
+			equipSet.status_value = tonumber(data:GetCell(i, "status_Value_1"))
+		
+			equipSet.rowNumber = i
+			
+			equipSet.category = data:GetCell(i, "category") 
+			equipSet.grade = data:GetCell(i, "grade") 
+			
+			
+			self.equipCollectionSet[equipSet.rowNumber] = equipSet
+			self.statusTable[equipSet.id] = equipSet
+		
+		end
+		
+		self.maxCollectionSize = data:GetRowCount()
+		
+	end
+
+	method table GetRowList(number gradeNum, number page)
+		-- 등급과 페이지에 따른 컬렉션 행 목록을 반환
+		
+		
+		
+		local startRowNumber = 0
+		local endRowNumber = 0 
+		local totalPage = 0
+		
+		if gradeNum == 1 then
+			startRowNumber = 1
+			endRowNumber = 26
+		elseif gradeNum == 2 then
+			startRowNumber = 27 
+			endRowNumber = 59
+		elseif gradeNum == 3 then
+			startRowNumber = 60
+			endRowNumber = 91
+		elseif gradeNum == 4 then
+			startRowNumber = 92
+			endRowNumber = 129
+		elseif gradeNum == 5 then
+			startRowNumber = 130
+			endRowNumber = 174
+		end
+		
+		startRowNumber = startRowNumber + 4 * (page - 1)
+		totalPage = (endRowNumber - startRowNumber + 1) / 4
+		
+		local rowNum = startRowNumber
+		local temp = {}
+		
+		for i = startRowNumber, startRowNumber + 4 do
+			if rowNum > endRowNumber then
+				break
+			else
+				rowNum = rowNum + 1
+				table.insert(temp, i)
+			end
+		end
+		return temp
+	end
+
+	method number GetTotalPage(number gradeNum)
+		-- 등급별 컬렉션의 총 페이지 수를 계산
+		local startRowNumber = 0
+		local endRowNumber = 0 
+		local totalPage = 0
+		
+		if gradeNum == 1 then
+			startRowNumber = 1
+			endRowNumber = 26
+		elseif gradeNum == 2 then
+			startRowNumber = 27
+			endRowNumber = 59
+		elseif gradeNum == 3 then
+			startRowNumber = 60
+			endRowNumber = 91
+		elseif gradeNum == 4 then
+			startRowNumber = 92
+			endRowNumber = 129
+		elseif gradeNum == 5 then
+			startRowNumber = 130
+			endRowNumber = 174
+		end
+		
+		totalPage = math.ceil( ((endRowNumber - startRowNumber + 1) / 4) )
+		return totalPage
+	end
+
+	method table GetEquipCollectionMaterialList(Entity player, string findId)
+		-- 플레이어 인벤토리에서 컬렉션 재료 목록을 검색
+		local storage = player.PlayerStorageComponent.storage
+		local materialList = {}
+		
+		local isAccessory = false
+		if isvalid(_ItemDataLogic.itemData[findId]) then
+			if _ItemDataLogic.itemData[findId].category == "accessory" then
+				isAccessory = true
+			end
+		end
+		
+		for key, value in pairs(storage) do
+			if value.originalId == findId then
+				if value.lock == false then 
+					
+					if isAccessory == true then
+						local grade = _UtilLogic:Split(self.statusTable[self.selectedListId].grade, "_")
+						if value.grade == grade[2] then
+							materialList[value.uniqueKey] = value			
+						end
+						
+					else
+						materialList[value.uniqueKey] = value			
+					end
+			
+				end
+			end
+		end
+		
+		return materialList
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RegisterToCollection(Entity player)
+		-- 선택된 재료들을 컬렉션에 등록 요청
+		self:RegisterToCollectionInServer(self.selectedListId, self.selectedMaterialId, self.selectedMaterialSlotNum, self.selectedUniqueKey, "CollectionRegist")
+		table.clear(self.selectedUniqueKey)
+		
+	end
+
+	@ExecSpace("Server")
+	method void RegisterToCollectionInServer(string selectedListId, string selectedMaterialId, number selectedMaterialSlotNum, table selectedUniqueKey, string source)
+		-- 서버에서 컬렉션 등록 처리
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if player.PlayerCollectionComponent.canRequestRegistCollection == false then
+			_LocalizeLogic:ShowToast("toast23", senderUserId)
+			return
+		end
+		player.PlayerCollectionComponent.canRequestRegistCollection = false
+		
+		local remainCount = #selectedUniqueKey
+		
+		for i = 1, #selectedUniqueKey do
+			remainCount = remainCount - 1
+			player.PlayerCollectionComponent:RegisterToCollectionTable(selectedListId, selectedMaterialId, selectedMaterialSlotNum, selectedUniqueKey[i], source, remainCount)
+		end
+		
+		player.PlayerCollectionComponent.canRequestRegistCollection = true
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetCollectionStatusTable(table collectionTable, Entity player)
+		-- 컬렉션 완성도에 따른 스탯 보너스를 계산
+		local statusTable = {}
+		local collectionCompo = player.PlayerCollectionComponent
+		
+		statusTable["maxHp"] = 0
+		statusTable["hpRecovery"] = 0 
+		statusTable["speed"] = 0
+		
+		statusTable["attackSpeed"] = 0
+		statusTable["range"] = 0
+		statusTable["evade"] = 0
+		statusTable["hitDamage"] = 0
+		
+		statusTable["totalDamage"] = 0
+		statusTable["bossDamage"] = 0
+		statusTable["physicalDamage"] = 0
+		statusTable["magicalDamage"] = 0
+		statusTable["criticalDamage"] = 0
+		statusTable["criticalPercent"] = 0
+		
+		
+		for key, value in pairs(collectionTable) do
+			local count = collectionCompo:GetMaterialTypeCount(key)
+		
+			if _CollectionLogic.statusTable[key].category == "weapon" then
+				for i = 1 , count do		
+					if _GameUtil:GetNumberValueTen(key,i,player) == false then
+						break
+					end
+					if i == count then
+						statusTable[self.statusTable[key].status_id] = statusTable[self.statusTable[key].status_id] + tonumber(self.statusTable[key].status_value)
+					end
+				end		
+			elseif  _CollectionLogic.statusTable[key].category == "armor" then
+				for i = 1 , count do		
+					if _GameUtil:GetBoolValue(value,i) == false then
+						break
+					end
+					if i == count then
+						statusTable[self.statusTable[key].status_id] = statusTable[self.statusTable[key].status_id] + tonumber(self.statusTable[key].status_value)
+					end
+				end	
+			elseif   _CollectionLogic.statusTable[key].category == "accessory" then
+				for i = 1 , count do		
+					if _GameUtil:GetNumberValueTen(key,i,player) == false then
+						break
+					end
+					if i == count then
+						statusTable[self.statusTable[key].status_id] = statusTable[self.statusTable[key].status_id] + tonumber(self.statusTable[key].status_value)
+					end
+				end		
+			end
+		end
+		
+		return statusTable
+	end
+
+	method number GetCollectionClearCount(Entity player, table collectionTable)
+		-- 플레이어가 완성한 컬렉션 개수를 계산
+		local completedCount = 0
+		local collectionCompo = player.PlayerCollectionComponent
+		
+		for key, value in pairs(collectionTable) do
+		
+			local count = collectionCompo:GetMaterialTypeCount(key)
+		
+			if _CollectionLogic.statusTable[key].category == "weapon" then
+				for i = 1 , count do		
+					if _GameUtil:GetNumberValueTen(key,i,player) == false then
+						break
+					end
+					if i == count then
+						completedCount = completedCount + 1
+					end
+				end		
+			elseif  _CollectionLogic.statusTable[key].category == "armor" then
+				for i = 1 , count do		
+					if _GameUtil:GetBoolValue(value,i) == false then
+						break
+					end
+					if i == count then
+						completedCount = completedCount + 1 
+					end
+				end	
+			elseif  _CollectionLogic.statusTable[key].category == "accessory" then
+				for i = 1 , count do		
+					if _GameUtil:GetNumberValueTen(key,i,player) == false then
+						break
+					end
+					if i == count then
+						completedCount = completedCount + 1
+					end
+				end			
+			end
+			
+		
+		end
+		
+		return completedCount
+	end
+
+	method string GetCollectionEquippedCount(string listId, integer n, Entity player)
+		-- 컬렉션의 특정 재료 슬롯 등록 개수를 문자열로 반환
+		
+		local collection = player.PlayerCollectionComponent.eCollectionTable
+		local value = collection[listId]
+		
+		local mat1 = _CollectionLogic.statusTable[listId].material1_count 
+		local mat2 = _CollectionLogic.statusTable[listId].material2_count
+		local mat3 = _CollectionLogic.statusTable[listId].material3_count
+		local mat4 = _CollectionLogic.statusTable[listId].material4_count
+		local mat5 = _CollectionLogic.statusTable[listId].material5_count 
+		
+		if value == nil then
+			if n == 1 then
+				return "0/"..tostring(mat1)
+			elseif n ==  2 then
+				return "0/"..tostring(mat2)
+			elseif n ==  3 then
+				return "0/"..tostring(mat3)
+			elseif n ==  4 then
+				return "0/"..tostring(mat4)
+			elseif n ==  5 then
+				return "0/"..tostring(mat5)
+			end
+		else	
+			if n == 1 then
+				return tonumber(value:sub(1,3)).."/"..mat1
+			elseif n ==  2 then
+				return tonumber(value:sub(4,6)).."/"..mat2
+			elseif n ==  3 then
+				return tonumber(value:sub(7,9)).."/"..mat3
+			elseif n ==  4 then
+				return tonumber(value:sub(10,12)).."/"..mat4
+			elseif n ==  5 then
+				return tonumber(value:sub(13,15)).."/"..mat5
+			end
+		end
+		
+		return ""
+	end
+
+	method boolean CheckAvailableRegisterCollectionWeapon()
+		-- 무기 컬렉션 등록 가능 여부를 확인
+		local materialList = #self.selectedUniqueKey 
+		if materialList == nil then
+			materialList = 0 
+		end
+		local collectionTable = _CollectionLogic.statusTable[self.selectedListId]
+		local needMaterialMaxCount = 0
+		
+		local eCollectionTable = _UserService.LocalPlayer.PlayerCollectionComponent.eCollectionTable
+		local idValue = ""
+		
+		if eCollectionTable[self.selectedListId] ~= nil then
+			idValue = eCollectionTable[self.selectedListId]
+		end
+		
+		local registeredCount = _GameUtil:GetWeaponCollectionNumber(idValue, self.selectedMaterialSlotNum) 
+		
+		if self.selectedMaterialSlotNum == 1 then
+			needMaterialMaxCount = collectionTable.material1_count
+		elseif self.selectedMaterialSlotNum == 2 then
+			needMaterialMaxCount = collectionTable.material2_count
+		elseif self.selectedMaterialSlotNum == 3 then
+			needMaterialMaxCount = collectionTable.material3_count
+		elseif self.selectedMaterialSlotNum == 4 then
+			needMaterialMaxCount = collectionTable.material4_count
+		elseif self.selectedMaterialSlotNum == 5 then
+			needMaterialMaxCount = collectionTable.material5_count
+		end
+		
+		if materialList + 1 <= needMaterialMaxCount - registeredCount then
+			return true
+		else
+			return false
+		end
+	end
+
+	method boolean CheckAvailableRegisterCollectionArmor()
+		-- 방어구 컬렉션 등록 가능 여부를 확인
+		local materialList = #self.selectedUniqueKey 
+		if materialList == nil then
+			materialList = 0
+		end
+		local collectionTable = _CollectionLogic.statusTable[self.selectedListId]
+		local needMaterialMaxCount = 0
+		
+		local eCollectionTable = _UserService.LocalPlayer.PlayerCollectionComponent.eCollectionTable
+		local registeredCount = 0
+		
+		local idValue = 0
+		
+		if eCollectionTable[self.selectedListId] ~= nil then
+			idValue = eCollectionTable[self.selectedListId]
+		end
+		
+		if _GameUtil:GetBoolValue(idValue, self.selectedMaterialSlotNum) then
+			registeredCount = 1
+		else
+			registeredCount = 0 
+		end
+		
+		if self.selectedMaterialSlotNum == 1 then
+			needMaterialMaxCount = collectionTable.material1_count
+		elseif self.selectedMaterialSlotNum == 2 then
+			needMaterialMaxCount = collectionTable.material2_count
+		elseif self.selectedMaterialSlotNum == 3 then
+			needMaterialMaxCount = collectionTable.material3_count
+		elseif self.selectedMaterialSlotNum == 4 then
+			needMaterialMaxCount = collectionTable.material4_count
+		elseif self.selectedMaterialSlotNum == 5 then
+			needMaterialMaxCount = collectionTable.material5_count
+		end
+		
+		if materialList + 1 <= needMaterialMaxCount - registeredCount then
+			return true
+		else
+			return false
+		end
+	end
+
+	method void RefreshCollectionPopupUI()
+		-- 컬렉션 팝업 UI를 새로고침하고 버튼 상태를 업데이트
+		local category= self.statusTable[self.selectedListId].category
+		
+		if #self.selectedUniqueKey >= 1 then 
+			self.EquipCollectionPopup.collection_SelectAllButton.TextComponent.Text =  _LocalizeLogic:GetText("CollectionLogic_Text_1") 
+			
+			self.EquipCollectionPopup.collection_RegistButton.SpriteGUIRendererComponent.ImageRUID = "fc7aab99a8e549e58d891d50f594ecd6" 
+			self.EquipCollectionPopup.collection_RegistButton.TextComponent.FontColor = Color.FromHexCode("#ffffff")
+			self.EquipCollectionPopup.collection_RegistButton.TextComponent.OutlineColor = Color.FromHexCode("#589334") 
+		
+		else 
+			self.EquipCollectionPopup.collection_SelectAllButton.TextComponent.Text = _LocalizeLogic:GetText("ui_EquipCollectionGroup_text_5") 
+			
+			self.EquipCollectionPopup.collection_RegistButton.SpriteGUIRendererComponent.ImageRUID = "dcb7b47e9c5048e09f56691f1b29fd29" 
+			self.EquipCollectionPopup.collection_RegistButton.TextComponent.FontColor = Color.FromHexCode("#d1d1d1")
+			self.EquipCollectionPopup.collection_RegistButton.TextComponent.OutlineColor = Color.FromHexCode("#616161") 
+		end
+		
+		if category == "armor" then 
+			local collectionTable = _CollectionLogic.statusTable[self.selectedListId]
+			local needMaterialMaxCount = 0 
+		
+			if self.selectedMaterialSlotNum == 1 then
+				needMaterialMaxCount = collectionTable.material1_count
+			elseif self.selectedMaterialSlotNum == 2 then
+				needMaterialMaxCount = collectionTable.material2_count
+			elseif self.selectedMaterialSlotNum == 3 then
+				needMaterialMaxCount = collectionTable.material3_count
+			elseif self.selectedMaterialSlotNum == 4 then
+				needMaterialMaxCount = collectionTable.material4_count
+			elseif self.selectedMaterialSlotNum == 5 then
+				needMaterialMaxCount = collectionTable.material5_count
+			end
+		
+			
+			local idValue = 0
+			
+			local eCollectionTable = _UserService.LocalPlayer.PlayerCollectionComponent.eCollectionTable
+			if eCollectionTable[self.selectedListId] ~= nil then
+				idValue = eCollectionTable[self.selectedListId]
+			end
+			
+			local registeredCount = 0 
+			if _GameUtil:GetBoolValue(idValue, self.selectedMaterialSlotNum) then
+				registeredCount = 1
+			else
+				registeredCount = 0 
+			end
+		
+			self.EquipCollectionPopup.collection_RegistedCount.TextComponent.Text = "("..tostring(registeredCount + #self.selectedUniqueKey.."/"..needMaterialMaxCount)..")"
+			
+		elseif category == "weapon" or category == "accessory" then 
+			local collectionTable = _CollectionLogic.statusTable[self.selectedListId]
+			local needMaterialMaxCount = 0 
+		
+			local eCollectionTable = _UserService.LocalPlayer.PlayerCollectionComponent.eCollectionTable
+			local idValue = ""
+		
+			if eCollectionTable[self.selectedListId] ~= nil then
+				idValue = eCollectionTable[self.selectedListId]
+			end
+		
+			if self.selectedMaterialSlotNum == 1 then
+				needMaterialMaxCount = collectionTable.material1_count
+			elseif self.selectedMaterialSlotNum == 2 then
+				needMaterialMaxCount = collectionTable.material2_count
+			elseif self.selectedMaterialSlotNum == 3 then
+				needMaterialMaxCount = collectionTable.material3_count
+			elseif self.selectedMaterialSlotNum == 4 then
+				needMaterialMaxCount = collectionTable.material4_count
+			elseif self.selectedMaterialSlotNum == 5 then
+				needMaterialMaxCount = collectionTable.material5_count
+			end
+		
+			local registeredCount = _GameUtil:GetWeaponCollectionNumber(idValue, self.selectedMaterialSlotNum) 
+			
+			self.EquipCollectionPopup.collection_RegistedCount.TextComponent.Text = "("..tostring(registeredCount + #self.selectedUniqueKey.."/"..needMaterialMaxCount)..")"
+		end
+		
+		
+		if _ItemDataLogic.equipmentData[self.selectedMaterialId] ~= nil then
+			if category == "armor" then
+				self.EquipCollectionPopup.collection_MaterialName.TextComponent.Text = _LocalizationService:GetText(_ItemDataLogic.equipmentData[self.selectedMaterialId].name)
+			elseif category == "weapon" then
+				self.EquipCollectionPopup.collection_MaterialName.TextComponent.Text = _LocalizationService:GetText(_WeaponSpecLogic.weaponData[self.selectedMaterialId].type)
+			end
+		else
+			if isvalid(_ItemDataLogic.itemData[self.selectedMaterialId]) and category == "accessory" then
+				self.EquipCollectionPopup.collection_MaterialName.TextComponent.Text = _LocalizeLogic:GetItemName(self.selectedMaterialId)  
+			else
+				self.EquipCollectionPopup.collection_MaterialName.TextComponent.Text = _LocalizeLogic:GetText("CollectionLogic_Text_3") 
+			end
+		end
+	end
+
+	method table GetAccessoryGrade(string stringText)
+		-- 액세서리 등급 문자열을 분리하여 반환
+		local grade = _UtilLogic:Split(stringText, "_") 
+		
+		return grade
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleSelectCollectionMaterial(SelectCollectionMaterial event)
+		-- 컬렉션 재료 선택/해제 이벤트를 처리
+		local uniqueKey = event.uniqueKey
+		local user = event.user
+		local slot = event.slot
+		local category = event.category
+		local requestState = event.requestState 
+		
+		for i = 1, #self.selectedUniqueKey do
+			if self.selectedUniqueKey[i] == uniqueKey then 
+		
+				if slot ~= nil then
+					slot.EquipCollectionInventoryMaterialSlot.selected:SetEnable(false)
+				end
+		
+				table.remove(self.selectedUniqueKey, i) 
+				goto refreshUI
+			end
+		end
+		
+		if requestState == "removeAll" then 
+			goto refreshUI 
+		end
+		
+		if category == "armor" then
+			if not _CollectionLogic:CheckAvailableRegisterCollectionArmor() then
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast39")) 
+				goto refreshUI
+			end
+		elseif category == "weapon" then
+			if not _CollectionLogic:CheckAvailableRegisterCollectionWeapon() then
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast40")) 
+				goto refreshUI
+			end
+		end
+		
+		
+		table.insert(self.selectedUniqueKey, uniqueKey)
+		if slot ~= nil then
+			slot.EquipCollectionInventoryMaterialSlot.selected:SetEnable(true)
+		end
+		
+		
+		::refreshUI::
+		self:RefreshCollectionPopupUI()
+	end
+
+end

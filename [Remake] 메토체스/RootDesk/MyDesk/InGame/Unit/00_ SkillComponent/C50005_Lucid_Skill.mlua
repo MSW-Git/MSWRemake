@@ -1,0 +1,191 @@
+@Component
+script C50005_Lucid_Skill extends Component
+
+	property number skillAnimLength = 2.28
+
+	@Sync
+	property Entity projectile = nil
+
+	property string attackProjectileRUID = "e05a8d284c3c453ea66691603c1d856c"
+
+	property string attackProjectile2RUID = "2a128870bab049aebd3c5ffcb7b8b15b"
+
+	property string hitEffectRUID = "3eb78fed9f634164ac9171bb0089b1e4"
+
+	property string hitEffect2RUID = "573575eadb954922b8ad5c2e2614a0c6"
+
+	property number skillCount = 0
+
+	property boolean Revive = true
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local nowSkillCount = _S01_SkillDescLogic.C50005_Active_SkillCount_Int[unitInfo.level] + self.skillCount
+		-- self.skillCount += 1
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		-- projectile Spwan
+		local function ProjectileSpawn()
+			local enemies = {}
+			if unitInfo.TeamType == "Enemy" then
+				enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+			elseif unitInfo.TeamType == "User" then
+				enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+			end
+			
+			local setUnits = _BTLogic_New:getTargets(unitInfo.setTile, enemies, "Nearest_" .. nowSkillCount)
+			
+			for i = 1, #setUnits do
+				if _BTLogic_New:CheckAttackAble(myUnit, setUnits[i], "Skill") then
+				self.projectile = _UnitSetLogic_New:GetProjectileEntity(unitInfo.OwnerId, "Skill")
+					self.projectile:AddComponent(C50005_Lucid_SkillprojectileInfo)
+				
+					if i%2 == 1 then
+						self.projectile.C50005_Lucid_SkillprojectileInfo.projectileNum = 1
+						self.projectile.SpriteRendererComponent.SpriteRUID = self.attackProjectileRUID
+					else
+						self.projectile.C50005_Lucid_SkillprojectileInfo.projectileNum = 2
+						self.projectile.SpriteRendererComponent.SpriteRUID = self.attackProjectile2RUID
+					end	
+					self.projectile.TransformComponent.Scale = unitInfo.spriteRenderer.TransformComponent.Scale
+					self.projectile.SpriteRendererComponent.FlipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+					_GeneralDirectorLogic:SetEffectAlpha(self.projectile,unitInfo.OwnerId)
+					
+					if isvalid(setUnits[i]) then
+						self.projectile.C50005_Lucid_SkillprojectileInfo:SetProjectile(self.Entity, setUnits[i], 0.8, 1, 0.5)
+					end
+				end
+			end
+			--사운드
+			_PlaySoundLogic:PlaySound("M0137",self.Entity.UnitInfo.OwnerId)
+		end
+		
+		_TimerService:SetTimerOnce(ProjectileSpawn, 0.9 / skillRate)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit, number projectileNum)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C50005_Active_SDamage_Magic[unitInfo.level]
+			
+			
+			local count = 0
+			local damageTimer = 0
+			local function setDamageFnc()
+				count += 1
+				self:HitEffect(targetUnit, projectileNum, unitInfo.OwnerId)
+				local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage/6, myUnit, targetUnit, 0, "Magical")
+				
+				if count <= 1 then
+					_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+				else
+					_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], string.format("skill_%d", count))
+				end
+				
+				if count >= 6 then
+					_TimerService:ClearTimer(damageTimer)
+				end
+			end
+			
+			damageTimer = _TimerService:SetTimerRepeat(setDamageFnc, 0.5, 0)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit, number projectileNum)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		local ruid = ""
+		if projectileNum == 1 then
+			ruid = self.hitEffectRUID
+		elseif projectileNum == 2 then
+			ruid = self.hitEffect2RUID
+		end
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(ruid, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one * 0.8, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetPassive()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		-----------------------------------------------------
+		-- 부활
+		self.Revive = false
+		unitStatus:SetProperty("state", "Idle", "")
+		
+		-- 3초간 무적/행동불가 및 회복
+		_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0001", 2.5)
+		_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0002", 2.5)
+		myUnit.UnitAIWanderComponent.setBattle = false
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "HP", 1, "skill")
+		
+		-- 3초 후, 다시 전투 참여
+		local function ChangedFnc()
+			-- 체력 회복 획득
+			local getHP = unitStatus.MaxHP * 0.4
+			_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "HP", getHP-1, "skill")
+			myUnit.UnitAIWanderComponent.setBattle = true
+		end
+		
+		_TimerService:SetTimerOnce(ChangedFnc, 2.5)
+		
+		-- 패시브 애니메이션
+		self:PassiveChangeAnimationSet(unitInfo.OwnerId)
+		
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		-- self.skillCount = 0
+		self.Revive = true
+	end
+
+	@ExecSpace("Client")
+	method void PassiveChangeAnimationSet()
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local spriteRenderer = unitInfo.spriteRenderer
+		local spriteRUID = "f8cfc6a8dfc641a98acebddd3d22e423"
+		
+		if isvalid(unitInfo.spriteRenderer) then
+			spriteRenderer.SpriteRendererComponent.PlayRate = 1
+			spriteRenderer.SpriteRendererComponent.SpriteRUID = spriteRUID
+		end
+	end
+
+end

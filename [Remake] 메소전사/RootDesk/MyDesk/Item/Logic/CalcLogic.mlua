@@ -1,0 +1,103 @@
+@Logic
+script CalcLogic extends Logic
+
+	property table cachedPVPTable = {}
+
+	method number GetWeaponAttackDamageByKey(string uniqueKey, Entity playerEntity)
+		-- 캐릭터 버프를 포함한 무기의 총 공격력을 계산
+		
+		local weaponDamage = self:GetWeaponAttackDamageByKeyWithoutCharBuff(uniqueKey,playerEntity)
+		
+		return weaponDamage + self:GetWeaponCharBuffAttack(uniqueKey,playerEntity,weaponDamage)
+		
+	end
+
+	method number GetWeaponAttackCharTierBuffRate(string uniqueKey, Entity playerEntity)
+		-- 캐릭터 티어에 따른 무기 공격력 버프 비율을 계산
+		local storage = playerEntity.PlayerStorageComponent
+		if storage == nil or storage.storage[uniqueKey] == nil then
+			return 0
+		end
+		local originalId = storage.storage[uniqueKey].originalId
+		local charData = playerEntity.PlayerCharacterData
+		
+		
+		if charData.charIndex == 0 then
+			return 0
+		end
+		
+		local playerTier = charData.charDeckStorage[charData.charIndex].tier 
+		local exWeaponTable = _CharacterLogic.characterTable[tostring(math.floor(charData.charIndex))].exWeaponId 
+		local exWeaponCharTierBuffRate = 0
+		
+		if playerTier > 0 then
+		for i = 1, #exWeaponTable do
+			if originalId == exWeaponTable[i] then 
+				exWeaponCharTierBuffRate = _CharacterLogic.characterTierEffectTable[charData.charIndex].skillTable[playerTier] 
+				break
+			end
+		end
+		end
+		
+		return exWeaponCharTierBuffRate
+	end
+
+	method number GetWeaponAttackDamageByKeyWithoutCharBuff(string uniqueKey, Entity playerEntity)
+		-- 캐릭터 버프를 제외한 무기의 기본 공격력을 계산
+		local storage = playerEntity.PlayerStorageComponent
+		
+		if storage == nil or storage.storage[uniqueKey] == nil then
+			return 0
+		end
+		local originalId = storage.storage[uniqueKey].originalId
+		local weaponSpec = _WeaponSpecLogic:GetWeaponSpec(originalId)
+		local level = storage.storage[uniqueKey].level
+		local weaponLevelData = _ItemDataLogic:GetWeaponLevelUpData(level)
+		local weaponData = _ItemDataLogic.equipmentData[originalId]
+		local star = tonumber(weaponData.star)
+		
+		local damage = weaponSpec.damage
+		
+		local fieldWeaponRatio = 1
+		
+		if isvalid(playerEntity.CurrentMap.MultiBattleMap) then
+			fieldWeaponRatio = weaponSpec.fieldRatio
+		end
+		
+		local levelAtkSum = 0
+		
+		for i = 1, tonumber(level) do
+			weaponLevelData = _ItemDataLogic:GetWeaponLevelUpData(i)
+			levelAtkSum = levelAtkSum + math.floor(damage*weaponLevelData.atk)
+		end
+		
+		local weaponDamage = (damage + levelAtkSum) * fieldWeaponRatio
+		
+		return weaponDamage
+	end
+
+	method number GetWeaponCharBuffAttack(string uniqueKey, Entity playerEntity, number weaponDamage)
+		-- 캐릭터 버프에 의한 추가 무기 공격력을 계산
+		
+		return (weaponDamage * self:GetWeaponAttackCharTierBuffRate(uniqueKey, playerEntity))
+	end
+
+	method number GetWeaponAttackInFieldMap(string uniqueKey, string userId)
+		-- 필드맵에서의 무기 공격력을 계산 (능력치 포함)
+		
+		local player =_UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		
+		if storage == nil or storage.storage[uniqueKey] == nil then
+			return 0
+		end
+		
+		local originalId = storage.storage[uniqueKey].originalId
+		local weaponSpec = _WeaponSpecLogic:GetWeaponSpec(originalId)
+		local weaponAttack = _AbilityLogic:GetAbilityAttackStatus(userId) * (weaponSpec.damage * weaponSpec.fieldRatio)  
+		local weaponDamage = (weaponAttack + self:GetWeaponAttackDamageByKeyWithoutCharBuff(uniqueKey, player)) * (1 + self:GetWeaponAttackCharTierBuffRate(uniqueKey, player))
+		
+		return weaponDamage
+	end
+
+end

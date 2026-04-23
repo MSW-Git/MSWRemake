@@ -1,0 +1,1034 @@
+@Component
+script MiningTargetObject extends InteractionComponent
+
+	@Sync
+	property number level = 0
+
+	property boolean IsKeyBox = false
+
+	property SyncTable<string> Visitor
+
+	method void OnBeginPlay()
+		-- 채광 대상 오브젝트 초기화 및 설정
+		self:SetPanel()
+		if self:IsServer() and self.IsKeyBox == false then
+			if string.sub(self.Entity.CurrentMapName, 1, 4) == "Temp" then
+				self.level = 27 -- 신전에서는 광맥 레벨 27로 통일
+			end
+			self:SetSpriteRUID()
+		end
+		
+		if self:IsClient() then
+			self.ShowActionInfo = false
+			
+			
+			-- 열쇠박스인 경우 '열쇠박스 이미지' 를 켜둠
+			if self.IsKeyBox == true then
+				local guideKeyImage = self.Entity:GetChildByName("Guide_KeyImage")
+				
+				-- 자식 엔티티가 없다면 생성
+				if guideKeyImage == nil then
+					local spawnPos = Vector3(-0.1, 1, 0)
+					local guideUI = _SpawnService:SpawnByModelId("model://0a82aaed-2b96-42ca-858c-71430acfe40c", "Guide_KeyImage", spawnPos, self.Entity)
+					guideUI.Enable = true
+		
+				-- 있다면 활성화
+				else
+					guideKeyImage.Enable = true
+				end
+				
+			else 
+				self.Entity.NameTagComponent.Name = string.format("Lv.%d %s", self.level, _LocalizationService:GetText("OreVein"))
+				if self.Entity.CurrentMapName == "Temple_Poseidon_2" then
+					self.Entity.NameTagComponent.Enable = false
+					local tag = _SpawnService:SpawnByModelId("model://1f562590-e20c-45bb-9777-534ad1c8dd10", "nameTag", Vector3(0,-0.25,0), self.Entity)
+					tag.NameTagComponent.NameTagRUID = "0032bdefb94d471a9bbde891fcca2763"
+					tag.NameTagComponent.Name = string.format("Lv.%d %s", self.level, _LocalizationService:GetText("OreVein"))
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetActivateEntity(boolean enable)
+		-- 채광 대상 엔티티의 활성화/비활성화 설정
+		self.Entity.Enable = enable
+	end
+
+	@ExecSpace("Multicast")
+	method void SetSpriteRUID()
+		-- 채광 대상의 스프라이트와 렌더링 레이어 설정
+		if self.level == 0 then
+			log("Bonanza Level is 0")
+			return 
+		end
+		------------------------------------------------------
+		-- SpriteRUID 변경
+		local miningTargetObjectTable = _DataService:GetTable("MiningTarget")
+		
+		local spriteRUID = miningTargetObjectTable:GetCell(self.level, 3)
+		self.Entity.SpriteRendererComponent.SpriteRUID = spriteRUID
+		------------------------------------------------------
+		-- 레이어 순서 세팅
+		self.Entity.SpriteRendererComponent.SortingLayer = "Foreground"
+		
+		if self.Entity.CurrentMapName == "Temple_Poseidon_2" then
+			self.Entity.SpriteRendererComponent.SortingLayer = "Layer2"
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GiveReward(string rewardType, Entity player)
+		-- 채광 성공 시 플레이어에게 보상 지급 처리
+		-- 현재 맵 인덱스에 따라 보상 인덱스를 결정(검증)
+		local currentMine = tonumber(string.sub(self.Entity.CurrentMapName, 5, 5))
+		local currentStage = tonumber(string.sub(self.Entity.CurrentMapName, 7, -1))
+		local currentTempleFloor = player.PlayerIngameData.TempleFloor_Current
+		
+		if string.sub(self.Entity.CurrentMapName, 1, 6) == "Temple" then
+			currentMine = 27
+			currentStage = 6
+		end 
+		
+		if self.IsKeyBox == false then
+			if currentMine <=5 then
+				self.level = (currentMine - 1)*3 + currentStage
+			elseif currentMine <= 8 then
+				self.level = 15 + (currentMine - 6)*2 + currentStage
+			else
+				self.level = 21 + currentStage
+			end
+		else 
+			self.level = currentMine
+		end
+		---------------------------------------------------------------------------------------------------
+		---------------------------------------------------------------------------------------------------
+		-- 각 오브젝트에 방문기록을 남겨 중복 수령 방지
+		---------------------------------------------------------------------------------------------------
+		if self.IsKeyBox == false and not string.sub(self.Entity.CurrentMapName, 1, 6) == "Temple" then
+			for i=1, #self.Visitor do
+				if self.Visitor[i] == player.OwnerId then
+					-- 이미 방문한 기록이 있으므로 중복 수령 방지
+					return
+				end
+			end
+			table.insert(self.Visitor, player.OwnerId)
+		end
+		---------------------------------------------------------------------------------------------------
+		---------------------------------------------------------------------------------------------------
+		-- 신전인 경우, 현재 층에 대한 기록을 남깁니다.
+		if player.PlayerData.TempleRecord_Current < currentTempleFloor then
+			player.PlayerData.TempleRecord_Current = currentTempleFloor
+		end
+		---------------------------------------------------------------------------------------------------
+		---------------------------------------------------------------------------------------------------
+		local miningTargetTable = _DataService:GetTable("MiningTarget")
+		
+		
+		if rewardType == "normal" or rewardType == "bonus" then
+			---------------------------------
+			-- 기본 광물
+			self:DropItem(player, self.level, player.OwnerId)
+			for i=1, 3 do
+				local amount = tonumber(miningTargetTable:GetCell(self.level, 2))
+				if self.level >= 27 then -- 신전에서는 2층부터 층당 60%씩 증가합니다.
+					amount = amount * (1 + 0.6 * (currentTempleFloor - 1))
+				end
+				local trifectaAmount = math.floor(amount/3)
+				
+				-- 실제 데이터에 반영합니다.
+				local addItem = function()
+					player.PlayerBackpack:AddItem(i, trifectaAmount)
+				end
+				
+				_TimerService:SetTimerOnce(addItem, 0.95)
+			end
+			---------------------------------
+			-- 특수재료
+			if currentMine == 3 then
+				local randomValue = _UtilLogic:RandomDouble()
+				if randomValue < 0.25 then
+					self:DropMaterial(player, 3)
+					local addMaterial = function()
+						player.PlayerStateAtStage:GetMaterial(1)
+						_UIGetLog:AddLog(Color.FromHexCode("#94FFF9"), "", 1, true, "Icicle", "d660bfd2e6d44b9182f048e730db5b5f", player.OwnerId)
+					end
+					_TimerService:SetTimerOnce(addMaterial, 0.95)
+				end
+			elseif currentMine == 6 then
+				if player.PlayerIngameData.MPUseRate ~= 0 then
+					self:DropMaterial(player, 6)
+					local addMaterial = function()
+						player.PlayerStateAtStage:GetMaterial(1)
+						_UIGetLog:AddLog(Color.FromHexCode("#94FFF9"), "", 1, true, "Stardust","e64e842795614536911e0df826d2c953", player.OwnerId)
+					end
+					_TimerService:SetTimerOnce(addMaterial, 0.95)
+				end
+				
+			elseif currentMine == 7 then
+				self:DropMaterial(player, 7, player.OwnerId)
+				local addMaterial = function()
+					player.PlayerStateAtStage:GetMaterial(1)
+					_UIGetLog:AddLog(Color.FromHexCode("#94FFF9"), "",  1, true, "CloudPiece", "286fbd8ad97645818ef5269b67c144e6", player.OwnerId)
+				end
+				_TimerService:SetTimerOnce(addMaterial, 0.95)
+		
+			elseif string.sub(self.Entity.CurrentMapName, 1, 4) == "Temp" then
+			 	local randomValue = _UtilLogic:RandomDouble()
+				if randomValue <= 0.1 then -- 0.1 then -- 0.1로 수정 (황금 사과)
+					self:DropMaterial(player, 0)
+					local addMaterial = function()
+						player.PlayerStateAtStage:GetMaterial(1)
+						_UIGetLog:AddLog(Color.FromHexCode("#94FFF9"), "", 1, true, "GoldApple","301b843fc7b64332bbc2347db41a623d", player.OwnerId) -- 바꿔줘야 
+					end
+					_TimerService:SetTimerOnce(addMaterial, 0.95)
+				end
+			end
+			
+			---------------------------------
+			-- 유적에서는 유물
+			if self.level >= 22 and self.level <= 26 then
+				local roomNum = tonumber(string.sub(self.Entity.CurrentMapName, 7, -1))
+				
+				-- 드롭 여부 결정
+				local dropProbTable = _DataService:GetTable("HistoricSiteMiningTargetBonusRewardProb")
+				local randValue = _UtilLogic:RandomDouble()
+				local baseProb = tonumber(dropProbTable:GetCell(roomNum, 2))
+				local bonusProb = player.PlayerData.BonusProbDroppingRelic
+				local prob = baseProb + bonusProb
+				
+				if randValue < prob then
+					-- 드롭하는 경우, 등급 결정
+					local grade = 2
+					randValue = _UtilLogic:RandomDouble()
+					
+					local grade1Prob = tonumber(dropProbTable:GetCell(roomNum, 3))
+					local grade2Prob = grade1Prob + tonumber(dropProbTable:GetCell(roomNum, 4))
+					local grade3Prob = grade2Prob + tonumber(dropProbTable:GetCell(roomNum, 5))
+					local grade4Prob = grade3Prob + tonumber(dropProbTable:GetCell(roomNum, 6))
+				
+					if randValue <= grade1Prob then
+						grade = 2
+					elseif randValue <= grade2Prob then
+						grade = 3
+					elseif randValue <= grade3Prob then
+						grade = 4
+					elseif randValue <= grade4Prob then
+						grade = 5
+					end
+					
+					
+					-- 드롭할 유물 결정 (중복 제거)
+					local relicTable = _DataService:GetTable("Relic")
+					local idxTable = {}
+					
+					for i=1, relicTable:GetRowCount() do
+						local targeGrade = tonumber(string.sub(relicTable:GetCell(i, 4), 7, -1))
+						if tonumber(grade) == targeGrade then
+							if player.PlayerRelic:IsPossibleRegistToBook(i) == true then
+								table.insert(idxTable, i)
+							end
+						end
+					end
+					
+					
+					-- 드롭할 유물이 없다면 중복 포함
+					if #idxTable == 0 then
+						for i=1, relicTable:GetRowCount() do
+							local targeGrade = tonumber(string.sub(relicTable:GetCell(i, 4), 7, -1))
+							if tonumber(grade) == targeGrade then
+								table.insert(idxTable, i)
+							end
+						end
+					end
+					
+					
+					
+					local randIdx = _UtilLogic:RandomIntegerRange(1, #idxTable)
+					local resultIdx = idxTable[randIdx]
+					
+					
+					-- 데이터 반영 + ui
+					local addRelic = function()
+						self:SetUI_RelicBoxResult(resultIdx, player.OwnerId)
+						player.PlayerRelic:AddRelic(true, resultIdx)
+					end
+					_TimerService:SetTimerOnce(addRelic, 0.95)
+					
+					-- 클라에서 보이게 추가
+					self:DropRelicBox(player, player.OwnerId)
+				end	
+			end
+			---------------------------------------------------------------------------------------------------
+			-- 낮은 확률로 젬 지급 (기본 5%, 행운에 따라 획득 확률 증가)
+			local randValue = _UtilLogic:RandomDouble() * 100
+			local luck = player.PlayerData.Luck
+			local prob = 5 * (1 + luck/100)
+			
+			if randValue < prob then
+				
+				local randAmount = _UtilLogic:RandomIntegerRange(10, 15)
+				player.PlayerStorage:AddCurrencyItems(2, randAmount, true)
+				
+				if randValue >= 5 then
+					_UIGetLog:PrintLuckAbilityLog(player.OwnerId)
+				end
+			end
+			---------------------------------------------------------------------------------------------------
+			-- 신전에서 낮은확률로 엠블렘 지급
+			if self.level >= 27 then
+				local dropProb = 10*math.log10(currentTempleFloor+1)
+				local randomValue = _UtilLogic:RandomDouble()*100
+				if randomValue < dropProb then
+					local randomEmblemIdx = _UtilLogic:RandomIntegerRange(1, 16)
+					player.PlayerEmblem:AddItems(randomEmblemIdx)
+					
+					-- 이펙트 및 사운드 재생
+					_EffectService:PlayEffectAttached("bfd3321a48d647ef84dd5c651a8dcb4a",
+							player,
+							Vector3.zero, 0, Vector3.one)
+					
+					_SoundService:PlaySound("731166a346144ab19b2c2a980f9f5084", 1, player.OwnerId)
+					
+					-- 공허 아이템 16 : 상징 획득 시 낮은 확률로 1개 추가 획득 
+					local voidItemLv = player.PlayerVoidItem.haveItems[16]
+					local voidItemTable = _DataService:GetTable("VoidItems")
+					if voidItemLv > 0 then
+						local initAbility = voidItemTable:GetCell(16, "InitAbility")
+						local levelAbility = voidItemTable:GetCell(16, "AbilityPerLevel")
+						local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+						
+						local bonusRandValue = _UtilLogic:RandomIntegerRange(1, 100)
+						if bonusRandValue <= currentAbility then
+							player.PlayerEmblem:AddItems(randomEmblemIdx)
+							
+							_UIGetLog:PrintVoidItemLog(16, player.OwnerId)
+						end
+						
+					end
+				end
+			end
+		end
+		---------------------------------------------------------------------------------------------------
+		---------------------------------------------------------------------------------------------------	
+		if rewardType == "bonus" then
+			-- 보너스게임 보상 타입을 결정
+			local rewardProbTable = _DataService:GetTable("MiningBonusReward")
+			local randomValue = _UtilLogic:RandomDouble()
+			
+			
+			local jewerlyProb = tonumber(rewardProbTable:GetCell(self.level, 3))
+			local fossilProb = jewerlyProb + tonumber(rewardProbTable:GetCell(self.level, 4))
+			local moneyBoxProb = fossilProb + tonumber(rewardProbTable:GetCell(self.level, 5))
+			local relicBoxProb = moneyBoxProb + tonumber(rewardProbTable:GetCell(self.level, 6))
+			local chairProb = relicBoxProb + tonumber(rewardProbTable:GetCell(self.level, 7))
+			local accessoryProb = chairProb + tonumber(rewardProbTable:GetCell(self.level, 8))
+		
+			--[[
+			local jewerlyProb = 0
+			local fossilProb = 0
+			local moneyBoxProb = 0
+			local relicBoxProb = 0
+			local chairProb = 0
+			local accessoryProb = 1
+			]]--
+			
+			
+			-- 보석인 경우
+			if randomValue < jewerlyProb then
+				-- 원석 또는 보석 결정
+				local randValue = _UtilLogic:RandomDouble()
+				local dropIdx = self.level * 2 + 1
+				
+				
+				if self.level == 1 then -- 1레벨, 20레벨, 21레벨 광맥은 원석/보석 구분 없음
+					dropIdx = 4
+					
+				elseif self.level == 20 or self.level == 21 then -- 1레벨, 20레벨, 21레벨 광맥은 원석/보석 구분 없음
+					dropIdx = self.level + 21
+					
+				elseif self.level >=2 and self.level <= 19 then -- 2~19레벨 광맥은 원석 또는 보석 랜덤
+					if randValue < 0.9 then
+						dropIdx = self.level*2 + 1
+					else 
+						dropIdx = self.level*2 + 2
+					end
+					
+				elseif self.level == 27 then -- 신전에서는 인덱스 랜덤, 개수 1개 고정
+					dropIdx = _UtilLogic:RandomIntegerRange(4, 42)
+				end 
+				
+				-- 클라이언트 상에서 보석이 떨어진 것처럼 보이게 함
+				self:DropJewerly(player, dropIdx) 
+				
+				-- 데이터 처리 (획득 처리)
+				local addItem = function()
+					player.PlayerBackpack:AddItem(dropIdx, 1)
+				end
+				_TimerService:SetTimerOnce(addItem, 0.94)
+			
+				
+			-- 화석인 경우
+			elseif randomValue < fossilProb then
+				local dropIdx = _UtilLogic:RandomIntegerRange(43, 49)
+				
+				-- 데이터 처리 (획득 처리)
+				local addItem = function()
+					player.PlayerBackpack:AddItem(dropIdx, 1)
+				end
+				_TimerService:SetTimerOnce(addItem, 0.94)
+				
+				-- 떨어뜨린것처럼 보이게
+				self:DropFossilBox(player, dropIdx, player.OwnerId)
+			
+				
+			-- 골드상자인 경우		
+			elseif randomValue < moneyBoxProb then
+				local goldBoxRewardTable = _DataService:GetTable("GoldBoxReward")
+				local localLevel = self.level
+				if self.level > 21 and self.level < 27 then
+					localLevel = 21
+				elseif self.level >= 27 then
+					localLevel = 22
+				end
+				
+				
+				
+				-- 최소금액을 기준으로 100% ~ 200% 사이에서 결정한다.
+				local minMoneyReward = tonumber(goldBoxRewardTable:GetCell(localLevel, 2))
+				local amount = minMoneyReward * (1 + _UtilLogic:RandomDouble())
+				
+				-- 신전에서는 단계에 비례해 보상이 증가한다. (60%)
+				if self.level >= 27 then
+					amount = math.floor(amount * (1+0.6*currentTempleFloor))
+				end
+				
+				-- 결과를 플레이어 데이터에 반영 + UI 띄우기
+				local addMoney = function()
+					player.PlayerData:GetMoney(amount)
+					self:SetUI_GoldBoxResult(localLevel, amount, player.OwnerId)
+				end		
+				_TimerService:SetTimerOnce(addMoney, 0.95)
+				
+				-- 상자 개체 소환
+				self:DropMoneyBox(player, player.OwnerId)
+			
+				
+			-- 유물상자인 경우	
+			elseif randomValue < relicBoxProb then
+				
+				-- 드롭할 유물 결정
+				local relicTable = _DataService:GetTable("Relic")
+				local idxTable = {}
+				
+				for i=1, relicTable:GetRowCount() do
+					if relicTable:GetCell(i, 4) == "Grade_2" then
+						table.insert(idxTable, i)
+					end
+				end
+				
+				local randIdx = _UtilLogic:RandomIntegerRange(1, #idxTable)
+				local resultIdx = idxTable[randIdx]
+				
+				
+				-- 데이터 반영 + ui
+				local addRelic = function()
+					self:SetUI_RelicBoxResult(resultIdx, player.OwnerId)
+					player.PlayerRelic:AddRelic(true, resultIdx)
+				end
+				_TimerService:SetTimerOnce(addRelic, 0.95)
+				
+				
+				-- 클라에서 보이게 추가
+				self:DropRelicBox(player, player.OwnerId)
+				
+				
+			-- 의자인 경우	
+			elseif randomValue < chairProb then
+				local chairKindNum = _DataService:GetRowCount("Chair")
+				local idx = _UtilLogic:RandomIntegerRange(1, chairKindNum)
+				
+				player.PlayerChair:AddItem(idx)
+				
+				self:DropChair(player, idx)
+				
+			-- 장신구인 경우
+			elseif randomValue < accessoryProb then
+				local part = _UtilLogic:RandomIntegerRange(1, 3)
+				local grade = 1
+				local gradeProb = {90.0, 8.0, 1.5, 0.4, 0.1}
+				
+				-- 공허 아이템 10 : 장신구 획득 시 더 높은 등급을 얻을 확률 증가
+				-- 일반~전설등급 드롭률을 올리고, 흔함등급 드롭률을 낮춥니다.
+				local voidItemLv = player.PlayerVoidItem.haveItems[10]
+				local voidItemTable = _DataService:GetTable("VoidItems")
+				if voidItemLv > 0 then
+					local initAbility = voidItemTable:GetCell(10, "InitAbility")
+					local levelAbility = voidItemTable:GetCell(10, "AbilityPerLevel")
+					local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+					
+					local normalProbDelta = 0
+					for i=2, 5 do
+						local currentGradeProbDelta = gradeProb[i] * currentAbility/100 
+						normalProbDelta = normalProbDelta + currentGradeProbDelta
+						
+						gradeProb[i] = gradeProb[i] + currentGradeProbDelta
+					end
+					gradeProb[1] = gradeProb[1] - normalProbDelta
+				end
+				
+				--log("등급별 확률 = ", gradeProb[1],  gradeProb[2],  gradeProb[3],  gradeProb[4],  gradeProb[5])
+				
+				local gradeRandomVal = _UtilLogic:RandomIntegerRange(1, 10000)/100
+				--log("랜덤값 = ", gradeRandomVal)
+				local currentProb = 0
+				for i=1, 5 do
+					if gradeRandomVal > currentProb and gradeRandomVal <= currentProb + gradeProb[i] then
+						grade = i
+					end
+					
+					currentProb = currentProb + gradeProb[i]
+				end
+				
+				-- 공허 아이템 효과가 적용되었다면 출력
+				if grade > 1 then
+					_UIGetLog:PrintVoidItemLog(10, player.OwnerId)
+				end
+				
+				
+				local set =_UtilLogic:RandomIntegerRange(1, 5) 
+				
+				local status = _AccessoryLogic:SetStatus(part, grade)
+				player.PlayerAccessory:GetItems(part, grade, set, status)
+				
+				
+			-- 잘못된 경우	
+			else
+				log("random value is wrong... = ", randomValue)
+			end
+			
+		end
+		---------------------------------------------------------------------------------------------------
+		---------------------------------------------------------------------------------------------------		
+		if rewardType == "key" then
+			player.PlayerData:ChangeTownProgress(self.level+1)
+			
+			-- 1레벨 열쇠박스는 업적 목표 (광산 1-3)
+			if self.level ==1 then
+				player.PlayerAchievementComponent:GetProgress(2, 1)
+			end
+			
+			self:SetUI_KeyboxSuccess(self.level, player.OwnerId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DropItem(Entity ownerEntity, number targetLevel)
+		-- 채광 시 기본 광물 아이템 드롭 처리
+		local dropPos = Vector3(self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y + 0.25,
+			self.Entity.TransformComponent.WorldPosition.z)
+			
+		local miningTargetTable = _DataService:GetTable("MiningTarget")
+		local amount = tonumber(miningTargetTable:GetCell(self.level, 2))
+		
+		local trifectaAmount = math.floor(amount/3)
+		local bonusIdx = _UtilLogic:RandomIntegerRange(1,3)
+		for i=1, 3 do
+			local item = _SpawnService:SpawnByModelId("model://41d3444d-2911-46f5-85a0-daa35d8570ad",
+			"item",	dropPos,	self.Entity.Parent)
+			
+			if _UserService.LocalPlayer ~= ownerEntity then
+				item.Enable = false
+			end
+			
+			item.DroppedItem.OwnerEntity = ownerEntity
+			
+			if i == bonusIdx then
+				item.DroppedItem:SetItemProperty(i, amount-trifectaAmount*2)
+			else 
+				item.DroppedItem:SetItemProperty(i, trifectaAmount)
+			end
+			
+			item.DroppedItem:SetSpriteRUID()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DropJewerly(Entity ownerEntity, number dropIdx)
+		-- 보너스 보상으로 보석류 아이템 드롭 처리
+		local dropPos = Vector3(self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y + 0.25,
+			self.Entity.TransformComponent.WorldPosition.z)
+		
+		
+		local item = _SpawnService:SpawnByModelId("model://41d3444d-2911-46f5-85a0-daa35d8570ad",
+				"item",
+				dropPos,
+				self.Entity.Parent)
+				
+		if _UserService.LocalPlayer ~= ownerEntity then
+			item.Enable = false
+		end
+		
+		item.DroppedItem.OwnerEntity = ownerEntity
+		
+		item.DroppedItem:SetItemProperty(dropIdx, 1)
+		item.DroppedItem:SetSpriteRUID()
+		
+		_EffectService:PlayEffectAttached("099510cd43ab4e8cbac450adb4693a45",
+			item,
+			Vector3(0, 0, 0),
+			0, 0.5*Vector3.one)
+		
+		_SoundService:PlaySound("01b601323d504a9e816429f6f3dc0a3b", 0.5)
+		
+	end
+
+	@ExecSpace("Client")
+	method void DropFossilBox(Entity ownerEntity, number dropIdx)
+		-- 보너스 보상으로 화석 아이템 드롭 처리
+		local dropPos = Vector3(self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y + 0.25,
+			self.Entity.TransformComponent.WorldPosition.z)
+		
+		local item = _SpawnService:SpawnByModelId("model://41d3444d-2911-46f5-85a0-daa35d8570ad",
+			"item",dropPos,self.Entity.Parent)
+		
+		if _UserService.LocalPlayer ~= ownerEntity then
+			item.Enable = false
+		end
+		
+		item.DroppedItem.OwnerEntity = ownerEntity
+		
+		item.DroppedItem:SetItemProperty(dropIdx, 1)
+		item.DroppedItem:SetSpriteRUID()
+		
+		_EffectService:PlayEffectAttached("028a2e4cdf0b4c8daf4eeb9f4743245e",
+			item,
+			Vector3(0, 0, 0),
+			0, 0.5*Vector3.one)
+	end
+
+	@ExecSpace("Client")
+	method void DropMoneyBox(Entity ownerEntity)
+		-- 보너스 보상으로 골드박스 드롭 처리
+		local dropPos = Vector3(self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y + 0.25,
+			self.Entity.TransformComponent.WorldPosition.z)
+		
+		local moneyBox = _SpawnService:SpawnByModelId(
+			"model://b76512d5-5d3f-4b3f-8b55-940b71eef46c",
+			"MoneyBox",
+			dropPos,
+			self.Entity.Parent)
+		
+		moneyBox.DroppedGoldBox.OwnerEntity = ownerEntity
+		
+		
+		_SoundService:PlaySound("00d0ebcf5d874333a2b4596c5770ef9a", 0.5)
+		
+		_EffectService:PlayEffectAttached("0578cb95b5c244e8a0043a6b3d2e23a6",
+					moneyBox,
+					Vector3(0, 0, 0),
+					0, 0.5*Vector3.one)
+		
+		
+		if ownerEntity ~= _UserService.LocalPlayer then
+			moneyBox.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DropRelicBox(Entity ownerEntity)
+		-- 보너스 보상으로 유물박스 드롭 처리
+		local dropPos = Vector3(self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y + 0.25,
+			self.Entity.TransformComponent.WorldPosition.z)
+		
+		local relicBox = _SpawnService:SpawnByModelId(
+			"model://c4855048-64f8-47ef-8268-5a32e74a013e",
+			"RelicBox",
+			dropPos,
+			self.Entity.Parent)
+		
+		
+		relicBox.DroppedRelicBox.OwnerEntity = ownerEntity
+		
+		_EffectService:PlayEffectAttached("074e166135db450baada7a9e8a8f0624",
+					relicBox,
+					Vector3(0, 0, 0),
+					0, 0.5*Vector3.one)
+		
+		_SoundService:PlaySound("00d90c0496084c1baf41945202a1085d", 0.5)
+		
+		if ownerEntity ~= _UserService.LocalPlayer then
+			relicBox.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_KeyboxSuccess(number level)
+		-- 열쇠박스 성공 시 결과 UI 표시
+		local KeyBoxOpenPopup = _EntityService:GetEntity("a45eba07-a76e-499b-8a59-5289a5bdf9cf")
+		KeyBoxOpenPopup:GetChildByName("Panel"):GetChildByName("Title").TextComponent.Text = _LocalizationService:GetTextFormat("KeyboxResult_Title", string.format("%d", level+1))
+		KeyBoxOpenPopup.Enable = true
+		
+		_SoundService:PlaySound("123888f05940460cb5ab3011c6693741", 0.75)
+		
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void DropMaterial(Entity ownerEntity, number stage)
+		-- 특수 재료 아이템 드롭 처리
+		local dropPos = Vector3(self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y + 0.25,
+			self.Entity.TransformComponent.WorldPosition.z)
+		
+		if stage == 6 and ownerEntity.PlayerIngameData.MPUseRate == 0 then
+			return
+		end
+		
+		
+		local material = _SpawnService:SpawnByModelId("model://a58189c7-1e26-494b-8b9d-3188a77f6930",
+			"Material",
+			dropPos,
+			self.Entity.Parent.Parent)
+		
+		
+		
+		if ownerEntity ~= _UserService.LocalPlayer then
+			material.Enable = false
+		end
+		
+		material.DroppedMaterial.OwnerEntity = ownerEntity
+		
+		if stage == 3 then
+			material.SpriteRendererComponent.SpriteRUID = "d660bfd2e6d44b9182f048e730db5b5f"
+			material.DroppedMaterial.ItemName = "고드름"
+			
+		elseif stage == 6 then
+			material.SpriteRendererComponent.SpriteRUID = "e64e842795614536911e0df826d2c953"
+			material.DroppedMaterial.ItemName = "별 조각"
+			
+		elseif stage == 7 then
+			material.SpriteRendererComponent.SpriteRUID = "286fbd8ad97645818ef5269b67c144e6"
+			material.DroppedMaterial.ItemName = "구름 조각"
+			
+		elseif stage == 0 then 
+			material.SpriteRendererComponent.SpriteRUID = "301b843fc7b64332bbc2347db41a623d"
+			material.DroppedMaterial.ItemName = "황금 사과"
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void DropChair(Entity ownerEntity, number idx)
+		-- 보너스 보상으로 의자 아이템 드롭 처리
+		local dropPos = Vector3(self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y + 0.25,
+			self.Entity.TransformComponent.WorldPosition.z)
+		
+		
+		local chair = _SpawnService:SpawnByModelId("model://2311c8b7-bc47-47e4-80a6-a089eb356c47",
+			"Chair",
+			dropPos,
+			self.Entity.Parent.Parent)
+		
+		chair.DroppedChair.OwnerEntity = ownerEntity
+		
+		if ownerEntity ~= _UserService.LocalPlayer then
+			chair.Enable = false
+		end
+		
+		chair.DroppedChair:SetItemProperty(idx)
+		chair.DroppedChair:SetSpriteRUID()
+	end
+
+	@ExecSpace("Client")
+	method void SetPanel()
+		-- 채광 대상 오브젝트의 인터랙션 패널 UI 설정
+		self.Entity.MiningTargetObject.ShowActionInfo = false
+		local Panel = _SpawnService:SpawnByModelId("model://85ad2718-739a-4bf9-aee4-f439cda53303", "Panel", Vector3(0,0.5,0), self.Entity)
+		Panel:GetChildByName("UIText").TextComponent.Text = "채광하기"
+		Panel:SetEnable(false)
+	end
+
+	@ExecSpace("Server")
+	method void OnInteractionEvent(Entity player, boolean isInGame)
+		-- 플레이어가 채광 대상과 상호작용 시 처리
+		--------------------------------------------------------
+		if isInGame == false then
+			return
+		end
+		--------------------------------------------------------
+		-- 보너스게임 등장 여부 설정
+		local containBonusGame = false
+		local randValue = _UtilLogic:RandomDouble()
+		local miningBonusProbTable = _DataService:GetTable("MiningBonusReward")
+		local containProbability = tonumber(miningBonusProbTable:GetCell(self.level, 2))
+		
+		-- 공허 아이템 15번 효과 적용 : 보너스게임 등장 확률 증가
+		local voidItemLv = player.PlayerVoidItem.haveItems[15]
+		local voidItemTable = _DataService:GetTable("VoidItems")
+		if voidItemLv > 0 then
+			local initAbility = voidItemTable:GetCell(15, "InitAbility")
+			local levelAbility = voidItemTable:GetCell(15, "AbilityPerLevel")
+			local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+			
+			local appliedProb = containProbability * (1 + currentAbility/100)
+			
+			if randValue >= containProbability and randValue < appliedProb then
+				_UIGetLog:PrintVoidItemLog(15, player.OwnerId)
+			end
+			
+			containProbability = appliedProb
+		end
+		
+		if randValue < containProbability then
+			containBonusGame = true
+		end
+		--------------------------------------------------------
+		-- 맵에 따라 레벨 검증
+		-- 현재 맵 인덱스에 따라 레벨 인덱스를 결정(검증)
+		local currentMine = tonumber(string.sub(self.Entity.CurrentMapName, 5, 5))
+		local currentStage = tonumber(string.sub(self.Entity.CurrentMapName, 7, -1))
+		if string.sub(self.Entity.CurrentMapName, 1, 6) == "Temple" then
+			currentMine = 1
+			currentStage = 1 
+		end 
+		--------------------------------------------------------
+		self:OnInteractionEventOnClient(containBonusGame, currentMine, currentStage, player.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void OnInteractionEventOnClient(boolean containBonusGame, number mine, number stage)
+		-- 클라이언트에서 채광 미니게임 시작 처리
+		if _UserService.LocalPlayer.MovementComponent.Enable == false then
+			--채광 중에도 E키로 초기화되어버리는 버그 수정
+			return
+		end
+		
+		--------------------------------------
+		if mine <=5 then
+			self.level = (mine - 1)*3 + stage
+		elseif mine <= 8 then
+			self.level = 15 + (mine - 6)*2 + stage
+		else
+			self.level = 21+stage
+		end
+		
+		--------------------------------------
+		
+		local miningGameUI = _EntityService:GetEntity("cf7e8298-08f2-4352-b1bc-6a21d7d3992f")
+		
+		-- 열쇠박스가 아니고, '신난다' 모드라면 바로 채광됨
+		if self.IsKeyBox == false and _UserService.LocalPlayer.PlayerStateAtStage.ExitedMode_LeftTime > 0 then
+			_EffectService:PlayEffectAttached("cb9cff6c57fd4cb18a05db3d47277031", _UserService.LocalPlayer, Vector3.zero, 0, Vector3.one)
+			_SoundService:PlaySound("fde27ff3991f4cf4a8218f61058db1d0", 1)
+			self:GiveReward("normal", _UserService.LocalPlayer)
+			self.Entity:SetEnable(false)
+			return
+		end
+		
+		
+		-- 플레이어 움직임 제한
+		_UserService.LocalPlayer.MovementComponent.Enable = false
+		
+		-- 타겟을 이 엔티티로 설정
+		miningGameUI.MiningGame.TargetEntity = self.Entity
+		
+		-- 미니게임 팝업 등장
+		if self.IsKeyBox == true then
+			miningGameUI.MiningGame:InitMinningGame(mine, self.IsKeyBox, containBonusGame)
+		else 
+			miningGameUI.MiningGame:InitMinningGame(self.level, self.IsKeyBox, containBonusGame)
+		end
+		
+		miningGameUI.MiningGame.onMining = true
+		miningGameUI:SetEnable(true)
+		
+		if self.IsKeyBox == false then
+			self.Enable = false
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RemoveVisitRecord(string playerId)
+		-- 플레이어의 채광 대상 방문 기록 제거
+		local idx = 0
+		for i=1, #self.Visitor do
+			if self.Visitor[i] == playerId then
+				idx = i
+				break
+			end
+		end
+		
+		if idx ~= 0 then
+			table.remove(self.Visitor, idx)
+			--log("테이블에서 지웠습니다")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_GoldBoxResult(number level, number amount)
+		-- 골드박스 개봉 결과 UI 표시
+		local resultUI = _EntityService:GetEntity("54996a97-addd-483d-98bb-1fda7c4b94bc")
+		resultUI:SetEnable(true)
+		------------------------------
+		local titleUI = _EntityService:GetEntity("63f877a5-d9c2-43b0-b5b6-a68075b3a235")
+		local amountUI = _EntityService:GetEntity("014751fa-c4ea-415d-85b8-0aa33ed022a4")
+		
+		--------------------------------
+		titleUI.TextComponent.Text = _LocalizationService:GetTextFormat("Message_GoldBoxOpen", string.format("%d", level))
+		--string.format(_LocalizationService:GetText("Message_GoldBoxOpen"), level)
+		amountUI.TextComponent.Text = string.format("+ %s", _ThousandsSeparator:ConvertToMetricPrefixString(amount, nil))
+		--------------------------------
+		local DisableUI = function()
+			resultUI.Enable = false
+		end
+		
+		_TimerService:SetTimerOnce(DisableUI, 3.5)
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_RelicBoxResult(number resultIdx)
+		-- 유물박스 개봉 결과 UI 표시
+		local relicTable = _DataService:GetTable("Relic")
+		local gradeTable = _DataService:GetTable("GradeIconback")
+		
+		-- 결과 팝업 UI 
+		local boxResultUI = _EntityService:GetEntity("1d2caece-bf8b-4dbe-b0f1-f5acfa8df0c2")
+		local panelUI = boxResultUI:GetChildByName("Panel")
+		
+		local iconBackUI = panelUI:GetChildByName("iconBack")
+		local iconUI = panelUI:GetChildByName("icon")
+		local nameUI = panelUI:GetChildByName("Name")
+		local titleUI = panelUI:GetChildByName("Title")
+		
+		local name = relicTable:GetCell(resultIdx, 1)
+		local iconRUID = relicTable:GetCell(resultIdx, 2)
+		local grade = relicTable:GetCell(resultIdx, 4)
+		
+		local gradeNum = tonumber(string.sub(grade, 7, -1))
+		local iconbackRUID = gradeTable:GetCell(gradeNum, "iconback")
+		local gradeColor = gradeTable:GetCell(gradeNum, "color")
+		
+		nameUI.TextComponent.Text = _LocalizationService:GetText(name)
+		iconUI.SpriteGUIRendererComponent.ImageRUID = iconRUID
+		titleUI.TextComponent.Text = _LocalizationService:GetTextFormat("Message_GetRelicItem", _LocalizationService:GetText(grade))
+		iconBackUI.SpriteGUIRendererComponent.ImageRUID = iconbackRUID
+		titleUI.TextComponent.FontColor = Color.FromHexCode(gradeColor)
+		
+		boxResultUI:SetEnable(true)
+		--------------------------------
+		-- 끄기 예약
+		local DisableUI = function()
+			boxResultUI.Enable = false
+		end
+		
+		_TimerService:SetTimerOnce(DisableUI, 3.5)
+	end
+
+	method void Init()
+		-- 채광 대상 오브젝트 초기화 (인스펙터에서 사용)
+		self:SetPanel()
+		if self:IsServer() and self.IsKeyBox == false then
+			self:SetSpriteRUID()
+		end
+		
+		if self:IsClient() then
+			self.ShowActionInfo = false
+			
+			
+			-- 열쇠박스인 경우 '열쇠박스 이미지' 를 켜둠
+			if self.IsKeyBox == true then
+				local guideKeyImage = self.Entity:GetChildByName("Guide_KeyImage")
+				
+				-- 자식 엔티티가 없다면 생성
+				if guideKeyImage == nil then
+					local spawnPos = Vector3(-0.1, 1, 0)
+					local guideUI = _SpawnService:SpawnByModelId("model://0a82aaed-2b96-42ca-858c-71430acfe40c", "Guide_KeyImage", spawnPos, self.Entity)
+					guideUI.Enable = true
+		
+				-- 있다면 활성화
+				else
+					guideKeyImage.Enable = true
+				end
+				
+			else 
+				self.Entity.NameTagComponent.Name = string.format("Lv.%d %s", self.level, _LocalizationService:GetText("OreVein"))
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 채광 대상과 상호작용 이벤트 처리
+		if _UserService.LocalPlayer.PlayerIngameData.isIngame == false then
+			return
+		end
+		
+		self:OnInteractionEvent(_UserService.LocalPlayer, _UserService.LocalPlayer.PlayerIngameData.isIngame)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 채광 대상에 근접 시 가이드 UI 표시
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			local spawnPos = Vector3(0, 1.25, 0)
+			local guideUI = _SpawnService:SpawnByModelId("model://85ad2718-739a-4bf9-aee4-f439cda53303", "Guide_Key", spawnPos, self.Entity)
+			
+			if self.IsKeyBox == true then
+				guideUI:GetChildByName("UIText").TextComponent.Text = _LocalizationService:GetText("InteractionGuideText_MiningKeyBox")
+		
+				
+				local guideKeyImage = self.Entity:GetChildByName("Guide_KeyImage")
+				guideKeyImage.Enable = false
+			else 
+				guideUI:GetChildByName("UIText").TextComponent.Text = _LocalizationService:GetText("InteractionGuideText_Mining")
+			end
+			
+		
+			if InteractionEntity ~= _UserService.LocalPlayer then
+				guideUI.Enable = false
+			else 
+				guideUI.Enable = true
+			end
+		else
+			guideKeyWorldUI.Enable = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 채광 대상에서 멀어질 때 가이드 UI 비활성화
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if self.IsKeyBox == true then
+			local guideKeyImage = self.Entity:GetChildByName("Guide_KeyImage")
+			guideKeyImage.Enable = true
+		end
+		
+		
+		if guideKeyWorldUI == nil then
+			log("가이드 키가 없습니다.")
+			return
+		end
+		
+		guideKeyWorldUI.Enable = false
+	end
+
+end

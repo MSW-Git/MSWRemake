@@ -1,0 +1,139 @@
+@Component
+script C10016_Homun_Skill extends Component
+
+	property number skillAnimLength = 5
+
+	property number SkillTime = 5
+
+	property number setReflection = 0
+
+	property string buffEffectRUID = "4b5e9dfee5de406fa9019194bd5284a5"
+
+	property string HitReflectionEffectRUID = "90491abadf01475e917034f2d42d8830"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		animComponent:PlayAnimation(1, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		self:SetBuffEffect(unitInfo.OwnerId)
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+			self:SetBuff()
+		end
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0218",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBuff()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local buffTime = _S01_SkillDescLogic.C10016_Active_BuffTime_Int[unitInfo.level]
+		local getAmount = _S01_SkillDescLogic.C10016_Active_GetDefAndMr_Magic[unitInfo.level] * unitStatus.MagicalAttack
+		
+		-- 방어력 마법저항력 증가
+		_StatusChangeLogic:GetBuff(myUnit, "Add_Defence", getAmount, buffTime)
+		_StatusChangeLogic:GetBuff(myUnit, "Add_MagicalResistance", getAmount, buffTime)
+		
+		-- 피해량 반사
+		self.setReflection += 1
+		
+		local function reflectionOff()
+			self.setReflection -= 1
+		end
+		
+		_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0018", 5)
+		_TimerService:SetTimerOnce(reflectionOff, 5)
+		
+		local directortype=_RuneCardDirectEnum:GetBuffDirectorType("Add_Defence")
+		_GeneralDirectorLogic:BattleBuffEffect(self.Entity,directortype,unitInfo.OwnerId)
+		directortype=_RuneCardDirectEnum:GetBuffDirectorType("Add_MagicalResistance")
+		_GeneralDirectorLogic:BattleBuffEffect(self.Entity,directortype,unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		self.setReflection = 0
+	end
+
+	@ExecSpace("Server")
+	method void Reflection(Entity targetUnit, table damageInfo)
+		-- 예외 처리
+		if isvalid(targetUnit) == false then
+			return
+		end
+		-----------------------------------------------
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local totalDamage = damageInfo[1] + damageInfo[2] + damageInfo[3]
+		
+		local refPer = _S01_SkillDescLogic.C10016_Active_MirrorDamage_Int[unitInfo.level]
+		
+		local finalDamage = totalDamage * ( refPer/100 )
+		
+		local finalDamageInfo = _StatusChangeLogic:CheckDamage(finalDamage, myUnit, targetUnit, 0, "Physical")
+		_StatusChangeLogic:HitDamage(myUnit, targetUnit, finalDamageInfo[1], 0, finalDamageInfo[2], "reflection")
+		
+		--피격 연출
+		self:HitEffect(targetUnit,unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetunit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = not filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.HitReflectionEffectRUID, targetunit, Vector3(0, 0, 0), 0, Vector3.one*0.7, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SetBuffEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Buff Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.buffEffectRUID, myUnit, Vector3(0, 0, 0), 0, Vector3(0.6, 0.6, 0.6), false, options)
+	end
+
+	@EventSender("Self")
+	handler HandleAttacked(Attacked event)
+		-- Parameters
+		local Attacker = event.Attacker
+		local Target = event.Target
+		local InitialDamages = event.InitialDamages
+		local FinalDamages = event.FinalDamages
+		local IsCritical = event.IsCritical
+		local AttackType = event.AttackType
+		---------------------------------------------------------
+		if self.setReflection > 0 and AttackType ~= "reflection" then
+			self:Reflection(Attacker, InitialDamages)
+		end
+	end
+
+end

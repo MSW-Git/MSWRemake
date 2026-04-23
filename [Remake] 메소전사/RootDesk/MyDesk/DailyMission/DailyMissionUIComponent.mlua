@@ -1,0 +1,370 @@
+@Component
+script DailyMissionUIComponent extends UICommonPopup
+
+	property Entity missionLayout = "f3b89ace-0858-4b24-95b8-4ef3f98a314f"
+
+	property Entity missionListTitle = "619b2017-d7f8-44ea-a53b-f959bb2f5a05"
+
+	property Entity remainTimeText = "d52759c6-efaf-4a42-9643-8f31e3f21063"
+
+	property Entity allMissionProgressText = "27bf6195-1447-4864-ba6f-7e10ecb87655"
+
+	property Entity allMissionProgressBar = "6e06c228-12b5-414e-98a7-b55d95779555"
+
+	property string currentCategory = "Daily"
+
+	property number receiveButtonClickedTime = 0
+
+	property Entity originalSlot = "ce8ada68-72cf-4108-9cd7-459d7fc1b0cd"
+
+	property Entity monsterInfoPopUp = "f815d774-5b95-4b00-9040-30be45b27fef"
+
+	property integer refreshTimer = 0
+
+	property Entity dailyMissionButton = "040808c7-0481-4f66-84f5-4b56d0ba2a9a"
+
+	property Entity weeklyMissionButton = "17b13ffd-ed89-41c8-a014-fae3afe63a40"
+
+	property Entity rewardEffect = "97674a4c-6aca-48ff-b08c-e996b289c994"
+
+	property Entity rewardCover = "e9ab7c59-65b7-475b-b8dd-09a2a06c5ee5"
+
+	property Entity receiveButton = "ba303481-d429-4b5c-9ea3-3c1f140e170e"
+
+	property Entity allCompleteSprite = "0f692af6-332f-4ac0-a553-95615831b845"
+
+	property Entity allClearRewardDescription = "ff0ef48b-51ab-49e3-b48b-312fd96fcfc1"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 일일 미션 UI 컴포넌트 초기화 및 슬롯 생성
+		__base:OnBeginPlay()
+		
+		for i = 1, 5 do
+			local entity = self.originalSlot:Clone(string.format("MissionSlot_%d", i))
+			entity.DailyMissionSlotComponent:SetSlotNum(i)
+			entity.Enable = true
+		end
+		
+		self.originalSlot.Enable = false
+		self.canvasGroup = _EntityService:GetEntityByPath("/ui/DailyMissionGroup").CanvasGroupComponent
+	end
+
+	@ExecSpace("Client")
+	method void Refresh()
+		-- 미션 목록 UI 새로고침 및 전체 진행도 업데이트
+		local player = _UserService.LocalPlayer
+		local dailyMissionCompo = player.PlayerDailyMissionComponent
+		local missionKey = "dm_"
+		
+		if self.currentCategory == "Weekly" then
+			missionKey = "wm_"
+		end
+		
+		for i = 1, 5 do
+			local missionInfo = dailyMissionCompo.missionInfo[string.format("%s%d", missionKey, i)]
+			local entity = self.missionLayout:GetChildByName(string.format("MissionSlot_%d", i))
+			
+			entity.DailyMissionSlotComponent:SetSlot(missionInfo.id)
+		end
+		
+		self:RefreshAllCompleteProgress()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCategory(string category)
+		-- 일일/주간 미션 카테고리 설정 및 UI 업데이트
+		self.currentCategory = category
+		
+		if category == "Daily" then
+			self.dailyMissionButton.SpriteGUIRendererComponent.ImageRUID = "a98b037c6b0f45288ce63cb8414b83b5"
+			self.weeklyMissionButton.SpriteGUIRendererComponent.ImageRUID = "75ff2132ace346358699f21009389b99"
+			self.allClearRewardDescription.TextComponent.Text = _LocalizeLogic:GetText("missionStr_3")
+		elseif category == "Weekly" then
+			self.dailyMissionButton.SpriteGUIRendererComponent.ImageRUID = "75ff2132ace346358699f21009389b99"
+			self.weeklyMissionButton.SpriteGUIRendererComponent.ImageRUID = "a98b037c6b0f45288ce63cb8414b83b5"
+			self.allClearRewardDescription.TextComponent.Text = _LocalizeLogic:GetText("missionStr_4")
+		end
+		
+		self:SetRefreshTimer()
+		self:Refresh()
+		
+		self:RefreshAllCompleteProgress()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickRewardButton()
+		-- 전체 완료 보상 정보 표시 버튼 클릭 처리
+		local rewardData = nil
+		
+		
+		if self.currentCategory == "Daily" then
+			rewardData = _DailyMissionLogic.rewardData["day_complete"]
+		else
+			rewardData = _DailyMissionLogic.rewardData["week_complete"]
+		end
+		
+		local infos = {}
+		
+		infos[1] = {["id"] = rewardData.rewardId, ["itemType"] = rewardData.rewardType, ["count"] = rewardData.rewardNum}
+		
+		_ItemListPopUp:Open(infos, nil, _LocalizeLogic:GetText("missionStr_5"))
+	end
+
+	@ExecSpace("Client")
+	method void OnClickReceiveButton()
+		-- 전체 완료 보상 수령 버튼 클릭 처리
+		if self.receiveButtonClickedTime + 1 > _UtilLogic.ServerElapsedSeconds then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast23"))
+		end
+		
+		self.receiveButtonClickedTime = _UtilLogic.ServerElapsedSeconds
+		
+		local dailyMissionCompo = _UserService.LocalPlayer.PlayerDailyMissionComponent
+		
+		if self.currentCategory == "Daily" then
+			if not dailyMissionCompo:IsCanGetReward(true) then
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast108"))
+				
+				return
+			end
+			
+			dailyMissionCompo:RequestGetReward(true)
+		elseif self.currentCategory == "Weekly" then
+			if not dailyMissionCompo:IsCanGetReward(false) then
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast107"))
+				
+				return
+			end
+			
+			dailyMissionCompo:RequestGetReward(false)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowTargetMonster(string monsterId)
+		-- 타겟 몬스터 정보 팝업 표시 및 등장 스테이지 안내
+		local panel = self.monsterInfoPopUp:GetChildByName("PopupPanel")
+		local data = _MonsterLogic.monsterData[monsterId]
+		local guide = ""
+		
+		local minStage = _UserService.LocalPlayer.PlayerInfoComponent.minRecommendStage
+		local chapter = math.floor(minStage / 10)
+		local stage = minStage % 10
+		local temp = {}
+		
+		for key, row in pairs(_DataService:GetTable("WaveData"):GetAllRow()) do
+			local waveChapter = row:GetItem("chapter")
+			
+			if string.len(waveChapter) <= 1 then continue end
+			
+			local convertedChapter = _UtilLogic:Split(waveChapter, "00")
+			local waveStageStep = (tonumber(convertedChapter[1]) - 1) * 10 + (tonumber(convertedChapter[2]))
+			local stageStep = _UserService.LocalPlayer.PlayerInfoComponent.playerInfo.stageStep
+			if stageStep == 0 then
+				stageStep = 1
+			end
+			
+				local monster = row:GetItem("monster")
+				
+				if monsterId == monster then
+					if not isvalid(temp[waveChapter]) then
+						temp[waveChapter] = 1
+					end
+				end
+		end
+		
+		local monsterStage = {}
+		
+		for key, value in pairs(temp) do
+			table.insert(monsterStage, tonumber(key))
+		end
+		
+		table.sort(monsterStage, function(a, b) return a < b end)
+		
+		for key, value in pairs(monsterStage) do
+			local convertedChapter = _UtilLogic:Split(tostring(value), "00")
+		
+			local stageStr = string.format("%d - %d", tonumber(convertedChapter[1]), tonumber(convertedChapter[2]))
+			
+			if guide == "" then
+				guide = stageStr
+			else
+				guide = string.format("%s, %s", guide, stageStr)
+			end
+		end
+		
+		panel:GetChildByName("MonsterTitle").TextComponent.Text = _LocalizeLogic:GetMonsterName(monsterId)
+		
+		local thumbnail = panel:GetChildByName("thumbnail")
+		
+		thumbnail.SpriteGUIRendererComponent.ImageRUID = data.stand_ruid
+		
+		local rectSize = thumbnail.UITransformComponent.RectSize
+		local frame = _ResourceService:LoadAnimationClipAndWait(data.stand_ruid).Frames[1].FrameSprite
+		
+		local x = (rectSize.x - frame.Width) * (frame.PivotPixel.x / frame.Width - 0.5)
+		local y = (rectSize.y - frame.Height) * (frame.PivotPixel.y / frame.Height - 0.5)
+		
+		thumbnail.SpriteGUIRendererComponent.LocalPosition = Vector2(x, y * 0.5)
+		
+		panel:GetChildByName("GuideText").TextComponent.Text = _LocalizeLogic:GetText("missionStr_6") .. guide
+		
+		self.monsterInfoPopUp.Enable = true
+	end
+
+	method void Show()
+		-- 일일 미션 UI 표시 및 날짜 확인
+		_UserService.LocalPlayer.PlayerDailyMissionComponent:CheckEnteredDate()
+		
+		__base:Show()
+		
+		self:SetRefreshTimer()
+	end
+
+	method void Hide()
+		-- 일일 미션 UI 숨김 및 타이머 정리
+		__base:Hide()
+		_TimerService:ClearTimer(self.refreshTimer)
+		
+		self.monsterInfoPopUp.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 컴포넌트 파괴 시 타이머 정리
+		_TimerService:ClearTimer(self.refreshTimer)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetRefreshTimer()
+		-- 미션 새로고침 타이머 설정 및 남은 시간 표시
+		_TimerService:ClearTimer(self.refreshTimer)
+		self.remainTimeText.TextComponent.Text = string.format(_LocalizeLogic:GetText("etcStr55"))
+		
+		if self.currentCategory == "Weekly" then
+			self.remainTimeText.TextComponent.Text = string.format(_LocalizeLogic:GetText("etcStr54"))
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshAllCompleteProgress()
+		-- 전체 미션 완료 진행도 및 보상 수령 상태 UI 업데이트
+		local player = _UserService.LocalPlayer
+		local dailyMissionCompo = player.PlayerDailyMissionComponent
+		local completedCount = 0
+		local rewarded = dailyMissionCompo.missionInfo.dmRewarded
+		self.rewardEffect.Enable = false
+		local missionKey = "dm_"
+		self.allCompleteSprite.SpriteGUIRendererComponent.ImageRUID = "2db8e4db477945b997bec0c2096525f0"
+		
+		if self.currentCategory == "Weekly" then
+			missionKey = "wm_"
+			rewarded = dailyMissionCompo.missionInfo.wmRewarded
+			self.allCompleteSprite.SpriteGUIRendererComponent.ImageRUID = "35a9c138db794444b54bf02d0aae737d"
+		end
+		
+		for i = 1, 5 do
+			local missionInfo = dailyMissionCompo.missionInfo[string.format("%s%d", missionKey, i)]
+			
+			if missionInfo.status == 1 then
+				completedCount += 1
+			end
+		end
+		
+		self.allMissionProgressText.TextComponent.Text = string.format("%d / %d", completedCount, 5)
+		self.allMissionProgressBar.SpriteGUIRendererComponent.FillAmount = completedCount / 5
+		
+		local textCompo = self.receiveButton.TextComponent
+		
+		textCompo.FontColor = Color.FromHexCode("#d1d1d1")
+		textCompo.OutlineColor = Color.FromHexCode("#616161")
+		
+		self.receiveButton.SpriteGUIRendererComponent.ImageRUID = "dcb7b47e9c5048e09f56691f1b29fd29"
+		
+		if completedCount >= 5 then
+			if rewarded == 1 then 
+				self.rewardCover.Enable = true
+				self.rewardCover:GetChildByName("icon_check").Enable = true
+			else 
+				self.rewardEffect.Enable = true
+				self.rewardCover.Enable = false
+				self.rewardCover:GetChildByName("icon_check").Enable = false
+				self.receiveButton.SpriteGUIRendererComponent.ImageRUID = "fc7aab99a8e549e58d891d50f594ecd6"
+				textCompo.FontColor = Color.FromHexCode("#ffffff")
+				textCompo.OutlineColor = Color.FromHexCode("#659f3d")
+			end
+		else 
+			self.rewardCover.Enable = false
+			self.rewardCover:GetChildByName("icon_check").Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "040808c7-0481-4f66-84f5-4b56d0ba2a9a")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 일일 미션 카테고리 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:SetCategory("Daily")
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "17b13ffd-ed89-41c8-a014-fae3afe63a40")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 주간 미션 카테고리 버튼 클릭 이벤트 처리
+		
+		
+		local Entity = event.Entity
+		self:SetCategory("Weekly")
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "ba303481-d429-4b5c-9ea3-3c1f140e170e")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 전체 완료 보상 수령 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:OnClickReceiveButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "e71d50e9-2721-4a30-b537-87b9754a0c35")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 보상 정보 보기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:OnClickRewardButton()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "ff27943c-06b0-4ee4-9a4e-6152fc90df5d")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 일일 미션 열기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:SetCategory("Daily")
+		self:Show()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "0f20e8b4-3f52-4ddf-8d21-9abe88210079")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 미션 UI 닫기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:Hide()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "2773ce96-a736-475f-8d89-4d8fc73bf815")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 몬스터 정보 팝업 닫기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self.monsterInfoPopUp.Enable = false
+	end
+
+end

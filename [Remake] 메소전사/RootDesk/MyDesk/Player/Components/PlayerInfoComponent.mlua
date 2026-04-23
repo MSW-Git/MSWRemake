@@ -1,0 +1,1401 @@
+@Component
+script PlayerInfoComponent extends Component
+
+	property table playerInfo = {}
+
+	@HideFromInspector
+	property PlayerDBComponent playerDB = nil
+
+	@HideFromInspector
+	property string userId = ""
+
+	property table stageRewardData = {}
+
+	@HideFromInspector
+	property table chapterRewardData = {}
+
+	property number totalPlayedTime = 0
+
+	property number totalStageStartCount = 0
+
+	property number totalStageEndCount = 0
+
+	property number lastBattlePower = 0
+
+	property integer minRecommendStage = 1
+
+	property boolean isInvalidRecord = false
+
+	@Sync
+	property string nameTag = ""
+
+	@Sync
+	property string chatBalloon = ""
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 및 스테이지 이벤트 연결
+		self.userId = self.Entity.PlayerComponent.UserId
+		
+		self.playerDB = self.Entity.PlayerDBComponent
+		
+		
+		if self:IsClient() and self.Entity == _UserService.LocalPlayer then
+			local time = _TimerLogic.ElapsedSeconds
+			local isStageStarted = false 
+			_StageLogic:ConnectEvent(StageStartEvent,function(e) isStageStarted = true
+				self.totalPlayedTime = 0
+				time = _TimerLogic.ElapsedSeconds
+		
+				self:AddStageStart()
+			 end)	
+		
+			_StageLogic:ConnectEvent(StageEndEvent,function(e) isStageStarted = false
+				
+				self:AddStageEnd(time)
+		
+				self.totalPlayedTime = 0
+				time = _TimerLogic.ElapsedSeconds
+				
+			end)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetPlayerInfoData()
+		-- 플레이어 정보 데이터를 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		self:CheckValidFields()
+		self:CheckDailyGiftRewardedDay()
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["playerInfo"] = _HttpService:JSONEncode(self.playerInfo)
+	end
+
+	method void InitData()
+		-- 플레이어 정보 데이터를 초기값으로 설정
+		local playerInfo = {}
+		
+		playerInfo.gold = 0
+		
+		playerInfo.diamond = 0
+		
+		
+		playerInfo.levelCapsule = 0
+		
+		playerInfo.upgradeCapsule = 0
+		playerInfo.weaponScroll = 0
+		
+		playerInfo.rankPoint = 0
+		playerInfo.stageStep = 0
+		playerInfo.bestBattlePower = 0
+		
+		
+		playerInfo.raidCnt = 0
+		playerInfo.raidLastTime = 0
+		playerInfo.raidDamage = 0
+		playerInfo.raidLastSeason = 0
+		
+		playerInfo.armorStorageSlot = 0
+		playerInfo.weaponStorageSlot = 0
+		playerInfo.petStorageSlot = 0
+		playerInfo.consumeStorageSlot = 0
+		playerInfo.etcStorageSlot = 0
+		playerInfo.accessoryStorageSlot = 0
+		
+		playerInfo.dailyGiftRewardedDay = 0 
+		playerInfo.dailyGiftRewardedTime = "" 
+		
+		playerInfo.enteredLimitLandCount = 0
+		playerInfo.enteredLimitLandDate = ""
+		playerInfo.bestLimitLandWave = 0 
+		playerInfo.limitLandRecordedTime = ""
+		playerInfo.weekBestLimitLandWave = 0 
+		playerInfo.weekLimitLandRecordedTime = ""
+		playerInfo.recordedBestLimitLandWeek = _LocalTimeLogic:GetSeasonWeek(DateTime("2023-11-20")) 
+		playerInfo.rewardedWeeklyBestLimitLandDate = "" 
+		playerInfo.limitLandRewardedNum = 0 
+		playerInfo.prevLimitLandWave = 0 
+		playerInfo.prevLimitLandRecordedTime = ""
+		
+		playerInfo.introPlayed = 0
+		
+		playerInfo.chapterStory = 10001
+		
+		playerInfo.enteredRandomBossCount = 0
+		playerInfo.enteredRandomBossDate = ""
+		
+		playerInfo.damageSkin = "5_000001"
+		playerInfo.nameTag = "5_000002"
+		playerInfo.chatBalloon = "5_000003"
+		
+		playerInfo.appliedBuff = ""
+		
+		
+		playerInfo.totalPlayedTime = 0
+		playerInfo.totalStageStart = 0
+		playerInfo.totalStageEnd = 0
+		playerInfo.enteredDate = tostring(_LocalTimeLogic:GetKST()) 
+		playerInfo.clearCount = 0 
+		pcall(function()
+			_WorldLog:LogInitDataFlow(self.userId, _WorldLog.DataType_RecommendStageClearCount, "1", "1", "0", "0")
+			end)
+		
+		
+		self.playerInfo = playerInfo
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerStep(integer step)
+		-- 플레이어의 스테이지 진행도를 설정하고 미션 업데이트
+		local chapter = math.floor(step / 10)
+		
+		
+		if self.playerInfo.stageStep >= step then return end
+		
+		
+		
+		self.Entity:SendEvent(NewbieMissionUpdateEvent("clearChapter", tostring(chapter), 1))
+		self.playerInfo.stageStep = step
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+		self:RequestGetRecommendStage()
+	end
+
+	@ExecSpace("Client")
+	method void SetPlayerInfoInClient(string playerInfo)
+		-- 클라이언트에서 플레이어 정보를 설정하고 UI 갱신
+		self.playerInfo = _HttpService:JSONDecode(playerInfo)
+		self:CheckValidFields()
+		
+		_DailyGiftLogic.dailyGiftUI:Init()
+		_CashShopLogic.cashShopUI:Refresh()
+		_HUDManager.outGameBuffUI:Refresh()
+		_UIGroupManager.uiPlayerStatusPopup:RefreshDecorationPanel()
+		
+		_LimitLandWaveLogic.limitLandUI:Refresh()
+		_RandomBossLogic.randomBossUI:Refresh()
+		_MultiHUDManager:Refresh()
+		
+		_UIGroupManager.baggageUIEntity:SendEvent(SetPlayerInfoInClient())
+		_RankingLogic.rankingUI:Refresh()
+	end
+
+	@ExecSpace("Server")
+	method void SetStageRewardStatus()
+		-- 스테이지 보상 상태를 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local stageRewardData = {}
+		for key, value in pairs(self.stageRewardData) do
+			table.insert(stageRewardData, _HttpService:JSONEncode(value))
+		end
+		stageRewardData = _HttpService:JSONEncode(stageRewardData)
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["stageRewardData"] = stageRewardData
+	end
+
+	@ExecSpace("ServerOnly")
+	method table SetStageRewardData(integer stageNum, boolean rewarded)
+		-- 스테이지 보상 데이터 테이블 생성
+		local rewardData = {}
+		
+		rewardData.stageNum = stageNum
+		rewardData.rewarded = rewarded
+		
+		return rewardData
+	end
+
+	@ExecSpace("Client")
+	method void SyncStageRewardStatusInClient(integer stageNum, table rewardData)
+		-- 클라이언트에서 스테이지 보상 상태 동기화
+		if not isvalid(rewardData) then 
+			if self.stageRewardData[stageNum] ~= nil then
+				self.stageRewardData[stageNum] = nil
+			end
+			
+			return
+		end
+		
+		self.stageRewardData[stageNum] = rewardData
+		_UIGroupManager.uiStageMovePopup.gridView:Refresh(false, true)
+	end
+
+	@ExecSpace("Server")
+	method void SetChapterRewardStatus()
+		-- 챕터 보상 상태를 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local chapterRewardData = {}
+		for key, value in pairs(self.chapterRewardData) do
+			table.insert(chapterRewardData, _HttpService:JSONEncode(value))
+		end
+		chapterRewardData = _HttpService:JSONEncode(chapterRewardData)
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["chapterRewardData"] = chapterRewardData
+	end
+
+	@ExecSpace("ServerOnly")
+	method table SetChapterRewardData(integer chapterNum, boolean rewarded)
+		-- 챕터 보상 데이터 테이블 생성
+		local rewardData = {}
+		
+		rewardData.chapterNum = chapterNum
+		rewardData.rewarded = rewarded
+		
+		return rewardData
+	end
+
+	@ExecSpace("Client")
+	method void SyncChapterRewardStatusInClient(integer chapterNum, table rewardData)
+		-- 클라이언트에서 챕터 보상 상태 동기화
+		if not isvalid(rewardData) then 
+			if self.chapterRewardData[chapterNum] ~= nil then
+				self.chapterRewardData[chapterNum] = nil
+			end
+			
+			return
+		end
+		
+		self.chapterRewardData[chapterNum] = rewardData
+	end
+
+	@ExecSpace("Server")
+	method void UseRaidTicket()
+		-- 레이드 티켓을 사용하고 레이드 입장 처리
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			_LocalizeLogic:ShowToast("failMessage1", self.Entity.PlayerComponent.UserId)
+			return
+		end
+		if _WorldBossRaidLogic.raidInfoInited == false then
+			_UIToast:ShowMessage("요청에 실패했습니다.(레이드 정보 조회 실패)",self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		if self.playerInfo.raidCnt >= _GameConfig:GetConfig().WORLD_RAID_MAX_TICKET then
+			_UIToast:ShowMessage("요청에 실패했습니다.(레이드 참가 수 초과)",self.Entity.PlayerComponent.UserId)
+			self:SyncUserRaidInfoInClient(self.playerInfo.raidCnt,self.playerInfo.raidLastTime,self.playerInfo.raidDamage,true,self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self.playerInfo.raidCnt = self.playerInfo.raidCnt + 1
+		self.playerInfo.raidLastTime = _LocalTimeLogic:GetUtcNow().Elapsed
+		
+		self.playerInfo.raidLastSeason = _WorldBossRaidLogic.raidInfo.season
+		local damage = _WorldBossRaidLogic.userDamage[self.Entity.PlayerComponent.UserId]
+		self.playerInfo.raidDamage = damage ~= nil and damage or 0
+		
+		self:SyncUserRaidInfoInClient(self.playerInfo.raidCnt,self.playerInfo.raidLastTime,self.playerInfo.raidDamage,true,self.Entity.PlayerComponent.UserId)
+		
+	end
+
+	@ExecSpace("Client")
+	method void SyncUserRaidInfoInClient(number raidCnt, number raidLastTime, number raidDamage, boolean enterRaid)
+		-- 클라이언트에서 레이드 정보 동기화 및 입장 처리
+		self.playerInfo.raidCnt = raidCnt
+		self.playerInfo.raidLastTime = raidLastTime
+		self.playerInfo.raidDamage = raidDamage
+		
+		if enterRaid then	
+			_BattleUIManager.loadingUI:Show()
+			_WaveLogic:SetChapter(99999)
+			_StageLogic:Teleport(_UserService.LocalPlayer,99999,"Raid")
+			_StageLogic.isInPlay = true
+			_StageLogic:SendEvent(StageStartEvent())
+			_UIGroupManager.uiStageMovePopup:Hide()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetWorldRaidUserDamage(number damage)
+		-- 월드 레이드에서 사용자 데미지 설정
+		self.playerInfo.raidDamage = damage
+		self:SyncUserRaidInfoInClient(self.playerInfo.raidCnt,self.playerInfo.raidLastTime,self.playerInfo.raidDamage,false,self.Entity.PlayerComponent.UserId)
+		
+	end
+
+	@ExecSpace("Server")
+	method void SetPlayerDailyGiftProgress(integer rewardedDay)
+		-- 일일 선물 진행도를 설정하고 로그 기록
+		if rewardedDay < self.playerInfo.dailyGiftRewardedDay then return end
+		
+		self.playerInfo.dailyGiftRewardedDay = rewardedDay
+		self.playerInfo.dailyGiftRewardedTime = tostring(_LocalTimeLogic:GetKST())
+		_WorldLog:LogAttendanceFlow(self.userId, "0", "Check", self.playerInfo.dailyGiftRewardedDay)
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void CheckDailyGiftRewardedDay()
+		-- 일일 선물 보상 날짜를 확인하고 초기화 처리
+		if not isvalid(self.playerInfo.dailyGiftRewardedDay) then
+			self.playerInfo.dailyGiftRewardedDay = 0
+			self.playerInfo.dailyGiftRewardedTime = ""
+		else
+			if _UtilLogic:IsNilorEmptyString(self.playerInfo.dailyGiftRewardedTime) then
+				self.playerInfo.dailyGiftRewardedDay = 0
+			else
+				local rewardedDate = DateTime(self.playerInfo.dailyGiftRewardedTime)
+				local currentDate = _LocalTimeLogic:GetKST()
+				
+				if self.playerInfo.dailyGiftRewardedDay == 7 and 
+					(rewardedDate.Day ~= currentDate.Day or rewardedDate.Month ~= currentDate.Month or rewardedDate.Year ~= currentDate.Year) then 
+					self.playerInfo.dailyGiftRewardedDay = 0
+					self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+					_WorldLog:LogAttendanceFlow(self.userId, "0", "InitAttendance", self.playerInfo.dailyGiftRewardedDay)
+				end
+			end
+		end
+	end
+
+	method boolean IsCanPurchaseLimitedProduct(string productId)
+		-- 제한된 상품의 구매 가능 여부를 확인
+		
+		local data = _CashShopLogic.cashItemData[productId]
+		
+		if data.limitPurchaseCount == 0 then
+			return true
+		end
+		
+		if self:IsServer() then
+			self:RefreshPurchasedCount()
+		end
+		
+		local historyKey = string.format("purchasedHistory,%s", data.id) 
+		
+		if not isvalid(self.playerInfo[historyKey]) then
+			return true
+		else
+			local values = _UtilLogic:Split(self.playerInfo[historyKey], ",")
+			local purchasedCount = tonumber(values[2])
+			
+			if purchasedCount < data.limitPurchaseCount then
+				return true
+			else
+				return false
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddPurchaseHistory(string productId)
+		-- 상품 구매 이력을 추가하고 구매 횟수 증가
+		
+		local data = _CashShopLogic.cashItemData[productId]
+		
+		if data.limitPurchaseCount == 0 then
+			return
+		end
+		
+		local historyKey = string.format("purchasedHistory,%s", data.id) 
+		
+		if not self:IsCanPurchaseLimitedProduct(productId) then return end
+		
+		if not isvalid(self.playerInfo[historyKey]) then
+			historyKey = historyKey
+			self.playerInfo[historyKey] = string.format("%s,%d", tostring(_LocalTimeLogic:GetKST()), 1)
+		else 
+			local values = _UtilLogic:Split(self.playerInfo[historyKey], ",")
+			local purchasedCount = tonumber(values[2])
+			values[2] = tostring(purchasedCount + 1)
+			
+			self.playerInfo[historyKey] = string.format("%s,%d", tostring(_LocalTimeLogic:GetKST()), values[2])
+		end
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void RefreshPurchasedCount()
+		-- 구매 횟수를 갱신하고 기간에 따른 초기화 처리
+		
+		function initCount(historyKey)
+			self.playerInfo[historyKey] = string.format("%s,0", tostring(_LocalTimeLogic:GetKST()))
+		end
+		
+		for key, value in pairs(_CashShopLogic.cashItemData) do
+			local historyKey = string.format("purchasedHistory,%s", value.id) 
+			
+			if isvalid(self.playerInfo[historyKey]) then
+				local lastPurchasedDate = _UtilLogic:Split(self.playerInfo[historyKey], ",")[1]
+				local currentDate = _LocalTimeLogic:GetKST()
+				lastPurchasedDate = DateTime(lastPurchasedDate)
+				local purchasedWeek = _LocalTimeLogic:GetSeasonWeek(lastPurchasedDate)
+				local currentWeek = _LocalTimeLogic:GetCurrentSeasonWeek()
+			
+				if isvalid(self.playerInfo[historyKey]) then
+					if value.initInterval == "day" then
+						if lastPurchasedDate.Day ~= currentDate.Day or (lastPurchasedDate.Month ~= currentDate.Month or lastPurchasedDate.Year ~= currentDate.Year) then
+							initCount(historyKey)
+						end
+					elseif value.initInterval == "week" then
+						if purchasedWeek ~= currentWeek or lastPurchasedDate.Month ~= currentDate.Month or lastPurchasedDate.Year ~= currentDate.Year then
+							initCount(historyKey)
+						end
+					elseif value.initInterval == "month" then
+						if lastPurchasedDate.Month ~= currentDate.Month or lastPurchasedDate.Year ~= currentDate.Year then
+							initCount(historyKey)
+						end
+					end
+				end
+			end
+		end
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method boolean SetEnteredLimitLandCount()
+		-- 리미트랜드 입장 횟수를 설정하고 일일 제한 확인
+		if not isvalid(self.playerInfo.enteredLimitLandCount) then
+			self.playerInfo.enteredLimitLandCount = 0
+			self.playerInfo.enteredLimitLandDate = ""
+			self.playerInfo.bestLimitLandWave = 0
+			self.playerInfo.limitLandRecordedTime = ""
+			self.playerInfo.weekBestLimitLandWave = 0
+			self.playerInfo.weekLimitLandRecordedTime = ""
+			self.playerInfo.recordedBestLimitLandWeek = 0
+			self.playerInfo.limitLandRewardedNum = 0
+			self.playerInfo.prevLimitLandWave = 0
+			self.playerInfo.prevLimitLandRecordedTime = ""
+		else
+			local entereDate = ""
+		
+			
+			if self.playerInfo.enteredLimitLandDate ~= "" then
+				entereDate = DateTime(self.playerInfo.enteredLimitLandDate)
+			end
+			
+			local currentDate = _LocalTimeLogic:GetKST()
+			
+			if entereDate.Year ~= currentDate.Year or entereDate.Month ~= currentDate.Month or entereDate.Day ~= currentDate.Day then
+				self.playerInfo.enteredLimitLandCount = 0
+			end
+		end
+		
+		if self.playerInfo.enteredLimitLandCount >= _GameConfig:GetConfig().MAX_ENTER_LIMITLAND_COUNT then 
+			return false
+		end
+		
+		self.playerInfo.enteredLimitLandCount = self.playerInfo.enteredLimitLandCount + 1
+		self.playerInfo.enteredLimitLandDate = tostring(_LocalTimeLogic:GetKST())
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecordLimitLandRecord(integer wave, string recordedTime, string senderId)
+		-- 리미트랜드 기록을 저장하고 주간/전체 최고 기록 관리
+		if TimeSpan(recordedTime).TotalSeconds > _GameConfig:GetConfig().TIMER_LIMITLAND then
+			recordedTime = tostring(TimeSpan(_GameConfig:GetConfig().TIMER_LIMITLAND * 1000))
+		end
+		
+		if not _UtilLogic:Contains(recordedTime, ".") then
+			recordedTime = recordedTime .. ".000"
+		end
+		
+		if wave < 1 then return end
+		
+		
+		if self.playerInfo.bestLimitLandWave < wave then 
+			self.playerInfo.bestLimitLandWave = wave
+			self.playerInfo.limitLandRecordedTime = recordedTime
+		elseif self.playerInfo.bestLimitLandWave == wave then 
+			if self.playerInfo.limitLandRecordedTime ~= "" then
+				local previousRecord = _RankingLogic:GetMs(self.playerInfo.limitLandRecordedTime) 
+				local currentRecord = _RankingLogic:GetMs(recordedTime) 
+				
+				if currentRecord < previousRecord then 
+					self.playerInfo.limitLandRecordedTime = recordedTime
+				end
+			else
+				self.playerInfo.limitLandRecordedTime = recordedTime
+			end
+		end
+		
+		local currentSeasonWeek = _LocalTimeLogic:GetCurrentSeasonWeek()
+		
+		if currentSeasonWeek ~= self.playerInfo.recordedBestLimitLandWeek then 
+			if currentSeasonWeek - 1 == self.playerInfo.recordedBestLimitLandWeek then 
+				self.playerInfo.prevLimitLandWave = self.playerInfo.weekBestLimitLandWave
+				self.playerInfo.prevLimitLandRecordedTime = self.playerInfo.weekLimitLandRecordedTime
+			end
+			
+			self.playerInfo.weekBestLimitLandWave = wave
+			self.playerInfo.weekLimitLandRecordedTime = recordedTime
+			self.playerInfo.recordedBestLimitLandWeek = currentSeasonWeek
+			self:SetLimitLandRewardedNum(0)
+			
+			_RankingLogic:SetLimitLandRecord(wave, senderId, recordedTime)
+		else
+			if self.playerInfo.weekBestLimitLandWave < wave then 
+				self.playerInfo.weekBestLimitLandWave = wave
+		
+				self.playerInfo.weekLimitLandRecordedTime = recordedTime
+				_RankingLogic:SetLimitLandRecord(wave, senderId, recordedTime)
+				_WorldLog:LogBestRecordFlow(self.userId, tostring(wave), "LimitLand", tostring(recordedTime))
+			elseif self.playerInfo.weekBestLimitLandWave == wave then 
+				if self.playerInfo.weekLimitLandRecordedTime ~= "" then
+					local previousRecord = _RankingLogic:GetMs(self.playerInfo.weekLimitLandRecordedTime) 
+					local currentRecord = _RankingLogic:GetMs(recordedTime) 
+					
+					if currentRecord < previousRecord then 
+						self.playerInfo.weekLimitLandRecordedTime = recordedTime
+						_WorldLog:LogBestRecordFlow(self.userId, tostring(wave), "LimitLand", tostring(recordedTime))
+						_RankingLogic:SetLimitLandRecord(wave, senderId, recordedTime)
+					end
+				else
+					self.playerInfo.weekLimitLandRecordedTime = recordedTime
+					_WorldLog:LogBestRecordFlow(self.userId, tostring(wave), "LimitLand", tostring(recordedTime))
+					_RankingLogic:SetLimitLandRecord(wave, senderId, recordedTime)
+				end
+			end
+		end
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBestBattlePower()
+		-- 최고 전투력을 설정하고 랭킹에 반영
+		local battlePower = _BattlePowerLogic:CalcBattlePower(self.Entity)
+		self.lastBattlePower = battlePower
+		
+		if not isvalid(self.playerInfo.bestBattlePower) then
+			self.playerInfo.bestBattlePower = battlePower
+			_RankingLogic:SetBattlePowerRecord(senderUserId)
+			
+			self:SetPlayerInfoData()
+			self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+		else
+			if self.playerInfo.bestBattlePower < battlePower then
+				self.playerInfo.bestBattlePower = battlePower
+		
+				
+				self:SetPlayerInfoData()
+				self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+				_WorldLog:LogBestRecordFlow(self.userId, self.playerInfo.battlePower, "BattlePower", tostring(self.playerInfo.stageStep))
+				
+				self.Entity:SendEvent(NewbieMissionUpdateEvent("reachBattlePower", "0", battlePower))
+			end
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetRewardedWeeklyBestLimitLandDate(any dateTime)
+		-- 주간 최고 리미트랜드 보상 날짜 설정
+		self.playerInfo.rewardedWeeklyBestLimitLandDate = tostring(dateTime)
+		
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBuff(string buffStr)
+		-- 적용된 버프 정보를 설정
+		self.playerInfo.appliedBuff = buffStr
+		
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void SetIntroPlayedDataTrue()
+		-- 인트로 재생 완료 상태로 설정
+		self.playerInfo.introPlayed = 1
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+		
+	end
+
+	@ExecSpace("Server")
+	method void SetEnteredRandomBossCount()
+		-- 랜덤 보스 입장 횟수를 증가시키고 일일 초기화 처리
+		if not isvalid(self.playerInfo.enteredLimitLandCount) then
+			self.playerInfo.enteredRandomBossCount = 0
+			self.playerInfo.enteredRandomBossDate = ""
+		else
+			local entereDate = ""
+			
+			if self.playerInfo.enteredRandomBossDate ~= "" then
+				entereDate = DateTime(self.playerInfo.enteredRandomBossDate)
+			end
+			
+			local currentDate = _LocalTimeLogic:GetKST()
+			
+			if entereDate.Year ~= currentDate.Year or entereDate.Month ~= currentDate.Month or entereDate.Day ~= currentDate.Day then
+				self.playerInfo.enteredRandomBossCount = 0
+			end
+		end
+		
+		self.playerInfo.enteredRandomBossCount = self.playerInfo.enteredRandomBossCount + 1
+		self.playerInfo.enteredRandomBossDate = tostring(_LocalTimeLogic:GetKST())
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	method void RefreshDailyInit()
+		-- 일일 초기화 데이터를 갱신하고 날짜 확인
+		if not isvalid(self.playerInfo.enteredLimitLandCount) or self.playerInfo.enteredLimitLandDate == "" then
+			self.playerInfo.enteredLimitLandCount = 0
+			self.playerInfo.enteredLimitLandDate = ""
+			self.playerInfo.bestLimitLandWave = 0
+			self.playerInfo.limitLandRecordedTime = ""
+			self.playerInfo.weekBestLimitLandWave = 0
+			self.playerInfo.weekLimitLandRecordedTime = ""
+			self.playerInfo.recordedBestLimitLandWeek = 0
+			self.playerInfo.limitLandRewardedNum = 0
+			self.playerInfo.prevLimitLandWave = 0
+			self.playerInfo.prevLimitLandRecordedTime = ""
+		else
+			local entereDate = ""
+		
+			
+			if self.playerInfo.enteredLimitLandDate ~= "" then
+				entereDate = DateTime(self.playerInfo.enteredLimitLandDate)
+			end
+			
+			local currentDate = _LocalTimeLogic:GetKST()
+			
+			if entereDate.Year ~= currentDate.Year or entereDate.Month ~= currentDate.Month or entereDate.Day ~= currentDate.Day then
+				self.playerInfo.enteredLimitLandCount = 0
+			end
+		end
+		
+		if not isvalid(self.playerInfo.enteredLimitLandCount) or self.playerInfo.enteredRandomBossDate == "" then
+			self.playerInfo.enteredRandomBossCount = 0
+			self.playerInfo.enteredRandomBossDate = ""
+		
+		else
+			local entereDate = ""
+			
+			if self.playerInfo.enteredRandomBossDate ~= "" then
+				entereDate = DateTime(self.playerInfo.enteredRandomBossDate)
+			end
+			
+			local currentDate = _LocalTimeLogic:GetKST()
+			
+			if entereDate.Year ~= currentDate.Year or entereDate.Month ~= currentDate.Month or entereDate.Day ~= currentDate.Day then
+				self.playerInfo.enteredRandomBossCount = 0
+			end
+		end
+		
+		
+		self:RefreshClearInfo()
+	end
+
+	@ExecSpace("Server")
+	method void SetChapterStoryProgress(number progress)
+		-- 챕터 스토리 진행도를 설정
+		self.playerInfo.chapterStory = progress
+		
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDamageSkin(string itemId, boolean causeDBLoad)
+		-- 데미지 스킨을 설정하고 장착 처리
+		local storageCompo = self.Entity.PlayerStorageComponent
+		
+		if not storageCompo.isLoaded then
+			_TimerService:SetTimerOnce(function() self:SetChatBalloon(itemId, causeDBLoad) end, 1)
+			
+			return
+		end
+		
+		local storage = storageCompo.storage
+		local unEquip = ""
+		local equip = ""
+		
+		for key, value in pairs(storage) do
+		
+			if value.equippedSlotNum == _GameEnum.EQUIPNUM_DAMAGESKIN then
+				unEquip = key
+				if causeDBLoad then
+					equip = key
+				end
+			elseif value.originalId == itemId then
+				equip = key
+			end
+		end
+		
+		if not _UtilLogic:IsNilorEmptyString(unEquip) then
+			storageCompo:UnEquip(unEquip)
+		end
+		
+		if itemId ~= "5_000001" and not _UtilLogic:IsNilorEmptyString(equip) then
+			storageCompo:Equip(equip, _GameEnum.EQUIPNUM_DAMAGESKIN)
+		else
+			itemId = "5_000001"
+		end
+		
+		self.playerInfo.damageSkin = itemId
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetNameTag(string itemId, boolean causeDBLoad)
+		-- 네임태그를 설정하고 장착 처리
+		local storageCompo = self.Entity.PlayerStorageComponent
+		
+		if not storageCompo.isLoaded then
+			_TimerService:SetTimerOnce(function() self:SetNameTag(itemId, causeDBLoad) end, 1)
+			
+			return
+		end
+		
+		local storage = storageCompo.storage
+		local unEquip = ""
+		local equip = ""
+		
+		for key, value in pairs(storage) do
+			if value.equippedSlotNum == _GameEnum.EQUIPNUM_NAMETAG then
+				unEquip = key
+				if causeDBLoad then
+					equip = key
+				end
+			elseif value.originalId == itemId then
+				equip = key
+			end
+		end
+		
+		if not _UtilLogic:IsNilorEmptyString(unEquip) then
+			storageCompo:UnEquip(unEquip)
+		end
+		
+		if itemId ~= "5_000002" and not _UtilLogic:IsNilorEmptyString(equip) then
+			storageCompo:Equip(equip, _GameEnum.EQUIPNUM_NAMETAG)
+		else
+			itemId = "5_000002"
+		end
+		
+		self.playerInfo.nameTag = itemId
+		self.nameTag = itemId
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+		self:BroadcastSetDecoration("NameTag", itemId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetChatBalloon(string itemId, boolean causeDBLoad)
+		-- 채팅벌룬을 설정하고 장착 처리
+		local storageCompo = self.Entity.PlayerStorageComponent
+		
+		if not storageCompo.isLoaded then
+			_TimerService:SetTimerOnce(function() self:SetChatBalloon(itemId, causeDBLoad) end, 1)
+			
+			return
+		end
+		
+		local storage = storageCompo.storage
+		local unEquip = ""
+		local equip = ""
+		
+		for key, value in pairs(storage) do
+			if value.equippedSlotNum == _GameEnum.EQUIPNUM_CHATBALLOON then
+				if causeDBLoad then
+					equip = key
+				else
+					unEquip = key
+				end
+			elseif value.originalId == itemId then
+				equip = key
+			end
+		end
+		
+		if not _UtilLogic:IsNilorEmptyString(unEquip) then
+			storageCompo:UnEquip(unEquip)
+		
+		
+		end
+		
+		if itemId ~= "5_000003" and not _UtilLogic:IsNilorEmptyString(equip) then
+			storageCompo:Equip(equip, _GameEnum.EQUIPNUM_CHATBALLOON)
+		else
+			itemId = "5_000003"
+		end
+		
+		self.playerInfo.chatBalloon = itemId
+		self.chatBalloon = itemId
+			
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+		self:BroadcastSetDecoration("ChatBalloon", itemId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDecoration(string itemId)
+		-- 장식 아이템을 카테고리에 따라 설정
+		local decorationData = _ItemDataLogic.decorationData[itemId]
+		
+		if decorationData.category == "damageSkin" then
+			self:SetDamageSkin(itemId, false)
+		elseif decorationData.category == "nameTag" then
+			self:SetNameTag(itemId, false)
+		elseif decorationData.category == "chatBalloon" then
+			self:SetChatBalloon(itemId, false)
+		end
+		
+		self:NoticeSuccessDecorate(itemId, self.userId)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeSuccessDecorate(string itemId)
+		-- 장식 아이템 장착 성공 알림 표시
+		local name = _LocalizeLogic:GetItemName(itemId) 
+		
+		_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast243"), name))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddBuff(string buffId, integer count)
+		-- 버프를 추가하고 기존 버프와 합치거나 새로 생성
+		local buffStr = self.playerInfo.appliedBuff
+		
+		if buffStr == nil or buffStr == "" then
+			buffStr = string.format("%s_%d", buffId, count)
+		else
+			local splits = _UtilLogic:Split(buffStr, "/")
+			local found = false
+			local newStr = ""
+			
+			for key, value in pairs(splits) do
+				local buffSplits = _UtilLogic:Split(value, "_")
+				
+				if buffSplits[1] == buffId then
+					if newStr == "" then
+						newStr = string.format("%s_%d", buffId, tonumber(buffSplits[2]) + count)
+					else
+						newStr = string.format("%s/%s_%d", newStr, buffId, tonumber(buffSplits[2]) + count)
+					end
+					
+					found = true
+				else
+					if newStr == "" then
+						newStr = string.format("%s", value)
+					else
+						newStr = string.format("%s/%s", newStr, value)
+					end
+				end
+			end
+			
+			if not found then
+				buffStr = string.format("%s/%s_%d", newStr, buffId, count)
+			else
+				buffStr = newStr
+			end
+		end
+		
+		self:SetBuff(buffStr)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReduceBuff(string buffId, integer count)
+		-- 버프를 감소시키고 0이 되면 제거
+		local buffStr = self.playerInfo.appliedBuff
+		
+		if buffStr == "" then
+			
+			return
+		else
+			local splits = _UtilLogic:Split(buffStr, "/")
+			local found = false
+			local newStr = ""
+			
+			for key, value in pairs(splits) do
+				local buffSplits = _UtilLogic:Split(value, "_")
+				local id = buffSplits[1]
+				local buffCount = tonumber(buffSplits[2])
+				
+				if id == buffId then
+					if buffCount - count > 0 then
+						if newStr == "" then
+							newStr = string.format("%s_%d", buffId, buffCount - count)
+						else
+							newStr = string.format("%s/%s_%d", newStr, buffId, buffCount - count)
+						end
+					end
+				else
+					if newStr == "" then
+						newStr = string.format("%s", value)
+					else
+						newStr = string.format("%s/%s", newStr, value)
+					end
+				end
+			end
+			
+			buffStr = newStr
+		end
+		
+		self:SetBuff(buffStr)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CheckAndReduceBuff(string buffId)
+		-- 버프 존재 여부를 확인하고 1개 감소
+		local buffStr = self.playerInfo.appliedBuff
+		
+		if buffStr == "" then
+		else
+			local splits = _UtilLogic:Split(buffStr, "/")
+			local found = false
+			
+			for key, value in pairs(splits) do
+				local buffSplits = _UtilLogic:Split(value, "_")
+				local id = buffSplits[1]
+				
+				if id == buffId then
+					self:ReduceBuff(buffId, 1)
+					
+					return true
+				end
+			end
+		end
+		
+		return false
+	end
+
+	method void CheckValidFields()
+		-- 플레이어 정보 필드의 유효성을 검사하고 초기화
+		if not isvalid(self.playerInfo.stageStep) then
+			self:InitData()
+			
+			return
+		end
+		
+		if not isvalid(self.playerInfo.armorStorageSlot) then
+			self.playerInfo.armorStorageSlot = 0
+			self.playerInfo.weaponStorageSlot = 0
+			self.playerInfo.petStorageSlot = 0
+			self.playerInfo.consumeStorageSlot = 0
+			self.playerInfo.etcStorageSlot = 0
+		end
+		
+		if not isvalid(self.playerInfo.accessoryStorageSlot) then
+			self.playerInfo.accessoryStorageSlot = 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetStorageSlot(string slotType, integer slotNum)
+		-- 스토리지 슬롯 수를 타입별로 설정
+		if slotType == "armor" then
+			self.playerInfo.armorStorageSlot = slotNum
+		elseif slotType == "weapon" then
+			self.playerInfo.weaponStorageSlot = slotNum
+		elseif slotType == "pet" then
+			self.playerInfo.petStorageSlot = slotNum
+		elseif slotType == "consume" then
+			self.playerInfo.consumeStorageSlot = slotNum
+		elseif slotType == "etc" then
+			self.playerInfo.etcStorageSlot = slotNum
+		elseif slotType == "accessory" then
+			self.playerInfo.accessoryStorageSlot = slotNum
+		end
+		
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void AddTotalPlayedTime(number delta)
+		-- 총 플레이 시간을 추가 (분 단위)
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		if self.playerInfo.totalPlayedTime == nil then
+			self.playerInfo.totalPlayedTime = 0
+		end
+		self.playerInfo.totalPlayedTime = self.playerInfo.totalPlayedTime + delta / 60
+	end
+
+	@ExecSpace("Server")
+	method void AddStageStart()
+		-- 스테이지 시작 횟수를 증가
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		if self.playerInfo.totalStageStart == nil then
+			self.playerInfo.totalStageStart = 0
+		end
+		self.playerInfo.totalStageStart = self.playerInfo.totalStageStart + 1
+	end
+
+	@ExecSpace("Server")
+	method void AddStageEnd(number time)
+		-- 스테이지 종료 횟수를 증가하고 플레이 시간 기록
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		self:AddTotalPlayedTime(time)
+		if self.playerInfo.totalStageEnd == nil then
+			self.playerInfo.totalStageEnd = 0
+		end
+		self.playerInfo.totalStageEnd = self.playerInfo.totalStageEnd + 1
+	end
+
+	@ExecSpace("Client")
+	method void BroadcastSetDecoration(string decorationType, string itemId)
+		-- 장식 아이템 설정을 브로드캐스트하고 UI에 반영
+		if not isvalid(_ItemDataLogic.decorationData[itemId]) then
+			
+			return
+		end
+		
+		local data = _ItemDataLogic.decorationData[itemId] 
+		local ruid = data.ruid
+		local offset = Vector2(data.offsetX, data.offsetY)
+		
+		if decorationType == "NameTag" then
+			self.Entity.NameTagComponent.NameTagRUID = ruid
+			self.Entity.NameTagComponent.FontOffset = offset
+		elseif decorationType == "ChatBalloon" then
+			self.Entity.ChatBalloonComponent.ChatBalloonRUID = ruid
+			self.Entity.ChatBalloonComponent.FontOffset = offset
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetLimitLandRewardedNum(integer num)
+		-- 리미트랜드 보상 받은 횟수를 설정
+		self.playerInfo.limitLandRewardedNum = num
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetDecoration(string uniqueKey)
+		-- 장식 아이템 장착 요청 처리
+		local playerEntity = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(playerEntity) or self.userId ~= senderUserId then
+			
+			return
+		end
+		
+		if isvalid(playerEntity.PlayerStorageComponent.storage[uniqueKey]) then
+			self:SetDecoration(playerEntity.PlayerStorageComponent.storage[uniqueKey].originalId)
+		else
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestUnEquipDecoration(string category)
+		-- 장식 아이템 해제 요청 처리
+		local playerEntity = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(playerEntity) or self.userId ~= senderUserId then
+			
+			return
+		end
+		
+		
+		if category == "nameTag" then
+			self:SetDecoration("5_000002")
+		elseif category == "chatBalloon" then
+			self:SetDecoration("5_000003")
+		elseif category == "damageSkin" then
+			self:SetDecoration("5_000001")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void CheckInductionCashProduct()
+		-- 유도 캐시 상품 구매 여부를 확인하고 샵 표시
+		local historyKey = string.format("purchasedHistory,%s", "Q9B16NBW8") 
+		
+		if not isvalid(self.playerInfo[historyKey]) then
+			_CashShopLogic.cashShopUI.currentShopCategory = "1"
+			_CashShopLogic.cashShopUI:Show()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestRefreshPlayerInfo()
+		-- 플레이어 정보를 갱신하고 클라이언트에 동기화
+		local playerEntity = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(playerEntity) or self.userId ~= senderUserId then
+			
+			return
+		end
+		self:RefreshLimitLandCount()
+		self:RefreshRandomBossCount()
+		self:RefreshClearInfo()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshLimitLandCount()
+		-- 리미트랜드 입장 횟수를 갱신하고 일일 초기화
+		if not isvalid(self.playerInfo.enteredLimitLandCount) then
+			self.playerInfo.enteredLimitLandCount = 0
+			self.playerInfo.enteredLimitLandDate = ""
+			self.playerInfo.bestLimitLandWave = 0
+			self.playerInfo.limitLandRecordedTime = ""
+		
+			self.playerInfo.weekBestLimitLandWave = 0
+			self.playerInfo.weekLimitLandRecordedTime = ""
+			self.playerInfo.recordedBestLimitLandWeek = 0
+			self.playerInfo.limitLandRewardedNum = 0
+			
+			self.playerInfo.prevLimitLandWave = 0
+			self.playerInfo.prevLimitLandRecordedTime = ""
+		else
+			local entereDate = ""
+			
+			if self.playerInfo.enteredLimitLandDate ~= "" then
+				entereDate = DateTime(self.playerInfo.enteredLimitLandDate)
+			end
+			
+			local currentDate = _LocalTimeLogic:GetKST()
+			
+			if entereDate.Year ~= currentDate.Year or entereDate.Month ~= currentDate.Month or entereDate.Day ~= currentDate.Day then
+				self.playerInfo.enteredLimitLandCount = 0
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshRandomBossCount()
+		-- 랜덤 보스 입장 횟수를 갱신하고 일일 초기화
+		if not isvalid(self.playerInfo.enteredLimitLandCount) or self.playerInfo.enteredRandomBossDate == "" then
+			self.playerInfo.enteredRandomBossCount = 0
+			self.playerInfo.enteredRandomBossDate = ""
+		else
+			local entereDate = ""
+			
+			if self.playerInfo.enteredRandomBossDate ~= "" then
+				entereDate = DateTime(self.playerInfo.enteredRandomBossDate)
+			end
+			
+			local currentDate = _LocalTimeLogic:GetKST()
+			
+			if entereDate.Year ~= currentDate.Year or entereDate.Month ~= currentDate.Month or entereDate.Day ~= currentDate.Day then
+				self.playerInfo.enteredRandomBossCount = 0
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetRecommendStage()
+		-- 추천 스테이지를 계산하고 클라이언트에 전송
+		
+		self.minRecommendStage = self.playerInfo.stageStep - 9
+		if self.minRecommendStage < 0 then
+			self.minRecommendStage = 1
+		end
+		
+		if self.playerInfo.stageStep - 9 >= self.minRecommendStage and self.playerInfo.stageStep < 80 then
+			self.minRecommendStage += 1
+		end
+		
+		self:SetRecommendStageInClient(self.minRecommendStage)
+	end
+
+	@ExecSpace("Client")
+	method void SetRecommendStageInClient(integer num)
+		-- 클라이언트에서 추천 스테이지 번호를 설정
+		self.minRecommendStage = num
+	end
+
+	@ExecSpace("Server")
+	method void InitInvalidRecord()
+		-- 유효하지 않은 기록 상태를 초기화
+		self.isInvalidRecord = false
+	end
+
+	@ExecSpace("Server")
+	method void RefreshClearInfo()
+		-- 일일 클리어 정보를 갱신하고 날짜별 초기화 처리
+		if not isvalid(self.playerInfo.clearCount) or self.playerInfo.enteredDate == "" then
+			self.playerInfo.enteredDate = tostring(_LocalTimeLogic:GetKST())
+			self.playerInfo.clearCount = 0
+			pcall(function()
+				_WorldLog:LogInitDataFlow(self.userId, _WorldLog.DataType_RecommendStageClearCount, "1", "1", "0", "0")
+				end)
+		else
+			local enteredDate = ""
+		
+			if self.playerInfo.enteredDate ~= "" then
+				enteredDate = DateTime(self.playerInfo.enteredDate)
+			end
+			
+			local currentDate = _LocalTimeLogic:GetKST()
+		
+			
+			if enteredDate.Year ~= currentDate.Year or enteredDate.Month ~= currentDate.Month or enteredDate.Day ~= currentDate.Day then
+				pcall(function()
+					_WorldLog:LogInitDataFlow(self.userId, _WorldLog.DataType_RecommendStageClearCount, "1", "2", tostring(self.playerInfo.clearCount), "0")
+					end)
+				self.playerInfo.clearCount = 0
+				self.playerInfo.enteredDate = tostring(_LocalTimeLogic:GetKST())
+				
+			end
+		end
+		
+		self:SetClearInfoInClient(self.playerInfo.enteredDate, self.playerInfo.clearCount, self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddClearCount()
+		-- 일일 클리어 횟수를 1 증가
+		self:RefreshClearInfo()
+		
+		self.playerInfo.clearCount += 1
+		self:SetClearInfoInClient(self.playerInfo.enteredDate, self.playerInfo.clearCount, self.userId)
+	end
+
+	@ExecSpace("Client")
+	method void SetClearInfoInClient(string enteredDate, integer clearCount)
+		-- 클라이언트에서 클리어 정보를 설정
+		self.playerInfo.enteredDate = enteredDate
+		self.playerInfo.clearCount = clearCount
+		
+		if self.Entity.PlayerDBComponent.dbInited then
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetFieldTutorialPlayed()
+		-- 필드 튜토리얼 완료 상태로 설정하고 보상 지급
+		self.playerInfo.fieldTutorialPlayed = true
+		_AccessoryLogic:AddAccessory("101_000001", "B", "FieldTutorial", "", self.userId)
+		self.Entity.PlayerAbilityComponent:RequestIncreasePoint(1, self.userId, "")
+		
+		
+		self:ShowGetFieldTutorialReward(self.userId)
+		
+		self:SetPlayerInfoData()
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void SetQuickSlot(integer slot, string itemId)
+		-- 퀵 슬롯에 아이템을 설정하거나 해제
+		if senderUserId ~= self.userId then
+			return
+		end
+		
+		if self.playerInfo.qSlot == nil then
+			self.playerInfo.qSlot = {
+				"",""
+			}
+		end
+		
+		
+		if self.playerInfo.qSlot[slot] == itemId then
+			self.playerInfo.qSlot[slot] = ""
+		else
+			self.playerInfo.qSlot[slot] = itemId
+		end
+		
+		
+		self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetFieldLogoutTime()
+		-- 필드 로그아웃 시간을 기록
+		self.playerInfo.fieldLogoutTime = _LocalTimeLogic:GetElapsedSecond()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshDecoration()
+		-- 장식 아이템들을 새로고침하고 장착 상태 동기화
+		local storageCompo = self.Entity.PlayerStorageComponent
+		
+		if not storageCompo.isLoaded then
+			_TimerService:SetTimerOnce(function() self:RefreshDecoration() end, 1)
+			
+			return
+		end
+		
+		local storage = storageCompo.storage
+		
+		local equipNameTag = "5_000002"
+		local equipChatBalloon = "5_000003"
+		
+		for key, value in pairs(storage) do
+			if value.equippedSlotNum == _GameEnum.EQUIPNUM_NAMETAG then
+				equipNameTag = value.originalId
+			elseif value.equippedSlotNum == _GameEnum.EQUIPNUM_CHATBALLOON then
+				equipChatBalloon = value.originalId
+			end
+		end
+		
+		self:BroadcastSetDecoration("NameTag", equipNameTag)
+		self:BroadcastSetDecoration("ChatBalloon", equipChatBalloon)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 네임태그와 채팅벌룬 동기화 시 UI 업데이트
+		if name == "nameTag" then
+			local data = _ItemDataLogic.decorationData[value] 
+			local ruid = data.ruid
+			local offset = Vector2(data.offsetX, data.offsetY)
+			
+			self.Entity.NameTagComponent.NameTagRUID = ruid
+			self.Entity.NameTagComponent.FontColor = Color.FromHexCode(data.color)
+			self.Entity.NameTagComponent.FontOffset = offset
+		elseif name == "chatBalloon" then
+			local data = _ItemDataLogic.decorationData[value]
+			local ruid = data.ruid
+			local offset = Vector2(data.offsetX, data.offsetY)
+			
+			self.Entity.ChatBalloonComponent.ChatBalloonRUID = ruid
+			self.Entity.ChatBalloonComponent.FontColor = Color.FromHexCode(data.color)
+			self.Entity.ChatBalloonComponent.FontOffset = offset
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowGetFieldTutorialReward()
+		-- 필드 튜토리얼 보상 획득 UI 표시
+		local itemInfos = {}
+		itemInfos[1] = {["id"] = "101_000001", ["itemType"] = "item", ["count"] = 1, ["grade"] = "B"}
+		itemInfos[2] = {["id"] = "", ["itemType"] = "fieldStatusPoint" , ["count"] = 1 , ["grade"] = ""}
+		_ItemListPopUp:Open(itemInfos, nil, "획득")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckEnteredDate()
+		-- 접속 날짜를 확인하고 주간 리셋 처리
+		local currentSeasonWeek = _LocalTimeLogic:GetCurrentSeasonWeek()
+		
+		if currentSeasonWeek ~= self.playerInfo.recordedBestLimitLandWeek then 
+			self:SetLimitLandRewardedNum(0)
+			self.playerInfo.prevLimitLandWave = self.playerInfo.weekBestLimitLandWave
+			self.playerInfo.prevLimitLandRecordedTime = self.playerInfo.weekLimitLandRecordedTime
+			
+			self:SetPlayerInfoInClient(_HttpService:JSONEncode(self.playerInfo), self.userId)
+		end
+	end
+
+end

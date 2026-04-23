@@ -1,0 +1,196 @@
+@Component
+script DPSUIComponent extends Component
+
+	@HideFromInspector
+	property Entity originalPanel = "5b86abbc-5712-41b0-9a82-baa5a3c597dd"
+
+	property SyncTable<Entity> panels
+
+	@HideFromInspector
+	property integer totalWeapon = 0
+
+	property string currentCategory = ""
+
+	@HideFromInspector
+	property Entity accumulatedButton = "73d6f494-2864-4c87-972a-15b0fe4a1026"
+
+	@HideFromInspector
+	property Entity dpsButton = "5ab84cf2-a957-4053-8aa8-32f15b3219be"
+
+	@HideFromInspector
+	property Entity attackCountButton = "883e4e28-c93c-4ebc-bec7-c7fcc718ea36"
+
+	@HideFromInspector
+	property table colorPools = {}
+
+	@HideFromInspector
+	property table weaponAndColor = {}
+
+	@HideFromInspector
+	property Entity dpsLayout = "96061df8-b70d-454e-b060-6fc1ecee4f5c"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- DPS UI 컴포넌트 초기화 및 패널 복제, 버튼 이벤트 연결
+		for i = 1, 5 do
+			self.originalPanel:Clone("DpsPanel_" .. tostring(i + 1))
+		end
+		
+		for _, entity in pairs(self.dpsLayout.Children) do
+			entity.Enable = false
+			table.insert(self.panels, entity)
+		end
+		
+		self.accumulatedButton:ConnectEvent(ButtonClickEvent, function()
+				self.currentCategory = "accumulated"
+			end)
+		
+		self.dpsButton:ConnectEvent(ButtonClickEvent, function()
+				self.currentCategory = "DPS"
+			end)
+		
+		self.attackCountButton:ConnectEvent(ButtonClickEvent, function()
+				self.currentCategory = "attackCount"
+			end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshByAccumulated()
+		-- 누적 데미지 비율에 따라 DPS UI 새로고침
+		if not isvalid(_UserService.LocalPlayer) then return end
+		
+		local index = 1
+		local etc = 0
+		
+		local damageRatioTable = _DPSLogic.damageRatio
+		for i = 1, #damageRatioTable do
+			local uniqueKey = damageRatioTable[i].uniqueKey
+			local ratio = damageRatioTable[i].ratio
+			local entityName = string.format("DpsPanel_%d", index)
+			
+			local panel = self.dpsLayout:GetChildByName(entityName)
+			if not isvalid(panel) then
+				panel = self.originalPanel:Clone(entityName)
+			end
+			local icon = panel:GetChildByName("DpsIcon")
+			local gauge = panel:GetChildByName("DpsGauge")
+			local weapon = _UserService.LocalPlayer.PlayerStorageComponent.storage[uniqueKey]
+			
+			if isvalid(weapon) then
+				local originalId = weapon.originalId
+				
+				icon.SpriteGUIRendererComponent.ImageRUID = _ItemDataLogic:GetWeaponRuidByEquipmentData(originalId)
+				gauge.SpriteGUIRendererComponent.Color = self.weaponAndColor[uniqueKey]
+				gauge.TextComponent.Text = string.format("%.2f", _DPSLogic.damageInfo[uniqueKey])
+				gauge.SpriteGUIRendererComponent.FillAmount = ratio
+				
+				panel.Enable = true
+				index = index + 1
+			else
+				etc = etc + ratio
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 선택된 카테고리에 따라 DPS UI 새로고침 (누적/DPS/공격횟수)
+		for _, entity in pairs(self.dpsLayout.Children) do
+			entity.Enable = false
+		end
+		
+		if self.currentCategory == "" or self.currentCategory == "accumulated" then
+			self:RefreshByAccumulated()
+		elseif self.currentCategory == "DPS" then
+			self:RefreshByDPS()
+		elseif self.currentCategory == "attackCount" then
+			self:RefreshByAttackCount()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshByDPS()
+		-- DPS 비율에 따라 UI 새로고침
+		local index = 1
+		local etc = 0
+		
+		for _, data in pairs(_DPSLogic.dpsRatio) do
+			local panel = self.dpsLayout:GetChildByName("DpsPanel_" .. tostring(index))
+			local icon = panel:GetChildByName("DpsIcon")
+			local gauge = panel:GetChildByName("DpsGauge")
+			local weapon = _UserService.LocalPlayer.PlayerStorageComponent.storage[data.uniqueKey]
+			
+			if isvalid(weapon) then
+				local originalId = weapon.originalId
+				
+				icon.SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic.weaponData[originalId].ruid
+				gauge.SpriteGUIRendererComponent.Color = self.weaponAndColor[data.uniqueKey]
+				gauge.TextComponent.Text = string.format("%.2f", _DPSLogic.dpsInfo[data.uniqueKey])
+				gauge.SpriteGUIRendererComponent.FillAmount = data.ratio
+				
+				panel.Enable = true
+				index = index + 1
+			else
+				etc = etc + data.ratio
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RegisterColor(string uniqueKey)
+		-- 무기에 대한 고유 색상 등록
+		for _, data in pairs(self.colorPools) do
+			if data.uniqueKey == "" then
+				data.uniqueKey = uniqueKey
+				self.weaponAndColor[uniqueKey] = data.color
+				break
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshByAttackCount()
+		-- 공격 횟수 비율에 따라 UI 새로고침
+		local index = 1
+		local etc = 0
+		
+		for _, data in pairs(_DPSLogic.attackCountRatio) do
+			local panel = self.dpsLayout:GetChildByName("DpsPanel_" .. tostring(index))
+			local icon = panel:GetChildByName("DpsIcon")
+			local gauge = panel:GetChildByName("DpsGauge")
+			local weapon = _UserService.LocalPlayer.PlayerStorageComponent.storage[data.uniqueKey]
+			
+			if isvalid(weapon) then
+				local originalId = weapon.originalId
+				
+				icon.SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic.weaponData[originalId].ruid
+				gauge.SpriteGUIRendererComponent.Color = self.weaponAndColor[data.uniqueKey]
+				gauge.TextComponent.Text = string.format("%d", _DPSLogic.attackCount[data.uniqueKey])
+				gauge.SpriteGUIRendererComponent.FillAmount = data.ratio
+				
+				panel.Enable = true
+				index = index + 1
+			else
+				etc = etc + data.ratio
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "StageLogic")
+	handler HandleStageStartEvent(StageStartEvent event)
+		-- 스테이지 시작 시 색상 풀 초기화 및 랜덤 색상 생성
+		table.clear(self.colorPools)
+		for _, entity in pairs(self.dpsLayout.Children) do
+			table.insert(self.colorPools, {["uniqueKey"] = "", ["color"] = Color(_UtilLogic:RandomDouble(), _UtilLogic:RandomDouble(), _UtilLogic:RandomDouble())})
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "StageLogic")
+	handler HandleStageEndEvent(StageEndEvent event)
+		-- 스테이지 종료 시 DPS UI 비활성화
+		self.Entity.Enable = false
+	end
+
+end

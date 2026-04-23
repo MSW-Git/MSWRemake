@@ -1,0 +1,368 @@
+@Component
+script PlayerAchievementComponent extends Component
+
+	property SyncTable<number> AchieveProgress
+
+	property SyncTable<boolean> AchieveComplete
+
+	property AchievementUI achievementPopupUI = "1901b65b-b603-4390-ab20-4b2aeb3fb8b6"
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 업적 진행도와 완료 상태 테이블을 설정
+		self._T.tableList = {AchieveProgress = self.AchieveProgress, AchieveComplete = self.AchieveComplete}
+		self._T.tableType = {AchieveProgress = "number", AchieveComplete = "boolean"}
+	end
+
+	@ExecSpace("Server")
+	method void GetProgress(number idx, number amount)
+		-- 업적 진행도를 증가시키고 완료 조건 달성 시 완료 처리
+		local achievementTable = _DataService:GetTable("AchievementDataSet")
+		local completeCondition = tonumber(achievementTable:GetCell(idx, 4))
+		
+		local recordedAmount = amount
+		-- 종료 조건을 초과하지 않도록 기록
+		if self.AchieveProgress[idx] == nil then
+			self.AchieveProgress[idx] = 0
+		end
+		
+		if (self.AchieveProgress[idx] + amount) >= completeCondition then
+			recordedAmount = completeCondition - self.AchieveProgress[idx]
+		end
+		
+		self.AchieveProgress[idx] = self.AchieveProgress[idx] + recordedAmount
+		self:SetTableElementClient("AchieveProgress", idx, tostring(self.AchieveProgress[idx]), self.Entity.OwnerId)
+		
+		-- 기록되는 수치가 존재하고, 업적 조건을 달성했다면 완료 팝업, 알람 마커 활성화
+		if recordedAmount > 0 and (self.AchieveProgress[idx] >= completeCondition) then
+			self:PopupCompleteUI(idx, self.Entity.OwnerId)
+			_UIAlarmMarker:SetEnableMarker("quest", true, self.Entity.OwnerId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PopupCompleteUI(number idx)
+		-- 업적 완료 시 페이드 효과가 있는 완료 UI를 표시
+		local completeUI = _EntityService:GetEntity("cc20d638-3fda-4feb-8292-4c312d2f7a84")
+		local alphaColor = 0
+		
+		local SetAlphaColorUp = function()
+			alphaColor = alphaColor + 1/30
+			
+			completeUI:GetChildByName("Panel").SpriteGUIRendererComponent.Color.a = alphaColor
+			
+			local panel = completeUI:GetChildByName("Panel")
+			panel.SpriteGUIRendererComponent.Color.a = alphaColor
+			panel:GetChildByName("Effect").SpriteGUIRendererComponent.Color.a = alphaColor
+			panel:GetChildByName("Effect_1").SpriteGUIRendererComponent.Color.a = alphaColor
+			panel:GetChildByName("QuestName").TextComponent.FontColor.a = alphaColor
+			panel:GetChildByName("Title").TextComponent.FontColor.a = alphaColor
+		end
+		
+		local SetAlphaColorDown = function()
+			alphaColor = alphaColor - 1/30
+			completeUI:GetChildByName("Panel").SpriteGUIRendererComponent.Color.a = alphaColor
+			
+			local panel = completeUI:GetChildByName("Panel")
+			panel.SpriteGUIRendererComponent.Color.a = alphaColor
+			panel:GetChildByName("Effect").SpriteGUIRendererComponent.Color.a = alphaColor
+			panel:GetChildByName("Effect_1").SpriteGUIRendererComponent.Color.a = alphaColor
+			panel:GetChildByName("QuestName").TextComponent.FontColor.a = alphaColor
+			panel:GetChildByName("Title").TextComponent.FontColor.a = alphaColor
+		end
+		
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(SetAlphaColorUp, i/30)
+			_TimerService:SetTimerOnce(SetAlphaColorDown, 2+i/30)
+		end
+		
+		-----------------------------------------------------------------
+		-- 내용 변경
+		local nameUI = _EntityService:GetEntity("abc09666-5ff2-4270-8a92-ea98067c8f37")
+		local name = _DataService:GetCell("AchievementDataSet", idx, 2)
+		nameUI.TextComponent.Text = _LocalizationService:GetText(name)
+		-----------------------------------------------------------------
+		-- Enable / Disable
+		completeUI.Enable = true
+		
+		local disable = function()
+			completeUI.Enable = false
+		end
+		
+		_TimerService:SetTimerOnce(disable, 3.5)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 전송된 테이블 데이터를 클라이언트에서 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 테이블의 특정 인덱스 값을 서버에서 클라이언트로 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트의 테이블을 초기값으로 전체 초기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 업적 테이블이 변경되었을 때 UI를 갱신하고 알람 마커를 설정
+		if name == "AchieveProgress" or name == "AchieveComplete" then
+			self.achievementPopupUI:LoadAchievementDataTable()
+			self.achievementPopupUI:RefreshUI()
+			self:SetAlarmMarker()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllProperty()
+		-- 모든 업적 진행도와 완료 상태를 초기화
+		for index = 1, #self.AchieveProgress do
+			self.AchieveProgress[index] = 0
+		end
+		for index = 1, #self.AchieveComplete do
+			self.AchieveComplete[index] = false
+		end
+		
+		self:ClearTableClient("AchieveProgress", "0", #self.AchieveProgress, self.Entity.OwnerId)
+		self:ClearTableClient("AchieveComplete", "false", #self.AchieveComplete, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadedUserData(string progressStr, string completeStr)
+		-- 저장된 업적 데이터를 불러와 진행도와 완료 상태를 복원
+		local achiDataSet = _DataService:GetTable("AchievementDataSet")
+		local achiDataSet_Length = achiDataSet:GetRowCount() -- 업적DataSet의 행 길이를 가져옵니다.
+		-----------------------------------------------
+		-- Progress
+		if isvalid(progressStr) == false then
+			for i=1, achiDataSet_Length do
+				self.AchieveProgress[i] = 0
+			end
+		else
+			local progress = _UtilLogic:StringToTable(progressStr)
+			for i=1, achiDataSet_Length do
+				if tonumber(progress[i]) == nil then
+					self.AchieveProgress[i] = 0
+				else 
+					self.AchieveProgress[i] = tonumber(progress[i])
+				end
+			end
+		end
+		-----------------------------------------------
+		-- Complete
+		if isvalid(completeStr) == false then
+			for i=1, achiDataSet_Length do
+				self.AchieveComplete[i] = false
+			end
+		
+		else
+			local complete = _UtilLogic:StringToTable(completeStr)
+			for i=1, achiDataSet_Length do
+				if complete[i] == nil or complete[i] == false then
+					self.AchieveComplete[i] = false
+				elseif complete[i] == true then 
+					self.AchieveComplete[i] = true
+				end
+			end
+		end
+		
+		-----------------------------------------------
+		self:SetTableClient("AchieveProgress", _UtilLogic:TableToString(self.AchieveProgress), self.Entity.OwnerId)
+		self:SetTableClient("AchieveComplete", _UtilLogic:TableToString(self.AchieveComplete), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(any enteredMap)
+		-- 특정 맵에 입장했을 때 해당하는 업적 진행도를 증가시킴
+		if enteredMap.Name == "Mine1_1" then
+			self:GetProgress(1, 1)
+		elseif enteredMap.Name == "Town2" then
+			self:GetProgress(3, 1)
+		elseif enteredMap.Name == "Town3" then
+			self:GetProgress(4, 1)
+		elseif enteredMap.Name == "Town4" then
+			self:GetProgress(5, 1)
+		elseif enteredMap.Name == "Town5" then
+			self:GetProgress(6, 1)
+		elseif enteredMap.Name == "Town6" then
+			self:GetProgress(7, 1)
+		elseif enteredMap.Name == "Town7" then
+			self:GetProgress(8, 1)
+		elseif enteredMap.Name == "Town8" then
+			self:GetProgress(9, 1)
+		elseif enteredMap.Name == "Mine9_2" then
+			self:GetProgress(26, 1)
+		elseif enteredMap.Name == "Mine9_3" then
+			self:GetProgress(27, 1)
+		elseif enteredMap.Name == "Mine9_4" then
+			self:GetProgress(28, 1)
+		elseif enteredMap.Name == "Mine9_5" then
+			self:GetProgress(29, 1)
+		elseif enteredMap.Name == "Town10" then
+			self:GetProgress(30, 1)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GiveReward(number idx)
+		-- 플레이어에게 업적 보상을 주는 코드입니다.
+		------------------------------------------------------------------------------
+		local player = self.Entity
+		------------------------------------------------------------------------------
+		log("give Reward!")
+		
+		-- 조건 검증
+		local achiDataSet = _DataService:GetTable("AchievementDataSet")
+		local condition = tonumber(achiDataSet:GetCell(idx, "Condition"))
+		if self.AchieveProgress[idx] < condition then
+			log("조건 미달 예외")
+			return
+		end
+		
+		if self.AchieveComplete[idx] == true then
+			log("이미 보상 받음 예외")
+			return
+		end
+		------------------------------------------------------------------------------
+		self.AchieveComplete[idx] = true
+		self:SetTableElementClient("AchieveComplete", idx, "true", player.OwnerId)
+		------------------------------------------------------------------------------
+		-- 보상 지급
+		for i=1, 3 do
+			local rewardName = achiDataSet:GetCell(idx, "RewardName"..tostring(i))
+			local rewardQuantity = achiDataSet:GetCell(idx, "RewardQuantity"..tostring(i))
+				
+			if isvalid(rewardName) == false or rewardName == "" then -- 예외 처리
+				return
+			end
+			
+			if not(isvalid(rewardName) and isvalid(rewardQuantity)) then -- 예외 처리
+				return
+			end
+		
+			
+			 _SoundService:PlaySound("b051e1f893fb4eb886746b20b7e0dc0d", 0.5, player.OwnerId)
+			
+			if rewardName == "AchiReward_PetEgg" then
+				player.PlayerData:AddPetEgg()
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_Achi_PetEgg", player.OwnerId)
+				_TutorialGuide:PlayGuide(7, player.OwnerId)
+				
+			elseif rewardName == "ChairName_1" then
+				player.PlayerChair:AddItem(1)
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_Achi_FirstChair", player.OwnerId)
+				_TutorialGuide:PlayGuide(6, player.OwnerId)
+				
+			elseif rewardName == "AchiReward_EmotToken" then
+				player.PlayerEmoticon:UseEmotToken(-1)
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_Achi_EmotToken", player.OwnerId)
+						
+			elseif string.sub(rewardName, 1, 11) == "PlayerTitle" then
+				local titleTable = _DataService:GetTable("Title")
+				
+				local titleIdx = 0
+				for i=1, titleTable:GetRowCount() do
+					local value = titleTable:GetCell(i, 1)
+					if value == rewardName then
+						titleIdx = i
+					end
+				end
+				if titleIdx > 0 then
+					player.PlayerTitle:GetNewItem(titleIdx)
+					_UIAlarmMarker:SetEnableMarker("title", true, player.OwnerId)
+				else 
+					log("idx가 이상해요!")
+					return
+				end
+				
+		
+				_CustomLocalizationLogic:SendLocalizedFormattedToastMessageFromServer("Message_Achi_Title", {rewardName}, player.OwnerId)
+				
+				
+			elseif rewardName == "CurrencyItemName_6" then
+				local rewardAmount = tonumber(rewardQuantity)
+				if rewardAmount == nil or rewardAmount == 0 then
+					rewardAmount = 1
+				end
+				player.PlayerStorage:AddCurrencyItems(6, rewardAmount, true)
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_Achi_GoldKey", player.OwnerId)
+				
+				
+			elseif rewardName == "CurrencyItemName_2" then
+				local rewardAmount = tonumber(rewardQuantity)
+				if rewardAmount == nil or rewardAmount == 0 then
+					rewardAmount = 150
+				end
+				player.PlayerStorage:AddCurrencyItems(2, rewardAmount, true)
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_Achi_Gem", player.OwnerId)
+					
+			else
+				_UIToast:ShowMessage("Reward Error.", player.OwnerId)
+				return
+			end
+		end
+		------------------------------------------------------------------------------
+		-- 데이터 저장
+		self.Entity.PlayerData:SaveData(1)
+	end
+
+	@ExecSpace("Client")
+	method void SetAlarmMarker()
+		-- 보상 수령이 가능한 업적이 1개라도 있으면 마커를 활성화하고, 아니면 비활성화
+		
+		local achiDataSet = _DataService:GetTable("AchievementDataSet")
+		
+		local markerEnable = false
+		
+		for i=1, achiDataSet:GetRowCount() do
+			local condition = tonumber(achiDataSet:GetCell(i, "Condition"))
+			
+			if self.AchieveComplete[i] == false and self.AchieveProgress[i] >= condition then
+				markerEnable = true
+				break
+			end
+			
+			local isComplete = self.AchieveComplete[i]
+		end
+		
+		if markerEnable == true then
+			_UIAlarmMarker:SetEnableMarker("quest", true) 
+		else 
+			_UIAlarmMarker:SetEnableMarker("quest", false)
+		end 
+	end
+
+end

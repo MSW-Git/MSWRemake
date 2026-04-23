@@ -1,0 +1,1064 @@
+@Component
+script PlayerAutoTrainingManager extends Component
+
+	@TargetUserSync
+	property integer OpenSlotNum = 0
+
+	property integer MaxSlotCount = 3
+
+	property integer RequireLunchBoxNum = 3
+
+	property integer RequireArcaneSimbolNum = 50
+
+	property table RewardBoxes = {}
+
+	property integer RewardMoney = 0
+
+	property integer RewardReputation = 0
+
+	@TargetUserSync
+	property integer ResultSlotNum = 0
+
+	property table RewardSlotNumList = {}
+
+	@TargetUserSync
+	property integer TrainingTime = 60
+
+	property table AutoTrainingSlotInfoTable = {}
+
+	property integer RewardClover = 0
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 자동 훈련 데이터를 데이터베이스에 저장하는 함수
+		local autoTrainingDB = {}
+		
+		autoTrainingDB["AutoTrainingSlotInfoTable"] = _HttpService:JSONEncode(self:ConvertToTable(self.AutoTrainingSlotInfoTable))
+		autoTrainingDB["OpenSlotNum"] = tostring(self.OpenSlotNum)
+		autoTrainingDB["ChuchuIds"] = _UtilLogic:TableToString(self.Entity.PlayerTrainingManager.ChuchuIds)
+		
+		saveData["AutoTrainingData"] = autoTrainingDB
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 로드된 데이터를 처리하는 함수
+		local data = loadedData["AutoTrainingData"]
+		if data == nil then
+			data = {}
+		end
+		
+		if #table.keys(data) > 0 then	
+			if _UtilLogic:IsNilorEmptyString(data["AutoTrainingSlotInfoTable"]) == false then
+				self.AutoTrainingSlotInfoTable = self:ConvertTableToInfo(_HttpService:JSONDecode(data["AutoTrainingSlotInfoTable"]))
+				
+				if _UtilLogic:IsNilorEmptyString(data["OpenSlotNum"]) == false then
+					self.OpenSlotNum = tonumber(data["OpenSlotNum"])
+					self:SetLockSlots(self.OpenSlotNum)
+				end
+				self:SyncData(self.AutoTrainingSlotInfoTable, "AutoTrainingSlotInfoTable", self.Entity.PlayerComponent.UserId)
+				self:SetEmpScroll(self.Entity.PlayerComponent.UserId)
+			else
+				self:InitTruckSlot()
+			end
+			
+			if _UtilLogic:IsNilorEmptyString(data["ChuchuIds"]) == false then
+				local chuchuIds = _UtilLogic:StringToTable(data["ChuchuIds"])
+				self:UpdateTrainingSelectedList(chuchuIds, self.Entity.PlayerComponent.UserId)
+			else
+				local chuchuIds = {}
+				self:UpdateTrainingSelectedList(chuchuIds, self.Entity.PlayerComponent.UserId)
+			end
+			
+		else
+			self:SetLockSlots(self.OpenSlotNum)
+			
+			local chuchuIds = {}
+			self:UpdateTrainingSelectedList(chuchuIds, self.Entity.PlayerComponent.UserId)
+		end
+		self.TrainingTime = math.floor(_GetConfigDataLogic:GetConfigNumDataByKey("TurnAroundTimeForTrainingAuto"))	
+		self:CheckCanRewardForRedDot()
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.AutoTraining)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EndAutoTraining)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 컴포넌트를 초기화하는 함수
+		self.OpenSlotNum = 0
+		self:InitTruckSlot()
+		table.clear(self.RewardBoxes)
+		self.RewardMoney = 0
+		self.RewardReputation = 0
+		self.RewardClover = 0
+		table.clear(self.RewardSlotNumList)
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ConvertToTable(any structData)
+		-- 구조체 데이터를 테이블로 변환하는 함수
+		local result = {}
+		for id, data in pairs(structData) do
+			---@type AutoTrainingSlotData
+			local slotData = data
+			result[id] = slotData:ConvertToTable()
+		end
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ConvertTableToInfo(table convertData)
+		-- 테이블 데이터를 슬롯 정보로 변환하는 함수
+		for id, data in pairs(convertData) do
+			local info = AutoTrainingSlotData()
+			info:SetFromTable(data)
+			self.AutoTrainingSlotInfoTable[id] = info
+		end
+		
+		self:SyncData(self.AutoTrainingSlotInfoTable, "AutoTrainingSlotInfoTable", self.Entity.PlayerComponent.UserId)
+		
+		return self.AutoTrainingSlotInfoTable
+	end
+
+	@ExecSpace("Server")
+	method void UpdateUnlockCondition()
+		-- 슬롯 잠금 해제 조건을 업데이트하는 함수
+		local openLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.AutoTrainingOpen)
+		if openLevel == self.OpenSlotNum then
+			return
+		end
+		self.OpenSlotNum = openLevel
+		
+		self:SetLockSlots(self.OpenSlotNum)
+		self:UpdateChuchuSlot(self.AutoTrainingSlotInfoTable, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void SetLockSlots(integer openSlotNum)
+		-- 슬롯의 잠금 상태를 설정하는 함수
+		if self.OpenSlotNum > self.MaxSlotCount then
+			return
+		end
+		
+		for i = 1, 3 do
+			---@type AutoTrainingSlotData
+			local slotData = self.AutoTrainingSlotInfoTable[i]
+			if i <= self.OpenSlotNum then
+				slotData.IsOpen = 1
+			else
+				slotData.IsOpen = 0
+			end
+		end
+		
+		self:SetLockSlotsUI(self.AutoTrainingSlotInfoTable, self.OpenSlotNum, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetLockSlotsUI(table data, integer openSlotNum)
+		-- 클라이언트에서 슬롯 잠금 UI를 설정하는 함수
+		self.OpenSlotNum = openSlotNum
+		self.AutoTrainingSlotInfoTable = data 
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:SetLockSlots(openSlotNum)
+	end
+
+	@ExecSpace("Client")
+	method void TruckSlotOkButton(integer slotNum)
+		-- 트럭 슬롯의 OK 버튼 클릭 시 처리하는 함수
+		---@type AutoTrainingSlotData
+		local slotData = self.AutoTrainingSlotInfoTable[slotNum] 
+		
+		if slotData.IsOpen == 0 then
+			_UIToast:ShowMessage(_LocalizationService:GetText("AutoTrainingMsg_BuyScooter"))
+			return
+		end
+		
+		local state = slotData.State
+			
+		if state == _AutoTrainingUIStateEnum.OnProgress then
+			_UIToast:ShowMessage(_LocalizationService:GetText("AutoTrainingMsg_OnProgress"))
+			
+		elseif state == _AutoTrainingUIStateEnum.WaitingReward then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_ScooterArrive_v2"], 1)
+			table.insert(self.RewardSlotNumList, slotNum)
+			self:CalcResult(self.RewardSlotNumList)
+			
+		else
+			
+			if  _UtilLogic:IsNilorEmptyString(slotData.ChuchuId) then
+				_UIToast:ShowMessage(_LocalizationService:GetText("AutoTrainingMsg_SelectChuchu"))
+			else
+				
+				self:CheckGoTraining(slotNum)
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void OnClickRewardAllButton()
+		-- 모든 보상 버튼 클릭 시 처리하는 함수
+		
+		for i = 1, #self.AutoTrainingSlotInfoTable do
+			---@type AutoTrainingSlotData
+			local slotData = self.AutoTrainingSlotInfoTable[i]
+			if slotData.State == _AutoTrainingUIStateEnum.WaitingReward then
+				table.insert(self.RewardSlotNumList, i)
+			end
+		end
+		
+		if #self.RewardSlotNumList < 1 then
+			_UIToast:ShowMessage(_LocalizationService:GetText("AutoTrainingMsg_NoArrived"))
+		else
+			self:CalcResult(self.RewardSlotNumList)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void TrainingShortCut(integer slotNum)
+		-- 훈련 단축키 처리하는 함수
+		---@type AutoTrainingSlotData
+		local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+		
+		if slotData.State == _AutoTrainingUIStateEnum.OnProgress then
+			self:StartTrainingShortCut(slotNum, self.Entity.PlayerComponent.UserId)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void StartTrainingShortCut(integer slotNum)
+		-- 훈련 단축 시작하는 함수
+		self:ChangeTruckState(slotNum, _AutoTrainingUIStateEnum.WaitingReward)
+		
+	end
+
+	@ExecSpace("Client")
+	method void FailStartTrainingShortCut()
+		-- 훈련 단축 시작 실패 시 처리하는 함수
+		
+		_UIToast:ShowMessage(_LocalizationService:GetText("NoArcaneSymbolToastMsg"))
+	end
+
+	@ExecSpace("Server")
+	method void CheckGoTraining(integer slotNum)
+		-- 훈련 시작 조건을 확인하는 함수
+		local player = self.Entity
+		local playerInven = player.PlayerInventory
+		if self.Entity.PlayerInventory.LunchBox < self.RequireLunchBoxNum then
+			self:FailStartTraining(self.Entity.PlayerComponent.UserId)
+		else
+			playerInven:ModifyLunchBox(-self.RequireLunchBoxNum,"Go auto training","Auto training popup")
+			self:StartTraining(slotNum, self.Entity.PlayerComponent.UserId)
+				
+			---@type AutoTrainingSlotData
+			local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+			if isvalid(slotData) then 
+				local chuchuId = slotData.ChuchuId 
+					if not _UtilLogic:IsNilorEmptyString(chuchuId) then
+		
+					local reward ={}			
+					self.Entity.PlayerLog:AutoTrainingFlow(slotData, reward, "1")
+				end
+			end
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void StartTraining(integer slotNum)
+		-- 훈련을 시작하는 함수
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_ScooterMove_v2"], 1)
+		self:ChangeTruckState(slotNum, _AutoTrainingUIStateEnum.OnProgress)
+		
+		---@type AutoTrainingSlotData
+		local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+		
+		slotData.Skill1Info = {"SkillName", "SkillLevel"}
+		slotData.Skill2Info = {"SkillName", "SkillLevel"}
+		
+		self:StartTimer(slotNum)
+		
+	end
+
+	@ExecSpace("Client")
+	method void FailStartTraining()
+		-- 훈련 시작 실패 시 처리하는 함수
+		
+		_UIToast:ShowMessage(_LocalizationService:GetText("NoTrainingTokenToastMsg"))
+	end
+
+	@ExecSpace("Client")
+	method void OpenResultPopup()
+		-- 결과 팝업을 여는 함수
+		
+		local resultScroll = _EntityService:GetEntityByPath("/ui/AutoTrainingGroup/ResultPopupDim/ResultPopup/ResultScroll")
+		for _, child in pairs (resultScroll.Children) do
+			child.Enable = false
+		end
+		
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:OpenResultPopup()
+	end
+
+	@ExecSpace("Server")
+	method void CalcResult(table slotNumList)
+		-- 훈련 결과를 계산하는 함수
+		self.RewardSlotNumList = slotNumList
+		if #self.RewardSlotNumList < 1 then
+			return
+		end
+		
+		local player = self.Entity
+		local userId = player.PlayerComponent.UserId
+		
+		self:OpenResultPopup(userId)
+		
+		
+		local upgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, _UpgradeTypeEnum.TrainingUpgrade, userId)
+		local dataRow = _DataService:GetTable("TrainingUpgradeDataSet"):FindRow("UpgradeLevel", tostring(upgradeLevel))
+		local upgradeCustomerCount = _StringUtilLogic:StringToInt(dataRow:GetItem("TrainingCustomerCount"))
+		local upgradeBurgerPrice = _StringUtilLogic:StringToInt(dataRow:GetItem("TrainingBurgerPrice"))
+		
+		local range =  _GetConfigDataLogic:GetConfigNumDataByKey("CustomerCountRandomRate")
+		local normalRange =  upgradeCustomerCount * range 
+		local normalRand = _UtilLogic:RandomIntegerRange(0, normalRange * 2) 
+		local customerCount = upgradeCustomerCount + normalRand - normalRange 
+		
+		local v = _GetConfigDataLogic:GetConfigNumDataByKey("MesoRewardRateForAutoTraing", userId)
+		
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(player.PlayerStage.NowStage)
+		local configValue = (1 + stageConfig.TrainingMoneyRate)
+		
+		for i = 1, #slotNumList do
+			local slotNum = slotNumList[i]
+			---@type AutoTrainingSlotData
+			local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+			slotData.SlotNum = slotNum
+			
+			local money = upgradeBurgerPrice * customerCount * v * configValue 
+			slotData.ResultMoney = money
+		
+			local managementLevel = player.PlayerManagement.ManagementLevel 
+			local arcaneData = _DataService:GetTable("TrainingRewardDataSet")
+			local clover = arcaneData:FindRow("ManagementLevel", _StringUtilLogic:NumToString(managementLevel)):GetItem("ArcaneSymbolForAuto")
+			clover = _StringUtilLogic:StringToInt(clover)
+			slotData.ResultClover = clover
+			
+			local reputation = tonumber(_DataService:GetTable("TrainingUpgradeDataSet"):FindRow("UpgradeLevel", tostring(upgradeLevel)):GetItem("AutoTrainingReputationReward"))
+			local strategyReputation = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.ReputationRewardBonus, player.PlayerStage.NowStage) 
+			reputation = math.floor(reputation * (1 + stageConfig.TrainingReputationRewardRate) * (1 + strategyReputation))
+			slotData.Reputation = reputation
+			
+			local stageId = self.Entity.PlayerStage.NowStage
+			
+			local expData = _TrainingRewardLogic:GetData(stageId, managementLevel)
+			local expCount = expData.AutoTrainingItemCount
+			local expCookItemId = expData.AutoTrainingExpCookItemId
+			local expServingItemId = expData.AutoTrainingExpServingItemId
+			
+			local ingreUpgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.TrainingIngreBox)
+			local ingreRow = _DataService:GetTable("TrainingIngreBoxDataSet"):FindRow("Level", tostring(ingreUpgradeLevel))
+			local ingreBoxIds = {"B0001", "B0002", "B0003", "B0004"}
+			
+			local min = _StringUtilLogic:StringToInt(ingreRow:GetItem("DropBoxCountAutoMin"))
+			local max = _StringUtilLogic:StringToInt(ingreRow:GetItem("DropBoxCountAutoMax"))
+			local count = _UtilLogic:RandomIntegerRange(min, max)
+			
+			for i = 1, count do
+				local weightTable = {ingreRow:GetItem("Weight1InAuto"), ingreRow:GetItem("Weight2InAuto"), ingreRow:GetItem("Weight3InAuto")}
+				local boxNum = _RandomLogic:ReturnRandomPickWeight(weightTable) 
+				slotData.RewardBoxes[ingreBoxIds[boxNum]] = 1
+			end
+			
+			local breadUpgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.TrainingBreadBoxOpen)
+			local breadDropProb = math.tointeger(tonumber(ingreRow:GetItem("BreadProbInAuto")))
+			if _RandomLogic:ReturnIsDropProb100(breadDropProb) == true then
+				slotData.RewardBoxes[ingreBoxIds[4]] = 1
+			end
+			
+			
+			local empId = slotData.ChuchuId
+			local skillValue = 0
+		
+			local data = _EmployeeService:GetData(empId)
+			local skillData = _EmployeeSkillService:GetData(data.Skill1Type)
+			local canUseSkill = false
+			if skillData.Type == "Training" then
+				canUseSkill = _EmployeeSkillService:CanUseSkill(empId, data.Skill1Type, player, userId)
+			end
+			
+			local addReward = function(expId, expCount)
+				if isvalid(slotData.RewardBoxes[expId]) then
+					slotData.RewardBoxes[expId] += expCount
+				else
+					slotData.RewardBoxes[expId] = expCount
+				end
+			end
+			
+			addReward(expCookItemId, expCount)
+			addReward(expServingItemId, expCount)
+			
+			if canUseSkill then
+				
+				local skillId = skillData.Id
+				local skillGrade = _EmployeeSkillService:ReturnSkillGrade(empId, skillId, self.Entity, userId)
+				local value = _EmployeeSkillService:ReturnSkillGradeValue(empId, skillId, self.Entity, userId) 
+				
+				if skillId == _SkillTypeEnum.TotalMoneyBonus then
+					local bonus = math.tointeger(money * value)
+					slotData.ResultMoney += bonus
+					skillValue = bonus
+					
+				elseif skillId ==  _SkillTypeEnum.ArcaneBonus then
+					local bonus = math.tointeger(clover * value) 
+					slotData.ResultClover += bonus
+					skillValue = bonus
+					
+				elseif skillId ==  _SkillTypeEnum.CookExpBonus then
+					local bonus = value
+					skillValue = bonus
+					addReward(expCookItemId, math.tointeger(bonus))
+		
+					
+				elseif skillId ==  _SkillTypeEnum.ServingExpBonus then
+					local bonus = value
+					skillValue = bonus
+					addReward(expServingItemId, math.tointeger(bonus))
+				end
+				
+				
+			end	
+			
+			local incomeProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.AutoTrainingIncome)
+			if slotData.ResultMoney > incomeProgress then
+				self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.AutoTrainingIncome, slotData.ResultMoney)
+			end
+			
+			local accumProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.AutoTrainingAccumIncome)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.AutoTrainingAccumIncome, accumProgress + slotData.ResultMoney)
+			
+			local originClover = slotData.ResultClover 
+			local collectionBonus = player.ChuchuCollectionDB.ChuchuCollectionCloverBonus 
+			local collectionPercent = player.ChuchuCollectionDB.CollectionPercent
+			local strategyEffect = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.CloverRewardBonus, player.PlayerStage.NowStage) 
+			
+			local totalClover = math.floor(originClover * (1 + (collectionBonus + strategyEffect)))
+			slotData.ResultClover = totalClover 
+			
+			local cloverBonusList = {originClover, collectionBonus * 100, math.floor(originClover * collectionBonus), math.floor(strategyEffect) * 100, math.floor(originClover * strategyEffect)}
+			slotData.ResultCloverInfoList = cloverBonusList
+			
+			self:DisplayResultSlot(slotData, skillData, math.tointeger(skillValue), userId)
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void DisplayResultSlot(AutoTrainingSlotData slotData, EmployeeSkillTypeData skillData, integer skillValue)
+		-- 결과 슬롯을 표시하는 함수
+		
+		local resultScroll = _EntityService:GetEntityByPath("/ui/AutoTrainingGroup/ResultPopupDim/ResultPopup/ResultScroll")
+		local slot = resultScroll:GetChildByName("ResultSlot_"..tostring(slotData.SlotNum))
+		slot.Enable = true
+		
+		local slotName = slot:GetChildByName("Title")
+		
+		local portrait = slot:GetChildByName("ChuchuInfo"):GetChildByName("Frame"):GetChildByName("ChuChu")
+		local skillSlot = slot:GetChildByName("ChuchuInfo"):GetChildByName("SkillSlot")
+		local skill1Entity = slot:GetChildByName("ChuchuInfo"):GetChildByName("Skill1")
+		local skillNoText = slot:GetChildByName("ChuchuInfo"):GetChildByName("NoSkillText")
+		local rewards = slot:GetChildByName("Rewards")
+		local totalMoneyText = rewards:GetChildByName("TotalMoneyBg"):GetChildByName("TotalMoneyText")
+		local totalCloverText = rewards:GetChildByName("TotalCloverBg"):GetChildByName("TotalCloverText")
+		local employeeId = slotData.ChuchuId
+		
+		---@type EmployeeData
+		local data = _EmployeeService:GetData(employeeId)
+		portrait.UIImageAlign:UpdateCanvas(data.PortraitUIRUID)
+		portrait.Enable = true
+		
+		local hasTrainingSkill =  _EmployeeSkillService:HasSkillOfType(employeeId, "Training", _UserService.LocalPlayer)
+		if hasTrainingSkill then
+			local skillIcon = portrait.Parent:GetChildByName("SkillIcon")
+			skillIcon.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum:GetSkillTypeIcon("Training")
+			skillIcon.Enable = true
+		else
+			portrait.Parent:GetChildByName("SkillIcon").Enable = false
+		end
+		
+		local skillId = data.Skill1Type
+		local skillGrade = _EmployeeSkillService:ReturnSkillGrade(employeeId, skillId, _UserService.LocalPlayer)
+		
+		skillSlot:GetChildByName("TypeIcon").SpriteGUIRendererComponent.ImageRUID =  _EmployeeSkillService:ReturnSkillIcon(skillId)
+		skillSlot.SpriteGUIRendererComponent.ImageRUID = _EmployeeSkillService:ReturnSkillSlotBg_Mini(skillGrade)
+		
+		local canUseSkill = _EmployeeSkillService:CanUseSkill(employeeId, skillId,_UserService.LocalPlayer)
+		skillSlot:GetChildByName("Disable").Enable = not canUseSkill
+		skillSlot:GetChildByName("Disable"):GetChildByName("ConditionText").Enable = false
+		
+		skill1Entity:GetChildByName("Title").TextComponent.Text = _EmployeeSkillService:ReturnSkillName(skillId, skillGrade)
+		skill1Entity:GetChildByName("Title").TextComponent.OutlineColor =  _ColorCodeEnum:GetColor(_EmployeeSkillService:ReturnSkillGradeColor(skillGrade))
+		
+		if isvalid(skillData) and skillData.Type == "Training" then
+			
+			local skillDesc = ""
+			
+			if skillId ==  _SkillTypeEnum.CookExpBonus then
+				skillDesc = "TrainingSkillDesc_Cook"
+			elseif skillId ==  _SkillTypeEnum.ServingExpBonus then
+				skillDesc = "TrainingSkillDesc_Serving"
+			elseif skillId == _SkillTypeEnum.TotalMoneyBonus then
+				skillDesc = "TrainingSkillDesc_Meso"
+				skillValue = _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(skillValue))
+			elseif skillId ==  _SkillTypeEnum.ArcaneBonus then
+				skillDesc = "TrainingSkillDesc_Arcane"
+				skillValue = _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(skillValue))
+			end
+			
+			skill1Entity:GetChildByName("Desc").TextComponent.Text =  _LocalizationService:GetTextFormat(skillDesc, skillValue)
+			skill1Entity.Enable = true
+			skillNoText.Enable = false
+		else
+			skill1Entity.Enable = false
+			skillNoText.Enable = true
+			if hasTrainingSkill then
+				skillNoText.TextComponent.Text = _LocalizationService:GetText("TrainingSkillText_Locked")
+				skillSlot:GetChildByName("Disable"):GetChildByName("UISprite").Enable = true 
+			else
+				skillNoText.TextComponent.Text = _LocalizationService:GetText("TrainingSkillText_NotTraining")
+				skillSlot:GetChildByName("Disable"):GetChildByName("UISprite").Enable = false 
+			end
+			
+		end
+		
+		totalMoneyText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(slotData.ResultMoney)
+		totalCloverText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(slotData.ResultClover)
+		slotData.RewardBoxes["G0006"] = 0 
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:SetCloverInfoToolTip(slotData.ResultCloverInfoList, slotData.SlotNum)
+		
+		local rewardScroll = rewards:GetChildByName("Model_RewardScroll") 
+		
+		local rewardKeys = table.keys(slotData.RewardBoxes)
+		table.sort(rewardKeys, function(a, b) return a < b end)
+		
+		if #rewardKeys > 0 then
+			for i = 1, 10 do
+				local rewardId = rewardKeys[i]
+				local entity = rewardScroll:GetChildByName("Model_UIItemRewardSlot_"..tostring(math.tointeger(i)))
+				
+				if i > #rewardKeys then 
+					entity.UIItemRewardSlot:SetEmptySlot()
+				else
+					local rewardCount = slotData.RewardBoxes[rewardId]
+					entity.UIItemRewardSlot:SetItem(rewardId, rewardCount)
+					entity.UIItemRewardSlot.isShowDesc = false
+				end
+			end
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void GiveReward(table rewardSlotNumList)
+		-- 플레이어에게 보상을 지급하는 함수
+		
+		for i = 1, #rewardSlotNumList do
+			local slotNum = rewardSlotNumList[i]
+			---@type AutoTrainingSlotData
+			local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+			
+			self.RewardMoney += slotData.ResultMoney
+			self.RewardClover += slotData.ResultClover
+			self.RewardReputation += slotData.Reputation
+			
+			local logReward = {}
+			table.insert(logReward,{id = "G0001",count = slotData.ResultMoney })
+			local rewardKeys = table.keys(slotData.RewardBoxes)
+			if #rewardKeys > 0 then
+				for i = 1, #rewardKeys do
+					local rewardId = rewardKeys[i]
+					local rewardCount = slotData.RewardBoxes[rewardId]
+		
+					table.insert(logReward, {id = rewardId, count = rewardCount})
+					local originRewardCount = self.RewardBoxes[rewardId]
+					if isvalid(originRewardCount) then
+						self.RewardBoxes[rewardId] = originRewardCount + rewardCount
+					else
+						self.RewardBoxes[rewardId] = rewardCount
+					end
+				end
+			end
+			
+			self.Entity.PlayerLog:AutoTrainingFlow(slotData,logReward,"3")
+		
+			table.clear(slotData.RewardBoxes)
+			slotData.ResultMoney = 0
+			slotData.ResultClover = 0
+			slotData.Reputation = 0
+		end
+		
+		
+		local player = self.Entity
+		local playerInven = player.PlayerInventory
+		playerInven:ModifyMoney(self.RewardMoney,"Auto training reward","Auto training popup")
+		self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.P_Training, self.RewardMoney)
+		
+		playerInven:ModifyArcaneSymbol(self.RewardClover, "Auto training reward","Auto training popup")
+		
+		self.RewardReputation = math.floor(self.RewardReputation * (1 + _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.ReputationRewardBonus, player.PlayerStage.NowStage)))
+		player.PlayerInventory:ModifyReputation(self.RewardReputation)
+		
+		if self.Entity.PlayerCheatComponent:HasAuthority() then
+			self.Entity.PlayerDebugMonitor:UpdateDebugMonitorReputationChangeByContents(self.RewardReputation, self.Entity.PlayerComponent.UserId)
+		end
+		
+		local rewardKeys = table.keys(self.RewardBoxes)
+		if #rewardKeys > 0 then
+			for i = 1, #rewardKeys do
+				local rewardId = rewardKeys[i]
+				local rewardCount = self.RewardBoxes[rewardId]
+				playerInven:RequestAddItem(rewardId, rewardCount,"Auto training reward","Auto training popup")
+			end
+		end
+		
+		local badgeProgress = player.PlayerBadge.BadgeProgress[_BadgeEnum.TrainingCount]
+		if badgeProgress == nil then
+			badgeProgress = 0
+		end
+		player.PlayerBadge:ChangeProgress(_BadgeEnum.TrainingCount, badgeProgress+1)
+		
+		local countAchi = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.AutoTrainingCount)
+		player.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.AutoTrainingCount, countAchi+1)
+		
+		self.RewardBoxes["G0001"] = self.RewardMoney
+		self.RewardBoxes["G0004"] = self.RewardClover
+		self.RewardBoxes["G0006"] = self.RewardReputation
+		
+		if isvalid(self.RewardBoxes) and #table.keys(self.RewardBoxes) > 0 then
+			_UIItemRewardService:SetItemRewardUI(self.RewardBoxes, "AutoTraining", self.Entity.PlayerComponent.UserId)
+		end
+		
+		table.clear(self.RewardSlotNumList)
+		table.clear(self.RewardBoxes)
+		self.RewardMoney = 0
+		self.RewardClover = 0
+		self.RewardReputation = 0
+	end
+
+	@ExecSpace("Client")
+	method void OnRewardPopupOkButton()
+		-- 보상 팝업의 OK 버튼 클릭 시 처리하는 함수
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:CloseResultPopup()
+		for i = 1, #self.RewardSlotNumList do
+			self:ChangeTruckState(self.RewardSlotNumList[i], _AutoTrainingUIStateEnum.Default)
+		end
+		
+		if #self.RewardSlotNumList > 0 then
+			self:GiveReward(self.RewardSlotNumList)
+			self:CheckCanRewardForRedDot() 
+		end
+		
+		table.clear(self.RewardSlotNumList)
+		table.clear(self.RewardBoxes)
+		self.RewardMoney = 0
+		self.RewardClover = 0
+		self.RewardReputation = 0
+	end
+
+	@ExecSpace("Server")
+	method void ChangeTruckState(integer slotNum, string state)
+		-- 트럭의 상태를 변경하는 함수
+		---@type AutoTrainingSlotData
+		local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+		local chuchuId = slotData.ChuchuId
+		slotData.SlotNum = slotNum
+		slotData.State = state 
+		self:SyncData(self.AutoTrainingSlotInfoTable, "AutoTrainingSlotInfoTable", self.Entity.PlayerComponent.UserId)
+		
+		if isvalid(slotData) then
+			if state == _AutoTrainingUIStateEnum.WaitingReward then 
+				self:CheckCanRewardForRedDot()
+				
+				if not _UtilLogic:IsNilorEmptyString(chuchuId) then
+			
+					local reward = {}
+					for k,v in pairs(slotData.RewardBoxes) do 
+						table.insert(reward,{id=k,count=v})	
+					end	
+					
+					self.Entity.PlayerLog:AutoTrainingFlow(slotData, reward, "2")
+				end
+			end
+		end
+		
+		if state == _AutoTrainingUIStateEnum.Default then
+			self:ChangeStateChuchuListSlot(chuchuId, _AutoTrainingUIStateEnum.List_Selected, self.Entity.PlayerComponent.UserId) 
+		else
+			self:ChangeStateChuchuListSlot(chuchuId, state, self.Entity.PlayerComponent.UserId)
+		end
+		self:ChangeTruckStateClient(slotNum, state, self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.AutoTraining)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EndAutoTraining)
+	end
+
+	@ExecSpace("Client")
+	method void ChangeTruckStateClient(integer slotNum, string state)
+		-- 클라이언트에서 트럭 상태를 변경하는 함수
+		---@type AutoTrainingSlotData
+		local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+		slotData.State = state 
+		slotData.SlotNum = slotNum
+		
+		if slotData.IsOpen == 1 then
+			_UIGroupManager.TrainingAutoGroup.UITrainingAuto:SetTruckSlot(slotNum, state)
+			self:UpdateTimerUI(slotData)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void StartTimer(integer slotNum)
+		-- 타이머를 시작하는 함수
+		---@type AutoTrainingSlotData
+		local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+		
+		slotData.RemainDay = self.TrainingTime
+		slotData.State = _AutoTrainingUIStateEnum.OnProgress 
+		
+		self:UpdateTimerUI(slotData, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void UpdateTimer()
+		-- 타이머를 업데이트하는 함수
+		for i = 1, self.OpenSlotNum do
+			---@type AutoTrainingSlotData
+			local slotData = self.AutoTrainingSlotInfoTable[i]
+			if isvalid(slotData) then
+				if slotData.State ==  _AutoTrainingUIStateEnum.OnProgress then
+					slotData.RemainDay -= 1
+					if slotData.RemainDay < 1 then 
+						slotData.RemainDay = 0
+						self:ChangeTruckState(i, _AutoTrainingUIStateEnum.WaitingReward)
+						self:CanRewardAutoTraining(true, self.Entity.PlayerComponent.UserId)
+						_ReportMessageMaker:RequestAddToReportQueue(7001, _StringUtilLogic:NumToString(i), "", "", self.Entity.PlayerComponent.UserId)
+					end
+					
+				end
+				self:UpdateTimerUI(slotData, self.Entity.PlayerComponent.UserId)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void InitTruckSlot()
+		-- 트럭 슬롯을 초기화하는 함수
+		local userId = self.Entity.PlayerComponent.UserId
+		for i = 1, 3 do
+			local newData = AutoTrainingSlotData()
+			local dataTable = newData:DefaultDataTable(userId)
+			newData:SetFromTable(dataTable, userId)
+			self.AutoTrainingSlotInfoTable[i] = newData
+		end
+		
+		self:SyncData(self.AutoTrainingSlotInfoTable, "AutoTrainingSlotInfoTable", userId)
+	end
+
+	@ExecSpace("Client")
+	method void UpdateTimerUI(AutoTrainingSlotData slotData)
+		-- 타이머 UI를 업데이트하는 함수
+		if slotData.State ~= _AutoTrainingUIStateEnum.Default then
+			local slotNum = slotData.SlotNum
+			local slot = _EntityService:GetEntityByPath("/ui/AutoTrainingGroup/Panel/ParkingPanel/TruckSlot_".._StringUtilLogic:NumToString(slotNum))
+			slot.AutoTrainingTruckSlot:UpdateTimeText(slotData.RemainDay)
+		
+			self:UpdateParkingAreaInfo(slotData)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UpdateHudTimerUI(AutoTrainingSlotData slotData)
+		-- HUD 타이머 UI를 업데이트하는 함수
+		if not isvalid(slotData) or not isvalid(slotData.SlotNum) or slotData.SlotNum == 0 then
+			return
+		end
+		local slotNum = _StringUtilLogic:NumToString(slotData.SlotNum)
+		local hudTimer = _EntityService:GetEntityByPath("/ui/LobbyHUDGroup/MainMenuPanel/UIMainMenu/MainMenuContents/MainMenuTitle_Group4/MainMenuContents_Group4/Menu_TrainingAuto/Slot"..slotNum.."/Timer")
+		
+		if slotData.State ~=  _AutoTrainingUIStateEnum.OnProgress then
+			if slotData.State == _AutoTrainingUIStateEnum.WaitingReward then
+				hudTimer.TextComponent.Text = _LocalizationService:GetText("Arrive")
+				hudTimer.Enable = true
+			elseif slotData.State == _AutoTrainingUIStateEnum.Default then
+				hudTimer.Enable = false
+			end
+			return
+		end
+		
+		local remainDay = slotData.RemainDay
+		if remainDay == 0 then
+			hudTimer.TextComponent.Text = _LocalizationService:GetText("Arrive")
+			hudTimer.Enable = true
+			
+		elseif remainDay > 0 then
+			hudTimer.TextComponent.Text = _LocalizationService:GetTextFormat("LeftDay_Format", remainDay)
+			hudTimer.Enable = true
+			
+		elseif remainDay < 0 then
+			hudTimer.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateParkingAreaInfo(AutoTrainingSlotData slotData)
+		-- 주차장 영역 정보를 업데이트하는 함수
+		
+		if not isvalid(slotData) then
+			return
+		end
+		local stageId = _UserService.LocalPlayer.PlayerStage.NowStage
+		local modelName = "Exterior_Stage"..stageId.."_ParkingArea"
+		local parkingArea = _LobbyRenovationService:GetParkingAreaEntity()
+		
+		if not isvalid(parkingArea) then
+			return
+		end
+		
+		local slotNum = _StringUtilLogic:NumToString(slotData.SlotNum)
+		local infoEntity = parkingArea:GetChildByName("Info_"..slotNum) 
+		local scooterEntity = parkingArea:GetChildByName("Scooter_"..slotNum)
+		local noParkingSignEntity = parkingArea:GetChildByName("NoParkingSign_"..slotNum)
+		
+		if slotData.State ~=  _AutoTrainingUIStateEnum.OnProgress then
+			if slotData.State == _AutoTrainingUIStateEnum.WaitingReward then
+				infoEntity.TextComponent.Text = _LocalizationService:GetText("Arrive")
+				infoEntity.Enable = true
+			elseif slotData.State == _AutoTrainingUIStateEnum.Default then
+				infoEntity.Enable = false
+			end
+			scooterEntity.Enable = true
+			noParkingSignEntity.Enable = false
+			return
+		end
+		
+		local remainDay = slotData.RemainDay
+		if remainDay <= 0 then
+			infoEntity.TextComponent.Text = _LocalizationService:GetText("Arrive")
+			infoEntity.Enable = true
+			scooterEntity.Enable = true
+			noParkingSignEntity.Enable = false
+			
+		elseif remainDay > 0 then
+			infoEntity.TextComponent.Text = _LocalizationService:GetTextFormat("LeftDay_Format", remainDay)
+			infoEntity.Enable = true
+			scooterEntity.Enable = false
+			noParkingSignEntity.Enable = true
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetChuhuInTruck(string chuchuId, integer slotNum)
+		-- 츄츄를 트럭에 설정하는 함수
+		for i = 1, 3 do
+			---@type AutoTrainingSlotData
+			local data = self.AutoTrainingSlotInfoTable[i]
+			if isvalid(data) then
+				if data.ChuchuId == chuchuId then
+					data.ChuchuId = nil 
+					self:ChangeStateChuchuListSlot(chuchuId, _AutoTrainingUIStateEnum.Default, self.Entity.PlayerComponent.UserId)
+				end
+			end
+		end 
+		
+		---@type AutoTrainingSlotData
+		local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+		if isvalid(slotData) then
+			
+				if not _UtilLogic:IsNilorEmptyString(slotData.ChuchuId) then
+					self:ChangeStateChuchuListSlot(slotData.ChuchuId, _AutoTrainingUIStateEnum.Default, self.Entity.PlayerComponent.UserId)
+				end
+		else
+			local newData = AutoTrainingSlotData()
+			newData.SlotNum = slotNum
+			newData.State = _AutoTrainingUIStateEnum.Default
+			
+			self.AutoTrainingSlotInfoTable[slotNum] = newData 
+			slotData = newData
+		end
+		
+		slotData.ChuchuId = chuchuId
+		slotData.SlotNum = slotNum
+		slotData.State = _AutoTrainingUIStateEnum.Default
+		
+		
+		local selectedChuchuIds = self.Entity.PlayerTrainingManager.ChuchuIds
+		for i, id in pairs(selectedChuchuIds) do
+			if id == chuchuId then
+				self:AutoTrainingToastMsg("AutoTrainingMsg_InTruck", self.Entity.PlayerComponent.UserId) 
+			end
+		end
+		
+		self:ChangeStateChuchuListSlot(slotData.ChuchuId, _AutoTrainingUIStateEnum.List_Selected, self.Entity.PlayerComponent.UserId)
+		
+		
+		self:SyncData(self.AutoTrainingSlotInfoTable, "AutoTrainingSlotInfoTable", self.Entity.PlayerComponent.UserId)
+		
+	end
+
+	@ExecSpace("Client")
+	method void SyncData(table data, string name)
+		-- 데이터를 동기화하는 함수
+		if name == "AutoTrainingSlotInfoTable" then 
+		
+			self.AutoTrainingSlotInfoTable = data
+			self:UpdateChuchuSlot(self.AutoTrainingSlotInfoTable)
+			
+			for i = 1, 3 do
+				---@type AutoTrainingSlotData
+				local slotData = self.AutoTrainingSlotInfoTable[i]
+				if slotData.IsOpen == 1 then
+					self:UpdateTimerUI(slotData)
+				end
+			end
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ChangeStateChuchuListSlot(string chuchuId, string state)
+		-- 츄츄 리스트 슬롯의 상태를 변경하는 함수
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:ChangeStateChuchuListSlot(chuchuId, state) 
+	end
+
+	@ExecSpace("Client")
+	method void UpdateChuchuSlot(table autoTrainingSlotInfoTable)
+		-- 츄츄 슬롯을 업데이트하는 함수
+		
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:UpdateTruckChuchuSlot(autoTrainingSlotInfoTable)
+		
+		for i = 1, 3 do
+			---@type AutoTrainingSlotData
+			local slotData = autoTrainingSlotInfoTable[i]
+			
+			if not isvalid(slotData) then
+				continue
+			end
+			
+			if self.Entity.EmployeeManager:CheckEmployeeAlreadyHave(slotData.ChuchuId) == false then
+				continue
+			end
+			
+			local chuchuId = slotData.ChuchuId
+			local state = slotData.State
+			if not _UtilLogic:IsNilorEmptyString(chuchuId) then
+				if state == _AutoTrainingUIStateEnum.Default then
+					self:ChangeStateChuchuListSlot(chuchuId, _AutoTrainingUIStateEnum.List_Selected) 
+				else
+					self:ChangeStateChuchuListSlot(chuchuId, state)
+				end
+					
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetEmpScroll()
+		-- 직원 스크롤을 설정하는 함수
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:DisplayEmployeeScroll()
+	end
+
+	@ExecSpace("Client")
+	method void UpdateTrainingSelectedList(table chuchuIds)
+		-- 훈련 선택 목록을 업데이트하는 함수
+		self.Entity.PlayerTrainingManager.ChuchuIds = chuchuIds
+		self.Entity.PlayerTrainingManager:SetSelectedChuchuIdList(chuchuIds)
+		_UIGroupManager.TrainingSettingGroup.UITrainingSetting:UpdateSelectedList(chuchuIds)
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateLunchBoxTruckSlotOkButtons()
+		-- 도시락 트럭 슬롯 OK 버튼을 업데이트하는 함수
+		local lunchBoxNum = self.Entity.PlayerInventory.LunchBox
+		
+		if lunchBoxNum < self.RequireLunchBoxNum then
+			_UIGroupManager.TrainingAutoGroup.UITrainingAuto:UpdateTruckSlotOkButtonDim(self.AutoTrainingSlotInfoTable, true)
+		else
+			_UIGroupManager.TrainingAutoGroup.UITrainingAuto:UpdateTruckSlotOkButtonDim(self.AutoTrainingSlotInfoTable, false) 
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnOpenUI()
+		-- UI가 열릴 때 처리하는 함수
+		self:UpdateChuchuSlot(self.AutoTrainingSlotInfoTable)
+	end
+
+	@ExecSpace("Server")
+	method void CheckCanRewardForRedDot()
+		-- 빨간 점 표시를 위한 보상 가능 여부를 확인하는 함수
+		local canReward = false
+		
+		for i = 1, self.OpenSlotNum do
+			---@type AutoTrainingSlotData
+			local data = self.AutoTrainingSlotInfoTable[i]
+			if isvalid(data) then
+				if data.State == _AutoTrainingUIStateEnum.WaitingReward then
+					canReward = true
+					break
+				end
+			end
+		end
+		self:CanRewardAutoTraining(canReward, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void CanRewardAutoTraining(boolean canReward)
+		-- 자동 훈련 보상 가능 상태를 설정하는 함수
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:EnableDimRewardAllBtn(not canReward) 
+		_MainMenuRedDotManager:EnableAutoTrainingRedDot(canReward)
+	end
+
+	@ExecSpace("Server")
+	method void OnTransferAutoTrainingChuchu(integer slotNum)
+		-- 자동 훈련 츄츄를 이송할 때 처리하는 함수
+		---@type AutoTrainingSlotData
+		local slotData = self.AutoTrainingSlotInfoTable[slotNum]
+		slotData.ChuchuId = nil
+		slotData.RemainDay = self.TrainingTime
+		
+		self:ChangeTruckState(slotNum, _AutoTrainingUIStateEnum.Default)
+	end
+
+	@ExecSpace("Server")
+	method void CheckChuchuAutoTraining(string empId)
+		-- 츄츄의 자동 훈련 상태를 확인하는 함수
+		local check = false
+		
+		for i = 1, self.OpenSlotNum do
+			---@type AutoTrainingSlotData
+			local data = self.AutoTrainingSlotInfoTable[i]
+			if isvalid(data) and empId == data.ChuchuId then
+				check = true
+				self:OnTransferAutoTrainingChuchu(i)
+				break
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnClickScooterArea()
+		-- 스쿠터 영역 클릭 시 처리하는 함수
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:OnClickScooterArea()
+	end
+
+	@ExecSpace("Client")
+	method void AutoTrainingToastMsg(string msg)
+		-- 자동 훈련 토스트 메시지를 표시하는 함수
+		_UIToast:ShowMessage(_LocalizationService:GetText(msg)) 
+	end
+
+end

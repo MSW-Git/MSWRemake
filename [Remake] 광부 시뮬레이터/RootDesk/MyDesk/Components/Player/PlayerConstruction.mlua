@@ -1,0 +1,234 @@
+@Component
+script PlayerConstruction extends Component
+
+	property SyncTable<number> haveItems
+
+	property number TempleStartingFloor = 1
+
+	method void OnBeginPlay()
+		-- 건설 컴포넌트 초기화 - 테이블 리스트와 타입 설정
+		self._T.tableList = { 	haveItems = self.haveItems,  
+		}
+		
+		self._T.tableType = { haveItems = "number", 
+		}
+		
+		if self:IsClient() then
+			self.TempleStartingFloor = 1
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 클라이언트로 테이블 데이터 전체 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 클라이언트로 테이블의 특정 인덱스 값 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트에서 테이블을 초기값으로 모두 리셋
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 테이블 변경 시 건설 샵 UI 새로고침 및 건설 이벤트 전송
+		if name == "haveItems" then
+			_EntityService:GetEntityByPath("/ui/ConstructionGroup/ConstructionShop").ConstructionShopUI:RefreshUI()
+			
+			local constructedEvent = LocalPlayerConstructed()
+			self.Entity:SendEvent(constructedEvent)
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void LoadedData(string haveItemsStr)
+		-- 데이터베이스에서 건설물 데이터 로드 후 업적 처리
+		local itemTable = _DataService:GetTable("Construction")
+		
+		if haveItemsStr == nil then
+			for i=1, itemTable:GetRowCount() do
+				self.haveItems[i] = 0
+			end
+		else 
+			local haveItems = _UtilLogic:StringToTable(haveItemsStr)
+			for i=1, itemTable:GetRowCount() do
+				if haveItems[i] == nil then
+					self.haveItems[i] = 0
+				else 
+					self.haveItems[i] = haveItems[i]
+				end
+			end
+		end
+		----------------------------------------------------------------------
+		-- 클라 동기화
+		self:SetTableClient("haveItems", _UtilLogic:TableToString(self.haveItems), self.Entity.OwnerId)
+		----------------------------------------------------------------------
+		-- 업적 체크
+		if self.Entity.PlayerAchievementComponent.AchieveProgress[31] < 1 and self.haveItems[1] >= 2 then
+			self.Entity.PlayerAchievementComponent:GetProgress(31, 1)
+		end
+		if self.Entity.PlayerAchievementComponent.AchieveProgress[32] < 1 and self.haveItems[2] >= 2 then
+			self.Entity.PlayerAchievementComponent:GetProgress(32, 1)
+		end
+		if self.Entity.PlayerAchievementComponent.AchieveProgress[35] < 1 and self.haveItems[3] >= 1 then
+			self.Entity.PlayerAchievementComponent:GetProgress(35, 1)
+		end
+		if self.Entity.PlayerAchievementComponent.AchieveProgress[36] < 1 and self.haveItems[4] >= 2 then
+			self.Entity.PlayerAchievementComponent:GetProgress(36, 1)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void UnlockConstruction(number idx)
+		-- 건설물 해금 - 비용지불 후 해금 및 업적 처리
+		local itemTable = _DataService:GetTable("Construction")
+		-------------------------------------------------------------------------------------
+		-------------------------------------------------------------------------------------
+		-- 검증 단계
+		-------------------------------------------------------------------------------------
+		-- 언락 대상인지
+		if self.haveItems[idx] ~= 0 then
+			log("이미 해금됨")
+			return
+		end
+		
+		-- 이전 해금대상이 해금되어있지 않다면 해금 불가
+		if idx > 1 and self.haveItems[idx-1] < 1 then
+			log("선행 해금 필요")
+			return
+		end
+		
+		
+		-- 비용 보유 여부
+		local cost = tonumber(itemTable:GetCell(idx, "UnlockCost")) 
+		if self.Entity.PlayerStorage.currencyItems[6] < cost then
+			log("비용 부족")
+			return
+		end
+		-------------------------------------------------------------------------------------
+		-------------------------------------------------------------------------------------
+		-- 실행 
+		self.haveItems[idx] = self.haveItems[idx] + 1
+		self.Entity.PlayerStorage:UseCurrencyItems(6, cost)
+		
+		-- 동기화
+		self:SetTableElementClient("haveItems", idx, tostring(self.haveItems[idx]), self.Entity.OwnerId)
+		
+		-- 연출
+		self:PlayPurchaseDirection("unlock", idx, self.haveItems[idx], self.Entity.OwnerId)
+		
+		-- 업적 체크
+		if idx == 3 and self.haveItems[3] == 1 then
+			self.Entity.PlayerAchievementComponent:GetProgress(35, 1)
+		end
+		
+		
+		-- 데이터 저장
+		self.Entity.PlayerData:SaveData(1)
+	end
+
+	@ExecSpace("Server")
+	method void BuyConstruction(number idx)
+		-- 건설물 구매(레벨업) - 비용지불 후 레벨 상승 및 업적 처리
+		local itemTable = _DataService:GetTable("Construction")
+		-------------------------------------------------------------------------------------
+		-------------------------------------------------------------------------------------
+		-- 검증 단계
+		-------------------------------------------------------------------------------------
+		-- 건설 가능 대상인지
+		if self.haveItems[idx] < 1 then
+			log("해금 안됨")
+			return
+		end
+		
+		-- 최대 건설을 초과하는지 (0=해금안됨, 1=해금됨+0레벨, 2=1레벨, ..., N=(n-1)레벨)
+		if self.haveItems[idx] >= tonumber(itemTable:GetCell(idx, "MaxLevel"))+1 then
+			log("최대레벨 초과")
+			return
+		end
+		
+		-- 비용 보유 여부
+		local cost = tonumber(itemTable:GetCell(idx, "ConstructionCost")) 
+		if cost == nil then -- 크로노스 시계탑의 경우 시작 단계가 조절됨!
+			cost = 4*(self.haveItems[idx])
+			log("cost = ", cost)
+		end
+		if self.Entity.PlayerStorage.currencyItems[5] < cost then
+			log("보유 재화 = ",  self.Entity.PlayerStorage.currencyItems[5], ", 비용 = ", cost)
+			log("비용 부족")
+			return
+		end
+		-------------------------------------------------------------------------------------
+		-------------------------------------------------------------------------------------
+		-- 실행 
+		self.haveItems[idx] = self.haveItems[idx] + 1
+		self.Entity.PlayerStorage:UseCurrencyItems(5, cost)
+		
+		-- 동기화
+		self:SetTableElementClient("haveItems", idx, tostring(self.haveItems[idx]), self.Entity.OwnerId)
+		
+		-- 연출
+		self:PlayPurchaseDirection("buy", idx, self.haveItems[idx], self.Entity.OwnerId)
+		
+		-- 업적 체크
+		if idx == 1 and self.haveItems[1] == 2 then
+			self.Entity.PlayerAchievementComponent:GetProgress(31, 1)
+		elseif idx == 2 and self.haveItems[2] == 2 then
+			self.Entity.PlayerAchievementComponent:GetProgress(32, 1)
+		elseif idx == 4 and self.haveItems[4] == 2 then
+			self.Entity.PlayerAchievementComponent:GetProgress(36, 1)
+		end
+		
+		
+		-- 데이터 저장
+		self.Entity.PlayerData:SaveData(1)
+	end
+
+	@ExecSpace("Client")
+	method void PlayPurchaseDirection(string type, number idx, number afterLevel)
+		-- 구매/해금 연출 재생 - 타입에 따라 해금 또는 기대 연출
+		if type == "unlock" then
+			_EntityService:GetEntityByPath("/ui/ConstructionGroup/ConstructionShop").ConstructionShopUI:PlayUnlockDirection(idx)
+			
+		elseif type == "buy" then
+			_EntityService:GetEntityByPath("/ui/ConstructionGroup/ConstructionShop").ConstructionShopUI:PlayPurchaseDireciton(idx, afterLevel)
+			
+		end
+	end
+
+end

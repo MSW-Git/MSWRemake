@@ -1,0 +1,505 @@
+@Logic
+script EmployeeUpgradeService extends Logic
+
+	property table EmployeeExpData = {}
+
+	property table ExpItem = {}
+
+	property table OverLimitCostData = {}
+
+	property SyncTable<integer, string> CookExpItemTableByItemLevel
+
+	property SyncTable<integer, string> ServingExpItemTableByItemLevel
+
+	property SyncTable<integer, integer> ExpPotionValueByItemLevel
+
+	property integer ExpPotionLevelCount = 5
+
+	method void OnBeginPlay()
+		-- 직원 업그레이드 서비스 초기화 시 실행되는 함수
+		local statType = {_EmployeeStatEnumType.Cook , _EmployeeStatEnumType.Serving , _EmployeeStatEnumType.MoveSpeed }
+		
+		for i = 1, #statType do
+			self.ExpItem[statType[i]] = _ItemDataSetLogic:ReturnPotionIdsByStatType(statType[i])
+		end
+		
+		if self:IsClient() then 
+			_EmployeeUpgradeUIServcie.EmployeeUpgrade.Enable = false
+		end
+		
+		table.clear(self.CookExpItemTableByItemLevel)
+		table.clear(self.ServingExpItemTableByItemLevel)
+		table.clear(self.ExpPotionValueByItemLevel)
+		
+		for i = 1 , self.ExpPotionLevelCount do 
+			self.CookExpItemTableByItemLevel[i] = "M000"..tostring(i)	
+			self.ServingExpItemTableByItemLevel[i] = "M100"..tostring(i)	
+			
+			local itemId = "M000"..tostring(i)
+			local funcUseItem = _DataService:GetTable("ItemData"):FindRow("Id", itemId):GetItem("funcUseItem")
+			local strings = _UtilLogic:Split(funcUseItem, ",", false)
+			
+			local exp = _StringUtilLogic:StringToInt(strings[2])
+			if exp > 0 then
+				self.ExpPotionValueByItemLevel[i] = exp
+			else	
+			end
+		end
+		
+		self:LoadData()
+	end
+
+	method void LoadData()
+		-- 직원 업그레이드 관련 데이터를 로드하는 함수
+		
+		table.clear(self.EmployeeExpData)
+		local dataSet = _DataService:GetTable("EmployeeStatLevelExpDataSet")
+		
+		for _,row in pairs(dataSet:GetAllRow()) do 
+		
+			local id = row:GetItem("Level")	
+			local data = EmployeeStatLevelExpData()
+			data:Load(tostring(id))
+		
+		
+			self.EmployeeExpData[data.Level] = data
+			
+		end
+	end
+
+	method EmployeeStatLevelExpData GetExpData(integer level)
+		-- 레벨에 따른 경험치 데이터를 반환하는 함수
+		if self.EmployeeExpData == nil then
+			return nil
+		end
+		
+		return self.EmployeeExpData[level]
+	end
+
+	method integer ReturnLevelExpOfExpSum(number expSum, string statType, Entity player)
+		-- 총 경험치로 레벨을 계산하여 반환하는 함수
+		if expSum == 0 then 
+			return 1
+		end
+		
+		
+		for i, data in pairs(_EmployeeUpgradeService.EmployeeExpData) do
+			local expData = _EmployeeUpgradeService:GetExpData(i)
+			
+			if i == 1 then continue end
+			
+			if i == #_EmployeeUpgradeService.EmployeeExpData then 
+				return expData.Level
+			end
+			
+			if expSum == expData:GetExpSum(player) then 
+				return expData.Level
+				
+			elseif expSum < expData:GetExpSum(player) then 
+				return expData.Level - 1
+			end
+		end
+		
+	end
+
+	method integer ReturnNextLevelOfExpSum(number expSum, string statType, Entity player)
+		-- 총 경험치로 다음 레벨을 계산하여 반환하는 함수
+		
+		
+		for i, data in pairs(_EmployeeUpgradeService.EmployeeExpData) do
+			local expData = _EmployeeUpgradeService:GetExpData(i)
+			
+		    if i == 1 then continue end
+		    
+		    if i == #_EmployeeUpgradeService.EmployeeExpData then 
+		        return expData.Level
+		    end 
+		    
+		    if expSum < expData:GetExpSum(player) then 
+		        return expData.Level
+		    end
+			
+		end
+		
+	end
+
+	method table CalcNextUpgradeData(string statType, string empId, number potionExp, Entity player)
+		-- 다음 업그레이드 데이터를 계산하는 함수
+		local detail = player.EmployeeManager:GetEmployeeDetail(empId):ConvertToTable()
+		local empStatExp = detail[statType.."Exp"]
+		local empStatLevel = math.max(1,detail[statType.."Level"]) 
+		local empStatMaxLevel = detail["MaxLevel"]
+		local empStatExpSum = self:GetExpData(empStatLevel):GetExpSum(player)	
+		
+		---@type number
+		local curExp = empStatExp + potionExp + empStatExpSum
+		
+		local nextLevel = self:ReturnNextLevelOfExpSum(curExp,statType, player)
+		
+		local changeExp = empStatExp + potionExp
+		
+		local changeLevel = math.min(self:ReturnLevelExpOfExpSum(curExp,statType, player),empStatMaxLevel)
+		
+		---@type number
+		local changeExpSum = self:GetExpData(changeLevel):GetExpSum(player)
+		
+		nextLevel = math.min(changeLevel+1,empStatMaxLevel)
+		
+		local nextExp = self:GetExpData(nextLevel):GetExpSum(player)
+		
+		if changeLevel > empStatLevel then 
+			local calc = curExp - changeExpSum
+			if changeLevel == empStatMaxLevel then 
+				changeExp = calc
+			else
+				changeExp =  math.floor(calc * 100 + 0.5) / 100 
+			end
+		end
+		
+		return {changeExp,nextLevel,changeLevel}
+	end
+
+	@ExecSpace("ClientOnly")
+	method table CalculateAutoLevel(string autoType, integer setLevel)
+		-- 자동 레벨 업그레이드를 계산하는 함수
+		local result = self:HasRequiredExp(autoType,setLevel) 
+		
+		local useItems = result[2]
+		if result[1] == false then 
+			
+			if autoType == "Add" then
+				setLevel -= 1
+			else
+				setLevel += 1
+			end
+			
+			useItems = nil
+		end
+		return {setLevel,useItems}
+	end
+
+	@ExecSpace("ClientOnly")
+	method table HasRequiredExp(string autoType, integer level)
+		-- 필요한 경험치를 보유했는지 확인하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local requiredExp = 0.0
+		local statType = _EmployeeUpgradeUIServcie.UIEmployeeUpgradeCompo.CurStatCategory
+		local empID = _EmployeeUpgradeUIServcie.UIEmployeeUpgradeCompo.EmployeeID
+		
+		local data = _EmployeeService:GetData(empID):ConvertToTable()
+		local maxLevelRequiredExp  
+		
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(empID):ConvertToTable()
+		local maxLevel = detail["MaxLevel"]
+		local curLevel = detail[statType.."Level"]
+		local curLevelExpSum = 0 
+		local curLevelExp = detail[statType.."Exp"]
+		
+		local nextLevelRequiredExp = 0.0
+		
+		local nextTargetLv 
+		if autoType == "Add" then 
+			nextTargetLv = level + 1
+		elseif autoType == "Sub"then 
+			nextTargetLv = level + 1 
+		end
+		requiredExp = self:GetExpData(level):GetExpSum(player) 
+		nextLevelRequiredExp = self:GetExpData(nextTargetLv):GetExpSum(player)
+		maxLevelRequiredExp = self:GetExpData(maxLevel):GetExpSum(player)
+		
+		curLevelExpSum = self:GetExpData(curLevel):GetExpSum(player)
+		
+		
+		local calculateTotalExp = curLevelExpSum + curLevelExp
+		
+		local result 
+		
+		if autoType == "Add" then 
+			
+			result = self:HasRequiredExpAdd(statType,calculateTotalExp,nextLevelRequiredExp,maxLevelRequiredExp,requiredExp)
+			
+		elseif autoType == "Sub" then
+			 
+			result = self:HasRequiredExpSub(statType,calculateTotalExp,nextLevelRequiredExp,maxLevelRequiredExp,requiredExp)
+			
+		end
+			
+		return result
+	end
+
+	@ExecSpace("ClientOnly")
+	method table HasRequiredExpAdd(string statType, number calculateTotalExp, number nextLevelRequiredExp, integer maxLevelRequiredExp, number requiredExp)
+		-- 경험치 추가 시 필요한 경험치를 확인하는 함수
+		local playerInven = _UserService.LocalPlayer.PlayerInventory
+		local expItems = self.ExpItem[statType]
+		
+		local useItems = {} 
+		
+		
+		for i=1,#expItems do 
+			
+			local itemId = expItems[i]
+			local itemCount = playerInven:GetItemCount(itemId)
+			
+			if not isvalid(itemCount) then 
+				continue
+			end
+			
+			if itemCount <=0 then 
+				continue 
+			end 
+			
+			useItems[itemId] = 0
+			local itemLevel =  string.sub(itemId,5,6)
+			local exp = _EmployeeUpgradeService:ReturnExpFromPotionLevel(itemLevel)
+			
+			for j=1,itemCount do 
+		
+				calculateTotalExp += exp 
+				useItems[itemId] += 1 
+				
+				if calculateTotalExp >= nextLevelRequiredExp then  
+					return {true,useItems} 
+				end
+				
+				if calculateTotalExp >= maxLevelRequiredExp then 
+					return {true,useItems} 
+				end
+				
+				if calculateTotalExp >= requiredExp then 
+		
+					return {true,useItems} 
+				end
+				
+			end
+			
+		end 
+		
+		
+		return {false,useItems}  
+	end
+
+	@ExecSpace("ClientOnly")
+	method table HasRequiredExpSub(string statType, number calculateTotalExp, number nextLevelRequiredExp, integer maxLevelRequiredExp, number requiredExp)
+		-- 경험치 차감 시 필요한 경험치를 확인하는 함수
+		local playerInven = _UserService.LocalPlayer.PlayerInventory
+		local expItems = self.ExpItem[statType]
+		
+		local useItems = {} 
+		
+		
+		for i=1,#expItems do 
+			
+			local itemId = expItems[i]
+			
+			local itemCount = playerInven:GetItemCount(itemId)
+		
+			if not isvalid(itemCount) then 
+				continue
+			end
+			
+			if itemCount <=0 then 
+				continue 
+			end 
+			
+			
+			
+			useItems[itemId] = 0
+			local itemLevel =  string.sub(itemId,5,6)
+			local exp = _EmployeeUpgradeService:ReturnExpFromPotionLevel(itemLevel)
+			
+			for j=1,itemCount do 
+		
+				calculateTotalExp += exp 
+		
+				
+					useItems[itemId] += 1
+				if calculateTotalExp >= nextLevelRequiredExp then  
+				
+					return {false,useItems} 
+			
+				end
+				
+				if calculateTotalExp >= maxLevelRequiredExp then 
+					return {true,useItems} 
+				end
+				
+				
+				if calculateTotalExp >= requiredExp then 
+		
+					return {true,useItems} 
+				end
+				
+			end
+			
+		end 
+		
+		
+		return {false,useItems}  
+	end
+
+	method table ReturnOverLimitCost(integer overLimitLevel, Entity player)
+		-- 한계돌파 비용을 반환하는 함수
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(player.PlayerStage.NowStage).OverLimitCostRate
+		local overlimitCostData = {}
+		local cost = 0
+		local nextLevel = overLimitLevel+1
+		
+		local dataSet = _DataService:GetTable("OverLimitCostDataSet")
+		local row = dataSet:FindRow("OverLimitLevel", tostring(nextLevel))
+		
+		local mesoCost = tonumber(row:GetItem("MesoCost"))
+		mesoCost = math.floor(mesoCost * (1+stageConfig))
+		
+		overlimitCostData[nextLevel] = {tostring(mesoCost), row:GetItem("HeartCost"), row:GetItem("JemCost")}
+		return overlimitCostData[nextLevel]
+	end
+
+	method string ReturnOverLimitJemItemId(string employeeId)
+		-- 한계돌파 보석 아이템 ID를 반환하는 함수
+		
+		local data = _EmployeeService:GetData(employeeId)
+		if data.Type == _EmployeeTypeEnum.Cook then
+			return "M3001"
+		else
+			return "M3002"
+		end
+	end
+
+	method integer ReturnExpFromPotionLevel(string potionLevel)
+		-- 포션 레벨로 경험치를 반환하는 함수
+		return self.ExpPotionValueByItemLevel[tonumber(potionLevel)]
+	end
+
+	@ExecSpace("ServerOnly")
+	method table RetrunExpItemCountTable(string statType, integer expValue)
+		-- 경험치 아이템 개수 테이블을 반환하는 함수
+		local expItemCountTable = {}
+		local remainder = expValue
+		
+		if not isvalid(expValue) or remainder == 0 then
+			return expItemCountTable
+		end
+		
+		
+		
+		for i = self.ExpPotionLevelCount , 1 , -1 do
+			
+			local quotient = math.floor( remainder/self.ExpPotionValueByItemLevel[i] ) 
+			remainder = remainder % self.ExpPotionValueByItemLevel[i] 
+				
+			if statType == _EmployeeStatEnumType.Cook then
+				
+				if quotient >= 1 then
+					expItemCountTable[ self.CookExpItemTableByItemLevel[i] ] = quotient
+				end
+				
+			elseif statType == _EmployeeStatEnumType.Serving then
+				
+				if quotient >= 1 then
+					expItemCountTable[ self.ServingExpItemTableByItemLevel[i] ] = quotient
+				end
+			end	
+			
+		end
+		
+		local expSum = 0
+		for itemId , count in pairs(expItemCountTable) do
+			
+			local potionLevel = string.sub(itemId,-1,-1)
+			local value = self:ReturnExpFromPotionLevel(potionLevel)
+			
+			expSum = expSum + ( value * count )
+		end
+		
+		
+		return expItemCountTable 
+	end
+
+	method integer ReturnTransferRefundJemCost(integer overLimitLevel)
+		-- 전송 시 환불되는 보석 비용을 반환하는 함수
+		
+		local dataSet = _DataService:GetTable("OverLimitCostDataSet")
+		local refund = 0
+		for  i = 1, dataSet:GetRowCount() do
+			if i > overLimitLevel then
+				break
+			end
+			local row = dataSet:FindRow("OverLimitLevel", _StringUtilLogic:NumToString(i))
+			local jemCost = tonumber(row:GetItem("JemCost"))
+			refund += jemCost
+		end
+		
+		return refund
+	end
+
+	method table MaxBtn()
+		-- 최대 레벨까지 업그레이드 시 필요한 아이템을 계산하는 함수
+		
+		local player = _UserService.LocalPlayer
+		
+		local statType = _EmployeeUpgradeUIServcie.UIEmployeeUpgradeCompo.CurStatCategory
+		local empID = _EmployeeUpgradeUIServcie.UIEmployeeUpgradeCompo.EmployeeID
+		
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(empID):ConvertToTable()
+		local maxLevel = detail["MaxLevel"]
+		local curLevel = detail[statType.."Level"]
+		local curLevelExp = detail[statType.."Exp"]
+		
+		local maxLevelRequiredExp = self:GetExpData(maxLevel):GetExpSum(player) 
+		local curLevelExpSum = self:GetExpData(curLevel):GetExpSum(player) + curLevelExp 
+		local calculateTotalExp = curLevelExpSum
+		
+		
+		local playerInven = _UserService.LocalPlayer.PlayerInventory
+		local expItems = self.ExpItem[statType]
+		
+		local useItems = {} 
+		
+		
+		for i = 1, #expItems do 
+			
+			local itemId = expItems[i]
+			local itemCount = playerInven:GetItemCount(itemId)
+			
+			if not isvalid(itemCount) then 
+				continue
+			end
+			
+			if itemCount < 1 then 
+				continue 
+			end 
+			
+			useItems[itemId] = 0 
+			local itemLevel =  string.sub(itemId,5,6)
+			local exp = _EmployeeUpgradeService:ReturnExpFromPotionLevel(itemLevel)
+			
+			for j = 1, itemCount do 
+		
+				calculateTotalExp += exp 
+				useItems[itemId] += 1 
+				
+				if calculateTotalExp >= maxLevelRequiredExp then  
+					return {true, useItems} 
+				end
+			end
+			
+		end 
+		
+		
+		return {false, useItems}  
+	end
+
+	method integer ReturnSkillNumByOverLimitLevel(integer overLimitLevel)
+		-- 한계돌파 레벨에 따른 스킬 번호를 반환하는 함수
+		if overLimitLevel == 0 or overLimitLevel == 1 then
+			return 1
+		elseif overLimitLevel == 2 then
+			return 2
+		elseif overLimitLevel == 3 then
+			return 3 
+		end
+	end
+
+end

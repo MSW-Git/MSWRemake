@@ -1,0 +1,157 @@
+@Logic
+script BattlePowerToast extends Logic
+
+	property TextComponent message = "46d4528c-d7d7-4718-a01b-cf2eba29db7f"
+
+	property Entity toastGroup = "7da2b765-b491-470c-b67d-050163e106b1"
+
+	property number duration = 2
+
+	property number tweenDuration = 0.1
+
+	property number tweenEventId = 0
+
+	property boolean isTweenPlaying = false
+
+	property boolean inited = false
+
+	property number offset = 0
+
+	property TextComponent iconText = nil
+
+	property Vector2 originalPos = Vector2(0,0)
+
+	property number lastHandledTime = 0
+
+	@HideFromInspector
+	property number realPreviousBattlePower = 0
+
+	@ExecSpace("Client")
+	method void ShowMessage(string message)
+		-- 전투력 토스트 메시지를 화면에 표시
+		if self._T.enteredTime + 10 > _UtilLogic.ServerElapsedSeconds then return end
+		
+		self.offset = -50
+		self:ForceClose()
+		self.message.Text = message
+		self:StartTween()
+	end
+
+	method void StartTween()
+		-- 토스트 메시지의 페이드 인/아웃 애니메이션 시작
+		local canvasGroup = self.message.Entity.CanvasGroupComponent
+		local transform = self.message.Entity.UITransformComponent
+		if self.tweenEventId > 0 then
+			_TimerService:ClearTimer(self.tweenEventId)
+			self.tweenEventId = 0
+		else
+			canvasGroup.GroupAlpha = 0
+		end
+		self.toastGroup.Enable = true
+		local time = 0
+		
+		local preTime = _UtilLogic.ElapsedSeconds
+		transform.anchoredPosition.x = self.originalPos.x
+		
+		local tween = function()
+			local delta = _UtilLogic.ElapsedSeconds - preTime
+			time = time + delta
+			preTime = _UtilLogic.ElapsedSeconds
+		
+			local alpha = canvasGroup.GroupAlpha 
+			if time >= (self.duration + self.tweenDuration) then		
+				self.toastGroup.Enable = false
+				_TimerService:ClearTimer(self.tweenEventId)
+				self.tweenEventId = 0
+				alpha = 0
+			else
+				if time > self.duration then			
+					alpha = alpha - delta / self.tweenDuration
+				else
+					alpha = alpha + delta / self.tweenDuration
+				end			
+			end	
+			alpha = math.min(1,math.max(alpha,0))
+			
+			canvasGroup.GroupAlpha = alpha
+			local tweenValue = _TweenLogic:Ease(0,1,1,EaseType.SineEaseIn,alpha)
+			transform.anchoredPosition = Vector2(self.originalPos.x - (self.offset * tweenValue), self.originalPos.y)
+		end
+		
+		self.tweenEventId = _TimerService:SetTimerRepeat(tween,1/60)
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 전투력 토스트 UI 초기화
+		self.iconText = self.message.Entity:GetChildByName("Icon").TextComponent
+		self.originalPos = self.message.Entity.UITransformComponent.anchoredPosition
+		self._T.enteredTime = _UtilLogic.ServerElapsedSeconds
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ForceClose()
+		-- 토스트 메시지를 강제로 닫기
+		self.message.Text = ""
+		self.toastGroup.Enable = false
+		_TimerService:ClearTimer(self.tweenEventId)
+		self.tweenEventId = 0
+		self.message.Entity.CanvasGroupComponent.GroupAlpha = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetIconEnable(boolean onOff)
+		-- 토스트 아이콘의 활성화 상태 설정
+		for _, entity in pairs(self.message.Entity.Children) do
+			entity.Enable = onOff
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "MySpecLogic")
+	handler HandleRefreshMySpecEvent(RefreshMySpecEvent event)
+		-- 전투력 변화 이벤트 처리 및 토스트 메시지 표시
+		local battlePower = event.battlePower
+		local previousBattlePower = event.previousBattlePower
+		if not _UserService.LocalPlayer.PlayerDBComponent.dbInited then return end
+		if _UIGroupManager.collectionPopup.UIEquipCollectionPopup.isOpen then return end
+		if previousBattlePower >= math.maxinteger then return end
+		
+		if not self.inited then
+			self.inited = true
+			
+			return
+		end
+		
+		if self.lastHandledTime + 0.1 > _UtilLogic.ServerElapsedSeconds then
+			previousBattlePower = self.realPreviousBattlePower
+		else
+			self.realPreviousBattlePower = previousBattlePower
+		end
+		
+		self:SetIconEnable(true)
+		
+		if isvalid(previousBattlePower) and isvalid(battlePower) then
+			if battlePower > previousBattlePower then
+				self.iconText.Text = "+"
+				self.iconText.FontColor = Color(0.31764, 0.666, 0.8509)
+				self:ShowMessage(string.format(_LocalizeLogic:GetText("etcStr174"), battlePower, battlePower - previousBattlePower))
+			elseif battlePower < previousBattlePower then
+				self.iconText.Text = "-"
+				self.iconText.FontColor = Color(0.8509, 0.31764, 0.31764)
+				self:ShowMessage(string.format(_LocalizeLogic:GetText("etcStr175"), battlePower, previousBattlePower - battlePower))
+			else
+				self.iconText.Text = "="
+				self:ShowMessage(string.format(_LocalizeLogic:GetText("etcStr173"), battlePower))
+			end
+		else
+			self:SetIconEnable(false)
+			self:ShowMessage(string.format(_LocalizeLogic:GetText("etcStr173"), battlePower))
+		end
+		
+		self.lastHandledTime = _UtilLogic.ServerElapsedSeconds
+	end
+
+end

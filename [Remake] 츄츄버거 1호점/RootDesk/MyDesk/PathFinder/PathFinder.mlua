@@ -1,0 +1,241 @@
+@Logic
+script PathFinder extends Logic
+
+	property table mapData = {}
+
+	property Vector2 horizontalSize = Vector2(1.3,0.3)
+
+	property Vector2 verticalSize = Vector2(0.3,1.2)
+
+	property number row = 0
+
+	property number col = 0
+
+	property number nowLevel = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 패스파인더 초기화 및 A* 알고리즘 함수들 설정
+		self:InitNodes(1)
+		
+		self._T.INF = 1/0
+		self._T.cachedPaths  = nil
+		
+		
+		self._T.dist =  function ( x1, y1, x2, y2 )
+			return math.sqrt ( ( x2 - x1)^2 + (y2 - y1)^2 )
+		end
+		
+		self._T.dist_between =  function ( nodeA, nodeB )
+		
+			return self._T.dist  ( nodeA.x, nodeA.y, nodeB.x, nodeB.y )
+		end
+		
+		self._T.heuristic_cost_estimate = function  ( nodeA, nodeB )
+		
+			return self._T.dist  ( nodeA.x, nodeA.y, nodeB.x, nodeB.y )
+		end
+		
+		self._T.is_valid_node  =  function  ( node, neighbor )
+		
+			return true
+		end
+		
+		self._T.lowest_f_score =  function  ( set, f_score )
+		
+			local lowest, bestNode = self._T.INF, nil
+			for _, node in ipairs ( set ) do
+				local score = f_score [ node ]
+				if score < lowest then
+					lowest, bestNode = score, node
+				end
+			end
+			return bestNode
+		end
+		
+		self._T.neighbor_nodes =  function( theNode, nodes )
+			local neighbors = {}
+		    local row = math.floor((theNode.id - 1) / self.col) + 1
+		    local col = (theNode.id - 1) % self.col + 1
+		
+		    for i = row - 1, row + 1 do
+		        for j = col - 1, col + 1 do
+		            if (i >= 1 and i <= self.row and j >= 1 and j <= self.col) and not (i == row and j == col) then
+		                local adjacentIndex = (i - 1) * self.col + j
+						if nodes[adjacentIndex].jump == false then
+		                	table.insert(neighbors, nodes[adjacentIndex])
+		            	end
+		        	end
+		    	end
+			end
+			return neighbors
+			
+		end
+		
+		self._T.not_in =   function ( set, theNode )
+		
+			for _, node in ipairs ( set ) do
+				if node == theNode then return false end
+			end
+			return true
+		end
+		
+		self._T.remove_node =  function  ( set, theNode )
+		
+			for i, node in ipairs ( set ) do
+				if node == theNode then 
+					set [ i ] = set [ #set ]
+					set [ #set ] = nil
+					break
+				end
+			end	
+		end
+		
+		
+		
+		
+		self._T.a_star = function ( start, goal, nodes )
+		
+			local closedset = {}
+			local openset = { start }
+			local came_from = {}
+		
+		
+			local g_score, f_score = {}, {}
+			g_score [ start ] = 0
+			f_score [ start ] = g_score [ start ] + self._T.heuristic_cost_estimate ( start, goal )
+		
+			while #openset > 0 do
+			
+				local current = self._T.lowest_f_score ( openset, f_score )
+				if current == goal then
+					local path = self._T.unwind_path ( {}, came_from, goal )
+					table.insert ( path, goal )
+					return path
+				end
+		
+				self._T.remove_node ( openset, current )		
+				table.insert ( closedset, current )
+				
+				local neighbors = self._T.neighbor_nodes( current, nodes )
+				for _, neighbor in ipairs ( neighbors ) do 
+					if self._T.not_in ( closedset, neighbor ) then
+					
+						local tentative_g_score = g_score [ current ] + self._T.dist_between ( current, neighbor )
+						 
+						if self._T.not_in ( openset, neighbor ) or tentative_g_score < g_score [ neighbor ] then 
+							came_from 	[ neighbor ] = current
+							g_score 	[ neighbor ] = tentative_g_score
+							f_score 	[ neighbor ] = g_score [ neighbor ] + self._T.heuristic_cost_estimate ( neighbor, goal )
+							if self._T.not_in ( openset, neighbor ) then
+								table.insert ( openset, neighbor )
+							end
+						end
+					end
+				end
+			end
+			return nil 
+		end
+		
+		
+		self._T.clear_cached_paths = function  ()
+		
+			self._T.cachedPaths  = nil
+		end
+		
+		self._T.distance = function( x1, y1, x2, y2 )
+			
+			return self._T.dist ( x1, y1, x2, y2 )
+		end
+		
+		self._T.path = function ( start, goal, nodes, ignore_cache )
+			if not self._T.cachedPaths  then self._T.cachedPaths  = {} end
+			if not self._T.cachedPaths  [ start ] then
+				self._T.cachedPaths  [ start ] = {}
+			elseif self._T.cachedPaths  [ start ] [ goal ] and not ignore_cache then
+				return self._T.cachedPaths  [ start ] [ goal ]
+			end
+		
+		      local resPath =  self._T.a_star ( start, goal, nodes )
+		
+		      if not self._T.cachedPaths  [ start ] [ goal ] and not ignore_cache then
+		              self._T.cachedPaths  [ start ] [ goal ] = resPath
+		      end
+		
+			return resPath
+		end
+		
+		self._T.unwind_path  =  function  ( flat_path, map, current_node )
+		
+			if map [ current_node ] then
+				table.insert ( flat_path, 1, map [ current_node ] ) 
+				return self._T.unwind_path ( flat_path, map, map [ current_node ] )
+			else
+				return flat_path
+			end
+		end
+		
+		
+	end
+
+	method number distance(Vector2 x1, Vector2 y1, Vector2 x2, Vector2 y2)
+		-- 두 점 사이의 거리를 계산하여 반환
+		return self._T.distance(x1,y1,x2,y2)
+	end
+
+	method table path(any start, any goal, any nodes, any ignore_cache)
+		-- A* 알고리즘을 사용하여 시작점에서 목표점까지의 경로를 계산
+		return self._T.path(start,goal,nodes,ignore_cache)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitNodes(number level)
+		-- 특정 레벨의 네비게이션 노드 데이터를 초기화하고 맵 데이터 로드
+		
+		if level > 7 or level < 1 then
+			return
+		end
+		
+		if level == self.nowLevel then
+			return
+		end
+		
+		self.nowLevel = level
+		
+		if level < 3 then
+			table.clear(self.mapData)
+			self:SendEvent(RefreshPathEvent())
+			return
+		end
+		
+		local naviTable = _DataService:GetTable("DataSet_NaviGroup_Stage"..level)
+		
+		if naviTable == nil then
+			return
+		end
+		
+		table.clear(self.mapData)
+		
+		self.row = tonumber(naviTable:GetColumn("row")[1])
+		self.col = tonumber(naviTable:GetColumn("col")[1])
+		local totalCount = self.row * self.col
+		
+		for i=1, totalCount do
+			local data = {}
+			
+			data.x = tonumber(naviTable:GetCell(i,1))
+			data.y = tonumber(naviTable:GetCell(i,2))
+			
+			if naviTable:GetCell(i,3) == "false" then
+				data.jump = false
+			else
+				data.jump = true
+			end
+			
+			table.insert(self.mapData, data)
+		end
+		
+		self:SendEvent(RefreshPathEvent())
+	end
+
+end

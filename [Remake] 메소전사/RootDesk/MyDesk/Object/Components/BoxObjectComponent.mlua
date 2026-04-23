@@ -1,0 +1,218 @@
+@Component
+script BoxObjectComponent extends DestroyableObject
+
+	@HideFromInspector
+	property boolean isDetroyed = false
+
+	property integer hp = 0
+
+	property integer maxHp = 6
+
+	property string boxId = ""
+
+	property integer exp = 20
+
+	property Vector3 position = Vector3(0,0,0)
+
+	property number type = 3
+
+	method void OnBeginPlay()
+		-- 박스 컴포넌트 초기화 및 데미지 스킨 설정
+		self.hp = self.maxHp
+		local transform = self.Entity.TransformComponent
+		transform.Position.z = transform.Position.y
+		
+		local sprite = self.Entity.SpriteRendererComponent
+		
+		sprite.SortingLayer = _UserService.LocalPlayer.AvatarRendererComponent.SortingLayer
+		sprite.OrderInLayer = _UserService.LocalPlayer.AvatarRendererComponent.OrderInLayer
+		self.position = transform.Position
+		
+		self._T.damageSkin = _ItemDataLogic.decorationData[_UserService.LocalPlayer.PlayerInfoComponent.playerInfo.damageSkin].ruid
+		
+		if not isvalid(self._T.damageSkin) then
+		
+			self._T.damageSkin = "b6b059a7ec8c44ad966363ed20f3926b"
+		end
+	end
+
+	method void SetDamage(number damage, Vector2 knockback, boolean isCritical, string weaponUniqueKey)
+		-- 박스가 데미지를 받았을 때 체력 감소 및 파괴 처리
+		if self.isDetroyed then
+			return
+		end
+		
+		if _OptionLogic.showDamageSkin then
+			_DamageSkinService:Play(self.Entity, self._T.damageSkin,0,{damage},DamageSkinTweenType.Volcano,false,Vector2(-0.5, -0.5))
+		end
+		self.hp = self.hp - damage
+		if self.hp <= 0 then
+			self:Destroy(true)
+		
+		end
+		
+	end
+
+	method void Respawn()
+		-- 박스를 랜덤 위치에 다시 스폰
+		local battleMap = self.Entity.CurrentMap.BattleMap
+		
+		if isvalid(battleMap) and battleMap.spawnedBox < _GameConfig:GetConfig().WAVE_PER_BOX and battleMap.accumulatedSpawnedBox < _GameConfig:GetConfig().WAVE_PER_BOX * 6 then
+			battleMap.spawnedBox += 1
+			battleMap.accumulatedSpawnedBox += 1
+			
+			self._T.leftBottom = self.Entity.CurrentMap.BattleMap.leftBottom
+			self._T.rightTop = self.Entity.CurrentMap.BattleMap.rightTop
+			
+			local randX = _UtilLogic:RandomIntegerRange(self._T.leftBottom.x + 1, self._T.rightTop.x - 1)
+			local randY = _UtilLogic:RandomIntegerRange(self._T.leftBottom.y + 1, self._T.rightTop.y - 1)
+			local pos = Vector3(randX, randY, 0)
+			
+			self.Entity.TransformComponent.Position = pos
+			self.Entity.TriggerComponent.Enable = true
+			self.Entity.Enable = true
+			self.Enable = true
+			self.isDetroyed = false
+			self.position = pos
+		elseif battleMap.spawnedBox >= _GameConfig:GetConfig().WAVE_PER_BOX or battleMap.accumulatedSpawnedBox >= _GameConfig:GetConfig().WAVE_PER_BOX * 6 then
+			local rand = _UtilLogic:RandomIntegerRange(5, 20)
+			
+			_TimerLogic:SetTimerOnce(function()
+					self:Respawn()
+				end, rand, "BoxObject.Respawn")
+		end
+	end
+
+	method void Destroy(boolean drop)
+		-- 박스 파괴 시 아이템 드롭 및 리스폰 처리
+		if drop then
+			self:InstallMine()
+			self:DropPotion()
+			if _CharacteristicDataLogic.SpawnTowerObject then
+				self:DropBombardKit()
+			end
+			self:DropGem()
+		end
+		self.hp = self.maxHp
+		
+		self.Entity.TransformComponent.Position = Vector3(888, 888, 0)
+		self.Entity.TriggerComponent.Enable = false
+		self.Entity.Enable = false
+		self.Enable = false
+		self.isDetroyed = true
+		_UserService.LocalPlayer:SendEvent(DestroyBoxEvent())
+		_UserService.LocalPlayer.BattlePlayer.destroyedOrbCount += 1
+		
+		local rand = _UtilLogic:RandomIntegerRange(5, 20)
+		
+		_TimerLogic:SetTimerOnce(function()
+				self:Respawn()
+			end, rand, "BoxObject.Destroy_Respawn")
+	end
+
+	method void InstallMine()
+		-- 확률에 따라 지뢰를 설치
+		local rand = _UtilLogic:RandomIntegerRange(1, 100)
+		
+		if rand <= 90 then return end
+		
+		rand = _UtilLogic:RandomIntegerRange(2, 3) 
+		
+		if rand == 1 then
+			local mine = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Model_Mine"), self.Entity.TransformComponent.Position, self.Entity.Parent)
+			local waveData = _WaveLogic.chapterData[_WaveLogic.currentChapter]
+			local averageMonster = _WaveLogic:GetAverageWave().monster
+			local hp = 0
+			
+			if isvalid(_MonsterLogic.monsterData[averageMonster]) then
+				hp = _MonsterLogic.monsterData[averageMonster].hp
+			else
+				hp = averageMonster.hp
+			end
+			
+			mine.MineComponent:SetDamage(hp * 1.5)
+		elseif rand == 2 then
+			self:InstallSlowMine()
+		elseif rand == 3 then
+			self:InstallStunMine()
+		end
+	end
+
+	method void DropBombardKit()
+		-- 확률에 따라 폭격 키트를 드롭
+		local rand = _UtilLogic:RandomIntegerRange(1, 100)
+		
+		if rand <= 95 then return end
+		
+		local waveData = _WaveLogic.chapterData[_WaveLogic.currentChapter]
+		local wave = _WaveLogic:GetAverageWave()
+		
+		if wave == false then return end
+		
+		local averageMonster = wave.monster
+		local hp = 0
+		
+		if isvalid(_MonsterLogic.monsterData[averageMonster]) then
+			hp = _MonsterLogic.monsterData[averageMonster].hp
+		else
+			hp = averageMonster.hp
+		end
+		
+		local entity = self.Entity
+		local from = entity.TransformComponent.Position:Clone()
+		
+		local bombardKit = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Model_TowerKit"), self.Entity.TransformComponent.Position, self.Entity.Parent)
+		bombardKit.TowerKitComponent.towerCategory = "Bombard"
+		bombardKit.TowerKitComponent.damage = hp * 0.65
+		
+		local parent = entity.CurrentMap
+		local battleMap = parent.BattleMap
+		local to = battleMap:ConvertPositionByBound(from + Vector3(_UtilLogic:RandomDouble()-0.5,_UtilLogic:RandomDouble()-0.5,0) * 1.5)
+		_Tweener:MoveTo(bombardKit, to, 0.5, 0, EaseType.SineEaseIn, nil, "BoxObjectComponent_DropBombardKit")
+	end
+
+	method void InstallSlowMine()
+		-- 슬로우 지뢰를 설치
+		local mine = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Model_SlowMine"), self.Entity.TransformComponent.Position, self.Entity.Parent)
+	end
+
+	method void InstallStunMine()
+		-- 스턴 지뢰를 설치
+		local mine = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Model_StunMine"), self.Entity.TransformComponent.Position, self.Entity.Parent)
+	end
+
+	method void DropPotion()
+		-- 확률에 따라 포션을 드롭
+		local entity = self.Entity
+		local from = entity.TransformComponent.Position:Clone()
+		
+		local parent = entity.CurrentMap
+		local battleMap = parent.BattleMap
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, 100)
+		
+		if rand <= 95 then return end
+		
+		local potion = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Model_Potion"), self.Entity.TransformComponent.Position, self.Entity.Parent)
+		local offset = Vector3(_UtilLogic:RandomDouble()-0.5,_UtilLogic:RandomDouble()-0.5,0) * 1.5
+		local to = battleMap:ConvertPositionByBound(from + Vector3(_UtilLogic:RandomDouble()-0.5,_UtilLogic:RandomDouble()-0.5,0) * 1.5) + offset
+		_Tweener:MoveTo(potion, to, 0.5, 0, EaseType.SineEaseIn, nil, "BoxObjectComponent_DropPotion")
+	end
+
+	method Vector3 GetPosition()
+		-- 박스의 현재 위치를 반환
+		return self.position
+	end
+
+	@EventSender("Logic", "StageLogic")
+	handler HandleMapSizeChange(MapSizeChange event)
+		-- 맵 크기 변경 시 범위를 벗어난 박스는 파괴
+		local leftBottom = event.leftBottom
+		local rightTop = event.rightTop
+		
+		if self.position.x < leftBottom.x or self.position.x > rightTop.x or self.position.y < leftBottom.y or self.position.y > rightTop.y then
+			self:Destroy(false)
+		end
+	end
+
+end

@@ -1,0 +1,1431 @@
+@Component
+script SpecialShopManager extends Component
+
+	@TargetUserSync
+	property SyncTable<string> ShopList_Items
+
+	@TargetUserSync
+	property SyncTable<string> ShopList_Runes
+
+	@TargetUserSync
+	property SyncTable<number> Cost_Items
+
+	@TargetUserSync
+	property SyncTable<number> Cost_Runes
+
+	@TargetUserSync
+	property SyncTable<boolean> IsDestructible_Runes
+
+	@TargetUserSync
+	property SyncTable<boolean> ToBeDestroyed_Runes
+
+	property Entity UI_ItemShop = "fbad54ce-1c60-4c6e-b0ad-f8bde26325ff"
+
+	property Entity UI_RuneShop = "ff9b1cce-f30c-49a6-a3f1-0805190fcef9"
+
+	property SyncTable<string> SoldRuneCardIDs
+
+	property number NextUID = 1
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		for i=1, 2 do
+			self.ShopList_Items[i] = ""
+			self.ShopList_Runes[i] = ""
+			self.Cost_Items[i] = 0
+			self.Cost_Runes[i] = 0
+			self.IsDestructible_Runes[i] = true
+			self.NextUID = 1
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RerollList_Runes()
+		local runeInfoTable = _DataService:GetTable("RuneInfo")
+		local runeListBySeason = _DataService:GetTable("RuneCardListBySeason")
+		local user = self.Entity
+		local userPControl = user.TM_PropertyControl
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local ownRunes = user.TeamManager.OwnRunes
+		local coachListEntity = user:GetChildByName("CoachListEntity")
+		------------------------------------------------
+		local gradeTable = {
+			"Normal",
+			"Rare",
+			"Epic",
+			"Legendary"
+		}
+		
+		local gradeCostTable = {
+			4,
+			7,
+			12,
+			25
+		}
+		
+		local runeShopProbTable = _DataService:GetTable("RuneShopProb")
+		
+		-- 팀 레벨로 등급 결정
+		--local teamLv = math.min(12, user.TeamManager.Level + userPControl.Level_ShopAddLevel + userPControl.Level_RuneShopAddLevel)
+		--teamLv = math.max(1, teamLv)
+		--local row = runeShopProbTable:FindRow("Level", string.format("%d", teamLv))
+		
+		-- 스테이지로 등급 결정
+		local stage = user.GameManager.Stage
+		local shopLv = stage + 2 + userPControl.Level_ShopAddLevel + userPControl.Level_RuneShopAddLevel
+		local row = runeShopProbTable:FindRow("Level", string.format("%d", shopLv))
+		
+		local gradeProbTable = {}
+		for i=1, 4 do
+			gradeProbTable[i] = tonumber(row:GetItem(gradeTable[i]))
+		end
+		
+		local season = string.format("%.1f", gameManager.ModeSetVersion)
+		------------------------------------------------
+		for slotIdx = 1, 2 do
+			if slotIdx <= userPControl.Shop_UseRuneSlotCount then
+				local checkedLegendary = false
+				
+				-- 등급을 먼저 결정합니다.
+				local grade = ""
+				local checkValue1 = 0
+				local randomValue1 = _UtilLogic:RandomIntegerRange(1, 100)
+				for i=1, #gradeProbTable do
+					checkValue1 += gradeProbTable[i]
+					if randomValue1 <= checkValue1 then
+						grade = gradeTable[i]
+						break
+					end
+				end
+				
+				local beforeGrade = grade
+				if gameManager.Stage == 2 and gameManager.Round == 1 and userPControl.Coach_SetCheck["COP50010"] >= 1 then
+					grade = "Epic"
+					userPControl.Coach_SetCheck["COP50010"] -= 1
+					
+					--연출
+					for i=1,4 do
+						if isvalid(user.CoachManager.PlayCoachesID[i]) then
+							if user.CoachManager.PlayCoachesID[i] == "COP50010" then
+								local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP50010
+								if isvalid(coachCompo) == true then
+									coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+								end
+								break
+							end
+						end
+					end
+					
+				elseif gameManager.Stage == 4 and gameManager.Round == 1 and userPControl.Coach_SetCheck["COP50003"] >= 1 then
+					-- 아란
+					grade = "Legendary"
+				elseif gameManager.Stage == 4 and gameManager.Round == 3 and userPControl.Coach_SetCheck["COP50006"] >= 1 then
+					-- 에반
+					grade = "Legendary"
+				elseif gameManager.Stage == 5 and gameManager.Round == 1 and userPControl.Coach_SetCheck["COP50002"] >= 1 then
+					-- 메르세데스
+					grade = "Legendary"
+				elseif gameManager.Stage == 5 and gameManager.Round == 3 and userPControl.Coach_SetCheck["COP50005"] >= 1 then
+					-- 루미너스
+					grade = "Legendary"
+				elseif gameManager.Stage == 6 and gameManager.Round == 1 and userPControl.Coach_SetCheck["COP50004"] >= 1 then
+					-- 팬텀
+					grade = "Legendary"
+				elseif userPControl.Penalty_SetCheck["PEN10004"] >= 1 and grade == "Legendary" then
+					 -- PEN10004 패널티 효과 적용 : 레전더리 등급의 룬카드가 등장하지 않음
+					if beforeGrade == "Legendary" then
+						grade = "Epic"
+					else
+						grade = beforeGrade
+					end
+				end
+				
+				
+				-- 이미 레전더리를 보유하고 있다면, 에픽으로 변경
+				-- 코치 효과로 레전더리로 바꿨는데 보유하고 있다면, 바꾸기 전 등급으로 변경
+				if grade == "Legendary" then
+					-- 이미 레전더리를 보유 중이라면
+					for i=1, #ownRunes do
+						local runeID = _UtilLogic:Split(ownRunes[i], "_")[1]
+						local ownGrade = runeInfoTable:FindRow("RuneID", runeID):GetItem("Grade")
+						
+						if ownGrade == "Legendary" then
+							if beforeGrade == "Legendary" then
+								grade = "Epic"
+							else
+								grade = beforeGrade
+							end
+							break
+						end
+					end
+					
+			
+					if slotIdx == 2 then
+						local slot1Grade = runeInfoTable:FindRow("RuneID", self.ShopList_Runes[1]):GetItem("Grade")
+						if slot1Grade == "Legendary" then
+							grade = "Epic"
+						end
+					end
+				end
+			
+				------------------------------------------------
+				-- 후보를 만듭니다.
+				local targetIDList = {}
+				for i=1, runeInfoTable:GetRowCount() do
+					local runeInfoRow = runeInfoTable:GetRow(i)
+					local targetGrade = runeInfoRow:GetItem("Grade")
+					
+					if targetGrade == grade then
+						local targetID = runeInfoRow:GetItem("RuneID")
+						
+						-- 예외1) 이미 보유한 룬 카드인지 검사
+						local isExcludingShop = false
+						for j=1, #ownRunes do
+							if _UtilLogic:Split(ownRunes[j], "_")[1] == targetID then
+								isExcludingShop = true
+								break
+							end
+						end
+						
+						-- 예외2) 이미 상점에 있는 룬 카드인지 검사
+						if slotIdx == 2 and self.ShopList_Runes[1] == targetID then
+							isExcludingShop = true
+						end
+						
+						-- 예외3) 현재 플레이중인 시즌에 포함되지 않는 룬
+						local seasonInfoRow = runeListBySeason:FindRow("RuneID", targetID)
+						if seasonInfoRow:GetItem(season) ~= "TRUE" then
+							isExcludingShop = true
+						end
+						
+						-- 기타 예외) 챌린지 9번, 덴마 제외
+						if userPControl.Challenge_SetCheck["CH10009"] >= 1 and targetID == "RC20039" then
+							isExcludingShop = true
+						end
+						
+						-- 위 상황에 해당하지 않는다면, 후보에 추가
+						if isExcludingShop == false then
+							local targetCost = runeInfoRow:GetItem("PurchaseCost")
+							table.insert(targetIDList, targetID)
+							
+						end
+					end
+				end
+				------------------------------------------------
+				if grade == "Legendary" and gameManager.Stage == 4 and gameManager.Round == 1 and userPControl.Coach_SetCheck["COP50003"] >= 1 then
+					-- 아란
+					self.ShopList_Runes[slotIdx] = "RC40002"
+					userPControl.Coach_SetCheck["COP50003"] -= 1
+					
+					--연출
+					for i=1,4 do
+						if isvalid(user.CoachManager.PlayCoachesID[i]) then
+							if user.CoachManager.PlayCoachesID[i] == "COP50003" then
+								local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP50003
+								if isvalid(coachCompo) == true then
+									coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+								end
+								break
+							end
+						end
+					end
+				elseif grade == "Legendary" and gameManager.Stage == 4 and gameManager.Round == 3 and userPControl.Coach_SetCheck["COP50006"] >= 1 then
+					-- 에반
+					self.ShopList_Runes[slotIdx] = "RC40005"
+					userPControl.Coach_SetCheck["COP50006"] -= 1
+					--연출
+					for i=1,4 do
+						if isvalid(user.CoachManager.PlayCoachesID[i]) then
+							if user.CoachManager.PlayCoachesID[i] == "COP50006" then
+								local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP50006
+								if isvalid(coachCompo) == true then
+									coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+								end
+								break
+							end
+						end
+					end
+				elseif grade == "Legendary" and gameManager.Stage == 5 and gameManager.Round == 1 and userPControl.Coach_SetCheck["COP50002"] >= 1 then
+					-- 메르세데스
+					self.ShopList_Runes[slotIdx] = "RC40001"
+					userPControl.Coach_SetCheck["COP50002"] -= 1
+					--연출
+					for i=1,4 do
+						if isvalid(user.CoachManager.PlayCoachesID[i]) then
+							if user.CoachManager.PlayCoachesID[i] == "COP50002" then
+								local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP50002
+								if isvalid(coachCompo) == true then
+									coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+								end
+								break
+							end
+						end
+					end
+				elseif grade == "Legendary" and gameManager.Stage == 5 and gameManager.Round == 3 and userPControl.Coach_SetCheck["COP50005"] >= 1 then
+					-- 루미너스
+					self.ShopList_Runes[slotIdx] = "RC40004"
+					userPControl.Coach_SetCheck["COP50005"] -= 1
+					--연출
+					for i=1,4 do
+						if isvalid(user.CoachManager.PlayCoachesID[i]) then
+							if user.CoachManager.PlayCoachesID[i] == "COP50005" then
+								local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP50005
+								if isvalid(coachCompo) == true then
+									coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+								end
+								
+								break
+							end
+						end
+					end
+				elseif grade == "Legendary" and gameManager.Stage == 6 and gameManager.Round == 1 and userPControl.Coach_SetCheck["COP50004"] >= 1 then
+					-- 팬텀
+					self.ShopList_Runes[slotIdx] = "RC40003"
+					userPControl.Coach_SetCheck["COP50004"] -= 1
+					--연출
+					for i=1,4 do
+						if isvalid(user.CoachManager.PlayCoachesID[i]) then
+							if user.CoachManager.PlayCoachesID[i] == "COP50004" then
+								local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP50004
+								if isvalid(coachCompo) == true then
+									coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+								end
+								break
+							end
+						end
+					end
+				else
+					local randomValue2 = _UtilLogic:RandomIntegerRange(1, #targetIDList)
+					self.ShopList_Runes[slotIdx] = targetIDList[randomValue2]
+				end
+				
+				for i = 1, 4 do
+					if gradeTable[i] == grade then
+						self.Cost_Runes[slotIdx] = gradeCostTable[i]
+						break
+					end
+				end
+				
+				-- 할인율 적용
+				local discountRate = (100-userPControl.Shop_RuneCardShopDiscountRate)/100
+				self.Cost_Runes[slotIdx] = math.ceil(self.Cost_Runes[slotIdx] * discountRate)
+				
+					
+				-- COP30010(천사 미엘) : 20% 확률로 무료 룬 카드 등장
+				if userPControl.Coach_SetCheck["COP30010"] >= 1 then
+					local per = _UtilLogic:RandomDouble()
+					if per < 0.2 then
+						self.Cost_Runes[slotIdx] = 0
+						
+						--연출
+						for i=1,4 do
+							if isvalid(user.CoachManager.PlayCoachesID[i]) then
+								if user.CoachManager.PlayCoachesID[i] == "COP30010" then
+									local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP30010
+									if isvalid(coachCompo) == true then
+										coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+									end
+									break
+								end
+							end
+						end
+					end
+				end
+				
+				-- 판매 및 파괴 불가 체크
+				if userPControl.Coach_SetCheck["COM20006"] >= 1 and slotIdx == 1 then
+					self.IsDestructible_Runes[slotIdx] = false
+				elseif userPControl.Penalty_SetCheck["PEN00002"] >= 1 or userPControl.Penalty_SetCheck["PEN30007"] >= 1 then
+					local per = _UtilLogic:RandomDouble()
+					if per < 0.3 then
+						self.IsDestructible_Runes[slotIdx] = false
+					else
+						self.IsDestructible_Runes[slotIdx] = true
+					end
+				else
+					self.IsDestructible_Runes[slotIdx] = true
+				end
+				
+				-- 5턴 후 파괴 체크
+				if userPControl.Challenge_SetCheck["CH10007"] >= 1 then
+					self.ToBeDestroyed_Runes[slotIdx] = true
+				elseif userPControl.Penalty_SetCheck["PEN00003"] >= 1 or userPControl.Penalty_SetCheck["PEN30008"] >= 1 then
+					local per = _UtilLogic:RandomDouble()
+					if per < 0.3 then
+						self.ToBeDestroyed_Runes[slotIdx] = true
+					else
+						self.ToBeDestroyed_Runes[slotIdx] = false
+					end
+				else
+					self.ToBeDestroyed_Runes[slotIdx] = false
+				end
+			else
+				self.ShopList_Runes[slotIdx] = ""
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void PurchaseItem_Check(number slotIdx)
+		-- 아이템 상점에서 구매 버튼을 눌렀을 때 호출하는 함수입니다.
+		-- 구매 관련 조건 검증 및 예외 처리를 실행하고, 모두 통과한 경우 구매한 것으로 처리합니다.
+		------------------------------------------------------------------------
+		local user = self.Entity
+		local userPControl = user.TM_PropertyControl
+		------------------------------------------------------------------------
+		-- 함수 호출자 검증
+		if senderUserId ~= nil and senderUserId ~= self.Entity.OwnerId then
+			return
+		end
+		------------------------------------------------------------------------
+		-- 비용을 보유 중인가?
+		local ownCoins = self.Entity.TeamManager.Golds
+		
+		local cost = math.floor( self.Cost_Items[slotIdx] * (100 - userPControl.Shop_ItemShopDiscountRate) / 100 + 0.5 )
+		
+		if ownCoins < cost then
+			log("비용이 부족해서 구매할 수 없습니다.")
+			return
+		end
+		
+		-- 슬롯에 아이템이 있는가?
+		if self.ShopList_Items[slotIdx] == "" then
+			return
+		end
+		
+		-- 아이템 구매가 가능한 상태인가?
+		if not userPControl.Shop_CanPurchaseItems then
+			return
+		end
+		
+		-- (2중 1택 룰) 이미 구매한 상태인가?
+		if (self.ShopList_Items[1] == "" or self.ShopList_Items[2] == "") and (not userPControl.Shop_CanPurchaseMoreItems) then
+			return
+		end
+		------------------------------------------------------
+		-- 구매 처리
+		local purchaseItemID = self.ShopList_Items[slotIdx]
+		--------------------------------------------------------------------------------------------
+		-- 챌린지 2 : 모든 완성 아이템은 '산타 장갑'이 됩니다.
+		if self.Entity.TM_PropertyControl.Challenge_SetCheck["CH10002"] >= 1 and string.sub(purchaseItemID, 1, 2) == "NI" then
+			purchaseItemID = "NI10033"
+		end
+		--------------------------------------------------------------------------------------------
+		self.Entity:SendEvent(BuyItem())
+		table.insert(self.Entity.TeamManager.OwnItems, purchaseItemID)
+		self.ShopList_Items[slotIdx] = ""
+		self.Entity.TeamManager.Golds -= cost
+		
+		------------------------------------------------------
+		-- 랭킹: 아이템 구매 횟수 체크
+		user.TeamBattleStatistics:SetRankCountProperty("CT10013", 1, "Add")
+		------------------------------------------------------
+		-- 업적: 아이템 구매 횟수 체크 
+		if string.sub(purchaseItemID,1,2) == "IB" then -- 업적 AC007004: 상자 구매 횟수 
+			--_AchievementService:UpdateAchievement("AC007004",1,self.Entity)
+			self.Entity.AchievementManager.PlayerAchievementData["AC007004"]['count'] += 1
+			--log("상자 구매횟수: ",self.Entity.AchievementManager.PlayerAchievementData["AC007004"]['count'])
+		end
+		
+		-- 업적 AC005007: 모든 아이템 구매 횟수 
+		--_AchievementService:UpdateAchievement("AC005007",1,self.Entity)
+		self.Entity.AchievementManager.PlayerAchievementData["AC005007"]['count'] += 1
+		--log("모든 아이템 구매횟수: ",self.Entity.AchievementManager.PlayerAchievementData["AC005007"]['count'])
+		
+		-- 일일 미션 : 싱글 모드에서 아이템 구매
+		if string.sub(self.Entity.GameManager.ModeType, 1, 6) == "Single" then
+			self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10012", self.Entity.GameManager.ModeLevel, 1)
+		end
+		------------------------------------------------------
+		-- 아이템 구매 사운드
+		_PlaySoundLogic:PlaySound("M0172",self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetRuneCard_Check(string runeID)
+		-- 룬 카드를 획득하는 효과에 의해 얻어질 때 실행합니다.
+		------------------------------------------------------------------------
+		local userEntity = self.Entity
+		local userPControl = userEntity.TM_PropertyControl
+		local teamManager = userEntity.TeamManager
+		------------------------------------------------------------------------
+		-- 빈 칸이 있는가?
+		if #teamManager.OwnRunes >= userPControl.Rune_UseRuneSlotCount then
+			log(string.format("보유 룬 카드가 %d장 이상입니다.", userPControl.Rune_UseRuneSlotCount))
+			return
+		end
+		------------------------------------------------------
+		-- 구매 처리
+		self:AddRCComponent(runeID, true, #teamManager.OwnRunes, 0)
+		------------------------------------------------------
+		-- 룬 카드 획득 사운드
+		
+		------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveRuneCard(string runeID, number setUID)
+		-- 룬카드가 파괴 될 때 호출합니다.
+		-- 룬카드의 슬롯 위치를 찾습니다. (slotIdx)
+		-----------------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local ownRunes = teamManager.OwnRunes
+		local userID = user.OwnerId
+		-----------------------------------------------------------
+		-- 룬 카드를 보유 중인가?
+		local slotIdx = 0
+		for i, runeIDs in pairs(ownRunes) do
+			local runeIDInfo = _UtilLogic:Split(runeIDs, "_")
+			if runeIDInfo[1] == runeID and tonumber(runeIDInfo[2]) == setUID then
+				slotIdx = i
+				break
+			end
+		end
+		
+		if slotIdx == 0 then
+			return
+		end
+		----------------------------------------------------------
+		-- 판매 처리
+		table.remove(ownRunes, slotIdx)
+		
+		self:RemoveRCComponent(runeID, setUID, true, slotIdx)
+		----------------------------------------------------------
+		-- 룬 카드 제거 사운드
+		
+		----------------------------------------------------------
+		-- 이벤트 처리가 따로 필요할지도
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveRuneCard_Check(string runeID, number setUID)
+		-- 룬카드가 파괴 될 때 호출합니다.
+		-- 룬카드의 슬롯 위치를 찾습니다. (slotIdx)
+		-----------------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local ownRunes = teamManager.OwnRunes
+		local userID = user.OwnerId
+		-----------------------------------------------------------
+		-- 룬 카드를 보유 중인가?
+		local slotIdx = 0
+		for i, runeIDs in pairs(ownRunes) do
+			local runeIDInfo = _UtilLogic:Split(runeIDs, "_")
+			if runeIDInfo[1] == runeID and tonumber(runeIDInfo[2]) == setUID then
+		
+				slotIdx = i
+				break
+			end
+		end
+		
+		if slotIdx == 0 then
+			return
+		end
+		----------------------------------------------------------
+		-- 파괴 가능한 룬카드인가?
+		local runeParent = user:GetChildByName("RuneCardParent")
+		for i=1, #runeParent.Children do
+			local cardEntity = runeParent.Children[i]
+			
+			if string.sub(cardEntity.Name, 1, 10) == "PlayerRune" then
+				---@type RuneCardComponent
+				local rcComponent = cardEntity:GetComponent(runeID)
+				
+				if isvalid(rcComponent) then
+					if (not rcComponent.Copied) and (not rcComponent.IsDestructible) then
+						return
+					end
+					break
+				end
+			end
+		end
+		----------------------------------------------------------
+		-- 판매 처리
+		table.remove(ownRunes, slotIdx)
+		
+		self:RemoveRCComponent(runeID, setUID, true, slotIdx)
+		----------------------------------------------------------
+		-- 룬 카드 제거 사운드
+		
+		----------------------------------------------------------
+		-- 이벤트 처리가 따로 필요할지도
+		
+	end
+
+	@ExecSpace("Server")
+	method void PurchaseRunecard_Check(number slotIdx)
+		-- 룬 카드 상점에서 구매 버튼을 눌렀을 때 호출하는 함수입니다.
+		-- 구매 관련 조건 검증 및 예외 처리를 실행하고, 모두 통과한 경우 구매한 것으로 처리합니다.
+		------------------------------------------------------------------------
+		local userEntity = self.Entity
+		local userPControl = userEntity.TM_PropertyControl
+		local teamManager = userEntity.TeamManager
+		------------------------------------------------------------------------
+		-- 함수 호출자 검증
+		if senderUserId ~= nil and senderUserId ~= self.Entity.OwnerId then
+			return
+		end
+		------------------------------------------------------------------------
+		-- 비용을 보유 중인가?
+		local ownCoins = self.Entity.TeamManager.Golds
+		
+		local cost = self.Cost_Runes[slotIdx]
+		
+		if ownCoins < cost then
+			log("비용이 부족해서 구매할 수 없습니다.")
+			return
+		end
+		
+		-- 슬롯에 아이템이 있는가?
+		if self.ShopList_Runes[slotIdx] == "" then
+			log("비정상적인 구매 요청이거나, 빈 슬롯입니다.")
+			return
+		end
+		
+		-- 빈 칸이 있는가?
+		if #self.Entity.TeamManager.OwnRunes >= userPControl.Rune_UseRuneSlotCount then
+			log("보유 룬 카드가 5장 이상입니다.")
+			return
+		end
+		
+		-- 룬카드를 구매할 수 있는 상태인가?
+		if not userPControl.Shop_CanPurchaseRuneCard then
+			return
+		end
+		------------------------------------------------------
+		-- 구매 처리
+		local runeID = self.ShopList_Runes[slotIdx]
+		self.ShopList_Runes[slotIdx] = ""
+		self.Entity.TeamManager.Golds -= cost
+		self:AddRCComponent(runeID, true, #teamManager.OwnRunes, slotIdx)
+		------------------------------------------------------
+		-- 룬 카드 구매 사운드
+		_PlaySoundLogic:PlaySound("M0173",self.Entity.OwnerId)
+		------------------------------------------------------
+		-- 이벤트 처리
+		self.Entity:SendEvent(BuyRuneCard(runeID))	-- 에러 아님
+		------------------------------------------------------
+		if string.sub(self.Entity.GameManager.ModeType, 1, 6) == "Single" then
+			-- 일일 미션 : 싱글 모드에서 룬 카드 구매
+			self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10013", self.Entity.GameManager.ModeLevel, 1)
+			
+			-- 일일 미션 : 싱글 모드에서 전설 등급 룬 카드 구매
+			local grade = _DataService:GetTable("RuneInfo"):FindRow("RuneID", runeID):GetItem("Grade")
+			if grade == "Legendary" then
+				self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10004", self.Entity.GameManager.ModeLevel, 1)
+			end
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void ResellRuneCard_Check(number slotIdx)
+		-- 룬 카드 인벤토리에서 카드를 sellZone으로 drag&drop 했을 때 호출합니다.
+		-- TeamManager.OwnRunes[slotIdx] 카드를 판매 요청합니다.
+		
+		----------------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		local ownRunes = teamManager.OwnRunes
+		local EntityRunes=teamManager.OnEntityUsingToOwnedRunes
+		local userID = user.OwnerId
+		----------------------------------------------------------
+		-- 함수 호출자 검증
+		if senderUserId ~= nil and senderUserId ~= self.Entity.OwnerId then
+			return
+		end
+		------------------------------------------------------------------------
+		-- 룬 카드를 보유 중인가?
+		if ownRunes[slotIdx] == nil or ownRunes[slotIdx] == "" then
+			return
+		end
+		----------------------------------------------------------
+		-- 룬 카드를 판매할 수 있는 상태인가?
+		if not userPControl.Rune_CanReSellRuneCard then
+			return
+		end
+		----------------------------------------------------------
+		-- 판매 처리
+		local runeIDInfo = _UtilLogic:Split(ownRunes[slotIdx], "_")
+		local runeID = runeIDInfo[1]
+		local setUID = 0
+		
+		-- 판매 가격 불러와서 그만큼 돈 획득
+		local runeParent = self.Entity:GetChildByName("RuneCardParent")
+		for i=1, #runeParent.Children do
+			local cardEntity = runeParent.Children[i]
+			if string.sub(cardEntity.Name, 1, 10) == "PlayerRune" then
+				---@type RuneCardComponent
+				local rcComponent = cardEntity:GetComponent(runeID)
+				
+				if isvalid(rcComponent) and rcComponent.UID == tonumber(runeIDInfo[2]) then
+					if rcComponent.IsDestructible then
+						if not rcComponent.Copied then
+							teamManager:AddGolds(rcComponent.ResellCost, "sellRuneCard")
+							setUID = rcComponent.UID
+							
+							-- 업적: 룬카드 [바이킨]을 n골드로 판매하기 
+							if runeID == "RC10004" then 
+								_AchievementService:UpdateProgress_RuneCard("AC004003",rcComponent.ResellCost,user)
+							end
+							
+							_GeneralDirectorLogic:PlayCoinDirector_Sprite(rcComponent.ResellCost,nil,"Shop",userID)
+							--_GeneralDirectorLogic:InsertCoinDirectorData("Shop",nil,userID)
+							--_GeneralDirectorLogic:PlayCoinDirector("Shop",rcComponent.ResellCost,nil,userID)
+							_RuneCardDirector:InitRuneCardManagingValue(runeID,runeParent.Children[i].Id,userID)
+							_RuneCardDirector:ChangeShopCharacterValues()
+							break
+						else
+							-- 예외처리 필요한 것들
+							if runeID=="RC20014" then
+								_RuneCardDirector:InitRuneCardManagingValue(runeID,runeParent.Children[i].Id,userID)
+								_RuneCardDirector:ChangeShopCharacterValues()
+							end
+						end
+					else
+						log("판매 불가인데요")
+						return
+					end
+				end
+			end	
+		end
+		
+		table.remove(ownRunes, slotIdx)
+		self:RemoveRCComponent(runeID, setUID, true, slotIdx)
+		----------------------------------------------------------
+		--룬 카드 연출 관련 처리
+		--_RuneCardDirector:InitRuneCardManagingValue(runeID,entityID.Id,userID)
+		----------------------------------------------------------
+		-- 판매 사운드 재생
+		_PlaySoundLogic:PlaySound("M0006", userID)
+		----------------------------------------------------------
+		-- 이벤트 처리
+		self.Entity:SendEvent(SellRuneCard(runeID))	-- 에러 아님
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		if name == "ShopList_Items" then
+			self:UI_RefreshItemShop()
+		elseif name == "ShopList_Runes" or name == "ToBeDestroyed_Runes" or name == "IsDestructible_Runes" then
+			self:UI_RefreshRuneShop()
+		elseif name == "Cost_Items" then
+			self:UI_RefreshItemShopCost()
+		elseif name == "Cost_Runes" then
+			self:UI_RefreshRuneShop()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_RefreshItemShop()
+		local itemStatusTable = _DataService:GetTable("ItemStatus")
+		local itemUITable = _DataService:GetTable("ItemUI_Background")
+		------------------------------------------------------------------------
+		local userEntity = self.Entity
+		local userPControl = userEntity.TM_PropertyControl
+		local userGolds = userEntity.TeamManager.Golds
+		------------------------------------------------------------------------
+		for i=1, 2 do	
+			local ui_product = self.UI_ItemShop:GetChildByName(string.format("Product_%d", i))
+			local ui_icon = ui_product:GetChildByName("Icon_Product")
+			local ui_cost = ui_product:GetChildByName("Text_Cost")
+			local itemID = self.ShopList_Items[i]
+			
+			local ui_favorite = ui_product:GetChildByName("Sprite_FavoriteMark")
+			
+			if isvalid(itemID) == false or itemID == "" then
+				ui_product.Enable = false
+			else
+				local iconRUID = itemStatusTable:FindRow("ItemID", itemID):GetItem("RUID")
+				local type = itemStatusTable:FindRow("ItemID", itemID):GetItem("Type")
+				
+				ui_icon.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				ui_icon.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(iconRUID)["scale"]
+				ui_icon.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(iconRUID)["pos"]
+				
+				ui_product.Enable = true
+				
+				ui_product.UI_ItemShopSlot.ItemID = itemID
+				
+				ui_product.SpriteGUIRendererComponent.ImageRUID = _UI_Inventory.TypeBackgroundRUID[type]
+					--itemUITable:FindRow("Type", type):GetItem("RUID")	
+				
+				
+				if _DictionaryFavoriteListManager:IsSettedFave_Item(itemID) then
+					ui_favorite.Enable = true
+				else
+					ui_favorite.Enable = false
+				end
+			end
+		end
+		------------------------------------------------------------------------
+		self:UI_RefreshItemShopCost()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_RefreshItemShopCost()
+		local userEntity = self.Entity
+		local userPControl = userEntity.TM_PropertyControl
+		----------------------------------------------
+		-- 둘 중 하나만 구매 가능한 룰 : 이미 하나를 구매한 상태인 경우 판정
+		local isPurchased = false
+		for i=1, 2 do
+			local itemID = self.ShopList_Items[i]
+			if isvalid(itemID) == false or itemID == "" then
+				isPurchased = true
+			end
+		end
+		
+		----------------------------------------------
+		for i=1, 2 do	
+			local ui_product = self.UI_ItemShop:GetChildByName(string.format("Product_%d", i))
+			local ui_icon = ui_product:GetChildByName("Icon_Product")
+			local ui_cost = ui_product:GetChildByName("Text_Cost")
+			local ui_costIcon = ui_cost:GetChildByName("Sprite_CoinIcon")
+			local cost = self.Cost_Items[i]
+			if isvalid(cost) == false then
+				return
+			end
+			cost = math.floor( tonumber(cost) * (100 - userPControl.Shop_ItemShopDiscountRate) / 100 + 0.5 )
+			
+			if cost == 0 then
+				ui_product:GetChildByName("Icon_Free").Enable = true
+			else
+				ui_product:GetChildByName("Icon_Free").Enable = false
+			end
+			
+			ui_cost:GetChildByName("Text").TextComponent.Text = string.format("%d", cost)
+			ui_product.UI_ItemShopSlot.Cost = tonumber(cost)
+			
+			-- 비용이 부족한 경우, 흑백 처리합니다.
+			local userGolds = self.Entity.TeamManager.Golds
+			local grayScaleMetrialID = "material://bfc15809-bc1f-4929-8575-0553f1f0dc4c"
+			if (tonumber(cost) > userGolds or isPurchased == true) and (not userPControl.Shop_CanPurchaseMoreItems) and userPControl.Shop_CanPurchaseItems then
+				ui_product.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMetrialID)
+				ui_icon.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMetrialID)
+				ui_costIcon.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMetrialID)
+			else
+				ui_product.SpriteGUIRendererComponent:ChangeMaterial("")
+				ui_icon.SpriteGUIRendererComponent:ChangeMaterial("")
+				ui_costIcon.SpriteGUIRendererComponent:ChangeMaterial("")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_RefreshRuneShop()
+		local runeTable = _DataService:GetTable("RuneInfo")
+		------------------------------------------------------------------------
+		local userEntity = self.Entity
+		local userPControl = userEntity.TM_PropertyControl
+		local userGolds = self.Entity.TeamManager.Golds
+		------------------------------------------------------------------------
+		local colorTable = _DataService:GetTable("GradeColor")
+		local gradeColor = {
+			["Normal"] = Color.FromHexCode(colorTable:FindRow("Key", "Rune_Normal"):GetItem("Default")),
+			["Rare"] = Color.FromHexCode(colorTable:FindRow("Key", "Rune_Rare"):GetItem("Default")),
+			["Epic"] = Color.FromHexCode(colorTable:FindRow("Key", "Rune_Epic"):GetItem("Default")),
+			["Legendary"] = Color.FromHexCode(colorTable:FindRow("Key", "Rune_Legendary"):GetItem("Default")),
+		}
+		
+		local gradeNum = {
+			["Normal"] = 	1,
+			["Rare"] = 		2,
+			["Epic"] = 		3,
+			["Legendary"] = 4,
+		}
+		------------------------------------------------------------------------
+		for i=1, 2 do	
+			local ui_product = self.UI_RuneShop:GetChildByName(string.format("Product_%d", i))
+			local ui_icon = ui_product:GetChildByName("Sprite_ProductBg"):GetChildByName("Sprite_Product")
+			local ui_tag_Indestructible = ui_product:GetChildByName("Tag_Indestructible")
+			local ui_tag_incineration = ui_product:GetChildByName("Tag_Incineration")
+			local ui_cost = ui_product:GetChildByName("Text_Cost")
+			local ui_costIcon = ui_cost:GetChildByName("Sprite_CoinIcon")
+			
+			local ui_favorite = ui_product:GetChildByName("Sprite_FavoriteMark")
+			
+			local runeID = self.ShopList_Runes[i]
+			
+			if runeID == "" then
+				ui_product.Enable = false
+				
+				ui_product.UI_RuneShopProductButton:SetProperty("", "", 0, 0, false, false, 0)
+			else
+				local row = runeTable:FindRow("RuneID", runeID)
+				
+				local name = _LocalizationService:GetText("RuneCard_"..runeID.."_Name")
+				local desc = _LocalizationService:GetTextFormat("RuneCard_"..runeID.."_Desc", "-")
+				local iconRUID = row:GetItem("IconRUID")
+				local cost = self.Cost_Runes[i]
+				local grade = row:GetItem("Grade")
+				ui_tag_Indestructible.Enable = not self.IsDestructible_Runes[i]
+				ui_tag_incineration.Enable = self.ToBeDestroyed_Runes[i]
+				
+				
+				ui_product.SpriteGUIRendererComponent.Color = gradeColor[grade]
+				ui_icon.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				ui_icon.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(iconRUID)["scale"]	
+				ui_icon.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(iconRUID)["pos"]
+				ui_cost:GetChildByName("Text").TextComponent.Text = string.format("%d", cost)
+				
+				local incineration = 0
+				if self.ToBeDestroyed_Runes[i] == true then
+					incineration = 5
+				end
+				ui_product.UI_RuneShopProductButton:SetProperty(name, desc, gradeNum[grade], tonumber(cost), not self.IsDestructible_Runes[i], false, incineration)
+				ui_product.Enable = true
+				
+				-- 즐겨찾기
+				if _DictionaryFavoriteListManager:IsSettedFave_Rune(runeID) then
+					ui_favorite.Enable = true
+				else
+					ui_favorite.Enable = false
+				end
+						
+				-- 비용이 부족한 경우, 흑백처리합니다.
+				if tonumber(cost) > userGolds or (not userPControl.Shop_CanPurchaseRuneCard) then
+					ui_icon.SpriteGUIRendererComponent:ChangeMaterial("material://bfc15809-bc1f-4929-8575-0553f1f0dc4c")
+					ui_costIcon.SpriteGUIRendererComponent:ChangeMaterial("material://bfc15809-bc1f-4929-8575-0553f1f0dc4c")
+				else
+					ui_icon.SpriteGUIRendererComponent:ChangeMaterial("")
+					ui_costIcon.SpriteGUIRendererComponent:ChangeMaterial("")
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method RuneCardComponent AddRCComponent(string runeID, boolean myTeam, number idx, number slotIdx)
+		local userEntity = self.Entity
+		local runeParent = userEntity:GetChildByName("RuneCardParent")
+		for i=1, #runeParent.Children do
+			local cardEntity = runeParent.Children[i]
+			if myTeam then
+				if string.sub(cardEntity.Name, 1, 10) == "PlayerRune" and isvalid(cardEntity.RuneCardComponent) == false then
+					---@type RuneCardComponent
+					local rcComponent = cardEntity:AddComponent(runeID)
+					table.insert(userEntity.TeamManager.OnEntityUsingToOwnedRunes, cardEntity)
+					local runeUID = string.format("%s_%d", runeID, self.NextUID)
+					
+					rcComponent:SetUID(self.NextUID)
+					self.NextUID += 1
+					
+					if isvalid(rcComponent) then
+						table.insert(userEntity.TeamManager.OwnRunes, runeUID)
+						rcComponent.SetTeamType = "User"
+						
+						if slotIdx > 0 then
+							rcComponent:SetIsDestructible(self.IsDestructible_Runes[slotIdx])
+							if self.ToBeDestroyed_Runes[slotIdx] then
+								rcComponent:AddIsRemovedCount(8)
+							end
+						end
+						if slotIdx >= 0 then
+							rcComponent:BuyThisRuneCard(runeID)
+						end
+					end
+					return rcComponent
+				end
+			else
+				if string.sub(cardEntity.Name, 1, 9) == "EnemyRune" and isvalid(cardEntity.RuneCardComponent) == false then
+					---@type RuneCardComponent
+					local rcComponent = cardEntity:AddComponent(runeID)
+					table.insert(userEntity.TeamManager.OnEntityUsingToEnemyOwnedRunes, cardEntity)
+					
+					
+					if isvalid(rcComponent) then
+						table.insert(userEntity.TeamManager.EnemyOwnedRunes, runeID)
+						rcComponent.SetTeamType = "Enemy"
+						
+						if slotIdx >= 0 then
+							rcComponent:BuyThisRuneCard(runeID)
+						end
+					end
+					return rcComponent
+				end
+			end
+		end
+		
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveRCComponent(string runeID, number setUID, boolean myTeam, number idx)
+		local userEntity = self.Entity
+		local runeParent = userEntity:GetChildByName("RuneCardParent")
+		for i=1, #runeParent.Children do
+			local cardEntity = runeParent.Children[i]
+			
+			if myTeam then
+				if string.sub(cardEntity.Name, 1, 10) == "PlayerRune" then
+					---@type RuneCardComponent
+					local rcComponent = cardEntity:GetComponent(runeID)
+					
+					if isvalid(rcComponent) and rcComponent.UID == setUID then
+						if not rcComponent.Copied then
+							rcComponent:SellThisRuneCard(runeID)
+							table.remove(userEntity.TeamManager.OnEntityUsingToOwnedRunes, idx)
+							break
+						end
+					end
+				end
+			else
+				if string.sub(cardEntity.Name, 1, 9) == "EnemyRune" then
+					---@type RuneCardComponent
+					local rcComponent = cardEntity:GetComponent(runeID)
+					
+					if isvalid(rcComponent) then
+						if not rcComponent.Copied then
+							rcComponent:SellThisRuneCard(runeID)
+							table.remove(userEntity.TeamManager.OnEntityUsingToEnemyOwnedRunes, idx)
+							break
+						end
+					end
+				end
+			end	
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RerollList_Items()
+		local itemShopTable = _DataService:GetTable("ItemShopVer2")
+		local itemInfoTable = _DataService:GetTable("ItemStatus")
+		local itemListBySeasonTable = _DataService:GetTable("ItemListBySeason")
+		local user = self.Entity
+		local userPControl = user.TM_PropertyControl
+		local coachListEntity = user:GetChildByName("CoachListEntity")
+		local season = string.format("%.1f", user.GameManager.ModeSetVersion)
+		------------------------------------------------------------------------
+		table.remove(self.ShopList_Items)
+		------------------------------------------------------------------------
+		-- 코치 효과 : 아이템 상점에서 메달 상자 및 아이템 상자 등장 x
+		local randomMax = 100
+		if userPControl.Coach_SetCheck["COM30005"] >= 1 then
+			randomMax = 94
+		end
+		local randomValue = _UtilLogic:RandomIntegerRange(1, randomMax)
+		local currentValue = 0
+		local shopType = ""
+		local cost1 = 99
+		local cost2 = 99
+		for i=1, itemShopTable:GetRowCount() do
+			local row = itemShopTable:GetRow(i)
+			
+			currentValue += tonumber(row:GetItem("Prob"))
+			if randomValue <= currentValue then -- 당첨
+				shopType = row:GetItem("ShopType")
+				cost1 = tonumber(row:GetItem("Cost"))
+				cost2 = cost1
+				break
+			end	
+		end
+		------------------------------------------------------------------------
+		-- 코치 효과 : 10% 확률로 상품 하나가 하트(20골드)로 대체
+		local checkCOP70006 = false
+		if userPControl.Coach_SetCheck["COP70006"] >= 1 then
+			local randValue = _UtilLogic:RandomIntegerRange(1, 100)
+			if randValue <= 10 then
+				checkCOP70006 = true
+				cost1 = 20
+			end
+			
+			--연출
+			for i=1,4 do
+				if isvalid(user.CoachManager.PlayCoachesID[i]) then
+					if user.CoachManager.PlayCoachesID[i] == "COP70006" then
+						local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP70006
+						if isvalid(coachCompo) == true then
+							coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+						end
+						
+						break
+					end
+				end
+			end
+		end
+		
+		-- 20% 확률로 아이템 상점이 무료가 됨
+		if userPControl.Coach_SetCheck["COP30009"] >= 1 then
+			local randValue = _UtilLogic:RandomIntegerRange(1, 100)
+			if randomValue <= 20 then
+				cost1 = 0
+				cost2 = 0
+				
+				--연출
+				for i=1,4 do
+					if isvalid(user.CoachManager.PlayCoachesID[i]) then
+						if user.CoachManager.PlayCoachesID[i] == "COP30009" then
+							local coachCompo = coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP30009
+							if isvalid(coachCompo) == true then
+								coachCompo:PlayAbilityEffect("",user.PlayerComponent.UserId)
+							end 
+							
+							break
+						end
+					end
+				end
+			end
+		end
+		------------------------------------------------------------------------
+		-- 챌린지 2 : 모든 완성 아이템은 '산타 장갑'이 됩니다.
+		local checkCH10002 = false
+		if user.TM_PropertyControl.Challenge_SetCheck["CH10002"] >= 1 then
+			checkCH10002 = true
+		end
+		------------------------------------------------------------------------
+		self.Cost_Items[1] = cost1
+		self.Cost_Items[2] = cost2
+		
+		local itemID = {}
+		-- 공격형 재료템 vs 방어형 재료템
+		if shopType == "Material_Category" then
+			itemID[1] = "IB00002"
+		
+			itemID[2] = "IB00003"
+		-- 재료템 vs 소모품	
+		elseif shopType == "MaterialBoxORConsumableBox" then
+			itemID[1] = "IB00001"
+			itemID[2] = "IB00013"
+		-- 완성템 vs 메달	
+		elseif shopType == "NormalItemBoxOREmblemItemBox" then
+			itemID[1] = "IB00004"
+			itemID[2] = "IB00014"
+		-- 그 외
+		else
+			local targetIDList = {}
+			-- 무작위 완성템 상자
+			if shopType == "RandomNormalBox" then
+				for i=4, 12 do
+					local boxID = string.format("IB000%02d", i)
+					table.insert(targetIDList, boxID)
+				end
+			else
+				local targetType = ""
+				-- 무작위 재료
+				if shopType == "RandomMaterial" then
+					targetType = "MaterialItem"
+				-- 무작위 메달
+				elseif shopType == "RandomEmblem" then
+					targetType = "Emblem"
+				-- 무작위 완성템
+				elseif shopType == "RandomNormal" then
+					targetType = "NormalItem"
+				end
+				
+				for i=1, itemInfoTable:GetRowCount() do
+					local row = itemInfoTable:GetRow(i)
+					local targetItemID = row:GetItem("ItemID")
+					local type = row:GetItem("Type")
+					if type == targetType then
+						local seasonInfoRow = itemListBySeasonTable:FindRow("ItemID", targetItemID)
+						if seasonInfoRow:GetItem(season) == "TRUE" then
+							table.insert(targetIDList, row:GetItem("ItemID"))
+						end
+					end
+				end
+			end
+		
+			for i=1, 2 do
+				local randomValue2 = _UtilLogic:RandomIntegerRange(1, #targetIDList)
+				itemID[i] = targetIDList[randomValue2]
+				table.remove(targetIDList, randomValue2)
+			end
+		end
+		
+		if checkCOP70006 then
+			itemID[1] = "CI0010"
+		end
+		
+		-- 아이템 ID 설정
+		for i = 1, 2 do
+			self.ShopList_Items[i] = itemID[i]
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_RefreshRuneShopChanceList()
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		
+		-- 팀 레벨에 의한 확률
+		--local teamLv = math.min(12, teamManager.Level + userPControl.Level_ShopAddLevel + userPControl.Level_RuneShopAddLevel)
+		--teamLv = math.max(1, teamLv)
+		--if teamLv < 1 then
+		--    return
+		--end
+		
+		-- 스테이지에 의한 확률
+		local teamLv = user.GameManager.Stage + 2 + userPControl.Level_ShopAddLevel + userPControl.Level_RuneShopAddLevel
+		
+		local runeShopProbTable = _DataService:GetTable("RuneShopProb")
+		local row = runeShopProbTable:FindRow("Level", string.format("%d", teamLv))
+		
+		local grade = {	"Normal", "Rare", "Epic", "Legendary"}
+		
+		local ui_chanceList = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/RuneCardShop/List_ChanceTable")
+		for i=1, 4 do
+			local ui_chancePanel = ui_chanceList:GetChildByName(string.format("Chance_%d", i))
+			ui_chancePanel:GetChildByName("Text").TextComponent.Text = row:GetItem(grade[i]).."%"
+		end
+	end
+
+	@ExecSpace("Server")
+	method void CheckReroll_Runes()
+		-- 함수 호출자 검증
+		if senderUserId ~= nil and senderUserId ~= self.Entity.OwnerId then
+			return
+		end
+		------------------------------------------------------------------------
+		local teamManager = self.Entity.TeamManager
+		local tmProperties = self.Entity.TM_PropertyControl
+		local gameManager = self.Entity.GameManager
+		------------------------------------------------------------------------
+		if gameManager.PhaseType ~= "Ready" then
+			return
+		end
+		
+		if not tmProperties.Shop_CanRerollRuneCard then
+			_UIToast:ShowMessageByLocalizingKey("CannotRerollRuneCard", self.Entity.OwnerId)
+			return
+		end
+		
+		
+		-- 재화 소모 : 일시 새로고침 > 영구 새로고침 > 골드 순으로 소모, 셋 다 없으면 예외처리
+		if tmProperties.RuneReroll_FreeCounts_Temporary > 0 then
+			tmProperties.RuneReroll_FreeCounts_Temporary -= 1
+		elseif tmProperties.RuneReroll_FreeCounts_Permanents > 0 then
+			tmProperties.RuneReroll_FreeCounts_Permanents -= 1
+		elseif teamManager.Golds >= tmProperties.RuneReroll_Cost then
+			teamManager:AddGolds(-tmProperties.RuneReroll_Cost, "rerollRuneCard")
+		else
+			self.Entity:SendEvent(NotEnoughCoin())
+			_UIToast:ShowMessageByLocalizingKey("LessCoin", self.Entity.OwnerId)
+			return
+		end
+		
+		-- 업적: 룬카드 리롤 {0}회
+		_AchievementService:UpdateProgress_RuneCard("AC004002",1,self.Entity)
+		
+		-- 일일 미션 : 싱글 모드에서 룬 카드 리롤
+		if string.sub(gameManager.ModeType, 1, 6) == "Single" then
+			self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10011", gameManager.ModeLevel, 1)
+		end
+		
+		self:RerollList_Runes()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RerollList_RunesSpecial(string runeCardID1, string runeCardID2)
+		--튜토리얼 진행을 위해, 룬카드 상점에 지정한 룬카드가 나오게 하는 함수입니다.
+		---------------------------------------------------
+		local user = self.Entity
+		local userPControl = user.TM_PropertyControl
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		------------------------------------------------
+		
+		self.ShopList_Runes[1] = runeCardID1
+		self.ShopList_Runes[2] = runeCardID2
+			
+		self.Cost_Runes[1] = 4
+		self.Cost_Runes[2] = 4
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RerollList_ItemsSpecial(string itemID1, string itemID2)
+		table.remove(self.ShopList_Items)
+		
+		self.Cost_Items[1] = 7
+		self.Cost_Items[2] = 7
+		
+		-- 아이템 ID 설정
+		self.ShopList_Items[1] = itemID1
+		self.ShopList_Items[2] = itemID2
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "6d76b84d-8245-473d-8231-ba2e78edb02a")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		if self.Entity.GameManager.ModeType == "Tutorial" then
+			if self.Entity.GameManager.Stage >= 2 and self.Entity.GameManager.Round >= 1 then
+				if self.Entity.TutorialManager_New.AllowPurchaseItem1 == true then
+					local arrow = _EntityService:GetEntityByPath("/ui/TutorialGuideGroup/InteractionGuide/Arrow/ShopSpecial1")
+					arrow:SetEnable(false)
+				else
+					_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+					return
+				end
+			else
+				_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+				return
+			end
+		end
+		
+		
+		if event.Entity.UI_ItemShopSlot.Cost > _UserService.LocalPlayer.TeamManager.Golds then
+			self.Entity:SendEvent(NotEnoughCoin())
+			log("비용이 부족합니다.")
+			return
+		
+		end
+		
+		self:PurchaseItem_Check(1)
+		_UI_Tooltip:SetItemInfo(false, "", "")
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "8a8d5c37-a430-4836-96a0-fffb01445dde")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		if self.Entity.GameManager.ModeType == "Tutorial" then
+			if self.Entity.GameManager.Stage >= 2 and self.Entity.GameManager.Round >= 1 then
+				if self.Entity.TutorialManager_New.AllowPurchaseItem2 == true then
+					local arrow = _EntityService:GetEntityByPath("/ui/TutorialGuideGroup/InteractionGuide/Arrow/ShopSpecial2")
+					arrow:SetEnable(false)
+				else
+		
+					_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+					return
+				end
+			else
+				_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+				return
+			end
+		end
+		
+		
+		if event.Entity.UI_ItemShopSlot.Cost > _UserService.LocalPlayer.TeamManager.Golds then
+			self.Entity:SendEvent(NotEnoughCoin())
+			log("비용이 부족합니다.")
+			return
+		end
+		
+		self:PurchaseItem_Check(2)
+		_UI_Tooltip:SetItemInfo(false, "", "")
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "b66cc067-8bd7-44e7-9ce7-681aa67f395d")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		if self.Entity.GameManager.ModeType == "Tutorial" then
+			if self.Entity.TutorialManager_New.AllowPurchaseRuneCard == true then
+				local arrow = _EntityService:GetEntityByPath("/ui/TutorialGuideGroup/InteractionGuide/Arrow/ShopSpecial3")
+				arrow:SetEnable(false)
+			else
+				_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+				 return
+			end
+		end
+		
+		if event.Entity.UI_RuneShopProductButton.Cost > _UserService.LocalPlayer.TeamManager.Golds then
+			self.Entity:SendEvent(NotEnoughCoin())
+			log("비용이 부족합니다.")
+			return
+		end
+		
+		self:PurchaseRunecard_Check(1)
+		_UI_Tooltip:SetRuneInfoUI(false, "", "", "", 0, 0, false, false, 0, "")
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "008ddbf7-58b5-4a2d-80d0-e4ea8ae64eea")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		if self.Entity.GameManager.ModeType == "Tutorial" then
+			if self.Entity.TutorialManager_New.AllowPurchaseRuneCard == true then
+				local arrow = _EntityService:GetEntityByPath("/ui/TutorialGuideGroup/InteractionGuide/Arrow/ShopSpecial4")
+					arrow:SetEnable(false)
+			else
+				_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+				 return
+			end
+		end
+		
+		
+		if event.Entity.UI_RuneShopProductButton.Cost > _UserService.LocalPlayer.TeamManager.Golds then
+			self.Entity:SendEvent(NotEnoughCoin())
+			log("비용이 부족합니다.")
+			return
+		end
+		
+		self:PurchaseRunecard_Check(2)
+		_UI_Tooltip:SetRuneInfoUI(false, "", "", "", 0, 0, false, false, 0, "")
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "5b5e30d0-d1b3-4a22-8058-ffe874b09929")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		local tmProperty = self.Entity.TM_PropertyControl
+		
+		if self.Entity.GameManager.ModeType == "Tutorial" then
+			if self.Entity.TutorialManager_New.AllowRuneCardReroll == true then
+				
+			else
+				_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+				return
+			end
+		end
+		
+		
+		if tmProperty.RuneReroll_FreeCounts_Temporary > 0
+		or tmProperty.RuneReroll_FreeCounts_Permanents > 0
+		or self.Entity.TeamManager.Golds >= tmProperty.RuneReroll_Cost then
+			self:CheckReroll_Runes()
+		else
+			self.Entity:SendEvent(NotEnoughCoin())
+			_UIToast:ShowMessageByLocalizingKey("LessCoin")
+			return
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "DictionaryManager")
+	handler HandleDictionaryFavoriteEvent(DictionaryFavoriteEvent event)
+		-- Parameters
+		local settedFaveChar = event.settedFaveChar
+		local settedFaveItem = event.settedFaveItem
+		local settedFaveRune = event.settedFaveRune
+		---------------------------------------------------------
+		
+		if settedFaveItem == nil and settedFaveRune == nil then return end
+		
+		-- 아이템 상점에 즐겨찾기 마크를 추가합니다.
+		for i=1, 2 do	
+			local ui_product = self.UI_ItemShop:GetChildByName(string.format("Product_%d", i))
+			local itemID = self.ShopList_Items[i]
+			
+			local ui_favorite = ui_product:GetChildByName("Sprite_FavoriteMark")
+			
+			if _DictionaryFavoriteListManager:IsSettedFave_Item(itemID) then
+				ui_favorite.Enable = true
+			else
+				ui_favorite.Enable = false
+			end
+		end
+		
+		-- 룬 카드 상점 즐찾마크
+		for i=1, 2 do	
+			local ui_product = self.UI_RuneShop:GetChildByName(string.format("Product_%d", i))
+			local runeID = self.ShopList_Runes[i]
+			
+			local ui_favorite = ui_product:GetChildByName("Sprite_FavoriteMark")
+			
+			if _DictionaryFavoriteListManager:IsSettedFave_Rune(runeID) then
+				ui_favorite.Enable = true
+			else
+				ui_favorite.Enable = false
+			end
+		end
+	end
+
+end

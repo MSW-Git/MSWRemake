@@ -1,0 +1,294 @@
+@Logic
+script EmployeeSkillService extends Logic
+
+	property table SkillData = {}
+
+	property table UnLockLevel = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 직원 스킬 서비스를 초기화하는 함수
+		self:LoadData()
+		
+	end
+
+	method void LoadData()
+		-- 직원 스킬 데이터를 로드하는 함수
+		table.clear(self.SkillData)
+		local dataSet = _DataService:GetTable("EmployeeSkillTypeDataSet")
+		
+		for _,row in pairs(dataSet:GetAllRow()) do 
+		
+			local id = row:GetItem("Id")	
+			local data = EmployeeSkillTypeData()
+			data:Load(tostring(id))
+		
+			self.SkillData[data.Id] = data
+		end
+		
+		
+		table.clear(self.UnLockLevel)
+		dataSet = _DataService:GetTable("OverLimitCostDataSet")
+		
+		for i = 1 , dataSet:GetRowCount() do
+			local maxLv = dataSet:GetCell( i , "MaxLevel" )
+			table.insert(self.UnLockLevel,maxLv)
+		end
+		
+		local iconRuidList = {}
+		for id, data in pairs(self.SkillData) do
+			table.insert(iconRuidList, data.IconRUID)
+		end
+		
+		_ResourceService:PreloadAsync(iconRuidList, function()  end)
+		
+	end
+
+	method EmployeeSkillTypeData GetData(string id)
+		-- 스킬 ID로 스킬 데이터를 반환하는 함수
+		if self.SkillData == nil then
+			return nil
+		end
+		
+		return self.SkillData[id]
+	end
+
+	method integer HasSkill(string employeeId, string skillId)
+		-- 직원이 특정 스킬을 보유했는지 확인하는 함수
+		
+		local data = _EmployeeService:GetData(employeeId)
+		if data.Skill1Type == skillId then
+			return 1
+		elseif data.Skill2Type == skillId then
+			return 2
+		end
+		
+		return 0
+		
+		
+	end
+
+	method boolean CanUseSkill(string employeeId, string skillId, Entity player)
+		-- 직원이 스킬을 사용할 수 있는지 확인하는 함수
+		
+		local skillNum = self:HasSkill(employeeId,skillId) 
+		if skillNum == 0 then return false end  
+		 
+		local detail = player.EmployeeManager:GetEmployeeDetail(employeeId)
+		local overLimitLevel = detail.OverLimitLevel
+		local hasSkillNum = _EmployeeUpgradeService:ReturnSkillNumByOverLimitLevel(overLimitLevel) 
+		if isvalid(hasSkillNum) and hasSkillNum >= skillNum then
+			return true
+		else
+			return false
+		end
+	end
+
+	method number ReturnSkillGradeValue(string employeeId, string skillId, Entity player)
+		-- 스킬 등급에 따른 값을 반환하는 함수
+		local own = self:HasSkill(employeeId,skillId)
+		
+		if own == 0 then 
+			return nil 
+		else
+			local employeeData = _EmployeeService:GetData(employeeId)
+			local skillLevel = self:ReturnSkillGrade(employeeId, skillId, player)
+			local skillData = self:GetData(skillId)
+			local skillValue = skillData["Grade"..skillLevel.."Value"]
+			
+			return skillValue	
+			
+		end
+	end
+
+	method boolean HasSkillOfType(string employeeId, string skillType, Entity player)
+		-- 직원이 특정 타입의 스킬을 보유했는지 확인하는 함수
+		
+		local data = _EmployeeService:GetData(employeeId)
+		local skills = {data.Skill1Type, data.Skill2Type}
+		
+		local hasSkill = false
+		for i = 1, #skills do
+			local skillData = self:GetData(skills[i])
+			if skillData.Type == skillType then
+				hasSkill = true
+				break
+			end	
+		end
+		
+		return hasSkill
+	end
+
+	method integer ReturnSkillGrade(string employeeId, string skillId, Entity player)
+		-- 스킬 등급을 반환하는 함수
+		
+		local outgameData = player.EmployeeManager:GetEmployeeOutgameDetail(employeeId)
+		local equipLevel = outgameData.EquipLevel
+		
+		local data = _EmployeeEquipUpgradeDataLogic:GetEmployeeEquipUpgrageData(equipLevel)
+		local skillType = _UtilLogic:SubString(skillId, 1, 1)
+		if skillType == "1" or skillType == "2" then 
+			return data.Skill2Grade
+		else
+			return data.Skill1Grade
+		end 
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ReturnSkillName(string skillId, integer skillLevel)
+		-- 스킬 이름을 반환하는 함수
+		local skillData = self:GetData(skillId)
+		local skillName = _GetLocalizationTextLogic:GetText(skillData.NameKey)
+		
+		return skillName
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ReturnSkillIcon(string skillId)
+		-- 스킬 아이콘을 반환하는 함수
+		local skillData = self:GetData(skillId)
+		
+		
+		return skillData.IconRUID
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ReturnSkillDesc(string skillId, integer skillLevel)
+		-- 스킬 설명을 반환하는 함수
+		local skillData = self:GetData(skillId)
+		
+		local desc = ""
+		if _UtilLogic:IsNilorEmptyString(skillData.DescValueType) then
+			desc = _GetLocalizationTextLogic:GetText(skillData.DescKey)
+			
+		else
+			local skillValue = skillData["Grade"..skillLevel.."Value"]
+			if skillData.DescValueType == "NumInt" then
+				local textValue = _StringUtilLogic:ReturnThousandsSeparatedString(math.floor(skillValue))
+				desc = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat(skillData.DescKey, textValue)
+			elseif skillData.DescValueType == "NumPercent" then
+				local textValue = _StringUtilLogic:ReturnThousandsSeparatedString(math.floor(skillValue*100))
+				desc = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat(skillData.DescKey, textValue)
+			end
+			
+		end
+		
+		
+		return desc
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ReturnSkillSlotBg_Mini(integer grade)
+		-- 미니 스킬 슬롯 배경을 반환하는 함수
+		local ruid = ""
+		
+		if grade == 1 then
+			ruid = _IconRuidEnum.SkillSlotBg1_Mini
+		elseif grade == 2 then
+			ruid = _IconRuidEnum.SkillSlotBg2_Mini
+		elseif grade == 3 then
+			ruid = _IconRuidEnum.SkillSlotBg3_Mini
+		elseif grade == 4 then
+			ruid = _IconRuidEnum.SkillSlotBg4_Mini
+		elseif grade == 5 then
+			ruid = _IconRuidEnum.SkillSlotBg5_Mini
+		end
+		
+		return ruid
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ReturnSkillGradeColor(integer grade)
+		-- 스킬 등급에 따른 색상을 반환하는 함수
+		local colorCode = ""
+		
+		if grade == 1 then
+			colorCode = "#857665"
+		elseif grade == 2 then
+			colorCode = "#686A6A"
+		elseif grade == 3 then
+			colorCode = "#966C07"
+		elseif grade == 4 then
+			colorCode = "#A42A38"
+		elseif grade == 5 then
+			colorCode = "#693A84"
+		end
+		
+		return colorCode
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ReturnSkillSlotBg(integer grade)
+		-- 스킬 슬롯 배경을 반환하는 함수
+		local ruid = ""
+		
+		if grade == 1 then
+			ruid = _IconRuidEnum.SkillSlotBg1
+		elseif grade == 2 then
+			ruid = _IconRuidEnum.SkillSlotBg2
+		elseif grade == 3 then
+			ruid = _IconRuidEnum.SkillSlotBg3
+		elseif grade == 4 then
+			ruid = _IconRuidEnum.SkillSlotBg4
+		elseif grade == 5 then
+			ruid = _IconRuidEnum.SkillSlotBg5
+		end
+		
+		return ruid
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DisplaySkillSlot(string empId, Entity ui, boolean isAlwaysUnlock)
+		-- 스킬 슬롯을 화면에 표시하는 함수
+		local data = _EmployeeService:GetData(empId)
+		local skill1Grade =  _UserService.LocalPlayer.EmployeeManager:ReturnSkillGrade(empId, 1)
+		local skill2Grade =  _UserService.LocalPlayer.EmployeeManager:ReturnSkillGrade(empId, 2)
+		
+		if ui:GetChildByName("Skill1").Model.Name == "Model_SkillSlotMini" then
+			ui:GetChildByName("Skill1").SpriteGUIRendererComponent.ImageRUID = _EmployeeSkillService:ReturnSkillSlotBg_Mini(skill1Grade)
+		else
+			ui:GetChildByName("Skill1").SpriteGUIRendererComponent.ImageRUID = _EmployeeSkillService:ReturnSkillSlotBg(skill1Grade)
+			ui:GetChildByName("Skill1"):GetChildByName("Name").TextComponent.Text = _EmployeeSkillService:ReturnSkillName(data.Skill1Type, skill1Grade)
+			ui:GetChildByName("Skill1"):GetChildByName("Name").TextComponent.OutlineColor = _ColorCodeEnum:GetColor(_EmployeeSkillService:ReturnSkillGradeColor(skill1Grade))
+			ui:GetChildByName("Skill1"):GetChildByName("UIButton"):GetChildByName("ToolTip").TextComponent.Text =  _EmployeeSkillService:ReturnSkillDesc(data.Skill1Type, skill1Grade)
+		end
+		ui:GetChildByName("Skill1"):GetChildByName("TypeIcon").SpriteGUIRendererComponent.ImageRUID = _EmployeeSkillService:ReturnSkillIcon(data.Skill1Type)
+		
+		if ui:GetChildByName("Skill2").Model.Name == "Model_SkillSlotMini" then
+			ui:GetChildByName("Skill2").SpriteGUIRendererComponent.ImageRUID = _EmployeeSkillService:ReturnSkillSlotBg_Mini(skill2Grade)
+		else
+			ui:GetChildByName("Skill2").SpriteGUIRendererComponent.ImageRUID = _EmployeeSkillService:ReturnSkillSlotBg(skill2Grade)
+			ui:GetChildByName("Skill2"):GetChildByName("Name").TextComponent.Text = _EmployeeSkillService:ReturnSkillName(data.Skill2Type, skill2Grade)
+			ui:GetChildByName("Skill2"):GetChildByName("Name").TextComponent.OutlineColor = _ColorCodeEnum:GetColor(_EmployeeSkillService:ReturnSkillGradeColor(skill2Grade))
+			ui:GetChildByName("Skill2"):GetChildByName("UIButton"):GetChildByName("ToolTip").TextComponent.Text =  _EmployeeSkillService:ReturnSkillDesc(data.Skill2Type, skill2Grade)
+		end
+		ui:GetChildByName("Skill2"):GetChildByName("TypeIcon").SpriteGUIRendererComponent.ImageRUID = _EmployeeSkillService:ReturnSkillIcon(data.Skill2Type)
+		
+		ui:GetChildByName("Skill1"):GetChildByName("Disable").Enable = false
+		ui:GetChildByName("Skill2"):GetChildByName("Disable").Enable = false
+		
+		ui:GetChildByName("Skill1"):GetChildByName("UIButton"):GetChildByName("ToolTip").Enable = false
+		ui:GetChildByName("Skill2"):GetChildByName("UIButton"):GetChildByName("ToolTip").Enable = false
+		
+		if not isAlwaysUnlock then
+			local result = _EmployeeSkillService:CanUseSkill(data.Id, data.Skill1Type,_UserService.LocalPlayer)
+			ui:GetChildByName("Skill1"):GetChildByName("Disable").Enable = not result
+			
+			result = _EmployeeSkillService:CanUseSkill(data.Id, data.Skill2Type,_UserService.LocalPlayer)
+			ui:GetChildByName("Skill2"):GetChildByName("Disable").Enable = not result
+		end
+		
+		
+	end
+
+	method integer ReturnUpgradeSkillNumByEquipLevel(integer equipLevel)
+		-- 장비 레벨에 따른 업그레이드 스킬 번호를 반환하는 함수
+		
+		if equipLevel % 2 == 1 then
+			return 1
+		else
+			return 2
+		end
+		
+	end
+
+end

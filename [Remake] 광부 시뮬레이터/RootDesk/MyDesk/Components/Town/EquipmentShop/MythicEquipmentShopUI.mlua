@@ -1,0 +1,1031 @@
+@Component
+script MythicEquipmentShopUI extends Component
+
+	property number filterIdx = 1
+
+	property SyncTable<boolean> redistributionChecked
+
+	property number upgradeLevel = 0
+
+	property boolean IsPlayingDirection = false
+
+	property Entity beadsDetailInfoPanel = "23ca227b-be23-4f19-99cc-9c36325d8f3b"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 신화장비 UI 초기화 시 재분배 체크 상태를 모두 false로 설정
+		for i=1, 8 do
+			self.redistributionChecked[i] = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI()
+		-- 다른 팝업 끄기
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UpgradeCheckPopup").Enable = false
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup").Enable = false
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockCheckPopup").Enable = false
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup").Enable = false
+		-------------------------------------------------------------------------
+		-------------------------------------------------------------------------
+		local level = _UserService.LocalPlayer.PlayerMythicEquipment.EquipmentLevel[self.filterIdx]
+		local icon = {
+			 "thumbnail://a062c5e53c6f45b3994d1e688cd73ea3",
+			"thumbnail://52a6839f290e431fbe29764bfbadae10",
+			"067d97e8224f4e49bdcebc3dbd0570a2",
+			"thumbnail://7967810b0e1a438ba6525116e537a0ba"
+		}
+		local abilityTitle = { "8001", "8002", "8003", "8005"}
+		local abilityAmount = { 30000000, 2500000, 3000000000, 30 }
+		
+		
+		local levelupCost = 150000000000 * (1+0.6*(level))
+		
+		-- 공허 아이템 20 : 신화장비 레벨업 비용 감소
+		local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[20]
+		local voidItemTable = _DataService:GetTable("VoidItems")
+		if voidItemLv == nil then
+			return
+		end
+		if voidItemLv > 0 then
+			local initAbility = voidItemTable:GetCell(20, "InitAbility")
+			local levelAbility = voidItemTable:GetCell(20, "AbilityPerLevel")
+			local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+			
+			levelupCost = levelupCost * (1 - currentAbility/100)
+		end
+		
+		
+		local unlockCost = 5
+		local rerollCost = 20000000000 * (1+0.6*(level-1))
+		-------------------------------------------------------------------------
+		-- Max Level 정보 갱신
+		local levelLimitEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/FilterList/MaxLevel/txt_MaxLevel")
+		levelLimitEntity.TextComponent.Text = string.format("Lv. %d", _UserService.LocalPlayer.PlayerMythicEquipment.PurchaseUnlockedLevel)
+		-------------------------------------------------------------------------
+		-- Filter 버튼
+		local filterList = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/FilterList")
+		for i=1, 4 do
+			local filterBtn = filterList:GetChildByName("Filter_"..tostring(i))
+			if self.filterIdx == i then
+				filterBtn.ButtonComponent.Enable = false
+				filterBtn:GetChildByName("unselected_cover").Enable = false
+			else 
+				filterBtn.ButtonComponent.Enable = true
+				filterBtn:GetChildByName("unselected_cover").Enable = true
+			end
+			
+			local levelText = filterBtn:GetChildByName("txt_level")
+			levelText.TextComponent.Text = string.format("Lv. %d", _UserService.LocalPlayer.PlayerMythicEquipment.EquipmentLevel[i])
+		end
+		-------------------------------------------------------------------------
+		-- 보유한 골드 및 황금열쇠 정보
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/MoneyPanel/Num").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(_UserService.LocalPlayer.PlayerData.Money, nil)
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/GoldKeyPanel/Num").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(_UserService.LocalPlayer.PlayerStorage.currencyItems[6], nil)
+		-------------------------------------------------------------------------
+		-- 기본 패널 정보 갱신
+		local setDefaultPanel = function()
+			local defaultPanel = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/DefaultInfo")
+			
+			local levelEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/DefaultInfo/Level")
+			local nameEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/DefaultInfo/Name")
+			local iconEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/DefaultInfo/IconBack/Icon")
+			local abilityTitleEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/DefaultInfo/panel_status/txt_title_status")
+			local abilityAmountEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/DefaultInfo/panel_status/txt_status")
+			local devineStoneAmountEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/DefaultInfo/panel_divineStone_count/txt_divineStone_count")
+			
+			levelEntity.TextComponent.Text = string.format("Lv. %d", level)
+			nameEntity.TextComponent.Text = _LocalizationService:GetText("MythicEquipment_Type"..tostring(math.floor(self.filterIdx)))
+			iconEntity.SpriteGUIRendererComponent.ImageRUID = icon[self.filterIdx]
+			abilityTitleEntity.TextComponent.Text = _LocalizationService:GetText(abilityTitle[self.filterIdx])
+			abilityAmountEntity.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(abilityAmount[self.filterIdx]*level, nil)
+			devineStoneAmountEntity.TextComponent.Text = string.format("%d", level)
+		end
+		setDefaultPanel()
+		-------------------------------------------------------------------------
+		-- 강화 정보 갱신 
+		local setLevelupPanel = function()
+			local beforeLevelEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/BeforeLevel")
+			local afterLevelEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/AfterLevel")
+			local beforeStatusEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/panel_status/BeforeStatus")
+			local afterStatusEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/panel_status/AfterStatus")
+			local abilityTitleEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/panel_status/title_status")
+			local levelupButton = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/UpgradeButton")
+			local levelupCostEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/UpgradeButton/CostAmount")
+			
+			local lockedPanel = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/LockedPanel")
+			local unlockCostUIEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/LockedPanel/UnlockButton/CostAmount")
+			local unlockButton = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/LevelUp_info/LockedPanel/UnlockButton")
+			
+			beforeLevelEntity.TextComponent.Text = string.format("Lv.%d", level)
+			afterLevelEntity.TextComponent.Text = string.format("Lv.%d", level+1)
+			abilityTitleEntity.TextComponent.Text = _LocalizationService:GetText(abilityTitle[self.filterIdx])
+			beforeStatusEntity.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(abilityAmount[self.filterIdx]*level, nil)
+			afterStatusEntity.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(abilityAmount[self.filterIdx]*(level+1), nil)
+			levelupCostEntity.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(levelupCost, nil)
+			
+			-- 보유 금액에 따라 레벨업 버튼 (비)활성화
+			--log("levelupCost = ", levelupCost)
+			--log("_UserService.LocalPlayer.PlayerData.Money = ", _UserService.LocalPlayer.PlayerData.Money)
+			if _UserService.LocalPlayer.PlayerData.Money < levelupCost then
+				levelupButton.ButtonComponent.Enable = false
+			else 
+				levelupButton.ButtonComponent.Enable = true
+			end
+			
+			-- 해금 여부에 따라 잠금 패널 활성화 및 버튼 비활성
+			if level >= _UserService.LocalPlayer.PlayerMythicEquipment.PurchaseUnlockedLevel then
+				lockedPanel.Enable = true
+				unlockCostUIEntity.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(unlockCost, nil) -- 잠금해제 비용 표시	
+				
+				if _UserService.LocalPlayer.PlayerStorage.currencyItems[6] < unlockCost then
+					unlockButton.ButtonComponent.Enable = false
+				else
+					unlockButton.ButtonComponent.Enable = true
+				end
+				
+			else 
+				lockedPanel.Enable = false
+			end
+		end
+		setLevelupPanel()
+		-------------------------------------------------------------------------
+		-- 신석 정보 갱신
+		local setDevineStoneInfoPanel = function ()
+			local beadzList = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/PowerOfGodInfo/InfoList")
+			for i=1, 8 do
+				local slot = beadzList:GetChildByName("List_"..tostring(i))
+				local beadzAmount = 0
+				if self.filterIdx == 1 then
+					beadzAmount = _UserService.LocalPlayer.PlayerMythicEquipment.Equip1_Element[i]
+				elseif self.filterIdx == 2 then
+					beadzAmount = _UserService.LocalPlayer.PlayerMythicEquipment.Equip2_Element[i]
+				elseif self.filterIdx == 3 then
+					beadzAmount = _UserService.LocalPlayer.PlayerMythicEquipment.Equip3_Element[i]
+				elseif self.filterIdx == 4 then
+					beadzAmount = _UserService.LocalPlayer.PlayerMythicEquipment.Equip4_Element[i]
+				end
+				
+				if beadzAmount ~= nil then
+					slot:GetChildByName("Amount").TextComponent.Text = string.format("%d", beadzAmount)
+				else 
+					return
+				end
+			end
+			
+		
+			local costAmountEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/PowerOfGodInfo/RedistributionButton/CostAmount")
+			costAmountEntity.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(rerollCost, nil)
+			
+			-- 보유 금액에 따라 재분배 버튼 비활성화
+			local redistributionBtn = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/Panel/Panel_Right/PowerOfGodInfo/RedistributionButton")
+			if rerollCost > _UserService.LocalPlayer.PlayerData.Money or level < 1 then
+				redistributionBtn.ButtonComponent.Enable = false
+			else 
+				redistributionBtn.ButtonComponent.Enable = true
+			end
+		end
+		setDevineStoneInfoPanel()
+	end
+
+	@ExecSpace("Client")
+	method void SetUpgradeCheckPopup()
+		-- 신화장비 업그레이드 확인 팝업 설정 및 표시
+		local popup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UpgradeCheckPopup")
+		----------------------------------------------------------------------------------------------------------------
+		----------------------------------------------------------------------------------------------------------------
+		local titleEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/Title")
+		local iconEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/IconBack/Icon")
+		local beforeLevelEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/IconBack/BeforeLevel")
+		local afterLevelEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/AfterLevel")
+		local nameEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/Name")
+		local abilityEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/panel_status/title_status")
+		local beforeStatusEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/panel_status/BeforeStatus")
+		local afterStatusEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/panel_status/AfterStatus")
+		local gainDivineStoneAmountEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UpgradeCheckPopup/Panel/panel_divineStone/txt_DivineStone_count")
+		local costNumEntity = _EntityService:GetEntityByPath(popup.Path.."/Panel/Button_Upgrade/CostAmount")
+		local upgradeButton = _EntityService:GetEntityByPath(popup.Path.."/Panel/Button_Upgrade")
+		
+		local beforeLevel = _UserService.LocalPlayer.PlayerMythicEquipment.EquipmentLevel[self.filterIdx]
+		local title = {
+			_LocalizationService:GetText("MythicEquipment_Type1").." ".._LocalizationService:GetText("LevelUp"),
+			_LocalizationService:GetText("MythicEquipment_Type2").." ".._LocalizationService:GetText("LevelUp"),
+			_LocalizationService:GetText("MythicEquipment_Type3").." ".._LocalizationService:GetText("LevelUp"),
+			_LocalizationService:GetText("MythicEquipment_Type4").." ".._LocalizationService:GetText("LevelUp"),
+		}
+		local iconRUID = {
+			"thumbnail://a062c5e53c6f45b3994d1e688cd73ea3",
+			"thumbnail://52a6839f290e431fbe29764bfbadae10",
+			"067d97e8224f4e49bdcebc3dbd0570a2",
+			"thumbnail://7967810b0e1a438ba6525116e537a0ba"
+		}
+		local ability = { "8001", "8002", "8003", "8005"}
+		local status = {30000000, 2500000, 3000000000, 30}
+		local cost = 0
+		-- 공허 아이템 20 : 신화장비 레벨업 비용 감소
+		local costRate = 1
+		local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[20]
+		local voidItemTable = _DataService:GetTable("VoidItems")
+		if voidItemLv > 0 then
+			local initAbility = voidItemTable:GetCell(20, "InitAbility")
+			local levelAbility = voidItemTable:GetCell(20, "AbilityPerLevel")
+			local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+			
+			costRate = (1 - currentAbility/100)
+		end
+		
+		for i=1, self.upgradeLevel do
+			local targetLevel = beforeLevel+i
+			local len = string.len(tostring(math.floor(100000000000 * targetLevel)))
+			local currentCost = costRate * 150000000000 * (1+0.6*(targetLevel-1))
+			cost = cost + currentCost
+		end
+		
+			
+		local i = self.filterIdx
+		titleEntity.TextComponent.Text = title[i]
+		iconEntity.SpriteGUIRendererComponent.ImageRUID = iconRUID[i]
+		abilityEntity.TextComponent.Text = _LocalizationService:GetText(ability[i])
+		beforeLevelEntity.TextComponent.Text = string.format("Lv.%d", beforeLevel)
+		afterLevelEntity.TextComponent.Text = string.format("Lv.%d", beforeLevel+self.upgradeLevel)
+		beforeStatusEntity.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(beforeLevel*status[i], nil)
+		afterStatusEntity.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString((beforeLevel+self.upgradeLevel)*status[i], nil)
+		gainDivineStoneAmountEntity.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(self.upgradeLevel, nil)
+		costNumEntity.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(cost, nil) 
+		
+		if cost > _UserService.LocalPlayer.PlayerData.Money then
+			upgradeButton.ButtonComponent.Enable = false
+		else 
+			upgradeButton.ButtonComponent.Enable = true
+		end
+		----------------------------------------------------------------------------------------------------------------
+		-- 다음 레벨 비용에 따라 버튼 활성화 여부를 막습니다.
+		local levelDownBtn = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UpgradeCheckPopup/Panel/btn_levelDown")
+		local levelMinBtn = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UpgradeCheckPopup/Panel/btn_levelDown_minimum")
+		local levelUpBtn = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UpgradeCheckPopup/Panel/btn_levelUp")
+		local levelMaxBtn = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UpgradeCheckPopup/Panel/btn_levelUp_maximum")
+		
+		-- 이미 최소레벨인 경우 레벨 낮추기 버튼을 비활성화
+		if self.upgradeLevel <= 1 then
+			levelDownBtn.ButtonComponent.Enable = false 
+			levelMinBtn.ButtonComponent.Enable = false 
+		else 
+			levelDownBtn.ButtonComponent.Enable = true 
+			levelMinBtn.ButtonComponent.Enable = true 
+		end
+		
+		-- 최대 레벨 제한, 금액 제한을 넘지 못하게 렙업버튼 비활성화
+		local nextLevel = beforeLevel + self.upgradeLevel + 1
+		local len = string.len(tostring(math.floor(100000000000 * nextLevel)))
+		local nextCost = cost + costRate * 150000000000 * (1+0.6*(nextLevel -1))
+		
+		if nextLevel > _UserService.LocalPlayer.PlayerMythicEquipment.PurchaseUnlockedLevel or _UserService.LocalPlayer.PlayerData.Money < nextCost then
+			levelUpBtn.ButtonComponent.Enable = false 
+			levelMaxBtn.ButtonComponent.Enable = false
+		else 
+			levelUpBtn.ButtonComponent.Enable = true 
+			levelMaxBtn.ButtonComponent.Enable = true 
+		end
+		----------------------------------------------------------------------------------------------------------------
+		----------------------------------------------------------------------------------------------------------------
+		popup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void PlayUpgradeDirection(number equipIdx, number equipLevel, table beadsResultTable)
+		-- 신화장비 업그레이드 완료 시 연출 효과 재생
+		self:RefreshUI()
+		
+		self.IsPlayingDirection = true
+		
+		-- 레벨업 사운드 재생
+		_SoundService:PlaySound("c198d87b06b24707864b1ac73345cca8", 1)
+		-----------------------------------------------------------------------------------------
+		-----------------------------------------------------------------------------------------
+		local buyCheckPopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup")
+		
+		-- "강해졌다!" 이미지 로컬라이징
+		local title = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/img_powerup_Kr")
+		local title_kr = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/img_powerup_Kr") 
+		local title_en = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/img_powerup_En")
+		
+		if _LocalizationService.CurrentLocaleId == "ko" then
+			title_kr.Enable = true
+			title_en.Enable = false
+			title = title_kr
+		else  
+			title_kr.Enable = false
+			title_en.Enable = true
+			title = title_en
+		end
+		
+		-- sprite
+		local abilityIncrementUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/AbilityIncrement")
+		local iconBackUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/IconBack")
+		local iconUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/IconBack/Icon")
+		
+		-- only text
+		local itemTitleUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/Title")
+		local levelUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/Level")
+		local abilityNameUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/AbilityIncrement/abilityName")
+		local befAmountUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/AbilityIncrement/beforeAmount")
+		local aftAmountUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/AbilityIncrement/afterAmount")
+		local exitButtonUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/Button_Exit")
+		
+		-- only for direction
+		local arrowUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/AbilityIncrement/arrow")
+		local divineStoneTitleUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/AbilityIncrement/txt_divineStone")
+		local divineStoneListUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/AbilityIncrement/list_divineStone")
+		local decoLine = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/LevelUpPopup/Panel/AbilityIncrement/deco_line")
+		-----------------------------------------------------------------------------------------
+		-----------------------------------------------------------------------------------------
+		local level = equipLevel
+		local icon = {
+			 "thumbnail://a062c5e53c6f45b3994d1e688cd73ea3",
+			"thumbnail://52a6839f290e431fbe29764bfbadae10",
+			"067d97e8224f4e49bdcebc3dbd0570a2",
+			"thumbnail://7967810b0e1a438ba6525116e537a0ba"
+		}
+		local abilityTitle = { "8001", "8002", "8003", "8005"}
+		local abilityAmount = { 30000000, 2500000, 3000000000, 30 }
+		local divineStoneRUID = {
+			"02ddbb3e70ad4b478b620d6abf39a53e",
+			"e1e8bcf265304122aaa3e35a162edb60",
+			"085008f22cea45eea0f2a329df34cd7b",
+			"afdfd440d48e4be1b1364a2a94a3ae8e",
+			"9c9c2d503d1b4002a3e3576532da2587", -- 5
+			"3f0fed655fc94390aa83e5ad3e8ef267",
+			"54d433041333401eb2883e3761979eb5",
+			"da265e4931b84fd9a10c29d5a63d5833",
+		}
+		-----------------------------------------------------------------------------------------
+		-----------------------------------------------------------------------------------------
+		local upgradedLvCount = 0
+		for i=1, 8 do
+			upgradedLvCount = upgradedLvCount + beadsResultTable[i]
+		end
+		
+		-- 각 엔티티 내용을 갱신합니다.
+		iconUI.SpriteGUIRendererComponent.ImageRUID = icon[self.filterIdx]
+		itemTitleUI.TextComponent.Text = _LocalizationService:GetText("Mythic").." ".._LocalizationService:GetText("EquipType_"..tostring(math.floor(equipIdx)))
+		levelUI.TextComponent.Text = string.format("Lv.%d", level)
+		abilityNameUI.TextComponent.Text = _LocalizationService:GetText(abilityTitle[equipIdx]) 
+		befAmountUI.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(abilityAmount[equipIdx]*(level-upgradedLvCount), nil)
+		aftAmountUI.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(abilityAmount[equipIdx]*(level), nil)
+		for i=1, 8 do
+			local slot = divineStoneListUI:GetChildByName("List_"..tostring(i))
+			local amountEntity = slot:GetChildByName("Amount") 
+			local iconEntity = slot:GetChildByName("slot_stone"):GetChildByName("Icon")
+			amountEntity.TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(beadsResultTable[i], nil)
+			if beadsResultTable[i] > 0 then
+				amountEntity.TextComponent.FontColor = Color.white
+				iconEntity.SpriteGUIRendererComponent.Color = Color.white
+			else 
+				amountEntity.TextComponent.FontColor = Color.FromHexCode("#999999")
+				iconEntity.SpriteGUIRendererComponent.Color = Color.FromHexCode("#4E4E4E")
+			end
+			
+		end
+		-----------------------------------------------------------------------------------------
+		-----------------------------------------------------------------------------------------
+		-- 다른 팝업을 모두 끕니다.
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UpgradeCheckPopup").Enable = false
+		-----------------------------------------------------------------------------------------
+		-----------------------------------------------------------------------------------------
+		-- (1) 타이틀을 화면 중앙에 띄운다 (점점 커지는 연출)
+		local titleSizeRate = 0
+		local originTitleSize = title.UITransformComponent.RectSize 
+		local t1 = 0
+		local c1 = 1.70158
+		local c3 = c1 + 1
+		local setTitleEnable = function()
+			t1 = t1 + 1/30
+			titleSizeRate = 1+c3*(t1-1)^3+c1*(t1-1)^2
+			title.UITransformComponent.RectSize = originTitleSize*titleSizeRate
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setTitleEnable, i/60)
+		end
+		
+		-------------------------------------------------------
+		-- (2) 타이틀이 화면 상단으로 올라간다
+		local originPosY = title.UITransformComponent.anchoredPosition.y - 340 
+		title.UITransformComponent.anchoredPosition.y = originPosY
+		local t2 = 0
+		local adjustedRate = 0
+		local adjustedValue = 0
+		local setTitleMoveUp = function()
+			t2 = t2 + 1/30
+			adjustedRate = -(t2-1)^2 + 1
+			adjustedValue = 340 * adjustedRate 
+			title.UITransformComponent.anchoredPosition.y = originPosY + adjustedValue
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setTitleMoveUp, 0.85+i/60)
+		end
+		
+		-------------------------------------------------------
+		-- (3) 나머지 UI들의 투명도가 올라간다
+		
+		-- preset
+		local alpha = 0 
+		local setAlphaValueOnEntities = function()
+			abilityIncrementUI.SpriteGUIRendererComponent.Color.a = alpha
+			iconBackUI.SpriteGUIRendererComponent.Color.a = alpha
+			iconUI.SpriteGUIRendererComponent.Color.a = alpha
+			decoLine.SpriteGUIRendererComponent.Color.a = alpha
+				
+			itemTitleUI.TextComponent.FontColor.a = alpha
+			levelUI.TextComponent.FontColor.a = alpha
+			abilityNameUI.TextComponent.FontColor.a = alpha
+			befAmountUI.TextComponent.FontColor.a = alpha
+			aftAmountUI.TextComponent.FontColor.a = alpha
+			arrowUI.TextComponent.FontColor.a = alpha
+			divineStoneTitleUI.TextComponent.FontColor.a = alpha
+				
+			itemTitleUI.TextComponent.OutlineColor.a = alpha
+			levelUI.TextComponent.OutlineColor.a = alpha
+			
+			for i=1, 8 do
+				local divineStoneSlot = divineStoneListUI:GetChildByName("List_"..tostring(i))
+				divineStoneSlot:GetChildByName("Amount").TextComponent.FontColor.a = alpha
+				divineStoneSlot:GetChildByName("Amount").TextComponent.DropShadowColor.a = alpha
+				divineStoneSlot:GetChildByName("Amount").TextComponent.OutlineColor.a = alpha
+				divineStoneSlot:GetChildByName("slot_stone"):GetChildByName("Icon").SpriteGUIRendererComponent.Color.a = alpha
+			end
+		end
+		setAlphaValueOnEntities()
+		
+		local setAlphaUp = function()
+			alpha = alpha + 1/30
+			
+			setAlphaValueOnEntities()
+		end
+		
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setAlphaUp, 1.1+i/60)
+		end
+		
+		---------------------------------
+		-- (4) '확인' 버튼이 활성화된다
+		exitButtonUI.SpriteGUIRendererComponent.Color.a = 0
+		exitButtonUI.TextComponent.FontColor.a = 0
+		exitButtonUI.Enable = false
+		
+		local alpha2 = 0
+		local setExitButtonEnable = function()
+			alpha2 = alpha2 + 1/30
+			exitButtonUI.SpriteGUIRendererComponent.Color.a = alpha2
+			exitButtonUI.TextComponent.FontColor.a = alpha2
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setExitButtonEnable, 1.4+i/60)
+		end
+		
+		local enableExitButton = function()
+			exitButtonUI.Enable = true
+			self.IsPlayingDirection = false
+		end
+		_TimerService:SetTimerOnce(enableExitButton, 1.35)
+		---------------------------------
+		
+		buyCheckPopup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void SetUnlockCheckPopup()
+		-- 신화장비 레벨 제한 해제 확인 팝업 설정 및 표시
+		self:RefreshUI()
+		local popup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockCheckPopup")
+		--------------------------------------------------------------------------------------------
+		--------------------------------------------------------------------------------------------
+		local beforeLimitEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockCheckPopup/Panel/panel_status/BeforeLv")
+		local afterLimitEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockCheckPopup/Panel/panel_status/AfterLv")
+		
+		beforeLimitEntity.TextComponent.Text = string.format("Lv.%d", _UserService.LocalPlayer.PlayerMythicEquipment.PurchaseUnlockedLevel)
+		afterLimitEntity.TextComponent.Text = string.format("Lv.%d", _UserService.LocalPlayer.PlayerMythicEquipment.PurchaseUnlockedLevel + 5)
+		
+		-- 비용 표시
+		local unlockCostEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockCheckPopup/Panel/Button_Unlock/GoldKeyPanel/Num")
+		local unlockCost = 5
+		unlockCostEntity.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(unlockCost, nil)
+		
+		-- 보유한 열쇠 개수에 따라 버튼 활성화
+		local buttonEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockCheckPopup/Panel/Button_Unlock")
+		if _UserService.LocalPlayer.PlayerStorage.currencyItems[6] < unlockCost then
+			buttonEntity.ButtonComponent.Enable = false
+		else 
+			buttonEntity.ButtonComponent.Enable = true
+		end
+		--------------------------------------------------------------------------------------------
+		--------------------------------------------------------------------------------------------
+		popup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void OpenRedistributionPopup()
+		-- 신석 재분배 팝업을 열고 체크 상태를 초기화
+		local popup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup")
+		-------------------------------------------------------------------------------------------------------
+		for i=1, 8 do
+			self.redistributionChecked[i] = false
+		end
+		
+		self:RefreshRedistributionInfoPanel()
+		-------------------------------------------------------------------------------------------------------
+		popup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void PlayUnlockDirection(number nextMaxLevel, number usedKeyNum)
+		-- 레벨 제한 해제 완료 시 열쇠와 자물쇠 애니메이션 재생
+		local popup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockFinishedPopup")
+		
+		local lockSprite = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockFinishedPopup/LockSprite")
+		local keySprite = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockFinishedPopup/KeySprite")
+		local panel = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockFinishedPopup/Panel")
+		------------------------------------------------------------------------------------
+		panel.Enable = false
+		lockSprite.Enable = true
+		keySprite.Enable = false
+		
+		local unlockCheckPopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockCheckPopup")
+		unlockCheckPopup.Enable = false
+		
+		
+		self.IsPlayingDirection = true
+		------------------------------------------------------------------------------------
+		-- 1. 열쇠 스프라이트를 생성합니다.
+		-- 각 열쇠들이 자물쇠로 이동하면서 타격합니다.
+		local creatKeySprites = function()
+			local angle = _UtilLogic:RandomIntegerRange(0, 360)
+			local clonedSprite = keySprite:Clone("clonedKeySprite")
+			clonedSprite.UITransformComponent.anchoredPosition = 700*Vector2(math.cos(math.rad(angle)), math.sin(math.rad(angle)))
+		end
+		for i=1, usedKeyNum do
+			_TimerService:SetTimerOnce(creatKeySprites, 0.1 * i)
+		end
+		
+		
+		
+		-- 2. 해금 이펙트를 재생하고 화면을 하얗게 만듭니다.
+		local unlockEffect = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockFinishedPopup/Effect_Unlock")
+		local playUnlockEffect = function()
+			_SoundService:PlaySound("1cd42f074ae349988c144fed207723d6", 1) -- '라이트오브커리지' 사운드
+			
+			local clonedEffect = unlockEffect:Clone("clonedUnlockEffect")
+			clonedEffect:Destroy(1.7)
+		end
+		_TimerService:SetTimerOnce(playUnlockEffect, usedKeyNum/10 + 0.5)
+		
+		local whitePanel = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockFinishedPopup/WhitePanel")
+		local alpha = 0
+		local setWhitePanel = function()
+			alpha = alpha + 1/30
+			whitePanel.SpriteGUIRendererComponent.Color.a = alpha
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setWhitePanel, usedKeyNum/10 + 1.5 + i/60)
+		end
+		
+		local setLockSpriteDisable = function()
+			lockSprite.Enable = false
+		end
+		_TimerService:SetTimerOnce(setLockSpriteDisable, usedKeyNum/10 + 1.5)
+		
+		
+		
+		-- 3. 화면을 정상화하고 패널을 띄웁니다.
+		local resultTextEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/UnlockFinishedPopup/Panel/AbilityIncrement/afterAmount")
+		resultTextEntity.TextComponent.Text = string.format("%d", nextMaxLevel)
+		
+		local setPanelEnable = function()
+			_SoundService:PlaySound("582c1206981644518b40c9745392306e", 1)
+			
+			whitePanel.SpriteGUIRendererComponent.Color.a = 0
+			panel.Enable = true
+			self.IsPlayingDirection = false
+		end
+		_TimerService:SetTimerOnce(setPanelEnable, usedKeyNum/10 + 2.5)
+		------------------------------------------------------------------------------------
+		popup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void RefreshRedistributionInfoPanel()
+		-- 신석 재분배 팝업의 내용을 갱신하고 체크 상태 반영
+		
+		-- panel left
+		local leftBeadsInfoList = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_left/BeadsInfo")
+		local leftBeadsStarList = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_left/BeadsAbilityList")
+		
+		
+		-- panel right 
+		local iconEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_right/IconBack/Icon")
+		local levelEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_right/Level")
+		local nameEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_right/Name")
+		local beadsInfoListEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_right/InfoList")
+		local checkBtnList = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_right/CheckingButtonList")
+		local rerollBtn = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_right/Button_Redistribution")
+		local rerollCostEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/RedistributionCheckPopup/panel/Panel_right/Button_Redistribution/CostAmount")
+		-------------------------------------------------------------------------------------------------------
+		-------------------------------------------------------------------------------------------------------
+		-- 필요한 정보를 가져옵니다.
+		local i = self.filterIdx
+		local level = _UserService.LocalPlayer.PlayerMythicEquipment.EquipmentLevel[i]
+		local icon = {
+			 "thumbnail://a062c5e53c6f45b3994d1e688cd73ea3",
+			"thumbnail://52a6839f290e431fbe29764bfbadae10",
+			"067d97e8224f4e49bdcebc3dbd0570a2",
+			"thumbnail://7967810b0e1a438ba6525116e537a0ba"
+		}
+		local abilityTitle = { "8001", "8002", "8003", "8005"}
+		local abilityAmount = { 30000000, 2500000, 3000000000, 30 }
+		local divineStoneRUID = {
+			"02ddbb3e70ad4b478b620d6abf39a53e",
+			"e1e8bcf265304122aaa3e35a162edb60",
+			"085008f22cea45eea0f2a329df34cd7b",
+			"afdfd440d48e4be1b1364a2a94a3ae8e",
+			"9c9c2d503d1b4002a3e3576532da2587", -- 5
+			"3f0fed655fc94390aa83e5ad3e8ef267",
+			"54d433041333401eb2883e3761979eb5",
+			"da265e4931b84fd9a10c29d5a63d5833",
+		}
+		local beadsStarStandard = {10, 40, 80, 160, 400, math.maxinteger}
+		
+		local beadsInfo = nil
+		if self.filterIdx == 1 then
+			beadsInfo = _UserService.LocalPlayer.PlayerMythicEquipment.Equip1_Element
+		elseif self.filterIdx == 2 then
+			beadsInfo = _UserService.LocalPlayer.PlayerMythicEquipment.Equip2_Element
+		elseif self.filterIdx == 3 then
+			beadsInfo = _UserService.LocalPlayer.PlayerMythicEquipment.Equip3_Element
+		elseif self.filterIdx == 4 then
+			beadsInfo = _UserService.LocalPlayer.PlayerMythicEquipment.Equip4_Element
+		end
+		
+		local totalBeadsInfo = {0,0,0,0,0, 0,0,0}
+		for i=1, 8 do
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip1_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip2_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip3_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip4_Element[i]
+		end
+		-------------------------------------------------------------------------------------------------------
+		-------------------------------------------------------------------------------------------------------
+		-- 왼쪽 패널을 갱신합니다.
+		for i=1, 8 do
+			leftBeadsInfoList:GetChildByName("Bead_"..tostring(i)).TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(totalBeadsInfo[i], nil)
+			
+			local starParentEntity = leftBeadsStarList:GetChildByName("Slot_"..tostring(i))
+			for j=1, 5 do
+				if totalBeadsInfo[i] >= beadsStarStandard[j] then
+					starParentEntity:GetChildByName("Star_"..tostring(j)).SpriteGUIRendererComponent.ImageRUID = "244ae3c308cf4b9e9b9d142d846317c9"
+				else 
+					starParentEntity:GetChildByName("Star_"..tostring(j)).SpriteGUIRendererComponent.ImageRUID = "494439a33548448686d16ca07fe7d526"
+				end
+			end
+		end
+		-------------------------------------------------------------------------------------------------------
+		-- 오른쪽 패널을 갱신합니다.
+		iconEntity.SpriteGUIRendererComponent.ImageRUID = icon[i]
+		levelEntity.TextComponent.Text = string.format("Lv.%d", level)
+		nameEntity.TextComponent.Text = _LocalizationService:GetText("Mythic").." ".._LocalizationService:GetText("EquipType_"..tostring(math.floor(self.filterIdx)))
+		for i=1, 8 do
+			local beadSlot = beadsInfoListEntity:GetChildByName("List_"..tostring(i))
+			beadSlot:GetChildByName("Amount").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(beadsInfo[i], nil)
+		end
+		
+		
+		-- 체크 갱신
+		local canRedistribution = false
+		local rerollingCount = 0
+		for i=1, 8 do
+			local checkBtn = checkBtnList:GetChildByName("CheckButton_"..tostring(i))
+			local isCheckedSprite = checkBtn:GetChildByName("icon_check")
+			if self.redistributionChecked[i] == true then
+				checkBtn.SpriteGUIRendererComponent.ImageRUID = "7705b075711840988021969f5a88907a"
+				isCheckedSprite.SpriteGUIRendererComponent.ImageRUID = "89da9a92e3f644248a342baae70a7cff"
+				isCheckedSprite.SpriteGUIRendererComponent.Color = Color.white
+				canRedistribution = true
+				rerollingCount = rerollingCount +  beadsInfo[i]
+			else 
+				checkBtn.SpriteGUIRendererComponent.ImageRUID = "eef3c9dde6914b13a89c613d7246b1a5"
+				isCheckedSprite.SpriteGUIRendererComponent.ImageRUID = "c437643e144d4356bcd97b6aa99248be"
+				isCheckedSprite.SpriteGUIRendererComponent.Color = Color.FromHexCode("#B3A087")
+			end
+		end
+		
+		-- 재분배 금액 갱신
+		local rerollCost = 20000000000 * (1+0.6*(level-1))
+		rerollCostEntity.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(rerollCost, nil)
+		
+		
+		-- 재분배 활성화 조건
+		-- (1) 8개 버튼 중 1개이상 눌려있을 것
+		-- (2) 눌려있는 버튼들의 신석 개수 합이 1 이상일 것
+		-- (3) 금액 조건을 만족할 것
+		if _UserService.LocalPlayer.PlayerData.Money >= rerollCost and canRedistribution == true and rerollingCount > 0 then
+			rerollBtn.ButtonComponent.Enable = true
+		else
+			rerollBtn.ButtonComponent.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshDevineStonesInfoPanel()
+		-- 신석 세부 정보 패널을 열고 대미 세트에 따라 정보 갱신
+		local popup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/BeadsDetailInfo")
+		popup.Enable = true
+		--------------------------------------------------------------
+		local tableEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/MythicEquipmentShop/BeadsDetailInfo/Panel/Table_Contents")
+		
+		-- 구슬 개수 갱신
+		local beadsInfoEntity = tableEntity:GetChildByName("BeadsInfo")
+		local totalBeadsInfo = {}
+		for i=1, 8 do
+			totalBeadsInfo[i] = 0
+			
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip1_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip2_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip3_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip4_Element[i]
+			
+			beadsInfoEntity:GetChildByName("Bead_"..tostring(i)).TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(totalBeadsInfo[i], nil)
+		end
+		
+		
+		-- 보유 개수에 따라 적용 개수 갱신
+		local sets = {}
+		local setsStandard = {10, 40, 80, 160, 400, math.maxinteger}
+		for i=1, 5 do
+			sets[i] = tableEntity:GetChildByName("Set_"..tostring(i))
+			
+			for j=1, 8 do
+				if totalBeadsInfo[j] >= setsStandard[i] and totalBeadsInfo[j] < setsStandard[i+1] then
+					sets[i]:GetChildByName("Bead_"..tostring(j)).TextComponent.FontColor = Color.FromHexCode("#B5E95B")
+				else 
+					sets[i]:GetChildByName("Bead_"..tostring(j)).TextComponent.FontColor = Color.FromHexCode("#423729")
+				end
+			end	
+		end
+	end
+
+	@EventSender("Entity", "274918f7-24dc-45de-901e-8acc942df206")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 레벨업 버튼 클릭 시 업그레이드 체크 팝업 표시
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.upgradeLevel = 1
+		self:SetUpgradeCheckPopup()
+	end
+
+	@EventSender("Entity", "f47428ef-1d68-4994-ab78-dce4b7463132")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 업그레이드 확인 버튼 클릭 시 신화장비 구매 실행
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		_UserService.LocalPlayer.PlayerMythicEquipment:PurchaseMythicEquipment(self.filterIdx, self.upgradeLevel)
+		
+		Entity.Parent.Parent.Enable = false
+	end
+
+	@EventSender("Entity", "0ce3cee5-ad29-4b51-a319-64e150974be8")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 필터 버튼 1번 클릭 시 해당 장비로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.filterIdx = 1
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "69c1cc03-349c-4304-a5a8-4650ddeb7c27")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 필터 버튼 2번 클릭 시 해당 장비로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.filterIdx = 2
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "61d2ba5d-0525-47b7-b037-6cc996c8f03e")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 필터 버튼 3번 클릭 시 해당 장비로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.filterIdx = 3
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "ec36d7e4-c06e-47f7-8771-e0c1f9431835")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 필터 버튼 4번 클릭 시 해당 장비로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.filterIdx = 4
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "0907378b-b4c0-4cbb-ab39-6c1bea2e0616")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 언락 버튼 클릭 시 레벨 제한 해제 팝업 표시
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetUnlockCheckPopup()
+	end
+
+	@EventSender("Entity", "b54fb897-7052-44f5-9d1c-d4b4662d4454")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- 재분배 버튼 클릭 시 신석 재분배 팝업 표시
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:OpenRedistributionPopup()
+	end
+
+	@EventSender("Entity", "c2e2057a-9ec1-4eaf-89bc-e65a8eb0d0f9")
+	handler HandleButtonClickEvent9(ButtonClickEvent event)
+		-- 재분배 실행 버튼 클릭 시 신석 재분배 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		Entity.Enable = false
+		
+		-- 조건 검증
+		local canRedistribution = false
+		for i=1, 8 do
+			if self.redistributionChecked[i] == true then
+				canRedistribution = true
+				break
+			end
+		end
+		
+		if canRedistribution == false then
+			return
+		end
+		
+		_UserService.LocalPlayer.PlayerMythicEquipment:RedistributionPowerOfGod(self.filterIdx, _UtilLogic:TableToString(self.redistributionChecked))
+	end
+
+	@EventSender("Entity", "6388f23d-d9fd-457e-b7c3-d530c259b5f7")
+	handler HandleButtonClickEvent10(ButtonClickEvent event)
+		-- 언락을 시도합니다.
+		--------------------------------------------------------
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		_UserService.LocalPlayer.PlayerMythicEquipment:UnlockUpgradeLimit()
+		Entity.ButtonComponent.Enable = false
+		
+		local buttonEnable = function()
+			Entity.ButtonComponent.Enable = true
+		end
+		_TimerService:SetTimerOnce(buttonEnable, 3)
+	end
+
+	@EventSender("Entity", "172f9718-22cf-46bf-a9bd-38a28c6ce75b")
+	handler HandleButtonClickEvent11(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 시 UI 새로고침
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "e10b1df0-c887-4ed2-bd2d-434a858db1a2")
+	handler HandleButtonClickEvent12(ButtonClickEvent event)
+		-- 신석 상세 정보 버튼 클릭 시 대미 세트 정보 표시
+		
+		self:RefreshDevineStonesInfoPanel()
+	end
+
+	@EventSender("Entity", "5e02d83f-cf74-4f05-bfa8-60f262e31e67")
+	handler HandleButtonClickEvent13(ButtonClickEvent event)
+		-- 신석 상세 정보 버튼 클릭 시 대미 세트 정보 표시
+		
+		self:RefreshDevineStonesInfoPanel()
+	end
+
+	@EventSender("Entity", "dc919fe2-4b9c-4aa1-a302-2bb270561234")
+	handler HandleButtonClickEvent14(ButtonClickEvent event)
+		-- 레벨 업 버튼 클릭 시 업그레이드 레벨 1단계 증가
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		local currentLevel = _UserService.LocalPlayer.PlayerMythicEquipment.EquipmentLevel[self.filterIdx]
+		local targetLevel = currentLevel + self.upgradeLevel + 1
+		if targetLevel > _UserService.LocalPlayer.PlayerMythicEquipment.PurchaseUnlockedLevel then
+			return
+		end
+		
+		self.upgradeLevel = self.upgradeLevel + 1
+		self:SetUpgradeCheckPopup()
+	end
+
+	@EventSender("Entity", "bd54b52d-4173-4c5c-b690-6dcdbdd46386")
+	handler HandleButtonClickEvent15(ButtonClickEvent event)
+		-- 최대 레벨 버튼 클릭 시 사용 가능한 최대 레벨로 업그레이드 설정
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		local userMoney = _UserService.LocalPlayer.PlayerData.Money
+		local currentLevel = _UserService.LocalPlayer.PlayerMythicEquipment.EquipmentLevel[self.filterIdx]
+		
+		
+		-- 공허 아이템 19 : 신화장비 레벨업 비용 감소
+		local purchaseCostRate = 1.0
+		local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[19]
+		local voidItemTable = _DataService:GetTable("VoidItems")
+		if voidItemLv == nil then
+			return
+		end
+		if voidItemLv > 0 then
+			local initAbility = voidItemTable:GetCell(19, "InitAbility")
+			local levelAbility = voidItemTable:GetCell(19, "AbilityPerLevel")
+			local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+			
+			purchaseCostRate = 1 - currentAbility/100
+		end
+		
+		
+		
+		local cost = 0
+		local level = 1
+		while true do
+			local targetLevel = currentLevel + level
+			local currentCost = purchaseCostRate * 150000000000 * (1 + 0.6*(targetLevel-1))
+		
+			if targetLevel > _UserService.LocalPlayer.PlayerMythicEquipment.PurchaseUnlockedLevel then
+				level = level - 1
+				break
+			end
+			
+			
+			if (cost+currentCost) > userMoney then
+				level = level - 1
+				break
+			else 
+				level = level + 1
+				cost = cost + currentCost
+			end
+		end
+		
+		self.upgradeLevel = level
+		self:SetUpgradeCheckPopup()
+	end
+
+	@EventSender("Entity", "404b7c7d-bac6-4c98-908d-a77ee28cba0f")
+	handler HandleButtonClickEvent16(ButtonClickEvent event)
+		-- 레벨 다운 버튼 클릭 시 업그레이드 레벨 1단계 감소
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		if self.upgradeLevel <=1  then
+			return
+		end
+		
+		self.upgradeLevel = self.upgradeLevel - 1
+		self:SetUpgradeCheckPopup()
+	end
+
+	@EventSender("Entity", "a8329a41-c71d-494a-a180-50c93cbd09e4")
+	handler HandleButtonClickEvent17(ButtonClickEvent event)
+		-- 최소 레벨 버튼 클릭 시 업그레이드 레벨을 1로 리셋
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.upgradeLevel = 1
+		self:SetUpgradeCheckPopup()
+	end
+
+	@EventSender("Entity", "64699a95-c9f4-4df2-b3aa-ba6d2617bea2")
+	handler HandleButtonClickEvent18(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 시 UI 새로고침
+		self:RefreshUI()
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- ESC 키 입력 시 상세 정보 패널 또는 UI 닫기
+		-- Parameters
+		local key = event.key
+		---------------------------------------------------------
+		if key == KeyboardKey.Escape and self.IsPlayingDirection == false then
+			
+			if self.beadsDetailInfoPanel.Enable == true then
+				self.beadsDetailInfoPanel.Enable = false
+			else 
+				self.Entity.Enable = false
+			end
+			
+		end
+	end
+
+end

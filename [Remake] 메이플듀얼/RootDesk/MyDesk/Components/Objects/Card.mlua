@@ -1,0 +1,1142 @@
+@Component
+script Card extends Object
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property CardActor actor = nil
+
+	property CardFront front = nil
+
+	property CardBack back = nil
+
+	property Entity signEntity = nil
+
+	property string signState = ""
+
+	property NameTagComponent nametag = nil
+
+	property Entity touchAreaEntity = nil
+
+	property Entity costEntity = nil
+
+	property Integer costInteger = nil
+
+	property Entity hpEntity = nil
+
+	property Integer hpInteger = nil
+
+	property Entity atkEntity = nil
+
+	property Integer atkInteger = nil
+
+	property Player player = nil
+
+	property Deck deck = nil
+
+	property Hand hand = nil
+
+	property boolean requiresTarget = false
+
+	property boolean isPlayable = false
+
+	property table targetableArray = {}
+
+	property Entity anchorEntity = nil
+
+	property boolean isDisplayable = true
+
+	property integer displayTimer = 0
+
+	property any tweener = nil
+
+	property any anchorTweener = nil
+
+	property any costTweener = nil
+
+	property any hpTweener = nil
+
+	property any atkTweener = nil
+
+	property boolean isFront = false
+
+	property table info = {}
+
+	property string variant = ""
+
+	property string quality = ""
+
+	property string backName = ""
+
+	property string category = ""
+
+	property integer cost = nil
+
+	property integer maxHp = nil
+
+	property integer atk = nil
+
+	property string rarity = ""
+
+	property table tagArray = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 클라이언트에서 플레이 가능 및 신호 가능 배열에 추가
+		__base:OnBeginPlay()
+		
+		if self:IsClient() then
+			if isvalid(self.commandManager) then
+				table.insert(self.commandManager.playableArray, self)
+				table.insert(self.commandManager.signableArray, self)
+			end
+		end
+	end
+
+	method table GetPublicProperties()
+		-- 공개 가능한 카드 속성들을 반환 (플레이어, 덱, 핸드)
+		local publicPropertyTable = {
+			player = self.player,
+			deck = self.deck,
+			hand = self.hand,
+		}
+		
+		return publicPropertyTable
+	end
+
+	method table GetProperties()
+		-- 카드의 모든 속성들을 테이블로 반환
+		local propertyTable = {
+			id = self.id,
+			enchantmentArray = self.enchantmentArray,
+			auraEnchantmentArray = self.auraEnchantmentArray,
+			
+			info = self.info,
+		}
+		
+		_Table:Assign(self:GetPublicProperties(), propertyTable)
+		_Table:Assign(self:GetIndependentVariables(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		-- 속성 동기화 시 플레이어 재설정 및 블루프린트 갱신
+		local player = self.player
+		self:ClearPlayer()
+		self:SetPlayer(player)
+		
+		if not _Table:IsEmpty(self.info) then
+			local blueprint = self:GetBlueprint()
+			self:ClearBlueprint()
+			self:SetBlueprint(blueprint)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetPropertiesInClient(table propertyTable)
+		-- 클라이언트에서 속성 설정 후 액터 생성
+		__base:SetPropertiesInClient(propertyTable)
+		
+		self:SpawnAndSetActor()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SyncProperties(string userId)
+		-- 사용자에게 카드 속성 동기화 (아군이면 전체, 적군이면 공개 정보만)
+		local propertyTable
+		if self:IsAllyWith(_UserService:GetUserEntityByUserId(userId).Character) and isvalid(self.hand) then
+			propertyTable = self:GetProperties()
+		else 
+			propertyTable = self:GetPublicProperties()
+		end
+		self:SetPropertiesInClient(propertyTable, userId)
+	end
+
+	method void SetVariables(table variableTable)
+		-- 카드의 변수들을 설정 (비용, 최대 체력, 공격력)
+		__base:SetVariables(variableTable)
+		
+		local cost = variableTable.cost
+		if cost then
+			self:SetCost(cost)
+		end
+		
+		local maxHp = variableTable.maxHp
+		if maxHp then
+			self:SetMaxHp(maxHp)
+		end
+		
+		local atk = variableTable.atk
+		if atk then
+			self:SetAtk(atk)
+		end
+	end
+
+	method void ClearVariables()
+		-- 카드의 모든 변수들을 초기화
+		__base:ClearVariables()
+		
+		self.cost = nil
+		self.maxHp = nil
+		self.atk = nil
+	end
+
+	method void SetTriggerNames(table triggerNameArray)
+		-- 트리거 이름들을 설정하고 타겟 필요 여부 확인
+		__base:SetTriggerNames(triggerNameArray)
+		
+		if isvalid(self.targetManager) then
+			self.requiresTarget = self.targetManager:GetCardRequiresTarget(self)
+		end
+	end
+
+	method table GetBlueprint()
+		-- 카드의 블루프린트 정보를 반환 (정보, 인챈트먼트, 독립 변수)
+		return {
+			info = self.info,
+			enchantmentArray = _Table:DeepCopy(self.enchantmentArray),
+			independentVariableTable = self:GetIndependentVariables()
+		}
+	end
+
+	method void SetBlueprint(table blueprint)
+		-- 블루프린트로부터 카드 정보를 설정
+		if not _Table:IsEmpty(self.info) then
+			return
+		end
+		
+		self:SetInfo(blueprint.info)
+		self:SetEnchantments(blueprint.enchantmentArray)
+		self:SetVariables(blueprint.independentVariableTable)
+	end
+
+	method void ClearBlueprint()
+		-- 카드의 블루프린트 정보를 모두 초기화
+		self:ClearInfo()
+		self:ClearEnchantments()
+		self:ClearVariables()
+	end
+
+	method void Clear()
+		-- 카드를 정리하고 파괴
+		__base:Clear()
+		
+		self:Destroy()
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetInputState(Character character)
+		-- 캐릭터가 이 카드를 플레이할 수 있는지 확인하고 입력 상태 반환
+		local isPlayable = character.player == self.player and self:IsPlayable()
+		return {isPlayable = isPlayable, targetableArray = isPlayable and self.targetableArray or {}}
+	end
+
+	method void SetInputState(table inputState)
+		-- 입력 상태를 설정하여 플레이 가능 여부와 타겟 배열 결정
+		if _Table:IsEmpty(inputState) then
+			self.isPlayable = false
+			self.targetableArray = {}
+		else
+			self.isPlayable = inputState.isPlayable
+			self.targetableArray = inputState.targetableArray
+		end
+	end
+
+	method boolean IsOwner()
+		-- 카드 소유자인지 확인
+		return self.player:IsOwner()
+	end
+
+	method boolean IsAllyWith(Character character)
+		-- 지정된 캐릭터와 같은 편인지 확인
+		return self.player:IsAllyWith(character)
+	end
+
+	method boolean IsAlly()
+		-- 아군인지 확인
+		return self.player:IsAlly()
+	end
+
+	method integer ShareId()
+		-- 카드 ID를 서버-클라이언트 간 공유
+		local id = nil
+		if self:IsServer() then
+			id = self.id
+			self.commandManager:PushPackage(id)
+		else
+			id = self.commandManager:PopPackage()
+		end
+		
+		return id
+	end
+
+	method integer SharePrivateId()
+		-- 카드 ID를 아군에게만 비공개로 공유
+		local id = nil
+		if self:IsServer() then
+			id = self.id
+			self.commandManager:PushPrivatePackage(self.player, id, nil)
+		elseif self.commandManager:IsAllyWith(self.player) then
+			id = self.commandManager:PopPackage()
+		end
+		
+		return id
+	end
+
+	method table ShareBlueprint()
+		-- 카드 블루프린트를 서버-클라이언트 간 공유
+		local blueprint = nil
+		if self:IsServer() then
+			blueprint = self:GetBlueprint()
+			self.commandManager:PushPackage(blueprint)
+		else
+			blueprint = self.commandManager:PopPackage()
+		end
+		
+		return blueprint
+	end
+
+	method table SharePrivateBlueprint()
+		-- 카드 블루프린트를 아군에게만 비공개로 공유
+		local blueprint = nil
+		if self:IsServer() then
+			blueprint = self:GetBlueprint()
+			self.commandManager:PushPrivatePackage(self.player, blueprint, nil)
+		elseif self.commandManager:IsAllyWith(self.player) then
+			blueprint = self.commandManager:PopPackage()
+		end
+		
+		return blueprint
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetActorPosition()
+		-- 카드 액터의 월드 좌표를 2D 벡터로 반환
+		return self.actor.Entity.TransformComponent.WorldPosition:ToVector2()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetActor()
+		-- 카드 액터를 생성하고 설정
+		self:SetActor(_SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("CardActor"), "CardActor", 
+			Vector3(100, 100, 0), self.Entity).CardActor)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetActor(CardActor actor)
+		-- 카드 액터를 설정하고 상호 참조 연결
+		self.actor = actor
+		actor.object = self
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearActor()
+		-- 액터 참조를 해제하고 앞뒤면 정리
+		if not isvalid(self.actor) then
+			return
+		end
+		
+		self.actor.object = nil
+		self.actor = nil
+		
+		self:ClearBack()
+		self:ClearFront()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyActor()
+		-- 액터 엔티티를 파괴하고 정리
+		if not isvalid(self.actor) then
+			return
+		end
+		
+		self.actor.Entity:Destroy()
+		self:ClearActor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetFront()
+		-- 카드 앞면을 생성하고 설정
+		local frontModelName = string.format("%s%s%sCardFront", self.name, self.variant, self.quality)
+		local frontModelId = _EntryService:GetModelIdByName(frontModelName)
+		self:SetFront(_SpawnService:SpawnByModelId(frontModelId, frontModelName, Vector3.zero, self.actor.Entity).CardFront)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetFront(CardFront front)
+		-- 카드 앞면을 설정하고 UI 요소들을 연결
+		self.front = front
+		front.object = self
+		self.signEntity = front.signEntity
+		self.nametag = front.nametag
+		self.nametag.Name = _LocalizationService:GetText(self.name)
+		self.touchAreaEntity = front.touchAreaEntity
+		self.costEntity = front.costEntity
+		self.costInteger = front.costInteger
+		self.hpEntity = front.hpEntity
+		self.hpInteger = front.hpInteger
+		self.atkEntity = front.atkEntity
+		self.atkInteger = front.atkInteger
+		
+		self:SetSignState(self.signState)
+		self.touchAreaEntity:ConnectEvent(TouchEvent, function()
+			self.Entity.CurrentMap.Map.input.touchingCard = self
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearFront()
+		-- 카드 앞면 참조를 해제하고 UI 요소들 정리
+		if not isvalid(self.front) then
+			return
+		end 
+		
+		self.front = nil
+		
+		self.signEntity = nil
+		self.nametag = nil
+		self.touchAreaEntity = nil
+		self.costEntity = nil
+		self.costInteger = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyFront()
+		-- 카드 앞면 엔티티를 파괴하고 정리
+		if not isvalid(self.front) then
+			return
+		end
+		
+		self.front.Entity:Destroy()
+		self:ClearFront()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetBack()
+		-- 카드 뒷면을 생성하고 설정
+		local backModelName = string.format("%sCardBack", self.backName)
+		local backModelId = _EntryService:GetModelIdByName(backModelName)
+		self:SetBack(_SpawnService:SpawnByModelId(backModelId, backModelName, Vector3.zero, self.actor.Entity).CardBack)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetBack(CardBack back)
+		-- 카드 뒷면을 설정하고 터치 이벤트 연결
+		self.back = back
+		back.object = self
+		
+		back.touchAreaEntity:ConnectEvent(TouchEvent, function()
+			self.Entity.CurrentMap.Map.input.touchingCard = self
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearBack()
+		-- 카드 뒷면 참조를 해제
+		if not isvalid(self.back) then
+			return
+		end
+		
+		self.back = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyBack()
+		-- 카드 뒷면 엔티티를 파괴하고 정리
+		if not isvalid(self.back) then
+			return
+		end
+		
+		self.back.Entity:Destroy()
+		self:ClearBack()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetActorEnable(boolean enable)
+		-- 액터의 활성화 상태를 설정
+		self.actor.Entity.Enable = enable
+	end
+
+	method void SetInfo(table info)
+		-- 카드 정보를 설정하고 관련 속성들을 초기화
+		if not _Table:IsEmpty(self.info) or _Table:IsEmpty(info) then
+			return
+		end
+		
+		self.info = info
+		self:SetName(info.name)
+		self.variant = info.variant
+		self.quality = info.quality
+		
+		self.category = self.cardManager:GetCategory(info.name)
+		self.rarity = self.cardManager:GetRarity(info.name)
+		self.tagArray = self.cardManager:GetTags(info.name)
+		
+		self:SpawnAndSetFront()
+		self:SetFace(true)
+	end
+
+	method void ClearInfo()
+		-- 카드 정보를 초기화하고 앞면을 파괴
+		if isvalid(self.front) then
+			self:DestroyFront()
+		end
+		
+		self.info = {}
+		self:ClearName()
+		self.variant = ""
+		self.quality = ""
+		
+		self.category = ""
+		self.rarity = ""
+		self.tagArray = {}
+		
+		self:SetFace(false)
+	end
+
+	method void SetBackName(string backName)
+		-- 카드 뒷면 이름을 설정하고 뒷면 생성
+		if not _UtilLogic:IsNilorEmptyString(self.backName) then
+			return
+		end
+		
+		self.backName = backName
+		
+		self:SpawnAndSetBack()
+	end
+
+	method void ClearBackName()
+		-- 카드 뒷면 이름을 초기화하고 뒷면 파괴
+		if isvalid(self.back) then
+			self:DestroyBack()
+		end
+		
+		self.backName = ""
+	end
+
+	method void SetPlayer(Player player)
+		-- 카드의 플레이어를 설정하고 해당 플레이어의 카드 뒷면 적용
+		if isvalid(self.player) then
+			return
+		end
+		
+		self.player = player
+		self:SetBackName(player.cardBack)
+	end
+
+	method void ClearPlayer()
+		-- 플레이어 참조를 해제하고 뒷면 정리
+		self.player = nil
+		self:ClearBackName()
+	end
+
+	method table GetBlueprintByName(string name)
+		-- 카드 이름으로 블루프린트를 생성하여 반환
+		local blueprint
+		if _UtilLogic:IsNilorEmptyString(name) then
+			blueprint = {}
+		else
+			local modelName = string.format("%s%s%sCardFront", name, self.variant, self.quality)
+			local modelId = _EntryService:GetModelIdByName(modelName)
+			local variant = _UtilLogic:IsNilorEmptyString(modelId) and "Default" or self.variant
+			blueprint = {
+				info = {name = name, variant = variant, quality = self.quality},
+				enchantmentArray = {},
+				independentVariableTable = {}
+			}
+		end
+		
+		return blueprint
+	end
+
+	method table GetBlueprintsByNames(table nameArray)
+		-- 여러 카드 이름들로 블루프린트 배열을 생성
+		local blueprintArray = {}
+		for i, name in ipairs(nameArray) do
+			blueprintArray[i] = self:GetBlueprintByName(name)
+		end
+		
+		return blueprintArray
+	end
+
+	method table GetCardTokens(table nameArray)
+		-- 카드 이름들로 카드 토큰들을 생성하여 반환
+		local blueprintArray = self:GetBlueprintsByNames(nameArray)
+		local cardArray = {}
+		for i, name in ipairs(nameArray) do
+			local card = self.duel:ShareAcquiredCard()
+			card:SetPlayer(self.player)
+			card:SetBlueprint(blueprintArray[i])
+			cardArray[i] = card
+		end
+		
+		return cardArray
+	end
+
+	method table GetMinionEnchantments()
+		-- 미니언 관련 인챈트먼트들만 필터링하여 반환
+		local enchantmentArray = {}
+		for _, enchantment in ipairs(self.enchantmentArray) do
+			local methodName = enchantment.methodName
+			if methodName == "AddMaxHpEnchantment" or methodName == "AddAtkEnchantment" then
+				table.insert(enchantmentArray, _Table:DeepCopy(enchantment))
+			end
+		end
+		
+		return enchantmentArray
+	end
+
+	method table GetMinionBlueprint()
+		-- 미니언 생성을 위한 블루프린트를 반환
+		return {
+			info = self.info,
+			enchantmentArray = self:GetMinionEnchantments(),
+			independentVariableTable = {
+				isDead = false,
+				hp = self.maxHp,
+				hasBarrier = self.cardManager:HasBarrier(self.name),
+				hasVenom = self.cardManager:HasVenom(self.name),
+			}
+		}
+	end
+
+	method void Destroy()
+		-- 카드를 완전히 파괴하고 리소스 정리
+		self:ClearPlayer()
+		self:ClearBlueprint()
+		self.duel:ReleaseCard(self)
+		self.duel:RemoveObject(self)
+		self:DestroyActor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetFace(boolean isFront)
+		-- 카드의 앞면 또는 뒷면을 표시
+		if isFront then
+			if isvalid(self.front) then
+				self.isFront = true
+				self.front.Entity.Enable = true
+				if isvalid(self.back) then
+					self.back.Entity.Enable = false
+				end
+			end
+		else
+			self.isFront = false
+			if isvalid(self.front) then
+				self.front.Entity.Enable = false
+			end
+			if isvalid(self.back) then
+				self.back.Entity.Enable = true
+			end
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetAnchorTransform(Vector2 position, number zRotation)
+		-- 앵커의 위치와 회전을 즉시 설정하고 액터의 월드 좌표는 유지
+		self:DestroyAnchorTweener()
+		
+		local worldPosition = self.actor.Entity.TransformComponent.WorldPosition:Clone()
+		local worldZRotation = self.actor.Entity.TransformComponent.WorldZRotation
+		
+		local transform = self.anchorEntity.TransformComponent
+		transform.Position.x = position.x
+		transform.Position.y = position.y
+		transform.ZRotation = zRotation
+		
+		self.actor.Entity.TransformComponent.WorldPosition = worldPosition
+		self.actor.Entity.TransformComponent.WorldZRotation = worldZRotation
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyTweener()
+		-- 트위너를 파괴하여 애니메이션 정리
+		if self.tweener then
+			self.tweener:Destroy()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyAnchorTweener()
+		-- 앵커 트위너를 파괴하여 앵커 애니메이션 정리
+		if self.anchorTweener then
+			self.anchorTweener:Destroy()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformAnchorTo(Vector2 position, number zRotation)
+		-- 앵커를 지정된 위치와 회전으로 애니메이션 이동
+		if not isvalid(self.anchorEntity) then
+			return
+		end
+		
+		self:DestroyAnchorTweener()
+		self.anchorTweener = _Tween:TransformTo(self.anchorEntity, position, zRotation, Vector2.one, 0.5, 
+			EaseType.QuintEaseOut, EaseType.QuintEaseOut, EaseType.ExpoEaseOut, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformToAnchor()
+		-- 카드를 앵커 위치로 애니메이션 이동
+		if not isvalid(self.anchorEntity) then
+			return
+		end
+		
+		self:DestroyTweener()
+		self.actor.Entity.TransformComponent.Position.z = 0
+		self.tweener = _Tween:TransformTo(self.actor.Entity, Vector2.zero, 0, Vector2.one, 1, 
+			EaseType.CubicEaseOut, EaseType.CubicEaseOut, EaseType.ExpoEaseOut, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformToTarget()
+		-- 카드를 타겟 선택 위치로 애니메이션 이동
+		self:DestroyTweener()
+		self.actor.Entity.TransformComponent.Position.z = -10
+		self.tweener = _Tween:TransformTo(self.actor.Entity, Vector2(0, -2.45), 0, Vector2.one, 0.5, 
+			EaseType.QuintEaseOut, EaseType.QuintEaseOut, EaseType.ExpoEaseOut, true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformToCast()
+		-- 카드를 시전 위치로 애니메이션 이동
+		self:DestroyTweener()
+		self.actor.Entity.TransformComponent.Position.z = -10
+		self.tweener = _Tween:TransformTo(self.actor.Entity, Vector2(0, 0.1), 0, Vector2.one, 0.75, 
+			EaseType.QuintEaseOut, EaseType.QuintEaseOut, EaseType.ExpoEaseOut, true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AttachToAnchor()
+		-- 카드 액터를 앵커 엔티티에 부착
+		self.actor.Entity:AttachTo(self.anchorEntity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceFront()
+		-- 카드를 앞쪽 레이어에 배치
+		self.actor.Entity.TransformComponent.Position.z = -20
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceBack()
+		-- 카드를 뒤쪽 레이어에 배치
+		self.actor.Entity.TransformComponent.Position.z = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsPlayable()
+		-- 카드가 플레이 가능한지 확인 (턴, 마나, 타겟, 필드 상태 검사)
+		return self.player:IsOurTurn() and isvalid(self.hand) and self.cost <= self.player.mp
+			and (not self.requiresTarget or not _Table:IsEmpty(self.targetableArray))
+			and (self.category == "Skill" or (self.category == "Minion" and not self.player.field:IsFull()))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateInputState()
+		-- 카드의 입력 상태를 업데이트하여 타겟 가능한 대상들을 갱신
+		self.targetableArray = self.targetManager:GetCardTargetables(self)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSignState(string signState)
+		-- 카드의 신호 상태를 설정하여 시각적 표시 변경
+		self.signState = signState
+		
+		if not isvalid(self.signEntity) then
+			return
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(signState) then
+			self.signEntity.Enable = false
+		elseif signState == "Playable" then
+			self.signEntity.Enable = true
+			self.signEntity.SpriteRendererComponent.Color = Color.FromHexCode("#7dff10")
+		elseif signState == "Casting" then
+			self.signEntity.Enable = true
+			self.signEntity.SpriteRendererComponent.Color = Color.FromHexCode("#1ed8ff")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPlayableSign()
+		-- 카드의 플레이 가능 여부에 따라 신호 표시 설정
+		self:SetSignState(self.isPlayable and "Playable" or nil)
+	end
+
+	method void BeginPlayingServerAttribute()
+		-- 서버에서 카드 플레이 시작 시 호출되는 속성 메서드
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BeginPlaying()
+		-- 서버에서 카드 플레이를 시작하고 클라이언트에 알림
+		if not isvalid(self.player) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self.player.character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		self:BeginPlayingInClient()
+	end
+
+	@ExecSpace("Client")
+	method void BeginPlayingInClient()
+		-- 클라이언트에서 카드 플레이 시작 처리 및 애니메이션
+		if not isvalid(self.hand) then
+			return	
+		end
+		
+		self.player:SetPlaying(true)
+		if not self:IsOwner() then
+			self:TransformToCast()
+		end
+	end
+
+	method void EndPlayingServerAttribute()
+		-- 서버에서 카드 플레이 종료 시 호출되는 속성 메서드
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndPlaying()
+		-- 서버에서 카드 플레이를 종료하고 클라이언트에 알림
+		if not isvalid(self.player) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self.player.character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		self:EndPlayingInClient()
+	end
+
+	@ExecSpace("Client")
+	method void EndPlayingInClient()
+		-- 클라이언트에서 카드 플레이 종료 처리 및 애니메이션
+		self.player:SetPlaying(false)
+		if not self:IsOwner() then
+			self:TransformToAnchor()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsInTouchArea(Vector2 point)
+		-- 지정된 점이 카드의 터치 영역 내에 있는지 확인
+		local transform = self.actor.Entity.TransformComponent
+		local position = transform.WorldPosition
+		local angle = math.rad(transform.WorldZRotation)
+		local x = position.x
+		local y = position.y
+		point.x = point.x - x
+		point.y = point.y - y
+		point.x = math.cos(angle) * point.x + math.sin(angle) * point.y
+		point.y = -math.sin(angle) * point.x + math.cos(angle) * point.y
+		
+		local touchAreaHalfX = 1.2 * 0.5
+		local touchAreaHalfY = 1.84 * 0.5
+		
+		return point.x > -touchAreaHalfX and point.x < touchAreaHalfX
+			and point.y > -touchAreaHalfY and point.y < touchAreaHalfY
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetDisplayTimer(number delaySeconds)
+		-- 카드 표시 타이머를 설정하여 일정 시간 후 표시 불가능하게 만듦
+		self.displayTimer = _TimerService:SetTimerOnce(function()
+				self.isDisplayable = false
+			end, delaySeconds)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearDisplayTimer()
+		-- 카드 표시 타이머를 해제
+		_TimerService:ClearTimer(self.displayTimer)
+	end
+
+	method void Swap(Card card)
+		-- 다른 카드와 ID와 블루프린트를 교환
+		self.id, card.id = card.id, self.id
+		self.duel:Sort(self.duel.objectArray)
+		
+		local blueprint = self:GetBlueprint()
+		self:ClearBlueprint()
+		self:SetBlueprint(card:GetBlueprint())
+		card:ClearBlueprint()
+		card:SetBlueprint(blueprint)
+	end
+
+	method void Open()
+		-- 카드를 공개하여 모든 플레이어가 볼 수 있도록 함
+		self.id = self:ShareId()
+		self.duel:Sort(self.duel.objectArray)
+		
+		local blueprint = self:ShareBlueprint()
+		self:SetBlueprint(blueprint)
+		
+		self.duel:ApplyAuras()
+	end
+
+	method void PrivateOpen()
+		-- 카드를 아군에게만 비공개로 공개
+		local id = self:SharePrivateId()
+		if id then
+			self.id = id
+			self.duel:Sort(self.duel.objectArray)
+		end
+		
+		local blueprint = self:SharePrivateBlueprint()
+		if blueprint then
+			self:SetBlueprint(blueprint)
+			
+			self.duel:ApplyAuras()
+		end
+	end
+
+	method void Play(Unit target)
+		-- 카드를 플레이하여 효과를 발동 (구현 필요)
+		
+	end
+
+	method void Cast(Unit target)
+		-- 카드를 시전하여 즉시 효과를 발동 (구현 필요)
+		
+	end
+
+	method void Put()
+		-- 카드를 덱에 넣고 애니메이션 재생
+		if self:IsClient() then
+			_Tween:TransformTo(self.actor.Entity, Vector2.zero, 0, Vector2.one, 0.75, 
+					EaseType.QuadEaseIn, EaseType.QuadEaseIn, EaseType.ExpoEaseIn, false)
+			_TimerService:SetTimerOnce(function()
+					self.player.deck:AddCardsCount(1)
+					self:ClearBlueprint()
+				end, 0.75)
+			
+			wait(0.75)
+		end
+	end
+
+	method void Add()
+		-- 카드를 핸드에 추가하고 애니메이션 재생
+		self:Initialize()
+		
+		if self:IsClient() then
+			self:TransformToAnchor()
+		
+			wait(1)
+		end
+	end
+
+	method void Draw()
+		-- 카드를 덱에서 뽑아 핸드로 가져오고 앞면 표시
+		self.player.deck:AddCardsCount(-1)
+		self:TransformToAnchor()
+		self:SetFace(true)
+		
+		if self:IsClient() then
+			wait(1)
+		end
+	end
+
+	method void Overdraw()
+		-- 카드를 과다 드로우하여 파괴 효과와 사운드 재생
+		if self:IsClient() then
+			local resource = self.resourceManager:GetResource("Overdraw")
+			_SoundService:StopSound(resource.sound)
+			_SoundService:PlaySound(resource.sound, 1)
+			_Effect:PlayEffect(resource.animation, self.actor.Entity.TransformComponent.WorldPosition, nil, nil)
+			
+			self:SetActorEnable(false)
+			
+			wait(0.7)
+		end
+	end
+
+	method void Return()
+		-- 카드를 핸드에서 덱으로 되돌리고 애니메이션 재생
+		if self:IsClient() then
+			_Tween:TransformTo(self.actor.Entity, Vector2.zero, 0, Vector2.one, 0.75, 
+				EaseType.CubicEaseIn, EaseType.ExpoEaseIn, EaseType.ExpoEaseIn, false)
+			_TimerService:SetTimerOnce(function()
+					self.player.deck:AddCardsCount(1)
+					self:ClearBlueprint()
+				end, 0.75)
+			
+			wait(0.75)
+		end
+		
+	end
+
+	method void Discard()
+		-- 카드를 버리고 폐기 효과와 사운드 재생
+		if self:IsClient() then
+			local resource = self.resourceManager:GetResource("Discard")
+			_SoundService:StopSound(resource.sound)
+			_SoundService:PlaySound(resource.sound, 1)
+			_Effect:PlayEffect(resource.animation, self.actor.Entity.TransformComponent.WorldPosition, nil, nil)
+			
+			self:SetActorEnable(false)
+			
+			wait(0.7)
+		end
+	end
+
+	method void SetCost(integer cost)
+		-- 카드의 비용을 설정하고 UI 업데이트 및 색상 변경
+		cost = math.max(0, cost)
+		if self.cost == cost then
+			return
+		end
+		
+		if self:IsClient() then
+			self.costInteger:SetInteger(cost)
+			if cost < self.entry.cost then
+				self.costInteger:SetColor(Color.green)
+			elseif cost > self.entry.cost then
+				self.costInteger:SetColor(Color.red)
+			else
+				self.costInteger:SetColor(Color.white)
+			end
+			
+			if self.costTweener then
+				self.costTweener:Destroy()
+			end
+			if self.cost ~= nil then
+				self.costTweener = _Tween:Damp(self.costEntity, Vector2.one, 1, 0.5)
+			end
+		end
+		
+		self.cost = cost
+	end
+
+	method void SetMaxHp(integer maxHp)
+		-- 카드의 최대 체력을 설정하고 UI 업데이트 및 색상 변경
+		maxHp = math.max(0, maxHp)
+		if self.maxHp == maxHp then
+			return
+		end
+		
+		if self:IsClient() then
+			self.hpInteger:SetInteger(maxHp)
+			if maxHp > self.entry.maxHp then
+				self.hpInteger:SetColor(Color.green)
+			else
+				self.hpInteger:SetColor(Color.white)
+			end
+			
+			if self.hpTweener then
+				self.hpTweener:Destroy()
+			end
+			if self.maxHp ~= nil then
+				self.hpTweener = _Tween:Damp(self.hpEntity, Vector2.one, 1, 0.5)
+			end
+		end
+		
+		self.maxHp = maxHp
+	end
+
+	method void SetAtk(integer atk)
+		-- 카드의 공격력을 설정하고 UI 업데이트 및 색상 변경
+		atk = math.max(1, atk)
+		if self.atk == atk then
+			return
+		end
+		
+		if self:IsClient() then
+			self.atkInteger:SetInteger(atk)
+			if atk > self.entry.atk then
+				 self.atkInteger:SetColor(Color.green)
+			else
+				self.atkInteger:SetColor(Color.white)
+			end
+			
+			if self.atkTweener then
+				self.atkTweener:Destroy()
+			end
+			if self.atk ~= nil then
+				self.atkTweener = _Tween:Damp(self.atkEntity, Vector2.one, 1, 0.5)
+			end
+		end
+		
+		self.atk = atk
+	end
+
+	method void AddCostEnchantment(integer delta)
+		-- 카드 비용에 델타 값을 추가하는 인챈트먼트 적용
+		local cost = self.dependentVariableTable.cost or self.entry.cost or 0
+		self.dependentVariableTable.cost = cost + delta
+	end
+
+	method void InsertAddCostEnchantment(integer delta, table remover)
+		-- 비용 추가 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "AddCostEnchantment", args = {delta}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void SetCostEnchantment(integer cost)
+		-- 카드 비용을 특정 값으로 설정하는 인챈트먼트 적용
+		self.dependentVariableTable.cost = cost
+	end
+
+	method void InsertSetCostEnchantment(integer cost, table remover)
+		-- 비용 설정 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "SetCostEnchantment", args = {cost}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void AddMaxHpEnchantment(integer delta)
+		-- 카드 최대 체력에 델타 값을 추가하는 인챈트먼트 적용
+		local maxHp = self.dependentVariableTable.maxHp or self.entry.maxHp or 0
+		self.dependentVariableTable.maxHp = maxHp + delta
+	end
+
+	method void InsertAddMaxHpEnchantment(integer delta, table remover)
+		-- 최대 체력 추가 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "AddMaxHpEnchantment", args = {delta}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void SetMaxHpEnchantment(integer maxHp)
+		-- 카드 최대 체력을 특정 값으로 설정하는 인챈트먼트 적용
+		self.dependentVariableTable.maxHp = maxHp
+	end
+
+	method void InsertSetMaxHpEnchantment(integer maxHp, table remover)
+		-- 최대 체력 설정 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "SetMaxHpEnchantment", args = {maxHp}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void AddAtkEnchantment(integer delta)
+		-- 카드 공격력에 델타 값을 추가하는 인챈트먼트 적용
+		local atk = self.dependentVariableTable.atk or self.entry.atk or 0
+		self.dependentVariableTable.atk = atk + delta
+	end
+
+	method void InsertAddAtkEnchantment(integer delta, table remover)
+		-- 공격력 추가 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "AddAtkEnchantment", args = {delta}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void SetAtkEnchantment(integer atk)
+		-- 카드 공격력을 특정 값으로 설정하는 인챈트먼트 적용
+		self.dependentVariableTable.atk = atk
+	end
+
+	method void InsertSetAtkEnchantment(integer atk, table remover)
+		-- 공격력 설정 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "SetAtkEnchantment", args = {atk}, remover = _Table:DeepCopy(remover)})
+	end
+
+end

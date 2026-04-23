@@ -1,0 +1,149 @@
+@Component
+script UIStageInfoStrategy extends Component
+
+	property TextComponent SPInfo = nil
+
+	property ScrollLayoutGroupComponent StrategyList = nil
+
+	property Entity StrategyListEmpty = nil
+
+	property Entity StrategySlotSample = nil
+
+	method void Init()
+		-- UI 컴포넌트들을 초기화하는 함수
+		self.SPInfo = self.Entity:GetChildByName("SPInfo").TextComponent
+		self.StrategyList = self.Entity:GetChildByName("StrategyList").ScrollLayoutGroupComponent
+		self.StrategyListEmpty = self.Entity:GetChildByName("StrategyListEmpty")
+		self.StrategySlotSample = self.Entity:GetChildByName("StrategySlotSample")
+		self.StrategySlotSample.Enable = false
+	end
+
+	method void Refresh(integer stageId, boolean isStageSetting)
+		-- 전략 정보를 새로고침하는 함수
+		if self.StrategySlotSample == nil then
+			self:Init()
+		end
+		
+		for i, child in pairs(self.StrategyList.Entity.Children) do
+			child.Enable = false
+		end
+		
+		local player = _UserService.LocalPlayer
+		local stageSettingData = {}
+		if _UtilLogic:IsNilorEmptyString(player.PlayerStage.StageSettingData[stageId]) == false then
+			stageSettingData = _HttpService:JSONDecode(player.PlayerStage.StageSettingData[stageId])
+		end
+		
+		local sideMenuId = 0
+		if stageId == player.PlayerStage.NowStage then
+			sideMenuId = player.PlayerIngameManager.StageSideMenu
+		else
+			if isvalid(stageSettingData[_StageSettingEnum.SideMenu]) then
+				sideMenuId = stageSettingData[_StageSettingEnum.SideMenu]
+			end
+		end
+		
+		if isStageSetting == true then
+			local uiStageSetting = _StageDataSetLogic.UIStageSetting
+			local settingPage = uiStageSetting.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy)].UIStageSettingStrategy
+			sideMenuId = settingPage.SelectedSideMenu
+		end
+		local sideMenuData = _StrategyDataSetLogic:GetSideMenuData(sideMenuId)
+		
+		local strategyData = {}
+		if stageId == player.PlayerStage.NowStage then
+			strategyData = player.PlayerIngameManager.StageStrategy
+		else
+			if _UtilLogic:IsNilorEmptyString(stageSettingData[_StageSettingEnum.Strategy]) == false then
+				strategyData = _UtilLogic:StringToTable(stageSettingData[_StageSettingEnum.Strategy])
+			end
+		end
+		
+		if isStageSetting == true then
+			local uiStageSetting = _StageDataSetLogic.UIStageSetting
+			local settingPage = uiStageSetting.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy)].UIStageSettingStrategy
+			strategyData = settingPage.SelectedStrategy
+		end
+		
+		local isStageOpened = player.PlayerStage:IsStageOpened(stageId)
+		local isListOff = isStageSetting == false and (isStageOpened == false or (sideMenuId == 0 and #table.keys(strategyData) <= 0))
+		
+		
+		if isListOff == true then
+			local isNotSet = sideMenuId == 0 and #table.keys(strategyData) <= 0
+			local isValidSettingData = #table.keys(stageSettingData) > 0
+			local listEmptyText = (isValidSettingData and isNotSet) 
+				and _GetLocalizationTextLogic:GetText("StageInfoListEmptyText2") 
+				or _GetLocalizationTextLogic:GetText("StageInfoListEmptyText1") 
+			
+			self.StrategyListEmpty.Enable = true
+			self.StrategyListEmpty.TextComponent.Text = listEmptyText
+			self.SPInfo.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("UsedSP_Format", 0)
+			self.StrategyList.Entity.Enable = false
+			return
+		end
+		
+		if sideMenuData ~= nil then
+			local slot = _UIEntityService:GetOrCreateClonedEntityByName(self.StrategyList.Entity, "StrategySlot"..0, self.StrategySlotSample)
+			local icon = slot:GetChildByName("Icon")
+			local goodsIcon = icon:GetChildByName("GoodsIcon")
+			local name = slot:GetChildByName("Name")
+			local desc = slot:GetChildByName("Desc")
+			
+			icon.SpriteGUIRendererComponent.ImageRUID = sideMenuData.IconRUID
+			goodsIcon.Enable = false
+			name.TextComponent.Text = _GetLocalizationTextLogic:GetText(sideMenuData.NameKey)
+			desc.TextComponent.Text = _StrategyDataSetLogic:GetSideMenuDescText(sideMenuId)
+		end
+		
+		local slotIdx = 1
+		local usedSP = 0
+		local idKeys = table.keys(strategyData)
+		table.sort(idKeys)
+		
+		for i = 1, #idKeys do
+			local id = idKeys[i]
+			local level = strategyData[id]
+			
+			local slot = _UIEntityService:GetOrCreateClonedEntityByName(self.StrategyList.Entity, "StrategySlot"..slotIdx, self.StrategySlotSample)
+			slotIdx += 1
+			
+			local stData = _StrategyDataSetLogic:GetStrategyData(id)
+			local icon = slot:GetChildByName("Icon")
+			local goodsIcon = icon:GetChildByName("GoodsIcon")
+			local name = slot:GetChildByName("Name")
+			local desc = slot:GetChildByName("Desc")
+			
+			goodsIcon.Enable = false
+			icon.SpriteGUIRendererComponent.ImageRUID = stData.IconRUID
+			name.TextComponent.Text = string.format("%s (%d)", _GetLocalizationTextLogic:GetText(stData.NameKey), level)
+			desc.TextComponent.Text = _StrategyDataSetLogic:GetStrategyDescText(id, level, false, stageId)
+			
+			usedSP += level * stData.SPCost
+		end
+		
+		self.SPInfo.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("UsedSP_Format", usedSP)
+		
+		local isAnyStrategy = sideMenuData ~= nil or #table.keys(strategyData) > 0
+		self.StrategyListEmpty.TextComponent.Text = _GetLocalizationTextLogic:GetText("StageInfoListEmptyText2") 
+		self.StrategyList.Entity.Enable = isAnyStrategy
+		self.StrategyListEmpty.Enable = not isAnyStrategy
+		
+	end
+
+	method string GetGoodsIcon(string relatedGoods)
+		-- 관련 상품에 따른 아이콘을 반환하는 함수
+		if relatedGoods == "Gold" then
+			return _ItemDataSetLogic:GetItemData("G0001").IconRUID
+		elseif relatedGoods == "Attractive" then
+			return _IconRuidEnum.Face_Good
+		elseif relatedGoods == "Reputation" then
+			return _ItemDataSetLogic:GetItemData("G0006").IconRUID
+		elseif relatedGoods == "Heart" then
+			return _ItemDataSetLogic:GetItemData("G0005").IconRUID
+		elseif relatedGoods == "Clover" then
+			return _ItemDataSetLogic:GetItemData("G0004").IconRUID
+		end
+	end
+
+end

@@ -1,0 +1,245 @@
+@Component
+script FieldMapPopup extends UICommonPopup
+
+	property Entity fieldMapPopupImage = "b2a419eb-33f3-4f8d-9ec6-f1bd5ee3d182"
+
+	property Entity playerPosition = "3dda76c9-577e-47ae-9df9-98ed5fe8d7b0"
+
+	property Entity sectionOrigin = "896b64f8-fb80-4f68-bb9c-9817a5fe5a17"
+
+	property MinimapComponent minimap = "0d50e5ba-8bd2-4a58-820d-46885faa8db2"
+
+	property table icons = {}
+
+	property string iconModelId = "model://44958b31-cf1e-47e3-b60d-78c494ba6c0f"
+
+	property number width = 1200
+
+	property number height = 916
+
+	property Entity iconsParent = "7127d721-6b50-4379-b9b3-c9793d369dff"
+
+	property number xLeft = -50
+
+	property number xRight = 51
+
+	property number yHigh = 76
+
+	property number yLow = 0
+
+	property Vector2 padding = Vector2(25,19)
+
+	property Vector2 center = Vector2(0,0)
+
+	method void Show()
+		-- 필드맵 팝업 표시 및 새로고침
+		self.width = self.fieldMapPopupImage.UITransformComponent.RectSize.x
+		self.height = self.fieldMapPopupImage.UITransformComponent.RectSize.y
+		
+		
+		self:Refresh()
+		__base:Show()
+		self:ShowMinimap()
+	end
+
+	method void Refresh()
+		-- 필드맵 정보 및 섹션 상태 새로고침
+		self.fieldMapPopupImage.SpriteGUIRendererComponent.ImageRUID = _MultiMapDataLogic.multiMapData[_UserService.LocalPlayer.CurrentMapName].fieldmapImage
+		self.playerPosition.UITransformComponent.anchoredPosition = self:ConvertPosition(_UserService.LocalPlayer.TransformComponent.WorldPosition)
+		
+		self:ClearIcon()
+		
+		local sections = _EntityService:GetEntitiesByTag("section")
+		local buttons = self.sectionOrigin.Parent.Children
+		for i, button in pairs(buttons) do
+			if button ~= self.playerPosition then
+				button.Enable = false
+			end	
+		end
+		
+		for i, section in pairs(sections) do
+			local sectionNum = section.SectionComponent.sectionNum
+			local playerFieldMap = _UserService.LocalPlayer.PlayerFieldMapComponent
+			local currentMapNum = _MultiMapDataLogic.multiMapData[_UserService.LocalPlayer.CurrentMapName].mapNum
+			local sectionState = playerFieldMap.fieldMapData[currentMapNum][sectionNum]
+			if sectionState ~= 2 then
+				---@type Entity
+				local sectionCover = nil
+				if isvalid(self.sectionOrigin.Parent:GetChildByName("section"..math.floor(sectionNum))) == false then
+					sectionCover = self.sectionOrigin:Clone("section"..math.floor(sectionNum))
+				else
+					sectionCover = self.sectionOrigin.Parent:GetChildByName("section"..math.floor(sectionNum))
+					sectionCover.Enable = true
+				end
+				sectionCover.UITransformComponent.AlignmentOption = AlignmentType.Center
+				local openIcon = sectionCover.Children[1]
+				local sectionOriginPos = section.TransformComponent.Position:ToVector2()
+				local sectionUIPos = self:ConvertPosition(sectionOriginPos:ToVector3())
+				sectionCover.UITransformComponent.anchoredPosition = sectionUIPos
+				
+				local rightTopOriginPos = self:ConvertPosition(Vector3(sectionOriginPos.x+section.TransformComponent.Scale.x, sectionOriginPos.y+section.TransformComponent.Scale.y,0))
+				local rectSize = rightTopOriginPos - sectionUIPos
+				sectionCover.UITransformComponent.RectSize.x = rectSize.x
+				sectionCover.UITransformComponent.RectSize.y = rectSize.y
+				
+				if sectionState == 1 then
+					openIcon.Enable = true
+					sectionCover.SpriteGUIRendererComponent.Color.a = 0.7
+					sectionCover.SpriteGUIRendererComponent:ChangeMaterial("material://128cb24f-4eab-4abe-b385-f55cc170785e")
+				elseif sectionState == 0 then
+					sectionCover.SpriteGUIRendererComponent.Color.a = 1
+					sectionCover.SpriteGUIRendererComponent:ChangeMaterial("")
+					openIcon.Enable = false
+				end
+				
+				sectionCover.SectionButtonComponent.section = section
+			else
+				if isvalid(self.sectionOrigin.Parent:GetChildByName("section"..math.floor(sectionNum))) then
+					self.sectionOrigin.Parent:GetChildByName("section"..math.floor(sectionNum)).Enable = false
+				end
+			end
+		end
+	end
+
+	method Vector2 GetUIPosition(Vector2 target)
+		-- 월드 좌표를 UI 좌표로 변환
+		
+		local mWidth = self.width - self.padding.x * 2
+		local mHeight = self.height - self.padding.y * 2
+		
+		
+		
+		local xTimes = mWidth / ( self.xRight - self.xLeft)
+		local yTimes = mHeight / ( self.yHigh - self.yLow)
+		
+		local posx = target.x
+		local posy = target.y
+		
+		return Vector2(mWidth/2 + posx*(xTimes),mHeight/2 + (posy-(self.yHigh-self.yLow)/2)*(yTimes))
+		
+		
+	end
+
+	method void ShowMinimap()
+		-- 미니맵 표시 및 주기적 새로고침 시작
+		if self._T.refreshMinimapEventId  == nil then
+		    self._T.refreshMinimapEventId = _TimerService:SetTimerRepeat(function() 
+		        self:RefreshMinimap()
+		    end,1)
+		end
+		self:RefreshMinimap()
+	end
+
+	method void HideMinimap()
+		-- 미니맵 숨기기 및 타이머 정리
+		_TimerService:ClearTimer(self._T.refreshMinimapEventId)
+		self._T.refreshMinimapEventId = nil
+	end
+
+	method void RefreshMinimap()
+		-- 미니맵 아이콘들 새로고침
+		
+		self.iconsParent.Enable = true
+		local minimapInfo = self.minimap.minimapInfo
+		
+		for k,v in pairs(minimapInfo) do
+			local ruid = "8dae84c6a2e346c3b21557f6705e8831"
+			if k == "shop" then
+				ruid = "8dae84c6a2e346c3b21557f6705e8831"
+			elseif k == "campfire" then
+				ruid = "e11e5b7169134309b934fccff0c2e299"
+			elseif k == "boss" then
+				continue
+			elseif k == "open" then
+				ruid = "d68416e1e4f149e3b8a6e52b801fb50a"
+			elseif k == "party" then
+				ruid = "c5d181ecff1943388e0e0e7fd8dedb1c"
+			elseif k == "portal" then
+				ruid = "98206ed6a092467d897ab6d2c1072cb9"
+			end
+			for id,v2 in pairs(v) do
+				---@type Entity
+				local icon = self.icons[id]
+				---@type TransformComponent
+				local transform = v2
+				local inSameMap = false
+				if k ~= "party" then
+					inSameMap = _EntityService:GetEntity(id).CurrentMap == _UserService.LocalPlayer.CurrentMap
+				else
+					inSameMap = _UserService:GetUserEntityByUserId(id).CurrentMap == _UserService.LocalPlayer.CurrentMap
+				end
+				if isvalid(transform) == false or inSameMap == false then
+					_PoolingLogic:DestroyEntity(self.icons[id])
+					self.icons[id] = nil				
+					continue
+				end
+				
+				if isvalid(icon) == false then
+					icon = _PoolingLogic:SpawnModel(self.iconModelId,Vector3.zero,self.iconsParent)
+					self.icons[id] = icon
+				end
+				icon.SpriteGUIRendererComponent.ImageRUID = ruid
+				local xBound = Vector2(-557,557)
+				local yBound = Vector2(-415,415)
+				icon.UITransformComponent.anchoredPosition =  self:ConvertPosition(transform.WorldPosition)
+				
+				local iconPos = icon.UITransformComponent.anchoredPosition
+				icon.UITransformComponent.anchoredPosition.x = math.max(xBound.x,iconPos.x)
+				icon.UITransformComponent.anchoredPosition.x = math.min(xBound.y,iconPos.x)
+				icon.UITransformComponent.anchoredPosition.y = math.max(yBound.x,iconPos.y)
+				icon.UITransformComponent.anchoredPosition.y = math.min(yBound.y,iconPos.y)
+			end
+		end
+	end
+
+	method void Hide()
+		-- 팝업 숨기기 및 미니맵 숨김 처리
+		__base:Hide()
+		self:HideMinimap()
+	end
+
+	method Vector2 ConvertPosition(Vector3 pos)
+		-- 월드 좌표를 미니맵 UI 좌표로 변환
+		
+		local x = pos.x-self.center.x
+		local y = pos.y-self.center.y
+		
+		local xTimes = (self.width - self.padding.x* 2) / ( self.xRight - self.xLeft)
+		local yTimes = (self.height - self.padding.y* 2) / ( self.yHigh - self.yLow)
+		return Vector2(x*(xTimes),y*(yTimes))
+	end
+
+	method void ClearIcon()
+		-- 모든 미니맵 아이콘 제거
+		for id, icon in pairs(self.icons) do
+			_PoolingLogic:DestroyEntity(icon)
+			self.icons[id] = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "da8cd405-15f9-41cf-a569-283649767cd2")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 시 팝업 닫기
+		
+		local Entity = event.Entity
+		self:Hide()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleOnMapEnter(OnMapEnter event)
+		-- 맵 진입 시 맵 바운드 정보 및 아이콘 초기화
+		local currentMap = event.currentMap
+		local userEnter = event.userEnter
+		self:ClearIcon()
+		
+		self.xLeft = currentMap.MapComponent.LeftBottom.x
+		self.xRight = currentMap.MapComponent.RightTop.x
+		self.yHigh = currentMap.MapComponent.RightTop.y
+		self.yLow = currentMap.MapComponent.LeftBottom.y
+		
+		self.center = Vector2((currentMap.MapComponent.LeftBottom.x + currentMap.MapComponent.RightTop.x) * 0.5,
+			(currentMap.MapComponent.LeftBottom.y + currentMap.MapComponent.RightTop.y) * 0.5)
+	end
+
+end

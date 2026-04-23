@@ -1,0 +1,167 @@
+@Component
+script SkillTweener extends Component
+
+	property Vector3 from = Vector3(0,0,0)
+
+	property Vector3 to = Vector3(0,0,0)
+
+	property number duration = 1
+
+	property string ease = "Linear"
+
+	property boolean pingpong = false
+
+	property number pingpongCount = 1
+
+	property boolean loop = false
+
+	@HideFromInspector
+	property boolean isPlaying = false
+
+	property boolean useRelativePosition = false
+
+	@HideFromInspector
+	property Vector3 offset = Vector3(0,0,0)
+
+	property string afterEffect = ""
+
+	property number afterEffectSize = 1
+
+	property boolean useSineMove = false
+
+	property number delay = 0
+
+	method void Play()
+		-- 스킬 트위닝 시작 (딱레이, 시작 위치 설정)
+		self._T.delay = self.delay
+		if self.delay > 0 then
+			self.Entity.Visible = false
+		end
+		self:SetPosition(self.from)
+		self._T.time = 0
+		self.isPlaying = true
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 트위닝 업데이트 (이징, 루프, 핑폰 처리)
+		if _TimerLogic.pause then
+			return
+		end
+		if self.isPlaying == false then
+			return
+		end
+		
+		delta = delta * _TimerLogic.timeScale
+		
+		if self._T.delay > 0 then
+			self._T.delay = self._T.delay - delta
+			if self._T.delay <= 0 then
+				self.Entity.Visible = true
+			else
+				return	
+			end
+		end
+		
+		
+		self._T.time = self._T.time + delta
+		local timeValue = self._T.time
+		if self.pingpong then
+			timeValue = _GameUtil:PingPong(self._T.time,self.duration)
+		elseif self.loop then
+			timeValue = self._T.time % self.duration
+		end
+		
+		local value = _TweenLogic:Ease(0,1,self.duration,self._T.ease,timeValue)
+		
+		
+		if self.useSineMove then
+			value = math.sin(self._T.time / self.duration * math.pi * 2)
+		end
+		self:SetPosition(value * self.to + (1-value) * self.from)
+		if self.pingpong == false then
+			if self._T.time > self.duration then
+				self:Stop()
+			end
+		
+		elseif self.pingpongCount > 0 then
+				local cnt = self._T.time / (self.duration * 2)
+				if cnt > self.pingpongCount then
+					self:Stop()
+				end
+		
+		end
+	end
+
+	method void Stop()
+		-- 스킬 트위닝 정지 및 최종 위치로 이동
+		self._T.isPlaying = false
+		
+		self:SetPosition(self.to)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 스킬 트위너 초기화 및 스킬 이팩트 이벤트 연결
+		
+		
+		self._T.ease = EaseType.CastFrom(self.ease)
+		self._T.transform = self.Entity.TransformComponent
+		self.offset = self._T.transform.Position:Clone()
+		
+		local parent = self:GetParentEntity(self.Entity.Parent)
+		if isvalid(parent) == false then
+			return
+		end
+		parent:ConnectEvent(SkillEffectStart,function(e)
+				self:Play()
+		end)
+		parent:ConnectEvent(SkillEffectEnd,function(e) 
+			if _UtilLogic:IsNilorEmptyString(self.afterEffect) == false then
+				_EffectService:PlayEffect(self.afterEffect,self.Entity,self.Entity.TransformComponent.WorldPosition,0,Vector3.one * self.afterEffectSize)
+			end
+				self:Stop()
+				
+		end)
+		
+		if self._T.isPlaying == false then
+			self:Play()
+		end
+		self._T.parent = parent
+		
+	end
+
+	method Entity GetParentEntity(Entity parent)
+		-- 스킬 이팩트 부모 엔티티 찾기 (재귀적 탐색)
+		if parent.MapComponent ~= nil then
+			return nil
+		end
+		if parent.SkillEffectObject ~= nil then
+			return parent
+		end
+		return self:GetParentEntity(parent.Parent)
+	end
+
+	method void SetPosition(Vector3 pos)
+		-- 위치 설정 (상대/절대 위치 모드 지원)
+		if self.useRelativePosition then
+			self._T.transform.Position = pos + self.offset
+		else
+			self._T.transform.Position = pos
+		end
+	end
+
+	@EventSender("Logic", "TimerLogic")
+	handler HandleTimerChange(TimerChange event)
+		-- 타이머 일시정지/재개 시 스프라이트 재생 속도 동기화
+		
+		local pause = event.pause
+		
+		local sprite = self.Entity.SpriteRendererComponent
+		if sprite ~= nil then
+			sprite.PlayRate = pause and 0 or 1
+		end
+	end
+
+end

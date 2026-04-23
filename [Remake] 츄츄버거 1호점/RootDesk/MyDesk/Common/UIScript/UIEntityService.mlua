@@ -1,0 +1,324 @@
+@Logic
+script UIEntityService extends Logic
+
+	property SyncTable<Entity, integer> uiAnimEffectTimer
+
+	property SyncTable<Entity, integer> fadeTimer
+
+	property number TimeFrame = 60
+
+	property table uiAnimData = {}
+
+	@ExecSpace("ClientOnly")
+	method void PlayUISpriteAnim(Entity entity, string ruid, number duration)
+		-- UI 스프라이트 애니메이션을 지정된 시간 동안 재생하고 자동으로 비활성화
+		if not _UtilLogic:IsNilorEmptyString(ruid) then
+			entity.SpriteGUIRendererComponent.ImageRUID = ruid
+		end
+		
+		if self.uiAnimEffectTimer[entity] ~= nil then
+			_TimerService:ClearTimer(self.uiAnimEffectTimer[entity])
+			self.uiAnimEffectTimer[entity] = nil
+			
+		end
+		
+		entity.SpriteGUIRendererComponent.StartFrameIndex = 0
+		entity.Enable = true
+		
+		self.uiAnimEffectTimer[entity] = _TimerService:SetTimerOnce(function()
+			entity.Enable = false
+			entity.SpriteGUIRendererComponent.ImageRUID = nil
+			self.uiAnimEffectTimer[entity] = nil
+		end, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity GetOrCreateEntityOfModel(string modelName, integer index, Entity parent)
+		-- 모델명과 인덱스로 엔티티를 찾거나 새로 생성하여 반환
+		local model = _EntryService:GetModelIdByName(modelName)
+		local entityName = modelName..tostring(index)
+		
+		local entity = parent:GetChildByName(entityName, true)
+		if entity == nil then
+			local newEntity = _SpawnService:SpawnByModelId(model, entityName, Vector3.zero, parent)
+			return newEntity
+		end
+		entity.Enable = true
+		return entity
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayMoveBounceTween(Entity entity, boolean isStartAtOriginPos, number targetY, number duration, boolean isFadeAfterEnd, number fadeDuration)
+		-- 엔티티에 랜덤 위치로 이동하는 바운스 트위닝 애니메이션을 재생
+		if not isStartAtOriginPos then
+			local xPos = entity.UITransformComponent.anchoredPosition.x
+			local yPos = entity.UITransformComponent.anchoredPosition.y + _UtilLogic:RandomIntegerRange(50, 100)
+			entity.UITransformComponent.anchoredPosition = Vector2(xPos, yPos)
+		end
+		
+		local targetPosX = entity.UITransformComponent.anchoredPosition.x + _UtilLogic:RandomIntegerRange(-250, 250)
+		
+		local targetPosY = targetY + _UtilLogic:RandomIntegerRange(-100, 100)/10
+		
+		local direction = Vector2(targetPosX, targetPosY)
+		
+		
+		entity.UITweenMoveBounce:StartTween(direction, duration, isFadeAfterEnd, fadeDuration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer MakeStarIconForTasteScore(integer index, integer tasteScore, Entity parent, Entity attachParent, string materialId)
+		-- 맛 점수에 따라 별 아이콘들을 생성하고 트위닝 효과를 적용
+		local smallStarCount = (tasteScore/1.5)%10
+		local bigStarCount = math.floor((tasteScore/2.5)/10)
+		local smallSizeFactor = 0.6
+		local bigSizeFactor = 1
+		
+		for i = 1, smallStarCount do
+			index = index + i
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_UIRecipeTypeIcon", index, parent)
+			entity.SpriteGUIRendererComponent.PreserveSprite = PreserveSpriteType.AspectOnly
+			entity.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.TasteScoreBonus
+			entity.UITransformComponent.RectSize = entity.UITransformComponent.RectSize * smallSizeFactor
+			entity.SpriteGUIRendererComponent:ChangeMaterial(materialId)
+			entity:AttachTo(attachParent)
+			
+			_UIEntityService:PlayPopFadeTween(entity, false, -attachParent.UITransformComponent.RectSize.y/2, 0.55)
+		end
+		
+		for i = 1, bigStarCount do
+			index = index + i
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_UIRecipeTypeIcon", index, parent)
+			entity.SpriteGUIRendererComponent.PreserveSprite = PreserveSpriteType.AspectOnly
+			entity.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.TasteScoreBonus
+			entity.UITransformComponent.RectSize = entity.UITransformComponent.RectSize * bigSizeFactor
+			entity.SpriteGUIRendererComponent:ChangeMaterial(materialId)
+			entity:AttachTo(attachParent)
+			
+			_UIEntityService:PlayPopFadeTween(entity, false, -attachParent.UITransformComponent.RectSize.y/2, 0.55)
+		end
+		
+		if tasteScore > 0 then
+			local volumeMin = 0.05
+			local volumeMax = 0.2
+			local targetScore = 100
+			local nowScore = tasteScore > targetScore and targetScore or tasteScore
+			local gap = nowScore/targetScore
+			local volumeGap = volumeMax - volumeMin
+			
+			local volume = volumeMin + volumeGap * gap
+		end
+		
+		
+		return index
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TweenAndFade(Entity entity, boolean isIn, Vector2 destination, number duration)
+		-- 엔티티를 지정된 위치로 이동시키면서 동시에 페이드 인/아웃 효과 적용
+		local canvasGroup = entity.CanvasGroupComponent
+		if not isvalid(canvasGroup) then
+			return
+		end
+		
+		local fadeIn = function()	
+			canvasGroup.GroupAlpha = canvasGroup.GroupAlpha + 1/(duration*self.TimeFrame)
+			if canvasGroup.GroupAlpha >= 1 then
+				_TimerService:ClearTimer(self.fadeTimer[entity])
+				self.fadeTimer[entity] = 0
+			end
+		end
+		
+		local fadeOut = function()
+			canvasGroup.GroupAlpha = canvasGroup.GroupAlpha - 1/(duration*self.TimeFrame)
+			if canvasGroup.GroupAlpha <= 0 then
+				_TimerService:ClearTimer(self.fadeTimer[entity])
+				self.fadeTimer[entity] = 0
+			end
+		end
+		
+		local moveTo = function()
+			local target = _TweenLogic:PlayTween(entity.UITransformComponent.anchoredPosition, destination, duration, EaseType.CubicEaseOut, function(t)
+				if not isvalid(entity) then return end
+				entity.UITransformComponent.anchoredPosition = t
+			end)
+		end
+		
+		if isIn then
+			self.fadeTimer[entity] = _TimerService:SetTimerRepeat(fadeIn, 1/(duration*self.TimeFrame))
+		else
+			self.fadeTimer[entity] = _TimerService:SetTimerRepeat(fadeOut, 1/(duration*self.TimeFrame))
+		end
+		_TimerService:SetTimerOnce(moveTo, 0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity GetOrCreateClonedEntityByName(Entity parent, string name, Entity cloneOrigin)
+		-- 이름으로 엔티티를 찾거나 원본을 복제하여 새로 생성하여 반환
+		local entity = parent:GetChildByName(name, true)
+		if entity == nil then
+			local newEntity = cloneOrigin:Clone(name)
+			if newEntity.Parent ~= parent then
+				newEntity:AttachTo(parent)
+			end
+			return newEntity
+		end
+		entity.Enable = true
+		return entity
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayPopFadeTween(Entity entity, boolean isStartAtOriginPos, number targetY, number duration)
+		-- 엔티티에 랜덤 위치로 팝업하며 페이드아웃되는 트위닝 애니메이션을 재생
+		if not isStartAtOriginPos then
+			local xPos = entity.UITransformComponent.anchoredPosition.x
+			local yPos = entity.UITransformComponent.anchoredPosition.y + _UtilLogic:RandomIntegerRange(50, 100)
+			entity.UITransformComponent.anchoredPosition = Vector2(xPos, yPos)
+		end
+		
+		local targetPosX = entity.UITransformComponent.anchoredPosition.x + _UtilLogic:RandomIntegerRange(-250, 250)
+		
+		local targetPosY = targetY + _UtilLogic:RandomIntegerRange(-100, 100)/10
+		
+		local direction = Vector2(targetPosX, targetPosY)
+		
+		entity.UITweenPopFade:StartTween(direction, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetDimWithIcon(Entity entity, boolean dimEnable)
+		-- 엔티티의 Dim 효과와 아이콘 Dim, 텍스트 색상을 설정
+		entity:GetChildByName("Dim").Enable = dimEnable
+		entity:GetChildByName("Icon"):GetChildByName("IconDim").Enable = dimEnable
+		local fontColor = function(b)
+			if b == false then
+				return _ColorCodeEnum:GetColor("#ffffff")
+			else
+				return _ColorCodeEnum:GetColor("#8C8C8C")
+			end
+		end
+		
+		local outlineColor = function(b)
+			if b == false then
+				return _ColorCodeEnum:GetColor("#a15205")
+			else
+				return _ColorCodeEnum:GetColor("#582D03")
+			end
+		end
+		
+		local textEntity = entity:GetChildByName("Text")
+		if isvalid(textEntity) then
+			textEntity.TextComponent.FontColor = fontColor(dimEnable)
+			textEntity.TextComponent.OutlineColor = outlineColor(dimEnable)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayMoneyPopFade(integer amount, Entity parent, Entity attachParent)
+		-- 금액에 따라 코인 아이콘들을 생성하고 팝페이드 효과를 적용
+		local bigCount = math.floor(amount/100)
+		local smallCount = math.floor((amount - bigCount*100)/10)
+		
+		local smallSizeFactor = 0.8
+		local bigSizeFactor = 1
+		
+		local index = 0
+		
+		for i = 1, (smallCount+bigCount) do
+			index = index + i
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_UIRecipeTypeIcon", i, parent)
+			entity.SpriteGUIRendererComponent.PreserveSprite = PreserveSpriteType.AspectOnly
+			entity.SpriteGUIRendererComponent.ImageRUID = _ItemDataSetLogic:GetItemData("G0001").IconRUID
+			
+			local sizeFactor = i < bigCount and bigSizeFactor or smallSizeFactor
+			entity.UITransformComponent.RectSize = entity.UITransformComponent.RectSize * sizeFactor
+			entity:AttachTo(attachParent)
+			
+			_UIEntityService:PlayPopFadeTween(entity, false, -attachParent.UITransformComponent.RectSize.y/2, 0.55)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayUIOpenAnim(Entity entity, Vector2 originPos, Vector2 dir, number duration, number delay, Vector2 moveVec, string easeTypeStr, any callback)
+		-- UI 엔티티의 오픈 애니메이션을 지연 시간과 함께 재생
+		
+		local uiTransform = entity.UITransformComponent
+		if isvalid(uiTransform) == false then
+			return
+		end
+		
+		local canvas = entity.CanvasGroupComponent
+		if isvalid(canvas) == false then
+			return
+		end
+		
+		if duration == nil then
+			duration = 0.4
+		end
+		
+		if delay == nil then
+			delay = 0
+		end
+		
+		if moveVec == nil then
+			moveVec = Vector2(200, 200)
+		end
+		
+		local easeType = EaseType.SineEaseIn
+		if _UtilLogic:IsNilorEmptyString(easeTypeStr) == false then
+			easeType = EaseType.CastFrom(easeTypeStr)
+		end
+		
+		local startPos = Vector2(originPos.x - (dir.x * moveVec.x), originPos.y - (dir.y * moveVec.y))
+		
+		uiTransform.anchoredPosition = Vector2(startPos.x, startPos.y)
+		canvas.GroupAlpha = 0
+		
+		canvas.Interactable = false
+		
+		local moveTween = _TweenLogic:MakeTween(startPos, originPos, duration, easeType, function(t)
+			uiTransform.anchoredPosition = t
+		end)
+		local alphaTween = _TweenLogic:MakeTween(0, 1, duration, easeType, function(t)
+			canvas.GroupAlpha = t
+		end)
+		
+		local startTimer = _TimerService:SetTimerOnce(function()
+			moveTween:Play()
+			alphaTween:Play()
+		end, delay)
+		
+		
+		local callbackTimer = _TimerService:SetTimerOnce(function()
+			canvas.Interactable = true
+			
+			if callback ~= nil then
+				callback()
+			end
+			
+			self.uiAnimData[entity] = nil
+		end, delay+duration)
+		
+		self.uiAnimData[entity] = {startTimer, callbackTimer, moveTween, alphaTween}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearUIOpenAnim(Entity entity)
+		-- 엔티티의 UI 오픈 애니메이션을 중단하고 관련 데이터를 정리
+		if self.uiAnimData[entity] ~= nil then
+			local startTimer = self.uiAnimData[entity][1]
+			_TimerService:ClearTimer(startTimer)
+			
+			local callbackTimer = self.uiAnimData[entity][2]
+			_TimerService:ClearTimer(callbackTimer)
+			
+			for i = 3, #self.uiAnimData[entity] do
+				local tweener = self.uiAnimData[entity][i]
+				tweener:Complete()
+			end
+			
+			self.uiAnimData[entity] = nil
+		end
+	end
+
+end

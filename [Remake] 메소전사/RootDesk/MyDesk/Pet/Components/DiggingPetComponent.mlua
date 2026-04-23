@@ -1,0 +1,109 @@
+@Component
+script DiggingPetComponent extends Component
+
+	@HideFromInspector
+	property Entity targetBox = nil
+
+	property number speed = 0
+
+	@HideFromInspector
+	property string state = "MOVE"
+
+	property number diggingTime = 0
+
+	@HideFromInspector
+	property number draggedTime = 0
+
+	@HideFromInspector
+	property number detectTime = 0
+
+	property integer timer = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임마다 타겟 박스로 이동하거나 새로운 박스를 탐지
+		if isvalid(self.targetBox) and not _TimerLogic.pause and self.targetBox.BoxObjectComponent.Enable then
+			if self.targetBox.TransformComponent.Position.x > self._T.transform.Position.x then
+				if not self.Entity.SpriteRendererComponent.FlipX then
+					self.Entity.SpriteRendererComponent.FlipX = true
+				end
+			else
+				if self.Entity.SpriteRendererComponent.FlipX then
+					self.Entity.SpriteRendererComponent.FlipX = false
+				end
+			end
+			
+			local petPos = self.targetBox.TransformComponent.Position:Clone()
+			local worldPos = self._T.transform.Position:Clone()
+			local distance = petPos:Distance(worldPos)
+			
+			if distance > 0 then
+				self._T.transform.Position = worldPos:Lerp(petPos, delta * self.speed)
+			end
+		elseif self.detectTime + 1 < _UtilLogic.ServerElapsedSeconds then 
+			self:DetectBox()
+			self.detectTime = _UtilLogic.ServerElapsedSeconds
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DetectBox()
+		-- 가장 가까운 박스를 탐지하여 타겟으로 설정
+		local boxes = self.Entity.CurrentMap:GetChildByName("Objects"):GetChildByName("Boxes").Children
+		local minDistance = 99999999
+		local target = nil
+		
+		for _, box in pairs(boxes) do
+			if isvalid(box) and isvalid(box.BoxObjectComponent) and box.BoxObjectComponent.Enable then
+				local distance = self._T.transform.WorldPosition:Distance(box.TransformComponent.WorldPosition)
+				
+				if distance < minDistance then
+					minDistance = distance
+					self.targetBox = box
+				end
+			end
+		end
+		
+		if isvalid(self.targetBox) then
+			self.state = "MOVE"
+		end
+	end
+
+	method void Init()
+		-- 디깅 펫 컴포넌트 초기화
+		self.targetBox = nil
+		self.draggedTime = 0
+		self._T.transform = self.Entity.TransformComponent
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 시작 시 초기화 및 렌더링 순서 설정
+		self:Init()
+		self.Entity.SpriteRendererComponent.OrderInLayer = _UserService.LocalPlayer.AvatarRendererComponent.OrderInLayer - 1
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 박스와 충돌 시 디깅 시작하고 일정 시간 후 박스 파괴
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		if TriggerBodyEntity.BoxObjectComponent then
+			self.state = "DIGGING"
+			local callback = function()
+				if not isvalid(self.Entity) then return end
+				if isvalid(TriggerBodyEntity) then	
+					TriggerBodyEntity.BoxObjectComponent:Destroy(true)
+					self.state = "MOVE"
+					self:Init()
+				end
+			end
+			_EffectService:PlayEffect("2a05ee8537af4444ad387f753aaeca39", TriggerBodyEntity, TriggerBodyEntity.TransformComponent.Position, 0, Vector3.one)
+			_SoundService:PlaySoundAtPos("39c2e1fe83474d6da302424f33837e05", TriggerBodyEntity.TransformComponent.WorldPosition, _UserService.LocalPlayer, _SoundLogic.effectRatio)
+			_TimerService:SetTimerOnce(callback, self.diggingTime)
+		end
+	end
+
+end

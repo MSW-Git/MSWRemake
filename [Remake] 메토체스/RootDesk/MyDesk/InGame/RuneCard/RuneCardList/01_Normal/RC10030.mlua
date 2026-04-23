@@ -1,0 +1,131 @@
+@Component
+script RC10030 extends RuneCardComponent
+
+	@Sync
+	property number SetHPPercent = 20
+
+	property number SetASPercent = 40
+
+	@ExecSpace("ServerOnly")
+	method void StartBattleHandler(any event)
+		__base:StartBattleHandler(event)
+		
+		-- 전투 시작 시 활성화된 시너지가 하나도 없는 아군 유닛이 20%의 최대 체력과 40%의 공격속도를 얻습니다.
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local units = {}
+		local enemy = {}
+		------------------------------------------------------------
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		local tableRowCount = synergyTable:GetRowCount()
+		local activateConditionTable = {}
+		
+		-- 시너지 활성화 여부 체크를 위해 최소로 필요한 숫자 테이블 가져오기
+		for i = 1, tableRowCount do
+			local synergyRow = synergyTable:GetRow(i)
+			local synergyID = synergyRow:GetItem("SynergyID")
+			
+			for i = 1, 5 do
+				local count = synergyRow:GetItem(string.format("NeedCount_step%d", i))
+				if isvalid(tonumber(count)) then
+					activateConditionTable[synergyID] = tonumber(count)
+					break
+				end
+			end
+		end
+		
+		
+		if self.SetTeamType == "User" then
+			for _, unit in pairs(teamManager.OwnUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					-- 활성화가 되어있는 시너지가 있는지 체크
+					local checked = true
+					for _, synergyID in pairs(unit.UnitInfo.synergyList) do
+						if isvalid(teamManager.OnFieldSynergy[synergyID]) then
+							if synergyID ~= "S10024" then
+								if teamManager.OnFieldSynergy[synergyID] >= activateConditionTable[synergyID] then
+									checked = false
+									break
+								end
+							else
+								-- 전직교관 예외처리
+								if teamManager.OnFieldSynergy[synergyID] == 1 or teamManager.OnFieldSynergy[synergyID] == 5 then
+									checked = false
+									break
+								end
+							end
+						end
+					end
+					
+					-- 활성화된 시너지가 없는 경우
+					if checked then
+						_StatusChangeLogic:GetBuff(unit, "Multi_MaxHP", self.SetHPPercent, -1)
+						_StatusChangeLogic:GetBuff(unit, "Multi_AttackSpeed", self.SetASPercent, -1)
+						table.insert(units,unit)
+					end
+				end
+			end
+		else
+			for _, unit in pairs(teamManager.EnemyUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					-- 활성화가 되어있는 시너지가 있는지 체크
+					local checked = true
+					for _, synergyID in pairs(unit.UnitInfo.synergyList) do
+						if isvalid(teamManager.EnemyOwnedFieldSynergy[synergyID]) then
+							if synergyID ~= "S10024" then
+								if teamManager.EnemyOwnedFieldSynergy[synergyID] >= activateConditionTable[synergyID] then
+									checked = false
+									break
+								end
+							else
+								-- 전직교관 예외처리
+								if teamManager.EnemyOwnedFieldSynergy[synergyID] == 1 or teamManager.EnemyOwnedFieldSynergy[synergyID] == 5 then
+									checked = false
+									break
+								end
+							end
+						end
+					end
+					-- 활성화된 시너지가 없는 경우
+					if checked then
+						_StatusChangeLogic:GetBuff(unit, "Multi_MaxHP", self.SetHPPercent, -1)
+						_StatusChangeLogic:GetBuff(unit, "Multi_AttackSpeed", self.SetASPercent, -1)
+						table.insert(enemy,unit)
+					end
+				end
+			end
+		end
+		
+		units = _UtilLogic:TableToString(units)
+		enemy = _UtilLogic:TableToString(enemy)
+		self:PlayEffect(units, user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(string units, string enemy)
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		units = _UtilLogic:StringToTable(units)
+		enemy = _UtilLogic:StringToTable(enemy)
+		------------------------------------------------------------
+		local stringHPValue = string.format("%d%%", self.SetHPPercent)
+		local stringASValue = string.format("%d%%", self.SetASPercent)
+		
+		--룬 카드 발동 연출
+		if #units > 0 then
+			local cardindex = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+			_RuneCardDirector:ShakingCard_Battle(cardindex, false)
+			_RuneCardDirector:IconToastDirector_Battle(cardindex, {_RuneCardDirectEnum.MaxHP, _RuneCardDirectEnum.AttackSpeed}, {stringHPValue, stringASValue}, false)
+		end
+		
+		if #enemy>  0 then
+			local cardindex=_RuneCardDirector:GetRuneCardIndex(self.Entity,true)
+			_RuneCardDirector:ShakingCard_Battle(cardindex, true)
+			_RuneCardDirector:IconToastDirector_Battle(cardindex, {_RuneCardDirectEnum.MaxHP, _RuneCardDirectEnum.AttackSpeed}, {stringHPValue,stringASValue}, true)
+		end
+		
+	end
+
+end

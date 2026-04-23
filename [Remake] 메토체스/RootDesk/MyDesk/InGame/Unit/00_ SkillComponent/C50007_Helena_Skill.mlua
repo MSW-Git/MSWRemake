@@ -1,0 +1,266 @@
+@Component
+script C50007_Helena_Skill extends Component
+
+	property boolean use = false
+
+	property number skillAnimLength = 2.46
+
+	@Sync
+	property Entity projectile = nil
+
+	property string AttackEffectRUID = "aeaa4780d0fb42f893c1b5aa0c9520c3"
+
+	property string HitEffectRUID = "61b6d3ca3ba745dda1972593e89c3ea4"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+			self:SynergeMotion()
+		end
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		
+		local attackCount = tonumber(_S01_SkillDescLogic.C50007_Active_ArrowAmount_Int[unitInfo.level])
+		
+		local function hitMotion()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				if isvalid(targetUnit) then
+					self:HitEffect(targetUnit, unitInfo.OwnerId)
+					--self:SetAttackEffect(unitInfo.OwnerId)
+				else
+					local enemies2 = {}
+					if unitInfo.TeamType == "User" then
+						enemies2 = teamManager.EnemyUnits
+					elseif unitInfo.TeamType == "Enemy" then
+						enemies2 = teamManager.OwnUnits
+					end
+					
+					local checkEnemies = _BTLogic_New:getEntities(enemies2, "AttackAble")
+					
+					targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Random")
+					
+					self:HitEffect(targetUnit, unitInfo.OwnerId)
+					--self:SetAttackEffect(unitInfo.OwnerId)
+				end
+				self:SetFlipX(targetUnit)
+			end
+			--사운드
+			_PlaySoundLogic:PlaySound("M0139",self.Entity.UnitInfo.OwnerId)
+		end
+		
+		_TimerService:SetTimerOnce(hitMotion, 0.9 / skillRate)
+		
+		
+		
+		-- Attack
+		local fncCount = 0
+		local damageTimer = 0
+		local function hitDamage()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetSkillDamage(targetUnit, fncCount)
+				
+				fncCount += 1
+				
+				if fncCount >= attackCount then
+					_TimerService:ClearTimer(damageTimer)
+				end
+			elseif not isvalid(targetUnit) then
+				_TimerService:ClearTimer(damageTimer)
+			end
+		end
+		
+		damageTimer = _TimerService:SetTimerRepeat(hitDamage, 0.05 / skillRate, 1.9 / skillRate)
+		
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit, number attackCount)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local trueDamage = 0
+			if unitStatus.AttackSpeed > targetStatus.AttackSpeed then
+				trueDamage = 1
+			end
+			
+			local skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C50007_Active_SDamage_Physic[unitInfo.level] +
+									unitStatus.MagicalAttack * _S01_SkillDescLogic.C50007_Active_SDamage_Magic[unitInfo.level]
+			
+			local nowVerticalNode = unitInfo.setTileVerticalNum
+			local nowHoizontalNode = unitInfo.setTileHorizontalNum * 2 - (nowVerticalNode%2)
+			
+			local targetVerticalNode = targetInfo.setTileVerticalNum
+			local targetHorizontalNode = targetInfo.setTileHorizontalNum * 2 - (targetVerticalNode%2)
+			
+			local nowTileNode = {nowHoizontalNode, nowVerticalNode}
+			local targetTileNode = {targetHorizontalNode, targetVerticalNode}
+			
+			local distance = _BTLogic_New:getDistance(nowTileNode, targetTileNode)
+			
+			skillSetDamage *= (1 + distance[1] * 0.09)
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, trueDamage, "Physical")
+			
+			if attackCount <= 1 then
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+			else
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], string.format("skill_%d", attackCount))
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.HitEffectRUID, targetUnit, Vector3(0, 0, 0), 0, Vector3.one * 1.5, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.AttackEffectRUID, myUnit, Vector3.zero, 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SynergeMotion()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		local enemies = {}
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		local checkEnemies = _BTLogic_New:getEntities(enemies, "Alive")
+		
+		local targetTileInfo = _BTLogic_New:getTile(myUnit, checkEnemies, "FarFromTheEnemies")
+		
+		local setVec = targetTileInfo[1].TransformComponent.WorldPosition:ToVector2() - myUnit.UnitStatus.SetPos
+		
+		unitInfo:SetPropertyToServer("setTile", targetTileInfo[1], "OnlySetTile", true)
+		
+		
+		self:SetFlipX(targetTileInfo[1])
+		
+		local callbackCount = 0
+		local function ActionFnc()
+			callbackCount += 0.01
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				local moveTilePos = unitInfo.setTile.TransformComponent.WorldPosition
+				local setPos = myUnit.UnitStatus.SetPos
+				
+				if 0.4 >= callbackCount then
+					local setPosX = setPos.x + (setVec.x * 0.01 * 1 / 0.4)
+					local setPosY = setPos.y + (setVec.y * 0.01 * 1 / 0.4)
+					
+					myUnit.UnitInfo:SetPosition(setPosX, setPosY, unitInfo.OwnerId)
+					myUnit.UnitStatus.SetPos = Vector2(setPosX, setPosY)
+				else
+					if myUnit.UnitStatus.ActionType == "Helena_SkillMove" then
+						myUnit.UnitStatus:SetActionType("Idle")
+						_TimerService:ClearTimer(myUnit.UnitStatus.ActionTimer)
+						myUnit.UnitStatus.ActionTimer = 0
+					end
+				end
+			else
+				if myUnit.UnitStatus.ActionType == "Helena_SkillMove" then
+					myUnit.UnitStatus:SetActionType("Idle")
+					_TimerService:ClearTimer(myUnit.UnitStatus.ActionTimer)
+					myUnit.UnitStatus.ActionTimer = 0
+				end
+			end
+		end
+		
+		_TimerService:ClearTimer(myUnit.UnitStatus.ActionTimer)
+		myUnit.UnitStatus:SetActionType("Helena_SkillMove")
+		myUnit.UnitStatus.ActionTimer = _TimerService:SetTimerRepeat(ActionFnc, 0.01 / skillRate, 0)
+	end
+
+	@ExecSpace("Server")
+	method void SetFlipX(Entity target)
+		local ownerUnit = self.Entity
+		
+		if isvalid(target.UnitStatus) then
+			if ownerUnit.UnitStatus.SetPos.x < target.UnitStatus.SetPos.x then
+				self:SetFlipXinClient(true, ownerUnit.UnitInfo.OwnerId)
+			elseif ownerUnit.UnitStatus.SetPos.x > target.UnitStatus.SetPos.x then
+				self:SetFlipXinClient(false, ownerUnit.UnitInfo.OwnerId)
+			end
+		else
+			if ownerUnit.UnitStatus.SetPos.x < target.TransformComponent.WorldPosition.x then
+				self:SetFlipXinClient(true, ownerUnit.UnitInfo.OwnerId)
+			elseif ownerUnit.UnitStatus.SetPos.x > target.TransformComponent.WorldPosition.x then
+				self:SetFlipXinClient(false, ownerUnit.UnitInfo.OwnerId)
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetFlipXinClient(boolean flipX)
+		self.Entity.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = flipX
+	end
+
+end

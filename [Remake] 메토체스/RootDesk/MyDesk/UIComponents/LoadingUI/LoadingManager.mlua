@@ -1,0 +1,111 @@
+@Component
+script LoadingManager extends Component
+
+	property Entity LoadingUI = "3d4f4f25-3a3c-45c6-97c5-e27c8fbf34cc"
+
+	@TargetUserSync
+	property SyncTable<string, number> NeedLoadCount
+
+	@TargetUserSync
+	property SyncTable<string, number> LoadedCount
+
+	@ExecSpace("Client")
+	method void SetEnableUI(boolean enable)
+		-- 로딩 UI의 활성화 상태를 설정하고 배경음악 페이드 처리
+		self.LoadingUI.UI_Loading:SetEnableUI(enable)
+		
+		if enable then
+			_PlaySoundLogic:FadeInFadeOut(false, 1, 0.5*_PlaySoundLogic.BGMVolume, 0)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetProgressUI(number rate)
+		-- 로딩 진행률을 UI에 반영
+		self.LoadingUI.UI_Loading:SetProgressUI(rate)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 프로퍼티 변경 시 로딩 진행률 계산 및 업데이트
+		if name == "LoadedCount" then
+			local totalNeedCount = 0
+			for key, value in pairs(self.NeedLoadCount) do
+				totalNeedCount += value
+			end
+			
+			local totalLoadedCount = 0
+			for key, value in pairs(self.LoadedCount) do
+				totalLoadedCount += value
+			end
+			self:SetProgressUI(totalLoadedCount / totalNeedCount)
+		else
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ClearLoadedCount()
+		-- 로딩 카운트를 초기화하고 필요한 로딩 항목들을 설정
+		self.NeedLoadCount["UnitSampleSpawn"] = 1
+		self.NeedLoadCount["ProjectileSampleSpawn"] = 1
+		self.NeedLoadCount["GameDataLoad"] = 1
+		
+		self.LoadedCount["UnitSampleSpawn"] = 0
+		self.LoadedCount["ProjectileSampleSpawn"] = 0
+		self.LoadedCount["GameDataLoad"] = 0
+	end
+
+	@ExecSpace("Server")
+	method void GameStart()
+		-- 로딩 완료 후 게임을 시작하고 다음 페이즈로 이동
+		if (senderUserId ~= nil) and (senderUserId ~= self.Entity.OwnerId) then 
+			log("내가 아닌 다른 유저의 호출입니다") 
+			return 
+		end
+		--------------------------------------------------------
+		-- 로딩 완료 여부를 검사합니다.
+		local totalNeedCount = 0
+		for key, value in pairs(self.NeedLoadCount) do
+			totalNeedCount += value
+		end
+		
+		local totalLoadedCount = 0
+		for key, value in pairs(self.LoadedCount) do
+			totalLoadedCount += value
+		end
+		
+		if totalLoadedCount / totalNeedCount < 1 then
+			return
+		end
+		--------------------------------------------------------
+		-- 로딩창을 닫습니다.
+		self:SetEnableUI(false, self.Entity.OwnerId)
+		--------------------------------------------------------
+		-- 스테이지 이동 연출
+		local gameManager = self.Entity.GameManager
+		_BackgroundChangeLogic:GotoNextNode(gameManager.Stage,self.Entity.OwnerId)
+		_BackgroundChangeLogic:SetBg(gameManager.Stage,self.Entity.OwnerId)
+		_BackgroundChangeLogic:SetBestClearInfoUI(self.Entity.OwnerId)
+		
+		
+		local gotonext=function()
+			-- 게임을 시작합니다.
+			
+			-- 이어하기인 경우에는 이벤트 쏘지 않음
+			if not gameManager.NeedDataLoad then
+				self.Entity:SendEvent(InGameStart())
+				self.Entity:SendEvent(StageStart(1))	-- 에러 아님
+			end
+			
+			gameManager:GoToNextPhase()
+		end
+		
+		_TimerService:SetTimerOnce(gotonext,1.8)
+		
+		-- 게임을 시작합니다.
+		--local gameManager = self.Entity.GameManager
+		--gameManager:GoToNextPhase()
+	end
+
+end

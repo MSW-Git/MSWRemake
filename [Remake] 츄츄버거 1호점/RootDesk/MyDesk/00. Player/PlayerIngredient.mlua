@@ -1,0 +1,476 @@
+@Component
+script PlayerIngredient extends Component
+
+	@TargetUserSync
+	property SyncTable<integer, integer> IngredientCards
+
+	@TargetUserSync
+	property SyncTable<integer, integer> Buns
+
+	property boolean IsServerProcessing = false
+
+	@TargetUserSync
+	property SyncTable<string, integer> IngreSubscriptionBox
+
+	property SyncTable<integer, string> IngreNameKeywords
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 재료 데이터를 데이터베이스에 저장하는 함수
+		local ingreTotal = {}
+		
+		ingreTotal["IngredientCards"] = _UtilLogic:TableToString(self.IngredientCards)
+		ingreTotal["Buns"] = _UtilLogic:TableToString(self.Buns)
+		ingreTotal["IngreSubscriptionBox"] = _UtilLogic:TableToString(self.IngreSubscriptionBox)
+		
+		saveData["IngredientData"] = ingreTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 재료 데이터를 로드하는 함수
+		local ingreTable = loadedData["IngredientData"]
+		if ingreTable == nil then
+			ingreTable = {}
+		end
+		
+		if #table.keys(ingreTable) > 0 then
+			
+			if ingreTable["IngredientCards"] then
+				table.initialize(self.IngredientCards, _UtilLogic:StringToTable(ingreTable["IngredientCards"]))		
+			end
+			
+			if ingreTable["Buns"] then
+				table.initialize(self.Buns, _UtilLogic:StringToTable(ingreTable["Buns"]))
+			end
+			
+			if ingreTable["IngreSubscriptionBox"] then
+				table.initialize(self.IngreSubscriptionBox, _UtilLogic:StringToTable(ingreTable["IngreSubscriptionBox"]))
+			end
+			
+		else	
+			self:AddBun(1, 1,"InitialOffer")
+			self:SetBunFunction(1)
+			
+			self:InitIngreCards(false)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 컴포넌트 초기화 시 모든 재료 데이터를 초기화하는 함수
+		table.clear(self.IngredientCards)
+		table.clear(self.Buns)
+		table.clear(self.IngreSubscriptionBox)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AddIngredientCard(integer ingreId, integer count, string source)
+		-- 재료 카드를 추가하는 함수
+		
+		if count <= 0 then
+			return 1
+		end
+		
+		local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+		if ingreData == nil then
+			return 2
+		end
+		
+		if self.IngredientCards[ingreId] == nil then
+			self.IngredientCards[ingreId] = 0
+		end
+		
+		local changeBef = self.IngredientCards[ingreId]
+		
+		self.IngredientCards[ingreId] += count
+		if self.IngredientCards[ingreId] > _IngredientDataSetLogic.IngredientMaxStack then
+			self.IngredientCards[ingreId] = _IngredientDataSetLogic.IngredientMaxStack
+			
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage7", {ingreData.NameKey}, true, self.Entity.PlayerComponent.UserId)
+		end
+		
+		self.Entity.PlayerCollection:AddIngredientCollection(ingreId)
+		
+		if ingreData.Grade == 2 then
+			local grade1Count = 0
+			for id, cnt in pairs(self.IngredientCards) do
+				local dt = _IngredientDataSetLogic:GetIngredientData(id)
+				if dt.Grade == 1 then
+					grade1Count += cnt
+				end
+			end
+			
+			if grade1Count >= 10 then
+				local p = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.GetIngreGrade2)
+				self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.GetIngreGrade2, p+count)
+			end    
+		end
+		
+		
+		self:IngreFlowLog(ingreId, ingreData.Grade, ingreData.Type, count, changeBef, self.IngredientCards[ingreId], "1", source)
+		
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer RemoveIngredientCard(integer ingreId, integer count, string source)
+		-- 재료 카드를 제거하는 함수
+		
+		local checkResult = self:CanUseIngredientCard(ingreId, count)
+		if checkResult ~= 0 then
+			return checkResult
+		end
+		
+		local changeBef = self.IngredientCards[ingreId]
+		if changeBef - count == 0 then
+			self.IngredientCards[ingreId] = nil
+		else
+			self.IngredientCards[ingreId] = changeBef - count
+		end
+		
+		local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+		
+		
+		self:IngreFlowLog(ingreId, ingreData.Grade, ingreData.Type, count, changeBef, self.IngredientCards[ingreId], "2", source)
+		
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CanUseIngredientCard(integer ingreId, integer count)
+		-- 재료 카드 사용 가능 여부를 확인하는 함수
+		
+		if count <= 0 then
+			return 1
+		end
+		
+		if ingreId <= 0 then
+			return 2
+		end
+		
+		local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+		if ingreData == nil then
+			return 2
+		end
+		
+		if self.IngredientCards[ingreId] == nil then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage5", nil, false, self.Entity.PlayerComponent.UserId)
+			return 3
+		end
+		
+		if self.IngredientCards[ingreId] < count then 
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage5", nil, false, self.Entity.PlayerComponent.UserId)
+			return 3
+		end
+		
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddBun(integer index, integer count, string source)
+		-- 번(빵)을 추가하는 함수
+		if self.Buns[index] == nil then
+			self.Buns[index] = 0
+		end
+		
+		local bunData = _IngredientDataSetLogic:GetBunData(index)
+		
+		local changeBef = self.Buns[index]
+		self.Buns[index] += count
+		if self.Buns[index] > _IngredientDataSetLogic.IngredientMaxStack then
+			self.Buns[index] = _IngredientDataSetLogic.IngredientMaxStack
+			
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage10", {bunData.Top.NameKey}, true, self.Entity.PlayerComponent.UserId)
+		end
+		
+		self.Entity.PlayerCollection:AddBunCollection(index)
+		
+		
+		
+		
+		self:IngreFlowLog(index, bunData.Grade, "Bun", count, changeBef, self.Buns[index], "1", source)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer RemoveBun(integer index, integer count)
+		-- 번을 제거하는 함수
+		
+		local checkResult = self:CanUseBun(index, count)
+		if checkResult ~= 0 then
+			return checkResult
+		end
+		
+		---@type BunData
+		local bunData = _IngredientDataSetLogic.BunData[index]
+		if bunData.isInfinite then
+			return 0
+		end
+		
+		local changeBef = self.Buns[index]
+		local logCount = 0 
+		if changeBef - count == 0 then
+			self.Buns[index] = nil
+			logCount = "0"
+		else
+			self.Buns[index] = changeBef - count
+			logCount = string.format("%d",self.Buns[index])
+		end
+		
+		
+		self:IngreFlowLog(index, bunData.Grade, "Bun", count, changeBef, self.Buns[index], "2", "RecipeMaking")
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CanUseBun(integer index, integer count)
+		-- 번 사용 가능 여부를 확인하는 함수
+		
+		if _IngredientDataSetLogic.BunData[index] == nil then
+			return 2
+		end
+		
+		---@type BunData
+		local bunData = _IngredientDataSetLogic.BunData[index]
+		if bunData.isInfinite then
+			return 0
+		end
+		
+		if count <= 0 then
+			return 1
+		end
+		
+		if self.Buns[index] == nil then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage6", nil, false, self.Entity.PlayerComponent.UserId)
+			return 3
+		end
+		
+		if self.Buns[index] < count then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage6", nil, false, self.Entity.PlayerComponent.UserId)
+			return 3
+		end
+		
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBunFunction(integer index)
+		-- 번 기능을 설정하는 함수
+		if self.Buns[index] == nil then
+			self.Entity.PlayerRecipe:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		if self.Buns[index] == nil then
+			self.Entity.PlayerRecipe:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		if self.Buns[index] <= 0 then
+			self.Entity.PlayerRecipe:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self.Entity.PlayerRecipe.SetBun = index
+		self.Entity.PlayerRecipe:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetBun(integer index)
+		-- 번 설정을 요청하는 함수
+		self:SetBunFunction(index)
+	end
+
+	@ExecSpace("Server")
+	method void RequestOpenIngredientGacha(string gachaId, integer count)
+		-- 재료 가차 오픈을 요청하는 함수
+		self:ProcessOpenIngredientGacha(gachaId, count)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ProcessOpenIngredientGacha(string gachaId, integer count)
+		-- 재료 가챠를 열어서 결과를 처리하는 함수
+		local loopCount = _IngredientGachaDataLogic:ReturnMultiCountByGachaId(gachaId) * count
+		
+		local gachaData = _IngredientGachaDataLogic:GetIngreGachaRandomBoxData(gachaId)
+		local result = gachaData:Pick(self.Entity, loopCount)
+		
+		
+		local progress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.IngreBoxOpenCount)
+		self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.IngreBoxOpenCount, progress + count)
+		
+		self:ProcessIngredientGacha(result, gachaId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ProcessIngredientGacha(table generatedIngreList, string gachaId)
+		-- 재료 가차 결과를 처리하는 함수
+		local results = {}
+		local gachaType = _UtilLogic:SubString(gachaId, 1, 2)
+		
+		for i, resultId in ipairs(generatedIngreList) do
+			if results[resultId] == nil then
+				results[resultId] = 0
+			end
+			results[resultId] = results[resultId] + 1
+		end
+		
+		for id, count in pairs(results) do
+			if gachaType == "IN" then
+				self:AddIngredientCard(id, count,"IngreGacha")
+					
+			elseif gachaType == "BN" then
+				self:AddBun(id, count,"IngreGacha")
+			end
+		end
+		
+		
+		self.Entity.PlayerIngredient:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+		self:SendGachaResult(results, gachaId, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SendGachaResult(table results, string gachaId)
+		-- 가차 결과를 클라이언트에 전송하는 함수
+		
+		local rewardDatas = {}
+		local gachaType = _UtilLogic:SubString(gachaId, 1, 2)
+		
+		for k, v in pairs(results) do
+		    if gachaType == "IN" then
+		        local rewardId = k..":".."False"
+				rewardDatas[rewardId] = v
+		        
+		    elseif gachaType == "BN" then
+		        local rewardId = k..":".."True"
+		        rewardDatas[rewardId] = v
+		    end
+		    
+		end
+		
+		_UIItemRewardService:SetItemRewardUI(rewardDatas, "IngreGacha")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성 변경 시 UI 업데이트를 처리하는 함수
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if name == "IngredientCards" then
+			if _UIEntityLogic_RecipeGroup.UIIngreCardSetting.Enable then
+				_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting:SetFilter(_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting.NowFilter)
+				_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting:RefreshIngreSlotList()
+			end
+		elseif name == "Buns" then
+			if _UIEntityLogic_RecipeGroup.UIIngreCardSetting.Enable then
+				_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting:RefreshBunSetSlot()
+			end
+			_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting:SetBunRedDot()
+			
+		elseif name == "IngreSubscriptionBox" then
+			local modelId = _EntryService:GetModelIdByName("Model_SubscriptionPostBox")
+			local subscriptionEntities = _EntityService:GetEntitiesSpawnedByModelId(modelId)
+			for i = 1, #subscriptionEntities do
+				local entity = subscriptionEntities[i]
+				entity.SubscriptionPostBox:Refresh()
+			end	
+			
+			_LobbyHUDService:RefreshSubscriptionBoxButton()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ChangeConnectingStatus(boolean status)
+		-- 연결 상태를 변경하는 함수
+		local player = _UserService.LocalPlayer
+		player.PlayerIngredient.IsServerProcessing = status
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddToIngreSubscriptionBox(string itemId)
+		-- 재료 구독 상자에 아이템을 추가하는 함수
+		if _ItemDataSetLogic:GetItemData(itemId) == nil then
+			return
+		end
+		
+		local itemCount = 1
+		
+		if self.IngreSubscriptionBox[itemId] == nil then
+			self.IngreSubscriptionBox[itemId] = 0
+		end
+		
+		self.IngreSubscriptionBox[itemId] = self.IngreSubscriptionBox[itemId] + itemCount
+		
+		_ReportMessageMaker:RequestAddToReportQueue(8003, "", "", "", self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetIngreSubscriptionBox()
+		-- 재료 구독 상자를 수령하는 함수
+		if #table.keys(self.IngreSubscriptionBox) == 0 then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self.Entity.PlayerInventory:AddItems(self.IngreSubscriptionBox,"Get IngreMailBox","Lobby HUD")
+		_UIItemRewardService:SetItemRewardUI(self.IngreSubscriptionBox, "IngreSubscription", self.Entity.PlayerComponent.UserId)
+		
+		table.clear(self.IngreSubscriptionBox)
+		
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetIngreSubscriptionBox()
+		-- 재료 구독 상자 수령을 요청하는 함수
+		self:GetIngreSubscriptionBox()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitIngreCards(boolean isQuit)
+		-- 초기 재료 카드들을 지급하는 함수
+		local nxLogKey = "InitialOffer"
+		if isQuit then
+			nxLogKey = "InitForQuit"
+		end
+		
+		self:AddIngredientCard(34, 2,nxLogKey) 
+		self:AddIngredientCard(43, 2,nxLogKey) 
+		self:AddIngredientCard(7, 2,nxLogKey) 
+		
+		self:AddBun(1, 1, nxLogKey)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void IngreFlowLog(integer ingreId, integer ingreGrade, string ingreType, integer changeAmount, integer changeBefore, integer changeAfter, string flowType, string source)
+		-- 재료 플로우 로그를 기록하는 함수
+		local success,value = pcall(function()	
+			local nickname = self.Entity.PlayerComponent.Nickname
+			local playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+			changeBefore = changeBefore == nil and 0 or changeBefore
+			changeAfter = changeAfter == nil and 0 or changeAfter
+			
+			_LogStorageLogic:LogValue(self.Entity.PlayerComponent.UserId,
+				_LogEnumType.IngreFlow,
+				_HttpService:JSONEncode({
+					changeAmount = tostring(changeAmount),
+					changeBefore = tostring(changeBefore),
+					changeAfter = tostring(changeAfter)
+				}),
+				{ 	
+					nickname = nickname,
+					ingreId = tostring(ingreId),
+					flowType = flowType,
+					source = source,
+					ingreGrade = tostring(ingreGrade),
+					ingretype = ingreType,
+					playerStageId = playerStageId
+				})
+		end)
+		
+		if not success then  end
+	end
+
+end

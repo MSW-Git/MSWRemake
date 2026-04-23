@@ -1,0 +1,308 @@
+@Logic
+script AbilityLogic extends Logic
+
+	property table abilityStatusData = {}
+
+	property table abilityExpData = {}
+
+	property integer abilityMaxLevel = 0
+
+	property integer ability_Attack_Max_Level = 0
+
+	property integer ability_Hp_Max_Level = 0
+
+	property integer ability_Mp_Max_Level = 0
+
+	property integer ability_ReductCooltime_Max_Level = 0
+
+	property integer maxBaggaeSlotCount = 200
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 능력치 관련 데이터 테이블 로드
+		if _GameConfig:GetConfig().FIELD_AVAILABLE == false then return end
+		
+		local data = _DataService:GetTable("AbilityStatusData") 
+		for i = 1, data:GetRowCount() do
+			local statusData = {}
+			statusData.accumulatedPoints = tonumber(data:GetCell(i, "accumulatedPoints"))
+			statusData.attack = tonumber(data:GetCell(i, "attack"))
+			statusData.hp = tonumber(data:GetCell(i, "hp"))
+			statusData.mp = tonumber(data:GetCell(i, "mp"))
+			statusData.reductCooltime = tonumber(data:GetCell(i, "reductCooltime"))
+			self.abilityStatusData[statusData.accumulatedPoints] = statusData
+		end
+		
+		data = _DataService:GetTable("AbilityExpData")
+		for i = 1, data:GetRowCount() do
+			local expData = {}
+			expData.level = tonumber(data:GetCell(i, "Level"))
+			expData.needToFillExp = tonumber(data:GetCell(i, "NeedToFillExp"))
+			expData.nextLevel = tonumber(data:GetCell(i, "NextLevel"))
+			expData.max_Attack_Level = tonumber(data:GetCell(i, "max_Attack_Level"))
+			expData.max_Hp_Level = tonumber(data:GetCell(i, "max_Hp_Level"))
+			expData.max_Mp_Level = tonumber(data:GetCell(i, "max_Mp_Level"))
+			expData.max_ReductCooltime_Level = tonumber(data:GetCell(i, "max_ReductCooltime_Level"))
+			self.abilityExpData[expData.level] = expData
+		end
+		
+		self.abilityMaxLevel = data:GetRowCount()
+		
+		
+	end
+
+	method number GetStatusByAbilityType(integer typeNum, integer lv)
+		-- 능력치 타입과 레벨에 따른 스탯 값 반환
+		
+		if typeNum == 1 then
+			return self.abilityStatusData[lv].attack 
+		elseif typeNum == 2 then
+			return self.abilityStatusData[lv].hp 
+		elseif typeNum == 3 then
+			return self.abilityStatusData[lv].mp 
+		elseif typeNum == 4 then
+			return self.abilityStatusData[lv].reductCooltime 
+		end
+		
+		return 0 
+	end
+
+	@ExecSpace("Client")
+	method integer GetToUseAbilityPoints()
+		-- 사용 예정인 능력치 포인트 총합 계산
+		local totalToUsePoints = 0
+		local toUsePoints = _UserService.LocalPlayer.PlayerAbilityComponent.toUsePoints
+		
+		for i = 1 , #toUsePoints do
+			totalToUsePoints += toUsePoints[i]
+		end
+		
+		return totalToUsePoints
+	end
+
+	method integer GetAbilityAttackStatus(string userId)
+		-- 플레이어의 능력치 공격력 스탯 반환
+		local player = _UserService:GetUserEntityByUserId(userId)
+		return self.abilityStatusData[player.PlayerAbilityComponent.ability["type_1"].lv].attack
+	end
+
+	method integer GetAbilityHpStatus(string userId)
+		-- 플레이어의 능력치 체력 스탯 반환
+		local player = _UserService:GetUserEntityByUserId(userId)
+		return self.abilityStatusData[player.PlayerAbilityComponent.ability["type_2"].lv].hp
+	end
+
+	method integer GetAbilityManaStatus(string userId)
+		-- 플레이어의 능력치 마나 스탯 반환
+		local player = _UserService:GetUserEntityByUserId(userId)
+		
+		return self.abilityStatusData[player.PlayerAbilityComponent.ability["type_3"].lv].mp
+	end
+
+	method integer GetAbilityReductCooltimeStatus(string userId)
+		-- 플레이어의 능력치 쿨타임 감소 스탯 반환
+		local player = _UserService:GetUserEntityByUserId(userId)
+		return self.abilityStatusData[player.PlayerAbilityComponent.ability["type_4"].lv].reductCooltime
+	end
+
+	method integer GetAbilityBaggageStatus(string userId)
+		-- 플레이어의 가방 슬롯 개수 반환
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if player.PlayerAbilityComponent.ability["lvData"].baggageSlot == nil then
+			player.PlayerAbilityComponent.ability["lvData"].baggageSlot = 100
+		end
+		return player.PlayerAbilityComponent.ability["lvData"].baggageSlot 
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ExcuteResetPoint(string userId)
+		-- 능력치 포인트 초기화 실행
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local ability = player.PlayerAbilityComponent.ability
+		local resetPrice = 100
+		if player.PlayerCurrencyData.currencyTable["Diamond"]. amount < resetPrice then
+			return
+		end
+		
+		local totalAp = ability["type_1"].lv + ability["type_2"].lv + ability["type_3"].lv + ability["type_4"].lv
+		
+		if ability["lvData"].ap ~= totalAp then
+			return
+		end 
+		
+		local beforeSP = player.PlayerAbilityComponent.ability["lvData"].cp 
+		
+		local changeLv_Type1 = -1 * ability["type_1"].lv
+		local changeLv_Type2 = -1 * ability["type_2"].lv
+		local changeLv_Type3 = -1 * ability["type_3"].lv
+		local changeLv_Type4 = -1 * ability["type_4"].lv
+		
+		player.PlayerAbilityComponent.ability["lvData"].cp = ability["lvData"].cp + ability["lvData"].ap
+		player.PlayerAbilityComponent.ability["lvData"].ap = 0
+		
+		player.PlayerAbilityComponent.ability["type_1"].lv = 0 
+		player.PlayerAbilityComponent.ability["type_2"].lv = 0
+		player.PlayerAbilityComponent.ability["type_3"].lv = 0
+		player.PlayerAbilityComponent.ability["type_4"].lv = 0
+		
+		_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, resetPrice, userId, "AbilityPointReset")
+		
+		if changeLv_Type1 ~= 0 then 
+			_WorldLog:LogFieldStatusFlow(_WorldLog.FlowType_FieldStatusFlow_Atk, "ResetAllStatus", userId, beforeSP, -1 * changeLv_Type1, ability["type_1"].lv, changeLv_Type1, ability["type_1"].lv)	
+		end
+		
+		if changeLv_Type2 ~= 0 then
+			_WorldLog:LogFieldStatusFlow(_WorldLog.FlowType_FieldStatusFlow_Hp, "ResetAllStatus", userId, beforeSP, -1 * changeLv_Type2, ability["type_2"].lv, changeLv_Type2, ability["type_2"].lv)
+		end
+		
+		if changeLv_Type3 ~= 0 then
+			_WorldLog:LogFieldStatusFlow(_WorldLog.FlowType_FieldStatusFlow_Mp, "ResetAllStatus", userId, beforeSP, -1 * changeLv_Type3, ability["type_3"].lv, changeLv_Type3, ability["type_3"].lv)
+		end
+		
+		if changeLv_Type4 ~= 0 then
+			_WorldLog:LogFieldStatusFlow(_WorldLog.FlowType_FieldStatusFlow_ReductCool, "ResetAllStatus", userId, beforeSP, -1 * changeLv_Type4, ability["type_4"].lv, changeLv_Type4, ability["type_4"].lv)
+		end
+		
+		player.PlayerAbilityComponent:SyncClient(player.PlayerAbilityComponent.ability, userId)
+		_LocalizeLogic:ShowToast("toast289", userId)
+		
+		if isvalid(player.MultiBattlePlayer) then
+			player:SendEvent(ChangePlayerAbilityData(player.PlayerAbilityComponent.ability, userId))
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestResetPoint()
+		-- 능력치 포인트 초기화 요청 처리
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		local resetPrice = 100
+		if player.PlayerCurrencyData.currencyTable["Diamond"]. amount < resetPrice then
+			_LocalizeLogic:ShowToast("toast237", senderUserId)
+			return
+		end
+		
+		if not isvalid(player) then
+			return
+		end
+		
+		self:ExcuteResetPoint(senderUserId)
+	end
+
+	method integer GetEnableUpgradePointByTypeNum(integer typeNum, string userId, integer value, integer toUseValue)
+		-- 능력치 타입별 업그레이드 가능한 포인트 수 계산
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local abilityLv = player.PlayerAbilityComponent.ability["lvData"].lv
+		local abilityData = self.abilityExpData[abilityLv]
+		local statusData = self.abilityStatusData
+		
+		
+		
+		if isvalid(player.PlayerAbilityComponent) then
+			local ability = player.PlayerAbilityComponent.ability
+			local nextStepLv = self:FindBreakAbilityStatusLevel(abilityLv, userId)
+			
+			if typeNum == 1 then
+				
+				if ability["type_1"].lv + toUseValue + value <= abilityData.max_Attack_Level then
+					return value
+				else
+					if nextStepLv == 0 then
+						_UIToast:ShowMessage(_LocalizeLogic:GetText("toast283"))
+					else
+						_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast280"), statusData[abilityData.max_Attack_Level].attack, nextStepLv))
+					end
+					return abilityData.max_Attack_Level - (ability["type_1"].lv + toUseValue)
+				end
+			elseif typeNum == 2 then
+				if ability["type_2"].lv + toUseValue + value <= abilityData.max_Hp_Level then
+					return value
+				else
+					if nextStepLv == 0 then
+						_UIToast:ShowMessage(_LocalizeLogic:GetText("toast283"))
+					else
+						_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast280"), statusData[abilityData.max_Hp_Level].hp, nextStepLv))
+					end
+					return abilityData.max_Hp_Level - (ability["type_2"].lv + toUseValue)
+				end
+			
+			elseif typeNum == 3 then
+				if ability["type_3"].lv + toUseValue + value <= abilityData.max_Mp_Level then
+					return value
+				else
+					if nextStepLv == 0 then
+						_UIToast:ShowMessage(_LocalizeLogic:GetText("toast283"))
+					else
+						_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast280"), statusData[abilityData.max_Mp_Level].mp, nextStepLv))
+					end
+					return abilityData.max_Mp_Level - (ability["type_3"].lv + toUseValue)
+				end
+			elseif typeNum == 4 then
+				if ability["type_4"].lv + toUseValue + value <= abilityData.max_ReductCooltime_Level then
+					return value
+				else
+					if nextStepLv == 0 then
+						_UIToast:ShowMessage(_LocalizeLogic:GetText("toast283"))
+					else
+						_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast280"), statusData[abilityData.max_ReductCooltime_Level].reductCooltime, nextStepLv))
+					end
+					return abilityData.max_ReductCooltime_Level - (ability["type_4"].lv + toUseValue)
+				end
+			end
+			
+		else
+			return 0
+		end
+	end
+
+	method integer FindBreakAbilityStatusLevel(integer currentLevel)
+		-- 다음 능력치 한계 돌파 레벨 찾기
+		for i = currentLevel, #self.abilityExpData do
+			if self.abilityExpData[currentLevel].max_Attack_Level < self.abilityExpData[i].max_Attack_Level then
+				return i
+			end	
+		end
+			
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean RequestExtendBaggageSlot(string userId, integer count)
+		-- 가방 슬롯 확장 요청 처리
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) then
+			return false
+		end
+		if self:GetAbilityBaggageStatus(userId) + count <= self.maxBaggaeSlotCount then
+			player.PlayerAbilityComponent.ability["lvData"].baggageSlot = player.PlayerAbilityComponent.ability["lvData"].baggageSlot + count
+			player.PlayerAbilityComponent:SyncClient(player.PlayerAbilityComponent.ability, userId)
+			return true
+		else
+			return false	
+		end
+		
+	end
+
+	method boolean CheckExistInvestedStatusPoint(string userId)
+		-- 투자된 능력치 포인트 존재 여부 확인
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(player) then
+			return false
+		end
+		
+		if not isvalid(player.PlayerAbilityComponent) then
+			return false
+		end
+		
+		if player.PlayerAbilityComponent.ability["type_1"].lv > 0 or player.PlayerAbilityComponent.ability["type_2"].lv > 0 or
+		 player.PlayerAbilityComponent.ability["type_3"].lv > 0 or player.PlayerAbilityComponent.ability["type_4"].lv > 0 then 
+			
+			return true
+		
+		else 
+			
+			return false	
+		end
+	end
+
+end

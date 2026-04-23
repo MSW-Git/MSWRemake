@@ -1,0 +1,119 @@
+@Component
+script UIWorldBossRaid extends Component
+
+	property GridViewComponent leaderboardGridView = "5ea48b3f-96d1-4321-8a4e-c34355cd2a4a"
+
+	property Entity rankItem = "038b1be7-0250-4e1e-9369-ef49c3df7616"
+
+	property Entity buttonEnterRaid = "a83ae088-98d8-44e8-bd20-747a9fcbb23e"
+
+	property SliderComponent hpBar = "70e88a73-6352-4c7e-93e5-69f5eec3b8a9"
+
+	property TextComponent hpText = "d4735aa2-8be4-4bca-a239-a5ce38b127ea"
+
+	property TextComponent myRank = "ff65c58e-bb62-40bb-a2f9-e35d9f41c36c"
+
+	property TextComponent myDamage = "1618ed2a-d707-467e-be20-51b7a04fbcdd"
+
+	property TextComponent raidDateTimeText = "84910bf2-26b8-4009-acd6-6688a1190920"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 월드 보스 레이드 UI 초기화
+		self.leaderboardGridView.ItemEntity = self.rankItem
+		
+		---@param entity Entity
+		local function refreshLeaderboard(index,entity) 
+			
+			local v = self._T.leaderboardInfo[index + 1]
+			entity:GetChildByName("Text_rank").TextComponent.Text = string.format("%d",v.rank)	
+			entity:GetChildByName("Text_nickname").TextComponent.Text = string.format("%s",v.nickname)	
+			entity:GetChildByName("Text_score").TextComponent.Text = string.format("%d",v.score)
+		end
+		self.leaderboardGridView.OnRefresh = refreshLeaderboard
+	end
+
+	method void RefreshLeaderboard(table leaderboard)
+		-- 리더보드 UI 업데이트
+		self._T.leaderboardInfo = _GameUtil:DeepCopyTable(leaderboard)
+		local ppsn = _UserService.LocalPlayer.PlayerComponent.UserId
+		self.myRank.Text = "순위밖"
+		local needToSort = false
+		for k,v in pairs(self._T.leaderboardInfo) do
+			if v.ppsn == ppsn then
+				v.score =_UserService.LocalPlayer.PlayerInfoComponent.playerInfo.raidDamage
+				self.myRank.Text = string.format("%d",k)
+				needToSort = true
+				break
+			end
+		end
+		if needToSort then
+			table.sort(self._T.leaderboardInfo,function(a,b) 
+					return a.score > b.score
+			end)
+		end
+		self.leaderboardGridView.TotalCount = #self._T.leaderboardInfo
+		self.leaderboardGridView:Refresh(true,true)
+	end
+
+	method void RefreshRaidInfo(table raidInfo)
+		-- 레이드 정보 UI 업데이트
+		local maxHP = 1000000 
+		self.hpBar.Value = raidInfo.bossHP / maxHP
+		self.hpText.Text = string.format("%d/%d", raidInfo.bossHP,maxHP)
+	end
+
+	method void Show()
+		-- 월드 보스 레이드 UI 표시
+		if _WorldBossRaidLogic.raidInfoInited then
+			self:RefreshRaidInfo(_WorldBossRaidLogic.raidInfo)
+		end
+		self:RefreshLeaderboard(_WorldBossRaidLogic.leaderboard)
+		local maxTicket = _GameConfig:GetConfig().WORLD_RAID_MAX_TICKET
+		local usedTicket = _UserService.LocalPlayer.PlayerInfoComponent.playerInfo.raidCnt
+		local remainTicket = maxTicket - usedTicket
+		
+		self.myDamage.Text =_UserService.LocalPlayer.PlayerInfoComponent.playerInfo.raidDamage
+		 
+		self.buttonEnterRaid.TextComponent.Text = string.format("참가하기(%d/%d)",remainTicket,maxTicket)
+		self.Entity.Enable = true
+		
+		local days = 1 + math.ceil(_LocalTimeLogic:GetUtcNow().Elapsed - _WorldBossRaidLogic.raidInfo.startDate) / (1000 * 3600 * 24)
+		self.raidDateTimeText.Text = string.format("공략 %d일째",days)
+	end
+
+	method void Hide()
+		-- 월드 보스 레이드 UI 숨기기
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleGetWorldBossRaidLeaderboard(GetWorldBossRaidLeaderboard event)
+		-- 리더보드 업데이트 이벤트 처리
+		local leaderboard = event.leaderboard
+		self:RefreshLeaderboard(leaderboard)
+	end
+
+	@EventSender("Entity", "f6139477-5325-4b9e-b66b-b245c3a29a95")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:Hide()
+	end
+
+	@EventSender("Entity", "a83ae088-98d8-44e8-bd20-747a9fcbb23e")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 참가하기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		
+		if _UserService.LocalPlayer.PlayerInfoComponent.playerInfo.raidCnt >= _GameConfig:GetConfig().WORLD_RAID_MAX_TICKET then
+			return
+		end
+		self:Hide()
+		_UserService.LocalPlayer.PlayerInfoComponent:UseRaidTicket()
+	end
+
+end

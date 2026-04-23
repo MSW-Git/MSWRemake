@@ -1,0 +1,327 @@
+@Component
+script PlayerEmoticon extends Component
+
+	property SyncTable<boolean> haveEmoticon
+
+	property SyncTable<number> equipedEmoticon
+
+	@Sync
+	property Entity emoticonEntity = nil
+
+	@Sync
+	property number EmotToken = 0
+
+	property SyncTable<number> timerTable
+
+	method void OnBeginPlay()
+		-- 이모티콘 컴포넌트 초기화 및 서버/클라이언트별 설정
+		self._T.tableList = { haveEmoticon = self.haveEmoticon, equipedEmoticon = self.equipedEmoticon }
+		self._T.tableType = { haveEmoticon = "boolean", equipedEmoticon = "number" }
+		
+		if self:IsServer() then
+			-- spawn emot entity
+			local emoticonEntity = _SpawnService:SpawnByModelId("model://33feca08-a3b2-443e-89e0-fcbfcf8f9a89",
+				"Emoticon",
+				Vector3(0, 1, 0),
+				self.Entity)
+			
+			self.emoticonEntity = emoticonEntity
+			emoticonEntity.SpriteRendererComponent.Color.a = 0
+		--------------------------------------------
+		elseif self:IsClient() and _UserService.LocalPlayer == self.Entity then -- isClient()
+			-- init ui
+			local emotSlot = _EntityService:GetEntity("828aa308-b8c3-4bd8-9fce-095f1636a708")
+			for i=1, 5 do
+				emotSlot:Clone("Slot_"..tostring(i))
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void PlayEmoticon(number equipIdx, Entity owner)
+		-- 장착된 이모티콘을 화면에 표시하며 페이드인/아웃 애니메이션 재생
+		if owner ~= self.Entity then
+			return
+		end
+		------------------------------------------------------------------------------
+		if self.equipedEmoticon[equipIdx] == 0 then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_ThereIsNoEquipedEmoticon", self.Entity.OwnerId)
+			return
+		end
+		------------------------------------------------------------------------------
+		-- change Emoticon RUID
+		local emoticonTable = _DataService:GetTable("Emoticon")
+		local ruid = emoticonTable:GetCell(self.equipedEmoticon[equipIdx], 2)
+		self.emoticonEntity.SpriteRendererComponent.SpriteRUID = ruid
+		------------------------------------------------------------------------------
+		-- clear timer
+		for i=1, #self.timerTable do
+			_TimerService:ClearTimer(self.timerTable[i])
+		end
+		
+		table.clear(self.timerTable)
+		------------------------------------------------------------------------------
+		-- change Emoticon Alpha-Color
+		local alphaColor = 0.0
+		self.emoticonEntity.SpriteRendererComponent.Color.a = alphaColor
+		
+		local alphaColorUp = function()
+			alphaColor = alphaColor + 1/30
+			self.emoticonEntity.SpriteRendererComponent.Color.a = alphaColor
+		end
+		
+		local alphaColorDown = function()
+			alphaColor = alphaColor - 1/30
+			self.emoticonEntity.SpriteRendererComponent.Color.a = alphaColor
+		end
+		------------------------------------------------------------------------------
+		for i=1, 30 do
+			local timerValue = _TimerService:SetTimerOnce(alphaColorUp, i/30)
+			table.insert(self.timerTable, timerValue)
+		end
+		
+		for i=1, 30 do
+			local timerValue = _TimerService:SetTimerOnce(alphaColorDown, 3 + i/30)
+			table.insert(self.timerTable, timerValue)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetEmoticonUI()
+		-- 장착된 이모티콘 정보를 UI에 반영하여 화면 갱신
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		-----------------------------------------
+		local emotList = _EntityService:GetEntity("93a28da9-71a6-4e83-be70-3182fa0eedff")
+		local emoticonTable = _DataService:GetTable("Emoticon")
+		
+		for i=1, 5 do
+			local slot = emotList:GetChildByName("Slot_"..tostring(i))
+			
+			local thumbnail = slot:GetChildByName("Thumbnail")
+			local defaultIcon = slot:GetChildByName("icon_emoticon")
+			
+			if self.equipedEmoticon[i] ~= nil and self.equipedEmoticon[i] > 0 then
+				local imageRUID = emoticonTable:GetCell(self.equipedEmoticon[i], 2)
+				thumbnail.SpriteGUIRendererComponent.ImageRUID = imageRUID
+				defaultIcon.Enable = false
+			else 
+				thumbnail.SpriteGUIRendererComponent.ImageRUID = "3e9d52ed52d64794bbd6f72bab8ee3d9"
+				defaultIcon.Enable = true
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangeEquipedSlot(number slot, number targetIdx)
+		-- 지정된 슬롯에 보유한 이모티콘을 장착 처리
+		if self.haveEmoticon[targetIdx] == false then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_YouTriedToReplaceAnExpressionEmot", self.Entity.OwnerId)
+			return
+		end
+		
+		self.equipedEmoticon[slot] = targetIdx
+		self:SetTableElementClient("equipedEmoticon", slot, tostring(targetIdx), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void GetNewEmot()
+		-- 이모토큰을 사용하여 새로운 이모티콘 획득
+		-- 재화 체크
+		if self.EmotToken <= 0 then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_ThereAreNoEmotToken", self.Entity.OwnerId)
+			return
+		end
+		
+		-------------------------------
+		
+		-- 전체 보유여부 체크
+		local emotNum = _DataService:GetRowCount("Emoticon")
+		local randomTargetTable = {}
+		for i=1, emotNum do
+			if self.haveEmoticon[i] == false then
+				table.insert(randomTargetTable, i)
+			end
+		end
+		
+		if #randomTargetTable <= 0 then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_AlreadyHaveAllEmot", self.Entity.OwnerId)
+			return
+		end
+		--------------------------------------------------------------
+		
+		-- 재화 소모 처리
+		self:UseEmotToken(1)
+		
+		-- 보유여부 데이터 처리
+		local randIdx = _UtilLogic:RandomIntegerRange(1, #randomTargetTable)
+		local newEmotIdx = randomTargetTable[randIdx]
+		self.haveEmoticon[newEmotIdx] = true
+		
+		
+		-- UI 반영
+		self:SetUIGachaResult(newEmotIdx, self.Entity.OwnerId)
+		
+		self:SetTableElementClient("haveEmoticon", newEmotIdx, tostring(self.haveEmoticon[newEmotIdx]), self.Entity.OwnerId)
+		_UIAlarmMarker:SetEnableMarker("emoticon", true, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseEmotToken(number amount)
+		-- 이모토큰 소모 처리
+		self.EmotToken = self.EmotToken - amount
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 전송된 테이블 데이터를 클라이언트에 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 전송된 특정 테이블 요소를 클라이언트에 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트의 테이블을 초기화하여 모든 값을 기본값으로 설정
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 테이블 변경 시 관련 UI 갱신 처리
+		_EntityService:GetEntity("95539959-ceeb-4b93-8625-07fa603f3ddc").EmoticonStorageUI:RefreshUI()
+		
+		if name == "haveEmoticon" then
+			_EntityService:GetEntity("6d046731-a6a7-421e-9318-aa0059842964").EmoticonShopUI:RefreshUI()
+			
+		elseif name == "equipedEmoticon" then
+			self:SetEmoticonUI()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllProperty()
+		-- 모든 이모티콘 관련 속성을 초기화
+		local emoticonTable = _DataService:GetTable("Emoticon")
+		local emoticonNum = emoticonTable:GetRowCount()
+		--------------------------------------------
+		-- init data
+		for i=1, emoticonNum do
+			table.insert(self.haveEmoticon, false)
+		end
+		
+		for i=1, 5 do
+			self.equipedEmoticon[i] = 0
+		end
+		
+		self:ClearTableClient("haveEmoticon", "false", emoticonNum, self.Entity.OwnerId)
+		self:ClearTableClient("equipedEmoticon", "0", 5, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadedUserData(string haveEmoticonStr, string equipedEmoticonStr, string emotTokenStr)
+		-- 저장된 유저 데이터를 로드하여 이모티콘 상태 복원
+		local emoticonKindNum = _DataService:GetRowCount("Emoticon")
+		
+		-- 보유 여부 갱신
+		if isvalid(haveEmoticonStr) == false then
+			for i=1, emoticonKindNum do
+				self.haveEmoticon[i] = false
+			end
+		else 
+			local haveEmotData = _UtilLogic:StringToTable(haveEmoticonStr)
+			for i=1, emoticonKindNum do
+				if haveEmotData[i] == nil or haveEmotData[i] == false then
+					self.haveEmoticon[i] = false
+					
+				elseif haveEmotData[i] == true then
+					self.haveEmoticon[i] = true
+				end
+			end
+		end
+		
+		
+		
+		-- 장착 정보 갱신
+		if isvalid(equipedEmoticonStr) == false then
+			for i=1, 5 do
+				self.equipedEmoticon[i] = 0
+			end
+		else 
+			local equipedEmotData = _UtilLogic:StringToTable(equipedEmoticonStr)
+			for i=1, emoticonKindNum do
+				if equipedEmotData[i] == nil then
+					self.equipedEmoticon[i] = 0
+					
+				else
+					self.equipedEmoticon[i] = tonumber(equipedEmotData[i])
+					
+				end
+			end
+		end
+		
+		-- 토큰 개수 정보 갱신
+		if tonumber(emotTokenStr) == nil then
+			self.EmotToken = 0
+		else
+			self.EmotToken = tonumber(emotTokenStr)
+		end
+		--------------------------------------------------
+		self:SetTableClient("haveEmoticon", _UtilLogic:TableToString(self.haveEmoticon), self.Entity.OwnerId)
+		self:SetTableClient("equipedEmoticon", _UtilLogic:TableToString(self.equipedEmoticon), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성 변경 시 UI 갱신 처리
+		if self.Entity ~= _UserService.LocalPlayer then
+			return 
+		end
+		
+		if name == "EmotToken" then
+			_EntityService:GetEntity("6d046731-a6a7-421e-9318-aa0059842964").EmoticonShopUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/InventoryGroup/Storage").StorageUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/GemShopGroup/GemShop").GemShopUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetUIGachaResult(number newEmotIdx)
+		-- 새로 획득한 이모티콘의 가챠 결과 UI 표시
+		local emotShopUI = _EntityService:GetEntityByPath("/ui/EmoticonGroup/EmotShop")
+		emotShopUI.EmoticonShopUI:SetGachaResultUI(newEmotIdx)
+	end
+
+end

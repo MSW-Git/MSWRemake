@@ -1,0 +1,436 @@
+@Component
+script TitleManager extends Component
+
+	property boolean itsOn = false
+
+	property boolean zoomed = false
+
+	property Entity titleSettingUI = "23355290-4bb4-4ba1-9f8a-81e5fd3611f5"
+
+	@Sync
+	property Entity MyTitle = nil
+
+	property string currentSelectedElements = ""
+
+	property table NameTagTable = {}
+
+	property table KeyWordFrontTable = {}
+
+	property table KeyWordBackTable = {}
+
+	property table EquippedTitle = {NameTag = "", KeyWordFront = "", KeyWordBack = ""}
+
+	property table redDotTable = {}
+
+	property table OwnedTable_KWF = {}
+
+	property table OwnedTable_KWB = {}
+
+	property table OwnedTable_NT = {}
+
+	@ExecSpace("ServerOnly")
+	method void TitleSet()
+		--칭호 요소를 변경하고, 칭호를 업데이트합니다.
+		
+		local nametagTable = _DataService:GetTable("Title_NameTagDataset")
+		local keywordFrontTable = _DataService:GetTable("Title_KeyWordFrontDataset")
+		local keywordBackTable = _DataService:GetTable("Title_KeyWordBackDataset")
+		
+		self.MyTitle.NameTagComponent.NameTagRUID = nametagTable:FindRow("NameTagID",self.EquippedTitle["NameTag"]):GetItem("ImageRUID")
+		self.MyTitle.NameTagComponent.FontOffset = Vector2(0,tonumber(nametagTable:FindRow("NameTagID",self.EquippedTitle["NameTag"]):GetItem("FontOffsetY")))
+		self.MyTitle.NameTagComponent.FontColor = Color.FromHexCode(nametagTable:FindRow("NameTagID",self.EquippedTitle["NameTag"]):GetItem("FontColor"))
+		self:TitleSet_Client(self.EquippedTitle, self.Entity.OwnerId)
+		self:TitleDataUpdate()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MakeTitleEntity()
+		
+		--칭호 엔티티가 없을 때, 칭호 엔티티를 만듭니다.
+		local newEntity = _EntityService:GetEntityByPath("/maps/Lobby/EmptyEntity")
+		local newTitle =  self.Entity:GetChildByName("PlayerTitle")
+		if isvalid(newTitle) == false then
+			newTitle = _SpawnService:SpawnByEntity(newEntity,"PlayerTitle",Vector3(0,0,0),self.Entity)
+			self.MyTitle = newTitle
+			newTitle:AddComponent(NameTagComponent)
+			newTitle.NameTagComponent.OffsetY = -0.2
+			--newTitle.NameTagComponent.Name = " "
+			
+			newTitle:AddComponent(SpriteRendererComponent)
+			newTitle.SpriteRendererComponent.SortingLayer = "Default"
+		end
+		
+		newTitle.Enable = false
+		
+		if self.EquippedTitle["NameTag"] == "" then
+			--칭호 데이터가 없다면, 새로 만듭니다.
+			self:TitleDataInitialize()
+		else
+			self:TitleSet()
+		end
+		
+		
+		--완벽히 동일한 시간에 유저가 2명 이상 접속 시, 서로의 칭호 엔티티가 아직 안 만들어져 참조 오류가 발생할 수 있습니다.
+		--위 상황을 방지하기 위해, 접속 후 1초 딜레이를 주어 엔티티 생성 후 참조하도록 합니다.
+		_TimerService:SetTimerOnce(function()
+		-- 유저가 입장할 때마다 호출 되는 함수입니다. (본인 포함)
+			for st,entity in pairs(_UserService.UserEntities) do
+				-- 새로운 유저가 입장했을 때 칭호 상태를 동기화해주기 위하여 '본인 제외'하고 모든 유저를 대상으로 아래 코드를 실행합니다.
+				if entity == self.Entity then continue end
+			
+				entity.TitleManager:TitleSet_Client(entity.TitleManager.EquippedTitle, entity.OwnerId)
+			end
+		end,1)
+		
+	end
+
+	@ExecSpace("Client")
+	method void TitleSet_Client(table equippedTitle, string userId)
+		-- 클라이언트에서 칭호 엔티티를 설정하고 UI에 반영
+		local nametagTable = _DataService:GetTable("Title_NameTagDataset")
+		local keywordFrontTable = _DataService:GetTable("Title_KeyWordFrontDataset")
+		local keywordBackTable = _DataService:GetTable("Title_KeyWordBackDataset")
+		
+		self.EquippedTitle = equippedTitle
+		self.MyTitle = _UserService:GetUserEntityByUserId(userId):GetChildByName("PlayerTitle")
+		local lobbyHUD_title = _EntityService:GetEntityByPath("/ui/Lobby_HUD/Profile/NameTag/Title")
+		
+		if self.EquippedTitle["KeyWordFront"] == "" then
+			self.EquippedTitle["KeyWordFront"] = "KWF10000" 
+		end
+		if self.EquippedTitle["KeyWordBack"] == "" then
+			self.EquippedTitle["KeyWordBack"] = "KWB10000" 
+		end
+		if self.EquippedTitle["NameTag"] == "" then
+			self.EquippedTitle["NameTag"] = "NT10000" 
+		end
+		
+		local title = ""
+		self.MyTitle.Enable = true
+		if self.EquippedTitle["KeyWordFront"] == "KWF10000" and self.EquippedTitle["KeyWordBack"] == "KWB10000" then
+			title = ""
+			self.MyTitle.Enable = false
+		elseif self.EquippedTitle["KeyWordFront"] == "KWF10000" then
+			title = _LocalizationService:GetText(keywordBackTable:FindRow("KeyWordID",self.EquippedTitle["KeyWordBack"]):GetItem("Name"))
+			self.MyTitle.Enable = true
+		elseif self.EquippedTitle["KeyWordBack"] == "KWB10000" then
+			title = _LocalizationService:GetText(keywordFrontTable:FindRow("KeyWordID",self.EquippedTitle["KeyWordFront"]):GetItem("Name"))
+			self.MyTitle.Enable = true
+		else
+			title = _LocalizationService:GetText(keywordFrontTable:FindRow("KeyWordID",self.EquippedTitle["KeyWordFront"]):GetItem("Name"))
+			.." ".._LocalizationService:GetText(keywordBackTable:FindRow("KeyWordID",self.EquippedTitle["KeyWordBack"]):GetItem("Name"))
+			self.MyTitle.Enable = true
+		end
+		self.MyTitle.NameTagComponent.Name = title
+		if userId == _UserService.LocalPlayer.OwnerId then
+			lobbyHUD_title.TextComponent.Text = title
+			self.titleSettingUI.UI_PlayerTitleButton:elementSelected(self.EquippedTitle)
+			
+			if self.currentSelectedElements == "KeyWordFront" then
+				self.titleSettingUI.UI_PlayerTitleButton.KeyWordFrontButton.UI_PlayerTitleButton:callTitleElementList()
+			elseif self.currentSelectedElements == "KeyWordBack" then
+				self.titleSettingUI.UI_PlayerTitleButton.KeyWordBackButton.UI_PlayerTitleButton:callTitleElementList()
+			elseif self.currentSelectedElements == "NameTag" then
+				self.titleSettingUI.UI_PlayerTitleButton.NameTagButton.UI_PlayerTitleButton:callTitleElementList()
+			end
+		end
+		self.MyTitle.NameTagComponent.NameTagRUID =nametagTable:FindRow("NameTagID",self.EquippedTitle["NameTag"]):GetItem("ImageRUID")
+		self.MyTitle.NameTagComponent.FontColor = Color.FromHexCode(nametagTable:FindRow("NameTagID",self.EquippedTitle["NameTag"]):GetItem("FontColor"))
+	end
+
+	@ExecSpace("Client")
+	method void Random_Title()
+		--보유중인 칭호 요소 중에서 무작위로 선정하여 칭호를 설정합니다.
+		---@type table
+		local randTable = {}
+		for i,TF in pairs(self.NameTagTable) do
+			--TF = true or false
+			if TF then -- 보유중일 경우
+				table.insert(randTable,i)
+			end
+		end
+		local randIndex = _UtilLogic:RandomIntegerRange(1,#randTable)
+		self:CheckTitleAvaliable(randTable[randIndex])
+		
+		if isvalid(self.redDotTable[randTable[randIndex]]) then
+			self.redDotTable[randTable[randIndex]] = nil
+		end
+		
+		table.clear(randTable)
+		for i,TF in pairs(self.KeyWordFrontTable) do
+			--TF = true or false
+			if TF then -- 보유중일 경우
+				table.insert(randTable,i)
+			end
+		end
+		randIndex = _UtilLogic:RandomIntegerRange(1,#randTable)
+		self:CheckTitleAvaliable(randTable[randIndex])
+		
+		if isvalid(self.redDotTable[randTable[randIndex]]) then
+			self.redDotTable[randTable[randIndex]] = nil
+		end
+		
+		table.clear(randTable)
+		for i,TF in pairs(self.KeyWordBackTable) do
+			--TF = true or false
+			if TF then -- 보유중일 경우
+				table.insert(randTable,i)
+			end
+		end
+		randIndex = _UtilLogic:RandomIntegerRange(1,#randTable)
+		self:CheckTitleAvaliable(randTable[randIndex])
+		
+		if isvalid(self.redDotTable[randTable[randIndex]]) then
+			self.redDotTable[randTable[randIndex]] = nil
+		end
+		
+		
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TitleDataInitialize()
+		--첫 접속 시 칭호 데이터 테이블을 초기화하는 함수입니다.
+		-------------------------------------------------------------------------
+		local user = self.Entity
+		local userID = user.OwnerId
+		
+		-------------------------------------------------------------------------
+		local NTDataset = _DataService:GetTable("Title_NameTagDataset")
+		local KWFDataset = _DataService:GetTable("Title_KeyWordFrontDataset") 
+		local KWBDataset = _DataService:GetTable("Title_KeyWordBackDataset") 
+		
+		--각 테이블 초기화
+		local NameTagTable = {}
+		local KeyWordFrontTable = {}
+		local KeyWordBackTable = {}
+		local EquippedTitleTable = {}
+		
+		--네임태그
+		for i=1, NTDataset:GetRowCount() do
+			if i == 1 or i == 2 then
+				NameTagTable[NTDataset:GetCell(i,"NameTagID")] = true
+			else
+				NameTagTable[NTDataset:GetCell(i,"NameTagID")] = false
+			end
+		end
+		
+		--키워드
+		for i=1, KWFDataset:GetRowCount() do
+			if i == 1 or i == 2 or i==3 or i==4 then
+				KeyWordFrontTable[KWFDataset:GetCell(i,"KeyWordID")] = true
+			else 
+				KeyWordFrontTable[KWFDataset:GetCell(i,"KeyWordID")] = false
+			end
+		end
+		
+		for i=1, KWBDataset:GetRowCount() do
+			if i == 1 or i == 2 or i==3 or i==4 then
+				KeyWordBackTable[KWBDataset:GetCell(i,"KeyWordID")] = true
+			else
+				KeyWordBackTable[KWBDataset:GetCell(i,"KeyWordID")] = false
+			end
+		end
+		
+		--장착한 상태
+		EquippedTitleTable["NameTag"] = "NT10000"
+		EquippedTitleTable["KeyWordFront"] = "KWF10001"
+		EquippedTitleTable["KeyWordBack"] = "KWB10001"
+		
+		--플레이어 타이틀 데이터 테이블에 모든 테이블 넣기
+		self.NameTagTable = NameTagTable
+		self.KeyWordFrontTable = KeyWordFrontTable
+		self.KeyWordBackTable = KeyWordBackTable
+		self.EquippedTitle = EquippedTitleTable
+		self:DataSyncToClient(self.NameTagTable,self.KeyWordFrontTable,self.KeyWordBackTable,self.EquippedTitle,self.Entity.OwnerId)
+		
+		--DB에 저장
+		_PlayerDataLogic:SetTitleData(userID)
+		--할당된 프로퍼티로 칭호 설정
+		self:TitleSet()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TitleDataUpdate()
+		--현재 칭호데이터를 업데이트하는 함수입니다.
+		------------------------------
+		
+		_PlayerDataLogic:SetTitleData(self.Entity.OwnerId)
+		self:DataSyncToClient(self.NameTagTable,self.KeyWordFrontTable,self.KeyWordBackTable,self.EquippedTitle)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetTitle(string TitleElementID, boolean GetBool)
+		--칭호 요소를 획득하는 함수입니다.
+		--------------------------------------------------------
+		local user = self.Entity
+		local userID = user.OwnerId
+		-----------------------------------
+		---------------------
+		local category = string.sub(TitleElementID,1,3)
+		--네임태그인지 키워드인지 확인
+		--획득 여부 변경
+		if category == "NT1" then
+			--네임태그
+			self.NameTagTable[TitleElementID] = GetBool
+		elseif category == "KWF" then
+			--키워드Front
+			self.KeyWordFrontTable[TitleElementID] = GetBool
+		elseif category == "KWB" then
+			--키워드Back
+			self.KeyWordBackTable[TitleElementID] = GetBool
+		end
+		
+		self:DataSyncToClient(self.NameTagTable,self.KeyWordFrontTable,self.KeyWordBackTable,self.EquippedTitle,self.Entity.OwnerId)
+		_PlayerDataLogic:SetTitleData(userID)
+		_UI_PlayerTitleSetting:AddToOwnedTable(TitleElementID,userID)
+		
+		
+		
+		--레드닷 테이블에 등록
+		self:AddtoRedDotTable(TitleElementID,userID)
+		--데이터베이스에 업데이트
+		self:TitleDataUpdate()
+		
+		--업적 진행도 증가: AC001007 칭호 획득하기
+		if  category == "KWF" or category == "KWB" then 
+			_AchievementService:UpdateProgress_Graduate("AC001007",1,self.Entity)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DataSyncToClient(table nameTagTable, table keyWordFrontTable, table keyWordBackTable, table equippedTitleTable)
+		-- 서버에서 전송된 칭호 데이터를 클라이언트에 동기화
+		self.NameTagTable = nameTagTable
+		self.KeyWordFrontTable = keyWordFrontTable
+		self.KeyWordBackTable = keyWordBackTable
+		self.EquippedTitle = equippedTitleTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetAllTitle()
+		--모든 칭호 요소를 획득하는 함수입니다. (치트용 코드)
+		------------------------------------------------------
+		local user = self.Entity
+		local userID = user.OwnerId
+		-------------------------------------------------------
+		local NTDataset = _DataService:GetTable("Title_NameTagDataset")
+		local KWFDataset = _DataService:GetTable("Title_KeyWordFrontDataset") 
+		local KWBDataset = _DataService:GetTable("Title_KeyWordBackDataset") 
+		
+		local NameTagTable = {}
+		local KeyWordFrontTable = {}
+		local KeyWordBackTable = {}
+		
+		for i=1, NTDataset:GetRowCount() do
+			if NameTagTable[NTDataset:GetCell(i,"NameTagID")] == true then
+				
+			else
+				NameTagTable[NTDataset:GetCell(i,"NameTagID")] = true
+				self:AddtoRedDotTable(NTDataset:GetCell(i,"NameTagID"))
+			end
+		end
+		
+		--키워드
+		for i=1, KWFDataset:GetRowCount() do
+			if KeyWordFrontTable[KWFDataset:GetCell(i,"KeyWordID")] then
+				
+			else
+				KeyWordFrontTable[KWFDataset:GetCell(i,"KeyWordID")] = true
+				self:AddtoRedDotTable(KWFDataset:GetCell(i,"KeyWordID"))
+			end
+		end
+		
+		for i=1, KWBDataset:GetRowCount() do
+			if KeyWordBackTable[KWBDataset:GetCell(i,"KeyWordID")] then
+				
+			else
+				KeyWordBackTable[KWBDataset:GetCell(i,"KeyWordID")] = true
+				self:AddtoRedDotTable(KWBDataset:GetCell(i,"KeyWordID"))
+			end
+		end
+		
+		self.NameTagTable = NameTagTable
+		self.KeyWordFrontTable = KeyWordFrontTable
+		self.KeyWordBackTable = KeyWordBackTable
+		self:DataSyncToClient(self.NameTagTable,self.KeyWordFrontTable,self.KeyWordBackTable,self.EquippedTitle,self.Entity.OwnerId)
+		_PlayerDataLogic:SetTitleData(userID)
+		--할당된 프로퍼티로 칭호 설정
+		--데이터베이스에 업데이트
+		self:TitleDataUpdate()
+	end
+
+	@ExecSpace("Client")
+	method void AddtoRedDotTable(string TitleElementID)
+		-- 새로 획득한 칭호 요소를 레드닷 표시 목록에 추가
+		self.redDotTable[TitleElementID] = true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitializeTitle()
+		-- 칭호 시스템을 초기화하고 엔티티 생성
+		self:DataSyncToClient(self.NameTagTable,self.KeyWordFrontTable,self.KeyWordBackTable,self.EquippedTitle,self.Entity.OwnerId)
+		self:MakeTitleEntity()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 맵 진입 시 호출되는 이벤트 핸들러 (현재 비활성화)
+		--_TimerService:SetTimerOnce(function() self:MakeTitleEntity() end,1) 
+	end
+
+	@ExecSpace("Server")
+	method void CheckTitleAvaliable(string titleElementID)
+		---칭호 요소를 실제로 서버에서 갖고있는지 체크하고, 갖고있다면 타이틀을 변경해줍니다.
+		-----------------------------
+		local user = self.Entity
+		local userID = user.OwnerId
+		--------------------------------------------------------
+		local category = string.sub(titleElementID,1,3)
+		--네임태그인지 키워드인지 확인
+		if category == "NT1" then
+			--네임태그
+			if self.NameTagTable[titleElementID] == true then
+				self.EquippedTitle["NameTag"] = titleElementID
+			end
+		elseif category == "KWF" then
+			--키워드Front
+			if self.KeyWordFrontTable[titleElementID] == true then
+				self.EquippedTitle["KeyWordFront"] = titleElementID
+			end
+		
+		elseif category == "KWB" then
+			--키워드Back
+			if self.KeyWordBackTable[titleElementID] == true then
+				self.EquippedTitle["KeyWordBack"] = titleElementID
+			end
+		end
+		
+		--변경한 타이틀을 세팅합니다.
+		self:TitleSet()
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: MODEntity
+		-- Space: Server, Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		---------------------------------------------------------
+		
+		local lobby = _EntityService:GetEntityByPath("/maps/Lobby")
+		
+		if isvalid(OldMap) and NewMap == lobby then
+			self:InitializeTitle()
+		end
+		
+		
+	end
+
+end

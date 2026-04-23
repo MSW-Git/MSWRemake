@@ -1,0 +1,257 @@
+@Component
+script UI_Loading extends Component
+
+	property Entity Text_Tip = "5d47c36d-b474-4d84-9477-9197126864ab"
+
+	property Entity Text_LoadingState = "8d519904-747b-4bb3-aee6-182393eaf30f"
+
+	property Entity Sprite_ProgressBar = "4431b5e9-da38-4650-b420-240df1d452c5"
+
+	property Entity Sprite_ProgressBarBack = "3a1a761e-7561-46bf-a6b8-df851d4c57f8"
+
+	property Entity Particle_Progress = "59ee4dcb-cba2-4c24-b28f-dbdffd45504d"
+
+	property Entity Text_ProgressRate = "2916641f-19b7-4585-9038-15cfba982367"
+
+	property Entity Sprite_LoadingSpinner = "923833bc-0b12-407b-b9bf-fd9191574280"
+
+	property Entity Sprite_LoadComplete = "a53cef4e-9d21-4921-96a3-c222d84c8c51"
+
+	property Entity Sprite_LoadCompleteDeco = "2eb5946e-19db-4b54-9b57-5e2d5cc45070"
+
+	property Entity Button_GameStart = "67a3be06-8c62-4181-8de7-b53b5c93108c"
+
+	property SyncTable<number> ProgressDirectionTimerQueue
+
+	property number ProgressRate = 0
+
+	property number TipUpdateTimer = 0
+
+	property boolean TipUpdate_IsGoingToLobby = false
+
+	property string TipUpdate_LastTipID = ""
+
+	property SyncTable<string> TipList_Enterance
+
+	property SyncTable<string> TipList_Exit
+
+	@ExecSpace("Client")
+	method void SetEnableUI(boolean enable)
+		-- 로딩 UI 요소들의 활성화 상태를 설정하고 페이드 애니메이션 적용
+		if enable == true then
+			self.Text_LoadingState.Enable = true
+			self.Sprite_ProgressBar.Enable = true
+			self.Sprite_ProgressBarBack.Enable = true
+			self.Particle_Progress.Enable = true
+			self.Text_ProgressRate.Enable = true
+			self.Sprite_LoadingSpinner.Enable = true
+			
+			self.Sprite_LoadComplete.Enable = false
+			self.Sprite_LoadCompleteDeco.Enable = false
+			self.Button_GameStart.Enable = false
+			
+			self:SetProgressUI(0)
+			
+			self.Entity.CanvasGroupComponent.GroupAlpha = 0
+			self.Entity.Enable = true
+		end
+		------------------------------------------------------------------------------------------------
+		if enable == true then
+			-- 로딩창을 0.5초에 걸쳐 환하게 만듭니다.
+			local alpha = 0
+			local setAlpha = function()
+				alpha += 1/30
+				self.Entity.CanvasGroupComponent.GroupAlpha = alpha
+			end
+			for i=1, 30 do
+				_TimerService:SetTimerOnce(setAlpha, i/60)
+			end
+		else
+			-- 로딩창을 0.5초에 걸쳐 부드럽게 사라지게 만듭니다.
+			local alpha = 1
+			local setAlpha = function()
+				alpha -= 1/30
+				self.Entity.CanvasGroupComponent.GroupAlpha = alpha
+			end
+			for i=1, 30 do
+				_TimerService:SetTimerOnce(setAlpha, i/60)
+			end
+			
+			_TimerService:SetTimerOnce(function()
+				self.Entity.Enable = false
+			end, 0.5)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetProgressUI(number rate)
+		-- 진행도를 변경하고, 그에 따라 UI를 갱신하는 함수입니다. 변경할 때 애니메이션 연출을 적용합니다.
+		--------------------------------------------------------------------------
+		-- 진행도 0으로 리셋하는 경우 : 애니메이션 재생 없이 즉시 변경
+		if rate == 0 then
+			self.ProgressRate = 0
+			
+			self.Sprite_ProgressBar.SpriteGUIRendererComponent.FillAmount = 0
+			self.Particle_Progress.UITransformComponent.anchoredPosition.x = 0
+			self.Text_ProgressRate.TextComponent.Text = "0%"
+			
+			return
+		end
+		--------------------------------------------------------------------------
+		local delta = 0 
+		if rate > 1 then
+			delta = 1 - self.ProgressRate
+		else
+			delta = rate - self.ProgressRate
+		end
+		
+		self.ProgressRate = rate
+		--------------------------------------------------------------------------
+		table.insert(self.ProgressDirectionTimerQueue, delta)
+		
+		-- 큐에 남은 게 혼자라면 즉시 실행
+		if #self.ProgressDirectionTimerQueue == 1 then
+			self:PlayLoadingAnim()
+		end
+		
+		if rate >= 2.00 then
+			-- 인겜 > 로비 이동할 때 예외처리하기 위해 rate를 2.0으로 받습니다
+		elseif rate >= 1.00 then
+			local setEnable_GameStartButton = function() 
+				self.Text_LoadingState.Enable = false
+				self.Sprite_ProgressBar.Enable = false
+				self.Sprite_ProgressBarBack.Enable = false
+				self.Particle_Progress.Enable = false
+				self.Text_ProgressRate.Enable = false
+				self.Sprite_LoadingSpinner.Enable = false
+				
+				self.Sprite_LoadComplete.Enable = true
+				self.Sprite_LoadCompleteDeco.Enable = true
+				self.Button_GameStart.Enable = true
+				
+				table.clear(self.ProgressDirectionTimerQueue)
+			end
+			
+			local checkTimer = 0
+			local checkLoadComplete = function()
+				if #self.ProgressDirectionTimerQueue > 0 then
+					
+				else
+					setEnable_GameStartButton()
+					_TimerService:ClearTimer(checkTimer)
+				end
+				
+			end
+			checkTimer = _TimerService:SetTimerRepeat(checkLoadComplete, 1.5)
+		
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayLoadingAnim()
+		-- 큐 맨 앞의 연출을 재생합니다. 
+		local delta = self.ProgressDirectionTimerQueue[1]	-- 로딩 진행도의 변화량
+		
+		local t = 0
+		local startValue = self.Sprite_ProgressBar.SpriteGUIRendererComponent.FillAmount
+		local trans = function()
+			t += 1
+			local deltaY = _TweenLogic:Ease(0, delta, 50, EaseType.CubicEaseOut, t)
+			self.Sprite_ProgressBar.SpriteGUIRendererComponent.FillAmount = startValue + deltaY
+			self.Particle_Progress.UITransformComponent.anchoredPosition.x = (startValue + deltaY) * self.Particle_Progress.Parent.UITransformComponent.RectSize.x
+			self.Text_ProgressRate.TextComponent.Text = string.format("%d", (startValue + deltaY)*100).."%"
+		end
+		-- 움직임을 0.5초 동안 진행
+		for i=1, 50 do
+			_TimerService:SetTimerOnce(trans, 0.01*i)
+		end
+		
+		-- 움직임 종료 후 큐에서 삭제, 큐에 다음 함수 있으면 실행
+		_TimerService:SetTimerOnce(function()
+			table.remove(self.ProgressDirectionTimerQueue, 1)
+			
+			if #self.ProgressDirectionTimerQueue > 0 then
+				self:PlayLoadingAnim()
+			end
+		end, 0.5)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 로딩 팁 업데이트 타이머 관리
+		self.TipUpdateTimer += delta 
+		
+		if self.TipUpdateTimer >= 5 then
+			self:UpdateUI_Tip()
+			self.TipUpdateTimer = 0
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateUI_Tip()
+		-- 로딩 화면에 표시할 팁 텍스트를 랜덤하게 업데이트
+		if #self.TipList_Exit == 0 then
+			local tipListDataSet = _DataService:GetTable("LoadingTipList")
+			for i=1, tipListDataSet:GetRowCount() do
+				local row = tipListDataSet:GetRow(i)
+				local tipID = row:GetItem("Key")
+				local condition = row:GetItem("Condition")
+				
+				if condition == "Enterance" then
+					table.insert(self.TipList_Enterance, tipID)
+				else
+					table.insert(self.TipList_Exit, tipID)
+				end
+			end
+		end
+		-------------------------------------------------------------------------------
+		local randomIndex = 1
+		local targetID = ""
+		
+		if self.TipUpdate_IsGoingToLobby == true then
+			randomIndex = _UtilLogic:RandomIntegerRange(1, #self.TipList_Exit)
+			targetID = self.TipList_Exit[randomIndex]
+		else
+			randomIndex = _UtilLogic:RandomIntegerRange(1, #self.TipList_Enterance)
+			targetID = self.TipList_Enterance[randomIndex]
+		end
+		
+		
+		if targetID == self.TipUpdate_LastTipID then
+			self:UpdateUI_Tip()
+			return
+		end
+		
+		self.Text_Tip.TextComponent.Text = targetID
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "67a3be06-8c62-4181-8de7-b53b5c93108c")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 게임 시작 버튼 클릭 시 로딩 완료 확인 후 게임 시작 요청
+		-- Parameters
+		local Entity = event.Entity
+		local gameManager = _UserService.LocalPlayer.GameManager
+		local loadingManager = _UserService.LocalPlayer.LoadingManager
+		---------------------------------------------------------
+		-- 로딩 완료 여부를 검사합니다.
+		local totalNeedCount = 0
+		for key, value in pairs(loadingManager.NeedLoadCount) do
+			totalNeedCount += value
+		end
+		
+		local totalLoadedCount = 0
+		for key, value in pairs(loadingManager.LoadedCount) do
+			totalLoadedCount += value
+		end
+		
+		if totalLoadedCount / totalLoadedCount < 1 then
+			return
+		end
+		---------------------------------------------------------
+		-- 서버에 게임 시작을 요청합니다.
+		Entity.Enable = false
+		loadingManager:GameStart()
+	end
+
+end

@@ -1,0 +1,930 @@
+@Logic
+script AccessoryLogic extends Logic
+
+	property table accReinforceData = {}
+
+	property table enchantData = {}
+
+	property table enchantPercentData = {}
+
+	property table accessoryData = {}
+
+	property table accessoryGradeRateData = {}
+
+	property string goldHammerId = "100_000143"
+
+	property table accBattlePower_Grade = {}
+
+	property table accBattlePower_AccStep = {}
+
+	method void OnBeginPlay()
+		-- 액세서리 로직 시작 시 데이터 초기화
+		self:Init()
+	end
+
+	@ExecSpace("ServerOnly")
+	method string CraftAccessory(string accessoryId, string userId)
+		-- 액세서리 제작 시 등급을 랜덤으로 결정하고 인벤토리에 추가
+		local itemData = _ItemDataLogic.itemData[accessoryId]
+		local itemStep = itemData.fixedItem
+		local grade = "B"
+		local rand = _UtilLogic:RandomDouble()
+		local sum = 0
+		
+		for i = 1, 5 do
+		
+			local convertGrade = "B"
+			
+			if i == 2 then
+				convertGrade = "A"
+			elseif i == 3 then
+				convertGrade = "S"
+			elseif i == 4 then
+				convertGrade = "SS"
+			elseif i == 5 then
+				convertGrade = "SSS"
+			end
+			
+			sum += self.accessoryGradeRateData[itemStep][convertGrade]
+			
+			if rand <= sum then
+				grade = convertGrade
+				
+				break
+			end
+		end
+		
+		self:RequestAddAccessoryInServer(accessoryId, grade, "CraftingResult", "", userId)
+		
+		return grade
+	end
+
+	method void Init()
+		-- 액세서리 관련 모든 데이터 테이블 로드 및 초기화
+		local data = _DataService:GetTable("AccReinforcePercentData")
+		
+		for i = 1, data:GetRowCount() do
+			local temp = {}
+			
+			temp.id = data:GetCell(i, "id")
+		
+			temp.percent = tonumber(data:GetCell(i, "percent"))
+			temp.meso = tonumber(data:GetCell(i, "meso"))
+			temp.materialCount = tonumber(data:GetCell(i, "materialCount"))
+		
+			self.accReinforceData[temp.id] = temp
+		end
+		
+		data = _DataService:GetTable("EnchantData")
+		
+		for i = 1, data:GetRowCount() do
+			local temp = {}
+			
+			temp.id = data:GetCell(i, "id")
+		
+			temp.name = data:GetCell(i, "name")
+			temp.min = tonumber(data:GetCell(i, "min"))
+			temp.max = tonumber(data:GetCell(i, "max"))
+		
+			self.enchantData[temp.id] = temp
+		end
+		
+		data = _DataService:GetTable("EnchantPercentData")
+		
+		for i = 1, data:GetRowCount() do
+			local temp = {}
+			
+			temp.id = data:GetCell(i, "id")
+			
+			temp.name = data:GetCell(i, "name")
+			temp.percent = tonumber(data:GetCell(i, "percent"))
+		
+			self.enchantPercentData[temp.id] = temp
+		end
+		
+		data = _DataService:GetTable("AccessoryData")
+		
+		for i = 1, data:GetRowCount() do
+			local temp = {}
+			
+			temp.id = data:GetCell(i, "id")
+			
+			temp.statType = data:GetCell(i, "statType")
+			temp.statNum = tonumber(data:GetCell(i, "statNum"))
+			temp.enchantScroll = tonumber(data:GetCell(i, "enchantScroll"))
+			temp.enchantMeso = tonumber(data:GetCell(i, "enchantMeso"))
+			temp.transplantMaterialId = data:GetCell(i, "transplantMaterialId")
+			temp.transplantMaterialCount = tonumber(data:GetCell(i, "transplantMaterialCount"))
+			temp.transplantMeso = tonumber(data:GetCell(i, "transplantMeso"))
+		
+			self.accessoryData[temp.id] = temp
+		end
+		
+		
+		data = _DataService:GetTable("AccessoryGradeRateData")
+		
+		for i = 1, data:GetRowCount() do
+			local temp = {}
+			
+			temp.itemStep = data:GetCell(i, "itemStep")
+			temp.B = tonumber(data:GetCell(i, "B"))
+			temp.A = tonumber(data:GetCell(i, "A"))
+			temp.S = tonumber(data:GetCell(i, "S"))
+			temp.SS = tonumber(data:GetCell(i, "SS"))
+			temp.SSS = tonumber(data:GetCell(i, "SSS"))
+		
+			self.accessoryGradeRateData[temp.itemStep] = temp
+		end
+		
+		data = _DataService:GetTable("AccBattlePower_AccStep")
+		
+		
+		for i = 1, data:GetRowCount() do
+			local temp = {}
+			
+			temp.id = data:GetCell(i, "id")
+			temp.battlePower = tonumber(data:GetCell(i, "battlePower"))
+		
+			self.accBattlePower_AccStep[temp.id] = temp
+		end
+		
+		
+		data = _DataService:GetTable("AccBattlePower_Grade")
+		
+		for i = 1, data:GetRowCount() do
+			local temp = {}
+			
+			temp.id = data:GetCell(i, "id")
+			temp.battlePower = tonumber(data:GetCell(i, "battlePower"))
+		
+			self.accBattlePower_Grade[temp.id] = temp
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddAccessory(string id, string grade, string source, string sourceId, string userId)
+		-- 서버에서 액세서리를 플레이어 인벤토리에 직접 추가
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		local itemData = _ItemDataLogic.itemData[id]
+		local uniqueKey = _GameUtil:CreateGUID()
+		
+		storage:AddItem(uniqueKey, 1, id, 0, 0, 0, 0, false, false, 0, false, source, sourceId)
+		storage.storage[uniqueKey].grade = grade
+		storage.storage[uniqueKey].maxReinforce = self:GetMaxReinforceCount(grade)
+		storage.storage[uniqueKey].failCount = 0 
+		
+		for i = 1, math.ceil(self:GetMaxReinforceCount(grade) / 10) do
+			local key = string.format("option_%d", i)
+			
+			storage.storage[uniqueKey][key] = "" 
+		end
+		
+		storage:SyncStorageInClient(uniqueKey, storage.storage[uniqueKey], userId)
+		_WorldLog:LogInventoryFlow(userId, uniqueKey, id, source, _WorldLog.FlowType_Get, 1, sourceId)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestAddAccessoryInServer(string id, string grade, string source, string sourceId, string userId)
+		-- 액세서리 추가 요청 시 슬롯 여유 공간 확인 후 추가
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		
+		if not _CheckLogic:IsEnoughAccessorySlot(userId, 1) then
+			_LocalizeLogic:ShowToast("toast79", userId)
+			
+			return
+		end
+		
+		self:AddAccessory(id, grade, source, sourceId, userId)
+	end
+
+	method integer GetMaxReinforceCount(string grade)
+		-- 액세서리 등급에 따른 최대 강화 가능 횟수 반환
+		if grade == "B" then
+			return 10
+		elseif grade == "A" then
+			return 20
+		elseif grade == "S" then
+			return 30
+		elseif grade == "SS" then
+			return 40
+		elseif grade == "SSS" then
+			return 50
+		end
+	end
+
+	method integer GetGradeNum(string grade)
+		-- 액세서리 등급 문자열을 숫자로 변환
+		if grade == "B" then
+			return 1
+		elseif grade == "A" then
+			return 2
+		elseif grade == "S" then
+			return 3
+		elseif grade == "SS" then
+			return 4
+		elseif grade == "SSS" then
+			return 5
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestEnchant(string targetUniqueKey, string materialUniqueKey, integer optionNum)
+		-- 액세서리 인챈트 요청 시 재료와 비용 검증 후 인챈트 실행
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local storage = player.PlayerStorageComponent
+		
+		if not isvalid(storage.storage[targetUniqueKey]) then
+			_LocalizeLogic:ShowToast("toast64", senderUserId)
+			
+			return
+		end
+		
+		if not isvalid(storage.storage[materialUniqueKey]) then
+			_LocalizeLogic:ShowToast("toast85", senderUserId)
+			
+			return
+		end
+		
+		local optionKey = string.format("option_%d", optionNum)
+		
+		if not isvalid(storage.storage[targetUniqueKey][optionKey]) then
+			_LocalizeLogic:ShowToast("toast90", senderUserId)
+			
+			return
+		end
+		
+		local accData = self.accessoryData[storage.storage[targetUniqueKey].originalId]
+		
+		if storage:GetItemCount("105_000001") < accData.enchantScroll then
+			_LocalizeLogic:ShowToast("toast77", senderUserId)
+			
+			return
+		end
+		
+		if not _CheckLogic:IsEnoughWealth(senderUserId, _GameConfig:GetConfig().WEALTHTYPE_MESO, accData.enchantMeso) then
+			_LocalizeLogic:ShowToast("toast89", senderUserId)
+			
+			return
+		
+		end
+		
+		self:Enchant(targetUniqueKey, materialUniqueKey, optionNum, senderUserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Enchant(string targetUniqueKey, string materialUniqueKey, integer optionNum, string userId)
+		-- 액세서리에 랜덤 옵션을 부여하는 인챈트 실행
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		
+		local material = storage.storage[materialUniqueKey]
+		local materialItemData = _ItemDataLogic.itemData[material.originalId]
+		local optionKey = string.format("option_%d", optionNum)
+		local enchantData = self.enchantData[materialItemData.fixedItem] 
+		local rand = _UtilLogic:RandomDouble() 
+		local sum = 0
+		local num = 0
+		local standard = enchantData.max - enchantData.min
+		local minValue = enchantData.min
+		local result = ""
+		local prevOptions = self:GetEnchantStr(userId, targetUniqueKey)
+		local materialId = storage.storage[materialUniqueKey].originalId
+		
+		
+		for i = 1, 5 do
+			local data = self.enchantPercentData[tostring(i)]
+			local percent = data.percent
+			local rangeValue = standard * percent
+			local max = minValue + rangeValue
+		
+			sum += percent
+			
+			if rand <= sum then
+				result = tostring(i)
+				num = _UtilLogic:RandomIntegerRange(minValue * 100, max * 100) / 100
+				
+				if i == 5 then
+					num = max
+				end
+				
+				break
+			end
+			
+			minValue = max
+		end
+		
+		storage.storage[targetUniqueKey][optionKey] = string.format("%d_%.3f", enchantData.id, num)
+		
+		local accData = self.accessoryData[storage.storage[targetUniqueKey].originalId]
+		
+		
+		storage:SyncStorageInClient(targetUniqueKey, storage.storage[targetUniqueKey], userId)
+		storage:RemoveItemByUniqueKey(materialUniqueKey, 1, "Enchant") 
+		storage:RemoveItemById("105_000001", accData.enchantScroll, "Enchant")
+		
+		
+		_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, accData.enchantMeso, userId, "Enchant")
+		
+		player.PlayerCharacterData:CalculateStatus()
+		
+		self:RefreshAccessoryInfo(userId)
+		self:ShowEnchantResult(result, userId)
+		
+		_WorldLog:LogAccEnchantFlow(userId, targetUniqueKey, string.format("%d", optionNum), prevOptions, self:GetEnchantStr(userId, targetUniqueKey), result, materialId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestReinforce(string uniqueKey)
+		-- 액세서리 강화 요청 시 조건 검증 후 강화 실행
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local storage = player.PlayerStorageComponent
+		
+		if not isvalid(storage.storage[uniqueKey]) then
+			_LocalizeLogic:ShowToast("toast64", senderUserId)
+			
+			return
+		end
+		
+		if storage.storage[uniqueKey].level >= 50 then
+			_LocalizeLogic:ShowToast("toast82", senderUserId)
+			
+			return
+		end
+		
+		if not _CheckLogic:IsCanReinforce(senderUserId, uniqueKey) then
+			_LocalizeLogic:ShowToast("toast84", senderUserId)
+			
+			return
+		end
+		
+		self:Reinforce(uniqueKey, senderUserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Reinforce(string uniqueKey, string userId)
+		-- 액세서리 강화 실행 및 성공/실패 처리
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		local data = self.accReinforceData[tostring(storage.storage[uniqueKey].level + 1)]
+		local percent = _UtilLogic:RandomDouble()
+		local result = false
+		local prevLevel = storage.storage[uniqueKey].level
+		local preFailCount = string.format("%d", storage.storage[uniqueKey].failCount)
+		local flowType = "0"
+		
+		if percent <= data.percent then
+			result = true
+			storage.storage[uniqueKey].level += 1
+		else
+			storage.storage[uniqueKey].failCount += 1
+		end
+		
+		local materialId = _AccessoryLogic:GetReinforceMaterialId(_ItemDataLogic.itemData[storage.storage[uniqueKey].originalId].grade)
+		
+		storage:RemoveItemById(materialId, data.materialCount, "Accessory Reinforce")
+		
+		_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, data.meso, userId, "Accessory Reinforce")
+		
+		storage:SetStorageData(false)
+		storage:SyncStorageInClient(uniqueKey, storage.storage[uniqueKey], userId)
+		player.PlayerCharacterData:CalculateStatus()
+		
+		if result then
+			_LocalizeLogic:ShowToast("toast88", userId)
+			_SoundService:PlaySound("289e3778f76c42b7a898b3fbd41b1211", 1, userId)
+			flowType = "1"
+		else
+			_LocalizeLogic:ShowToast("toast76", userId)
+			_SoundService:PlaySound("dbab9199d637406ead41fed06f31df81", 1, userId)
+			flowType = "2"
+		end
+		
+		self:RefreshAccessoryInfo(userId)
+		self:ShowReinforceResult(result, userId)
+		_WorldLog:LogAccReinforceFlow(userId, uniqueKey, string.format("%d", prevLevel), preFailCount, flowType, "1")
+	end
+
+	@ExecSpace("Client")
+	method void RefreshAccessoryInfo()
+		-- 클라이언트에서 액세서리 정보 UI 갱신
+		local statusPopUp = _UIGroupManager.uiPlayerStatusPopup
+		
+		if statusPopUp.accessoryInfo.Entity.Enable then
+			statusPopUp.accessoryInfo:Refresh()
+		end
+		
+		if statusPopUp.accessoryInfo.enchantPopUp.Enable then
+			statusPopUp.accessoryInfo.enchantPopUp.EnchantPopUp:Refresh()
+		end
+		
+		if statusPopUp.accessoryInfo.transplantPopUp.Enable then
+			statusPopUp.accessoryInfo.transplantPopUp.TransplantPopUp:Refresh()
+		end
+		
+		if statusPopUp.Entity.Enable then
+			statusPopUp:RefreshAccessoryPanel()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestUseGoldHammer(string uniqueKey)
+		-- 골드 해머 사용 요청 시 조건 검증 후 실행
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local storage = player.PlayerStorageComponent
+		
+		if not isvalid(storage.storage[uniqueKey]) then
+			_LocalizeLogic:ShowToast("toast64", senderUserId)
+			
+			return
+		end
+		
+		if storage:GetItemCount(_AccessoryLogic.goldHammerId) < 1 then
+			_LocalizeLogic:ShowToast("toast74", senderUserId)
+			
+			return
+		end
+		
+		local item = storage.storage[uniqueKey]
+		
+		if self:GetMaxReinforceCount(item.grade) <= item.level then
+			_LocalizeLogic:ShowToast("toast70", senderUserId)
+			
+			return
+		end
+		
+		if item.failCount <= 0 then
+			_LocalizeLogic:ShowToast("toast67", senderUserId)
+			
+			return
+		end
+		
+		self:UseGoldHammer(uniqueKey, senderUserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseGoldHammer(string uniqueKey, string userId)
+		-- 골드 해머로 액세서리 강화 실패 카운트 감소
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		local item = storage.storage[uniqueKey]
+		local prevFailCount = string.format("%d", item.failCount)
+		
+		item.failCount -= 1
+		
+		storage:RequestRemoveItemById(_AccessoryLogic.goldHammerId, 1, "Recover Count", userId)
+		
+		storage:SetStorageData(false)
+		storage:SyncStorageInClient(uniqueKey, item, userId)
+		
+		self:RefreshAccessoryInfo(userId)
+		_WorldLog:LogAccReinforceFlow(userId, uniqueKey, string.format("%d", item.level), prevFailCount, "3", "2")
+		
+		_LocalizeLogic:ShowToast("toast71", userId)
+		_SoundService:PlaySound("ad27deabbfbf469296292be8e54e4720", 1, userId)
+	end
+
+	method number GetBasicStatNum(string uniqueKey, string userId)
+		-- 액세서리의 기본 스탯 수치 반환
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		local item = storage.storage[uniqueKey]
+		
+		if not isvalid(item) then
+			return 0
+		end
+		
+		return self.accessoryData[item.originalId].statNum
+	end
+
+	method number GetReinforceStatNum(string uniqueKey, string userId)
+		-- 액세서리 강화 레벨에 따른 추가 스탯 수치 계산
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		local item = storage.storage[uniqueKey]
+		
+		if not isvalid(item) then
+			return 0
+		end
+		
+		local category = _ItemDataLogic:GetAccessoryDetailCategory(item.originalId)
+		local reinforceNum = item.level
+		local result = 0
+		
+		if category == "ring" then
+			result = reinforceNum * 1.2
+		elseif category == "earring" then
+			result = reinforceNum
+		elseif category == "necklace" then
+			result = reinforceNum * 0.15
+		end
+		
+		return result
+	end
+
+	method number GetTotalStatNum(string uniqueKey, string userId)
+		-- 액세서리의 총 스탯 수치(기본 + 강화) 반환
+		return self:GetBasicStatNum(uniqueKey, userId) + self:GetReinforceStatNum(uniqueKey, userId)
+	end
+
+	method string GetAlphabetGradeRUID(string grade)
+		-- 액세서리 등급에 따른 알파벳 아이콘 RUID 반환
+		if grade == "B" then
+			return "d361f6a0859f48b8a5c7fcfd2a06e2d9"
+		elseif grade == "A" then
+			return "f08e8e6d509745918691c3140a9054a5"
+		elseif grade == "S" then
+			return "d990e606d152483390373baf339fe14a"
+		elseif grade == "SS" then
+			return "e68baaa4531b4fa793f2b577811b1b28"
+		elseif grade == "SSS" then
+			return "182e895cb2b144d1bb5247469220e5c8"
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowReinforceResult(boolean isSuccess)
+		-- 강화 결과 이팩트 표시
+		_UIGroupManager.uiPlayerStatusPopup.accessoryInfo.reinforcePopUp:ShowResultEffect(isSuccess)
+	end
+
+	method string GetEnchantGrade(string optionId, number value)
+		-- 인챈트 옵션 값에 따른 등급 결정
+		local enchantData = self.enchantData[optionId]
+		local standard = enchantData.max - enchantData.min
+		local minValue = enchantData.min
+		local gradeNum = 0
+		
+		
+		for i = 1, 5 do
+			gradeNum = i
+			
+			local data = self.enchantPercentData[tostring(i)]
+			local percent = data.percent
+			local rangeValue = standard * percent
+			local max = minValue + rangeValue
+			
+			if value <= max then
+				break
+			end
+			
+			minValue = max
+		end
+		
+		if gradeNum == 1 then
+			return "normal"
+		elseif gradeNum == 2 then
+			return "rare"
+		elseif gradeNum == 3 then
+			return "epic"
+		elseif gradeNum == 4 then
+			return "unique"
+		elseif gradeNum == 5 then
+			return "legendary"
+		end
+		
+		
+		return ""
+	end
+
+	@ExecSpace("Client")
+	method void ShowEnchantResult(string id)
+		-- 인챈트 결과에 따른 토스트 메시지와 사운드 재생
+		if id == "1" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast87"))
+			_SoundService:PlaySound("05ebac34ee3043a7b7e585e5b67d48d4", 1)
+		elseif id == "2" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast78"))
+			_SoundService:PlaySound("05ebac34ee3043a7b7e585e5b67d48d4", 1)
+		elseif id == "3" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast73"))
+			_SoundService:PlaySound("35164b2e2cb84308824af715bc30523b", 1)
+		elseif id == "4" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast66"))
+			_SoundService:PlaySound("35164b2e2cb84308824af715bc30523b", 1)
+		elseif id == "5" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast68"))
+			_SoundService:PlaySound("07a156f100e045189c0481ec07785aba", 1)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestTransplant(string targetUniqueKey, string materialUniqueKey)
+		-- 액세서리 옵션 이식 요청 시 조건 검증 후 이식 실행
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local storage = player.PlayerStorageComponent
+		
+		if not isvalid(storage.storage[targetUniqueKey]) then
+			_LocalizeLogic:ShowToast("toast83", senderUserId)
+			
+			return
+		end
+		
+		if not isvalid(storage.storage[materialUniqueKey]) then
+			_LocalizeLogic:ShowToast("toast75", senderUserId)
+			
+			return
+		end
+		
+		if not self:IsValidEnchantOption(senderUserId, materialUniqueKey) then
+			_LocalizeLogic:ShowToast("toast72", senderUserId)
+			
+			return
+		end
+		
+		local accData = self.accessoryData[storage.storage[targetUniqueKey].originalId]
+		local needScrollId = accData.transplantMaterialId
+		local needScrollCount = accData.transplantMaterialCount
+		
+		if needScrollId ~= "" and storage:GetItemCount(needScrollId) < needScrollCount then
+			self:NoticeNotEnoughScroll(needScrollId, senderUserId)
+			
+			return
+		end
+		
+		if not _CheckLogic:IsEnoughWealth(senderUserId, _GameConfig:GetConfig().WEALTHTYPE_MESO, accData.transplantMeso) then
+			_LocalizeLogic:ShowToast("toast86", senderUserId)
+			
+			return
+		end
+		
+		local targetGrade = storage.storage[targetUniqueKey].grade
+		local materialGrade = storage.storage[materialUniqueKey].grade
+		
+		
+		if self:GetGradeNum(targetGrade) < self:GetGradeNum(materialGrade) then
+			self:NoticeNotMatchedGrade(targetGrade, materialGrade, senderUserId)
+			
+			return
+		end
+		
+		self:Transplant(targetUniqueKey, materialUniqueKey, senderUserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Transplant(string targetUniqueKey, string materialUniqueKey, string userId)
+		-- 재료 액세서리의 옵션을 대상 액세서리로 이식
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		local prevTargetOptions = self:GetEnchantStr(userId, targetUniqueKey)
+		local prevMatOptions = self:GetEnchantStr(userId, materialUniqueKey)
+		
+		
+		for i = 1, 5 do
+			local targetItem = storage.storage[targetUniqueKey]
+			local materialItem = storage.storage[materialUniqueKey]
+			
+			local optionKey = string.format("option_%d", i)
+			
+			if isvalid(targetItem[optionKey]) then
+				targetItem[optionKey] = ""
+			end
+			
+			if isvalid(materialItem[optionKey]) and isvalid(targetItem[optionKey]) then
+				targetItem[optionKey] = materialItem[optionKey]
+			end
+			
+			if isvalid(materialItem[optionKey]) then
+				materialItem[optionKey] = ""
+			end
+		end
+		
+		
+		storage:SyncStorageInClient(targetUniqueKey, storage.storage[targetUniqueKey], userId)
+		storage:SyncStorageInClient(materialUniqueKey, storage.storage[materialUniqueKey], userId)
+		
+		
+		local accData = self.accessoryData[storage.storage[targetUniqueKey].originalId]
+		local needScrollId = accData.transplantMaterialId
+		local needScrollCount = accData.transplantMaterialCount
+		
+		storage:RequestRemoveItemById(needScrollId, needScrollCount, "Transplant", userId)
+		_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, accData.transplantMeso, userId, "Transplant")
+		player.PlayerCharacterData:CalculateStatus()
+		
+		self:InitTransplantUI(userId)
+		self:RefreshAccessoryInfo(userId)
+		_LocalizeLogic:ShowToast("toast65", userId)
+		_SoundService:PlaySound("40cf3db76ec946518f9dd6e059b9ba1b", 1, userId)
+		
+		_WorldLog:LogAccTransplantFlow(userId, targetUniqueKey, prevTargetOptions, self:GetEnchantStr(userId, targetUniqueKey), "1")
+		_WorldLog:LogAccTransplantFlow(userId, materialUniqueKey, prevMatOptions, self:GetEnchantStr(userId, materialUniqueKey), "2")
+	end
+
+	method string GetOptionSlotRUID(string grade)
+		-- 인챈트 옵션 등급에 따른 슬롯 UI RUID 반환
+		if grade == "normal" then
+			return "301ce7434e0242bea0aada27f3a46390"
+		elseif grade == "rare" then
+			return "937199a8f0034eaea7d131f5963c5533"
+		elseif grade == "epic" then
+			return "be61e9454a65421bb80f6ba5374ae73e"
+		elseif grade == "unique" then
+			return "adddbd4486b340e68e56993ad2016db5"
+		elseif grade == "legendary" then
+			return "022fbeb40fde4e0089dfd0481ed219c9"
+		end
+			
+		return "d67d703a107f4c57aa943be72bd646c5"
+	end
+
+	method number GetNextTotalStatNum(string uniqueKey, string userId)
+		-- 다음 강화 레벨에서의 예상 스탯 수치 계산
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		local item = storage.storage[uniqueKey]
+		
+		if not isvalid(item) then
+			return 0
+		end
+		
+		local category = _ItemDataLogic:GetAccessoryDetailCategory(item.originalId)
+		local reinforceNum = item.level + 1
+		local result = 0
+		
+		if category == "ring" then
+			result = reinforceNum * 1.2
+		elseif category == "earring" then
+			result = reinforceNum
+		elseif category == "necklace" then
+			result = reinforceNum * 0.15
+		end
+		
+		return self:GetBasicStatNum(uniqueKey, userId) + result
+	end
+
+	@ExecSpace("Client")
+	method void InitTransplantUI()
+		-- 이식 UI 초기화
+		_UIGroupManager.uiPlayerStatusPopup.accessoryInfo.transplantPopUp.TransplantPopUp:Init()
+	end
+
+	method table GetStatusTable(string userId)
+		-- 플레이어의 장착된 액세서리로부터 스탯 테이블 생성
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent
+		local statusTable = {}
+		
+		statusTable["totalDamage"] = 0
+		statusTable["wealthBonus"] = 0
+		statusTable["hitDamage"] = 0
+		
+		for key, value in pairs(self.enchantData) do
+			statusTable[key] = 0
+		end
+		
+		local getOptions = function(item)
+			for i = 1, self:GetGradeNum(item.grade) do
+				local key = string.format("option_%d", i) 
+				
+				if isvalid(item[key]) and item[key] ~= "" then
+					local parse = _UtilLogic:Split(item[key], "_")
+					local optionId = parse[1]
+					local stat = tonumber(parse[2])
+					
+					statusTable[optionId] += stat
+				end
+			end
+		end
+		
+		for key, value in pairs(storage.storage) do
+			if value.equippedSlotNum == _GameEnum.EQUIPNUM_RING then
+				statusTable["totalDamage"] = self:GetTotalStatNum(key, userId)
+				getOptions(value)
+			elseif value.equippedSlotNum == _GameEnum.EQUIPNUM_EARRING then
+				statusTable["wealthBonus"] = self:GetTotalStatNum(key, userId)
+				getOptions(value)
+			elseif value.equippedSlotNum == _GameEnum.EQUIPNUM_NECKLACE then
+				statusTable["hitDamage"] = self:GetTotalStatNum(key, userId)
+				getOptions(value)
+			end
+		end
+		
+		
+		return statusTable
+	end
+
+	method string GetReinforceMaterialId(string grade)
+		-- 액세서리 등급에 따른 강화 재료 아이템 ID 반환
+		if grade == "rare" then
+			return "100_000134"
+		elseif grade == "epic" then
+			return "100_000135"
+		elseif grade == "unique" then
+			return "100_000136"
+		elseif grade == "legendary" then
+			return "100_000137"
+		end
+		
+		return "100_000133"
+	end
+
+	method string GetEnchantStr(string userId, string uniqueKey)
+		-- 액세서리의 인챈트 옵션 정보를 문자열로 변환
+		local str = ""
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then
+			return str
+		end
+		
+		local storage = user.PlayerStorageComponent.storage
+		local item = storage[uniqueKey]
+		
+		for i = 1, 5 do
+			local optionKey = string.format("option_%d", i) 
+			
+			if not isvalid(item[optionKey]) then
+				break
+			else
+				local value = item[optionKey]
+				
+				if str == "" then
+					str = string.format("%s:%s", optionKey, value)
+				else
+					str = string.format("%s/%s:%s", str, optionKey, value)
+				end
+			end
+		end
+		
+		return str
+	end
+
+	method boolean IsCanReinforce(string userId, string uniqueKey)
+		-- 액세서리 강화 가능 여부 검사(레벨, 재료, 비용, 실패 카운트 등)
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then
+			return false
+		
+		end
+		
+		local storage = user.PlayerStorageComponent
+		local item = storage.storage[uniqueKey]
+		
+		if item.level >= _AccessoryLogic:GetMaxReinforceCount(item.grade) then 
+			return false
+		end
+		
+		local nextLevel = item.level + 1
+		local accReinforceData = _AccessoryLogic.accReinforceData[tostring(nextLevel)]
+		local needMeso = accReinforceData.meso
+		local needMaterialId = _AccessoryLogic:GetReinforceMaterialId(_ItemDataLogic.itemData[item.originalId].grade)
+		local needMaterialCount = accReinforceData.materialCount
+		
+		local itemCount = storage:GetItemCount(needMaterialId)
+			
+		if itemCount < needMaterialCount then 
+			return false
+		end
+		
+		if not _CheckLogic:IsEnoughWealth(userId, _GameConfig:GetConfig().WEALTHTYPE_MESO, needMeso) then 
+			return false
+		end
+		
+		if item.failCount > 0 and _AccessoryLogic:GetMaxReinforceCount(item.grade) - item.level - item.failCount <= 0 then 
+			return false
+		end
+		
+		return true
+	end
+
+	method boolean IsValidEnchantOption(string userId, string uniqueKey)
+		-- 액세서리에 이식 가능한 인챈트 옵션이 있는지 확인
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then
+			return false
+		
+		end
+		
+		local storage = user.PlayerStorageComponent
+		local item = storage.storage[uniqueKey]
+		
+		for i = 1, 5 do
+			local optionKey = string.format("option_%d", i)
+			
+			if isvalid(item[optionKey]) and not _UtilLogic:IsNilorEmptyString(item[optionKey]) then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	@ExecSpace("Client")
+	method void NoticeNotEnoughScroll(string needScrollId)
+		-- 이식에 필요한 스크롤 부족 알림 표시
+		_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast69"), _LocalizeLogic:GetItemName(needScrollId)))
+	end
+
+	@ExecSpace("Client")
+	method void NoticeNotMatchedGrade(string targetGrade, string materialGrade)
+		-- 이식 시 대상과 재료 등급 불일치 알림 표시
+		local str = string.format(_LocalizeLogic:GetText("toast91"), targetGrade, materialGrade)
+		_UIToast:ShowMessage(str)
+	end
+
+end

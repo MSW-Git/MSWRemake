@@ -1,0 +1,272 @@
+@Component
+script UIReputationReview extends Component
+
+	property Entity LeftSection = nil
+
+	property UIReputation UIReputation = nil
+
+	property TextComponent ReputationFeedback = nil
+
+	property Entity RightSection = nil
+
+	property Entity RecentLogList = nil
+
+	property Entity FeedbackList = nil
+
+	property Entity NoData = nil
+
+	property integer RECENT_LOG_MAX_COUNT = 5
+
+	property integer FEEDBACK_MAX_COUNT = 2
+
+	property Entity ReputationStats = nil
+
+	property Entity BottomSection = nil
+
+	property Entity Line = nil
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- UI 엘리먼트들을 초기화하는 함수
+		self.LeftSection = self.Entity:GetChildByName("LeftSection")
+		self.UIReputation = self.LeftSection:GetChildByName("UIReputation").UIReputation
+		self.ReputationFeedback = self.LeftSection:GetChildByName("ReputationFeedback").TextComponent
+		self.ReputationStats = self.LeftSection:GetChildByName("ReputationStats")
+		
+		self.RightSection = self.Entity:GetChildByName("RightSection")
+		self.RecentLogList = self.RightSection:GetChildByName("RecentLogList")
+		
+		self.BottomSection = self.Entity:GetChildByName("BottomSection")
+		self.FeedbackList = self.BottomSection:GetChildByName("FeedbackList")
+		
+		self.NoData = self.Entity:GetChildByName("NoData")
+		self.Line = self.Entity:GetChildByName("Line")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 평판 리뷰 UI를 열고 데이터를 새로고침하는 함수
+		if self.Entity.Enable == true then
+			return
+		end
+		
+		self:Refresh()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 평판 리뷰 데이터를 새로고침하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local isReputationOpened = _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.HUDReputation, player)
+		if isReputationOpened then
+			self.NoData.Enable = false
+			self.Line.Enable = true	
+			self.LeftSection.Enable = true
+			self.RightSection.Enable = true
+			self.BottomSection.Enable = true
+		else
+			self.NoData.Enable = true
+			self.Line.Enable = false
+			self.LeftSection.Enable = false
+			self.RightSection.Enable = false
+			self.BottomSection.Enable = false
+			return
+			
+		end
+		
+		
+		self.UIReputation:Refresh()
+		
+		local nowReputation = player.PlayerInventory.Reputation
+		
+		local stageEarningLevelData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage):GetStageEarningLevelData(player.PlayerSettlement.EarningLevel)
+		local storeAttractiveData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+		
+		local maxReputation = storeAttractiveData.MaxReputation
+		
+		local reputationStarCount = math.floor(_ReputationDataSetLogic:ReturnReputationReviewScore(player))
+		if reputationStarCount < 1 then
+			reputationStarCount = 1
+		elseif reputationStarCount > 5 then
+			reputationStarCount = 5
+		end
+		
+		
+		self.ReputationFeedback.Text = _GetLocalizationTextLogic:GetText("ReputationFeedbackGrade"..reputationStarCount)
+		
+		player.PlayerManagement:RequestSyncReputationLogs()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRecentLogList()
+		-- 최근 평판 로그 리스트를 새로고침하는 함수
+		local reputationLogs = _UserService.LocalPlayer.PlayerManagement.ReputationLogs
+		local drawLogsMinus = {}
+		local drawLogsPlus = {}
+		
+		for i = #reputationLogs, 1, -1 do
+			local logInfo = reputationLogs[i]
+			local changeAmount = logInfo[1]
+			
+			if changeAmount >= 0 then
+				table.insert(drawLogsPlus, logInfo)
+			else
+				table.insert(drawLogsMinus, logInfo)
+			end
+		end
+		
+		local getLog = function()
+			if #drawLogsMinus > 0 then
+				return table.remove(drawLogsMinus, 1)
+			end
+			
+			if #drawLogsPlus > 0 then
+				return table.remove(drawLogsPlus, 1)
+			end
+			
+			return nil	
+		end
+		
+		for i = 1, self.RECENT_LOG_MAX_COUNT do
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_ReputationRecentLog", i, self.RecentLogList)
+			entity.UIReputationRecentLog:Refresh(getLog())
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshFeedbackList()
+		-- 피드백 리스트를 새로고침하는 함수
+		local feedbackTable = self:ReturnFeedbackTable()
+		
+		for i = 1, self.FEEDBACK_MAX_COUNT do
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_ReputationFeedback", i, self.FeedbackList)
+			entity.UIReputationFeedback:Refresh(feedbackTable[i])
+		end
+	end
+
+	method table ReturnFeedbackTable()
+		-- 평판 로그를 분석하여 피드백 테이블을 생성하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local earningLevel = player.PlayerSettlement.EarningLevel
+		local stageEarningLevelData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage):GetStageEarningLevelData(earningLevel)
+		
+		local reputationLogs = player.PlayerManagement.ReputationLogs
+		local feedbackTable = {}
+		
+		local cookDelayFeedback = false
+		
+		local lackEmployeeId = ""
+		for i = 1, #reputationLogs do
+			local logInfo = reputationLogs[i]
+			local changeAmount = logInfo[1]
+			local employeeId = logInfo[2]
+			local isCookDelayed = logInfo[4]
+			
+			if isCookDelayed then
+				cookDelayFeedback = true
+			end
+			
+			if changeAmount < 0 and _UtilLogic:IsNilorEmptyString(lackEmployeeId) then
+				local employeeDetail = player.EmployeeManager:GetEmployeeDetail(employeeId)
+				if isvalid(employeeDetail) then
+					if _EmployeeService:ReturnChuchuLevel(employeeId, player) < stageEarningLevelData.ServingEmployeeWarningLevel then
+						lackEmployeeId = employeeId
+					end
+				end			
+			end
+		end
+		
+		if cookDelayFeedback then
+			table.insert(feedbackTable, "CookDelayed")
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(lackEmployeeId) then
+			table.insert(feedbackTable, "GoodEmployee")
+		else
+			table.insert(feedbackTable, "LackOfStat_"..lackEmployeeId)
+		end
+		
+		
+		table.insert(feedbackTable, "ReputationInfo")
+		
+		return feedbackTable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshReputationStats()
+		-- 평판 통계 데이터를 새로고침하는 함수
+		local statLogs = {} 
+		local reputationLogs = _UserService.LocalPlayer.PlayerManagement.ReputationLogs
+		local totalCount = #reputationLogs
+		
+		for i = 1, #reputationLogs do
+			local logInfo = reputationLogs[i]
+			local changeAmount = logInfo[1]
+			local starCount = _ReputationDataSetLogic:ReturnReviewStarCountByReputationAmount(changeAmount, _UserService.LocalPlayer)
+			
+			if statLogs[starCount] == nil then
+				statLogs[starCount] = 0
+			end
+			statLogs[starCount] += 1
+		end
+		
+		local maxCount = 0
+		for i = 1, 5 do
+			if statLogs[i] == nil then
+				statLogs[i] = 0
+			end
+			maxCount = math.max(maxCount, statLogs[i])
+		end
+		
+		if maxCount ~= totalCount then
+			maxCount = math.ceil(maxCount*1.1)
+		end
+		
+		for i = 5, 1, -1 do
+			local statEntity = _UIEntityService:GetOrCreateEntityOfModel("Model_ReputationStat", i, self.ReputationStats)
+			statEntity.UIReputationStat:Refresh(i, statLogs[i], maxCount)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 초기화를 수행하는 함수
+		self:Init()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerReputationChangedEvent(PlayerReputationChangedEvent event)
+		-- 플레이어 평판 변경 이벤트를 처리하는 함수
+		local Current = event.Current
+		local Amount = event.Amount
+		if self.Entity.Enable == false then
+			return
+		end
+		
+		self:Refresh()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleEarningLevelChangedEvent(EarningLevelChangedEvent event)
+		-- 수익 레벨 변경 이벤트를 처리하는 함수
+		local EarningLevel = event.EarningLevel
+		if self.Entity.Enable == false then
+			return
+		end
+		
+		self:Refresh()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerManagementChangedEvent(PlayerManagementChangedEvent event)
+		-- 플레이어 관리 데이터 변경 이벤트를 처리하는 함수
+		if self.Entity.Enable == false then
+			return
+		end
+		
+		self:Refresh()
+	end
+
+end

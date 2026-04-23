@@ -1,0 +1,1761 @@
+@Component
+script PlayerStorageComponent extends Component
+
+	@HideFromInspector
+	property string userId = ""
+
+	@HideFromInspector
+	property PlayerDBComponent playerDB = nil
+
+	property table storage = {}
+
+	@HideFromInspector
+	property integer maxStorageSlotNum = 100
+
+	property integer maxArmorStorageSlotNum = 100
+
+	property table equipArmorTable = {}
+
+	property table armorStatusTable = {}
+
+	property table gridStorage = {}
+
+	property integer maxCount = 1000
+
+	property boolean isLoaded = false
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID와 DB 컴포넌트 설정 및 방어구 스탯 테이블 초기화
+		self.userId = self.Entity.PlayerComponent.UserId
+		self.playerDB = self.Entity.PlayerDBComponent
+		
+		self.armorStatusTable["maxHp"] = 0
+		self.armorStatusTable["maxHpRate"] = 0
+		
+		self.armorStatusTable["damageRate"] = 0
+		self.armorStatusTable["attackSpeed"] = 0
+		self.armorStatusTable["moveSpeed"] = 0
+		
+		self.armorStatusTable["criticalRate"] = 0
+		self.armorStatusTable["criticalDamageRate"] = 0
+		
+		self.armorStatusTable["evade"] = 0 
+		self.armorStatusTable["range"] = 0 
+		self.armorStatusTable["hpRecovery"] = 0 
+		self.armorStatusTable["reductDamage"] = 0 
+		self.armorStatusTable["bossDamage"] = 0 
+		
+		
+		
+		if self:IsServer() then
+			self:SyncArmorStatusTable(self.armorStatusTable, self.userId)
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void SyncStorageInClient(string uniqueKey, table itemData)
+		-- 클라이언트에서 인벤토리 아이템 데이터를 동기화하고 UI 갱신
+		self.Entity:SendEvent(OnChangeNewMergeItem(uniqueKey,itemData))
+		
+		if self.storage[uniqueKey] == nil then
+			_UIGroupManager.baggageUIEntity:SendEvent(OnChangeNewMergeItem(uniqueKey, itemData))
+		end
+		
+		local needRefreshSpec = false
+		
+		if isvalid(self.storage[uniqueKey]) and isvalid(itemData) then
+			if self.storage[uniqueKey].equippedSlotNum ~= itemData.equippedSlotNum then 
+				needRefreshSpec = true
+			end
+		elseif isvalid(itemData) then
+			if itemData.equippedSlotNum > 0 then 
+				needRefreshSpec = true
+			end
+		end
+		
+		self.storage[uniqueKey] = itemData
+		
+		_QuestUILogic.questHUD:Refresh()
+		
+		if itemData~=nil and itemData.equippedSlotNum~=nil then
+			if itemData.equippedSlotNum > 0 then
+				_HUDManager:SendEquipEvent(itemData.equippedSlotNum, true, uniqueKey)
+			end
+		end
+		
+		if needRefreshSpec then
+			_MySpecLogic:RefreshSpec()
+		end
+		
+		if _UIGroupManager.playerStatusPopup.UIPlayerStatusPopup.canvasGroup.Interactable then
+			_UIGroupManager.usableInven:Refresh()
+			_UIGroupManager.uiPlayerStatusPopup:RefreshStatusPanel()
+			_UIGroupManager.uiPlayerStatusPopup:RefreshAccessoryPanel()
+		end
+		
+		_AccessoryLogic:RefreshAccessoryInfo()
+		
+		if _UIGroupManager.baggageUI.Enable and _UIGroupManager.baggageUI.selectedCategory ~= 0 then 
+			if _UserService.LocalPlayer.PlayerDBComponent.dbInited then
+				_UIGroupManager.baggageUI:Refresh(_UIGroupManager.baggageUI.selectedCategory, false)
+				
+				if uniqueKey == _UIGroupManager.baggageUI.selectedUniqueKey then
+					if self.storage[uniqueKey] == nil then
+						_UIGroupManager.baggageUI:SetInformationPanel(false, "") 
+					else
+						_UIGroupManager.baggageUI:ChangeInformationCount(uniqueKey)
+					end
+				end
+			end
+		end
+		
+		
+		if isvalid(self.Entity.CurrentMap.MultiBattleMap) then
+			for slot, gunTable in pairs(self.Entity.MultiBattlePlayer.equipGun) do
+				---@type BattleGunObject
+				local battleGun = gunTable.gun.BattleGunObject
+				
+				battleGun:SetPlayer(self.Entity, slot, _WeaponSpecLogic:GetWeaponSpec(gunTable.id), gunTable.uniqueKey, false)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestAddItemFromServer(string uniqueKey, integer count, string itemId, integer level, string userId, string source, string sourceId)
+		-- 서버에서 아이템 추가 요청을 처리하고 인벤토리 공간 검증
+		if self.userId ~= userId then 
+			_WorldLog:LogAbnormalFlow(userId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		local itemData = _ItemDataLogic.itemData[itemId]
+		local itemType = nil
+		
+		
+		if not isvalid(itemData) then
+			itemData = _ItemDataLogic.equipmentData[itemId]
+		end
+		
+		if not isvalid(itemData) then
+			
+			return
+		end
+		
+		itemType = itemData.category
+		
+		if not isvalid(itemType) then
+			
+			return
+		end
+		
+		if _CheckLogic:IsFieldItem(itemId) then 
+			local needCount = count 
+			local addEnableItemCount = _CheckLogic:GetEnableAddItemCount(itemId, userId) 
+				
+			if addEnableItemCount < needCount then 
+				_LocalizeLogic:ShowToast("toast43", self.userId)
+				return
+			end
+		else
+			if itemType == "weapon" then
+				if not _CheckLogic:IsEnoughWeaponSlot(userId, count) then
+					_LocalizeLogic:ShowToast("toast231", self.userId)
+				end
+			elseif itemType == "armor" then
+				if not _CheckLogic:IsEnoughArmorSlot(userId, count) then
+					_LocalizeLogic:ShowToast("toast24", self.userId)
+					return
+				end
+			elseif itemType == "accessory" then
+				if not _CheckLogic:IsEnoughAccessorySlot(userId, count) then
+					_LocalizeLogic:ShowToast("toast79", self.userId)
+					return
+				end
+			elseif itemType == "decoration" then
+				if not _CheckLogic:IsEnoughDecorationSlot(userId, math.ceil(count / self.maxCount)) then
+					_LocalizeLogic:ShowToast("toast233", self.userId)
+		
+					return
+				end
+			elseif itemType == "consume" then
+				if not _CheckLogic:IsEnoughConsumeSlot(userId, math.ceil(count / self.maxCount)) then
+					_LocalizeLogic:ShowToast("toast118", self.userId)
+					return
+				end
+			elseif itemType == "etc" then
+				if not _CheckLogic:IsEnoughETCSlot(userId, math.ceil(count / self.maxCount)) then
+					_LocalizeLogic:ShowToast("toast235", self.userId)
+					return
+				end
+			end
+		end
+		
+		
+		if _CheckLogic:IsUsableOrEtcItem(userId, itemId) then 
+			local key = _CheckLogic:IsAlreadyHaveUsableOrEtcItem(userId, itemId)
+			
+			if not _UtilLogic:IsNilorEmptyString(key) then 
+				self:AddItemCount(key, itemId, count, source, sourceId)
+				
+				return
+			else 
+				local loop = math.ceil(count / self.maxCount)
+				local remainCount = count
+				
+				for i = 1, loop do
+					if remainCount >= self.maxCount then
+						self:AddItem(_GameUtil:CreateGUID(), self.maxCount, itemId, 1, 0, 0, 0, false, false, 0, true, source, sourceId)
+						remainCount -= self.maxCount
+					else
+						self:AddItem(_GameUtil:CreateGUID(), remainCount, itemId, 1, 0, 0, 0, false, false, 0, true, source, sourceId)
+					end
+				end
+				
+				return
+			end
+		end
+		
+		
+		
+		if itemType == "egg" then
+			local result = self:AddItem(itemId, count, itemId, level,0,0,0,false,false,0,true,source,sourceId)
+		else
+			local result = self:AddItem(uniqueKey, count, itemId, level,0,0,0,false,false,0,true,source,sourceId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddItem(string uniqueKey, integer count, string itemId, integer level, number x, number y, number mergeExp, boolean merge, boolean lock, number equipNum, boolean sync, string source, string sourceId)
+		-- 아이템을 인벤토리에 추가하고 그리드 위치 설정
+		local itemData = _ItemDataLogic:GetItemData(itemId)
+		local inventoryNum = 0
+		
+		if merge == false then
+			
+			if itemData == nil then
+				return false
+			end
+		end
+		
+		if itemData.category == "weapon" then
+			local key = _NewMergeLogic:GetGridKey(x,y)
+			
+			if merge == false then
+				local newKey = self:FoundNearestOpenCell()
+				if newKey == nil then
+					_LocalizeLogic:ShowToast("toast267", self.userId)
+					return false
+				end
+				x = newKey.x
+				y = newKey.y
+				key = _NewMergeLogic:GetGridKey(x,y)
+				self.gridStorage[key] = uniqueKey
+			end
+		else
+			x = -1
+			y = -1
+		end
+		
+		self.storage[uniqueKey] = self:SetInventoryItemData(count, 100, "", itemId, equipNum, true, x, y, uniqueKey, level, "", _ArmorSystemLogic:GetArmorInventoryNum(itemData.category, self.userId))
+		if itemData.category == "weapon" then
+			self.storage[uniqueKey].mergeExp = mergeExp
+		else
+			self.storage[uniqueKey].mergeExp = 0
+		end
+		self.storage[uniqueKey].lock = lock
+		
+		
+		if itemData.category == "weapon" then	
+			self:SetPos(uniqueKey,Vector3(x,y,0),false)
+		end
+		
+		self:SetStorageData(false)
+		if sync then
+			self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+		end
+		
+		if itemData.category == "accessory" and source == "CraftingResult" and self.storage[uniqueKey].grade == "" then 
+		else
+			_WorldLog:LogInventoryFlow(self.userId, uniqueKey, self.storage[uniqueKey].originalId, source, _WorldLog.FlowType_Get, count,sourceId)
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestRemoveItemFromServer(string itemId, string uniqueKey, string userId, boolean sync, string source)
+		-- 서버에서 아이템 제거 요청을 처리하고 권한 검증
+		
+		if not _CheckLogic:IsCanRemoveItemByUniqueKey(userId, uniqueKey) then
+			_WorldLog:LogAbnormalFlow(userId, "Invalid Try Remove Item : " .. uniqueKey, 0, 0, 0, 0)
+		
+			return
+		end
+		
+		local result = self:RemoveItem(uniqueKey,sync,source)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean RemoveItem(string uniqueKey, boolean sync, string source)
+		-- 아이템을 인벤토리에서 제거하고 장착 해제 처리
+		local item = _ItemDataLogic:GetItemData(self.storage[uniqueKey].originalId)
+		
+		self.storage[uniqueKey].count = self.storage[uniqueKey].count - 1
+		_WorldLog:LogInventoryFlow(self.userId, uniqueKey, self.storage[uniqueKey].originalId, source, _WorldLog.FlowType_Consume, -1,"")
+		
+		if self.storage[uniqueKey].count <= 0 then
+			if item.category == "armor" then 
+				_ArmorSystemLogic:RefreshArmorInventoryNum(self.userId, self.storage[uniqueKey].inventoryNum)
+				if self.storage[uniqueKey].equippedSlotNum > 0 then
+					self:UnEquip(uniqueKey)
+				end
+			elseif item.category == "weapon" then
+				if sync then
+					if self.storage[uniqueKey].equippedSlotNum > 0 then
+						self:UnEquip(uniqueKey)
+					end
+				end
+			elseif item.category == "decoration" then
+				self:UnEquip(uniqueKey)
+			elseif item.category == _ItemDataLogic:GetItemCategory(self.storage[uniqueKey].originalId) then
+				self:SendChangedEggEvent(self.userId)
+			end
+		
+			self.gridStorage[_NewMergeLogic:GetGridKey(self.storage[uniqueKey].posX,self.storage[uniqueKey].posY)] = nil
+		
+			self.storage[uniqueKey] = nil
+		end
+		
+		self:SetStorageData(false)
+		
+		if sync then
+			self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void SetPos(string uniqueKey, Vector3 pos, boolean sync)
+		-- 아이템의 그리드 위치를 설정하고 다른 아이템과 위치 교환 처리
+		local key = ""
+		if isvalid(self.storage[uniqueKey]) then
+			local item = _ItemDataLogic:GetItemData(self.storage[uniqueKey].originalId)
+			if item == nil then
+				return
+			end
+		
+			
+			local checkEquipment = {}
+		
+			key = _NewMergeLogic:GetGridKey(pos.x,pos.y)
+		
+			if _UtilLogic:IsNilorEmptyString(self.gridStorage[key]) == false then
+				
+				local previousUniqueKey = self.gridStorage[key]
+				
+				if isvalid(self.storage[previousUniqueKey]) then
+					local newKey = _NewMergeLogic:GetGridKey(self.storage[uniqueKey].posX,self.storage[uniqueKey].posY)
+					self.gridStorage[newKey] = previousUniqueKey
+					self.storage[previousUniqueKey].posX = self.storage[uniqueKey].posX
+					self.storage[previousUniqueKey].posY = self.storage[uniqueKey].posY
+					if sync then
+						self:SyncStorageInClient(previousUniqueKey, self.storage[previousUniqueKey], self.userId)
+					end
+					table.insert(checkEquipment,previousUniqueKey)
+				end
+				self.gridStorage[key] = nil
+			end
+			
+			self.storage[uniqueKey].posX = pos.x
+			self.storage[uniqueKey].posY = pos.y
+			key = _NewMergeLogic:GetGridKey(pos.x,pos.y)
+			self.gridStorage[key] = uniqueKey
+			
+			table.insert(checkEquipment,uniqueKey)
+		
+			self:SetStorageData(false)
+			if sync then
+				self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+			end
+		
+		end
+	end
+
+	method InventoryItemData GetItemData(string uniqueKey)
+		-- 고유 키로 아이템 데이터를 조회
+		return self.storage[uniqueKey]
+	end
+
+	@ExecSpace("Server")
+	method void SetOldItem(string uniqueKey)
+		-- 기존 아이템 정보를 클라이언트에 동기화
+		for key, value in pairs(self.storage) do
+			if value.uniqueKey == uniqueKey and isvalid(value) then
+				self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+			end
+		end
+		
+		self:SetStorageData(false)
+	end
+
+	@ExecSpace("Server")
+	method void Equip(string uniqueKey, integer slotNum)
+		-- 아이템을 지정된 슬롯에 장착하고 기존 장착 아이템 해제 처리
+		self:CheckExpiredItems()
+		
+		local item = self.storage[uniqueKey]
+		if item == nil then
+			return
+		end
+		local itemData = _ItemDataLogic.equipmentData[item.originalId] 
+		local detailCategory = ""
+		local category = ""
+		
+		if not isvalid(itemData) then
+			itemData = _ItemDataLogic.itemData[item.originalId]
+			if not isvalid(itemData) then return end
+		else
+			if itemData.categry == "accessory" then
+				detailCategory = _ItemDataLogic:GetAccessoryDetailCategory(item.originalId)
+			else
+				detailCategory = itemData.detailCategory
+			end
+		end
+		
+		category = itemData.category
+		
+		if item.equippedSlotNum == slotNum then
+			return
+		end
+		if category == "weapon" then
+			local canEquipCount = self.Entity.PlayerCharacteristicData.canEquipCount
+			if canEquipCount < slotNum then
+				return
+			end
+		end
+		for key, value in pairs(self.storage) do	
+			if key == uniqueKey then
+				self:UnEquip(key)
+			end	
+		end
+		
+		for key, value in pairs(self.storage) do
+				if value.equippedSlotNum == slotNum then
+					self:UnEquip(key)
+				end
+		end
+		
+		
+		self.storage[uniqueKey].equippedSlotNum = slotNum
+		
+		if category == "armor" then 
+			self.equipArmorTable[detailCategory] = self.storage[uniqueKey].originalId
+			self:ApplyArmorStatus(false)
+			self:SetEquipArmorTableInClient(detailCategory, self.storage[uniqueKey].originalId, self.userId)
+			
+			self.Entity:SendEvent(NewbieMissionUpdateEvent("equipArmor", itemData.grade, 1))
+		elseif category == "weapon" then
+			self.Entity:SendEvent(NewbieMissionUpdateEvent("equipWeapon", itemData.grade, 1))
+		elseif category == "accessory" then
+			self.Entity.PlayerCharacterData:CalculateStatus()
+		elseif category == "decoration" then
+			local equipNum = self.storage[uniqueKey].equippedSlotNum
+			local playerInfo = self.Entity.PlayerInfoComponent
+			local itemId = self.storage[uniqueKey].originalId
+			
+			
+			if equipNum == _GameEnum.EQUIPNUM_CHATBALLOON then
+				playerInfo.playerInfo.chatBalloon = itemId
+				playerInfo.chatBalloon = itemId
+			elseif equipNum == _GameEnum.EQUIPNUM_NAMETAG then
+				playerInfo.playerInfo.nameTag = itemId
+				playerInfo.nameTag = itemId
+			elseif equipNum == _GameEnum.EQUIPNUM_DAMAGESKIN then
+				playerInfo.playerInfo.damageSkin = itemId
+			end
+			
+			playerInfo:SetPlayerInfoData()
+			playerInfo:SetPlayerInfoInClient(_HttpService:JSONEncode(playerInfo.playerInfo), self.userId)
+		end
+		
+		self:SetStorageData(false)
+		self:SyncStorageInClient(uniqueKey, item, self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void UnEquip(string uniqueKey)
+		-- 장착된 아이템을 해제하고 기본 장식 아이템으로 복원
+		self:CheckExpiredItems()
+		
+		local item = self.storage[uniqueKey]
+		if item == nil then
+			return
+		end
+		local itemData = _ItemDataLogic.equipmentData[item.originalId] 
+		local detailCategory = ""
+		
+		if not isvalid(itemData) then
+			itemData = _ItemDataLogic.itemData[item.originalId]
+			if not isvalid(itemData) then return end
+		else
+			if itemData.categry == "accessory" then
+				detailCategory = _ItemDataLogic:GetAccessoryDetailCategory(item.originalId)
+			else
+				detailCategory = itemData.detailCategory
+			end
+		end
+		
+		local category = itemData.category
+		
+		if item.equippedSlotNum == 0 then 
+			return
+		else
+			if category == "armor" then 	
+				self.equipArmorTable[detailCategory] = nil
+				self:ApplyArmorStatus(false)
+				self:SetEquipArmorTableInClient(detailCategory, nil, self.userId)
+			end
+		end
+		local equipNum = self.storage[uniqueKey].equippedSlotNum
+		self.storage[uniqueKey].equippedSlotNum = 0
+		self:SetStorageData(false)
+		
+		self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+		
+		_HUDManager:SendEquipEvent(self.storage[uniqueKey].equippedSlotNum, false, uniqueKey, self.userId)
+		
+		if category == "accessory" then
+			self.Entity.PlayerCharacterData:CalculateStatus()
+		elseif category == "decoration" then
+			local playerInfo = self.Entity.PlayerInfoComponent
+			
+			if equipNum == _GameEnum.EQUIPNUM_CHATBALLOON then
+				playerInfo.playerInfo.chatBalloon = "5_000003"
+				playerInfo.chatBalloon = "5_000003"
+			elseif equipNum == _GameEnum.EQUIPNUM_NAMETAG then
+				playerInfo.playerInfo.nameTag = "5_000002"
+				playerInfo.nameTag = "5_000002"
+			elseif equipNum == _GameEnum.EQUIPNUM_DAMAGESKIN then
+				playerInfo.playerInfo.damageSkin = "5_000001"
+			end
+			
+			playerInfo:SetPlayerInfoData()
+			playerInfo:SetPlayerInfoInClient(_HttpService:JSONEncode(playerInfo.playerInfo), self.userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetStorageData(boolean inited)
+		-- 인벤토리 데이터를 DB에 저장하고 그리드 스토리지 갱신
+		if  inited ==false and self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		table.clear(self.gridStorage)
+		local storageData = {}
+		for key, value in pairs(self.storage) do	
+			table.insert(storageData, _HttpService:JSONEncode(value))
+			local gridkey = _NewMergeLogic:GetGridKey(value.posX,value.posY)
+			local itemData = _ItemDataLogic:GetItemData(value.originalId)
+			if itemData ~= nil and itemData.category == "weapon" then
+				self.gridStorage[gridkey] = key
+			end
+		end
+		storageData = _HttpService:JSONEncode(storageData)
+		
+		
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["storageData"] = storageData
+		
+		
+	end
+
+	method table SetInventoryItemData(integer count, number durability, string grade, string originalId, integer equippedSlotNum, boolean isNewItem, number posX, number posY, string uniqueKey, integer level, string contentEquipment, number inventoryNum)
+		-- 인벤토리 아이템 데이터 구조체를 생성하여 반환
+		local itemData = {}
+		
+		itemData.count = count
+		itemData.durability = durability
+		itemData.grade = grade
+		itemData.originalId = originalId
+		itemData.equippedSlotNum = equippedSlotNum
+		itemData.posX = posX
+		itemData.posY = posY
+		itemData.uniqueKey = uniqueKey
+		itemData.level = level
+		itemData.content = contentEquipment
+		itemData.lock = false
+		itemData.inventoryNum = inventoryNum
+		
+		return itemData
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestRemoveItemById(string itemId, integer count, string source, string userId)
+		-- 아이템 ID로 지정된 수량만큼 제거 요청 처리
+		if self:GetItemCount(itemId) < count then
+		
+			return
+		end
+		
+		self:RemoveItemById(itemId, count, source)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveItemById(string itemId, integer count, string source)
+		-- 아이템 ID로 인벤토리에서 지정된 수량만큼 제거하고 로그 기록
+		local deleteCount = count
+		local willRemoveKey = {}
+		local tempLog = {} 
+		local tempCount = {}
+		local index = 1
+		local uniqueKey = ""
+		
+		for key, value in pairs(self.storage) do
+			if deleteCount <= 0 then break end
+			
+			if value.originalId == itemId then
+				if value.count >= deleteCount then
+					local temp = self.storage[key].count
+					self.storage[key].count -= deleteCount
+					
+					if value.count <= 0 then
+						if isvalid(tempCount[key]) then
+							tempCount[key] += temp
+						else
+							tempCount[key] = temp
+						end
+						
+						table.insert(willRemoveKey, key)
+					else
+						uniqueKey = key
+					end
+		
+					deleteCount = 0
+					
+					self:SyncStorageInClient(key, self.storage[key], self.userId)
+					break
+				else
+					deleteCount = deleteCount - value.count
+					
+					if isvalid(tempCount[key]) then
+						tempCount[key] += self.storage[key].count 
+					else
+						tempCount[key] = self.storage[key].count
+					end
+					
+					self.storage[key].count = 0
+					table.insert(willRemoveKey, key)
+				end
+			end
+		end
+		
+		for _, uniqueKey in pairs(willRemoveKey) do
+			local itemData = _ItemDataLogic:GetItemData(itemId)
+			local removeCount = tempCount[uniqueKey]
+			
+			if self.storage[uniqueKey].count <= 0 then 
+				if isvalid(itemData) and itemData.category == "weapon" then
+					self.gridStorage[_NewMergeLogic:GetGridKey(self.storage[uniqueKey].posX, self.storage[uniqueKey].posY)] = nil
+				elseif isvalid(itemData) and itemData.category == "decoration" then
+					self.Entity.PlayerStorageComponent:UnEquip(uniqueKey)
+				end
+				self.storage[uniqueKey] = nil
+			end
+			
+			tempLog[index] = {["itemId"] = itemId, ["count"] = -removeCount, ["key"] = uniqueKey}
+			index += 1
+			self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+		end
+		
+		self:SetStorageData(false)
+		
+		if _ItemDataLogic:GetItemCategory(itemId) == "egg" then
+			self:SendChangedEggEvent(self.userId)
+		end
+		
+		for i = 1, index do
+			if isvalid(tempLog[i]) then
+				_WorldLog:LogInventoryFlow(self.userId, tempLog[i].key, tempLog[i].itemId, source, _WorldLog.FlowType_Consume, tempLog[i].count, "")
+			end
+		end
+		
+		
+		if #table.keys(tempLog) < 1 then
+			_WorldLog:LogInventoryFlow(self.userId, uniqueKey, itemId, source, _WorldLog.FlowType_Consume, -count, "")
+		end
+	end
+
+	method table GetItem(string uniqueKey)
+		-- 고유 키로 아이템 정보를 조회
+		return self.storage[uniqueKey]
+	end
+
+	method table GetAllEquippedWeapon()
+		-- 현재 장착된 모든 무기 목록을 반환
+		local weapon = {}
+		for k,v in pairs(self.storage) do
+			if isvalid(_ItemDataLogic.equipmentData[v.originalId]) and _ItemDataLogic.equipmentData[v.originalId].category == "weapon" then
+				if v.equippedSlotNum > 0 then
+					table.insert(weapon,v)
+				end
+			end
+		end
+		return weapon
+	end
+
+	@ExecSpace("Server")
+	method void CheckEquipped()
+		-- 장착된 모든 아이템에 대해 HUD 이벤트 전송
+		for key, itemData in pairs(self.storage) do
+			if itemData.equippedSlotNum > 0 then
+				_HUDManager:SendEquipEvent(itemData.equippedSlotNum, true, key, self.userId)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetLevel(string uniqueKey, integer level)
+		-- 아이템의 레벨을 설정하고 클라이언트에 동기화
+		if not isvalid(self.storage[uniqueKey]) then return end
+		
+		self.storage[uniqueKey].level = level
+		self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+	end
+
+	method string GetWeaponIdByUniqueKey(string uniqueKey)
+		-- 고유 키로 무기 ID를 조회
+		return self.storage[uniqueKey].originalId
+	end
+
+	method void CheckArmorEquipped()
+		-- 장착된 방어구를 확인하고 방어구 테이블 갱신 후 스탯 적용
+		for key, itemData in pairs(self.storage) do	
+			if isvalid(_ItemDataLogic.equipmentData[itemData.originalId]) then
+				if _ItemDataLogic.equipmentData[itemData.originalId].category == "armor" and itemData.equippedSlotNum > 0 then
+					self.equipArmorTable[_ItemDataLogic.equipmentData[itemData.originalId].detailCategory] = itemData.originalId
+					self:SetEquipArmorTableInClient(_ItemDataLogic.equipmentData[itemData.originalId].detailCategory, itemData.originalId)
+				end
+			end
+		end
+		
+		self:ApplyArmorStatus(false)
+	end
+
+	method string GetCategoryByUniqueKey(string uniqueKey)
+		-- 고유 키로 아이템의 카테고리를 조회
+		local category = ""
+		local data = _ItemDataLogic.equipmentData[self.storage[uniqueKey].originalId]
+		if not isvalid(data) then
+			data = _ItemDataLogic.itemData[self.storage[uniqueKey].originalId]
+		end
+		
+		if data.category == "weapon" then
+			category = "weapon"
+		end
+		
+		if string.sub(data.category, 1, 5) == "armor" then
+			category = "armor"
+		end
+		
+		return category 
+	end
+
+	@ExecSpace("Client")
+	method void SetEquipArmorTableInClient(string category, string value)
+		-- 클라이언트에서 장착 방어구 테이블 설정
+		self.equipArmorTable[category] = value
+		
+		if self.equipArmorTable[category] == nil then
+			self.Entity.PlayerArmorSkillComponent:ResetArmorSkill(_UserService.LocalPlayer)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestAddEgg(string uniqueKey, integer count, string itemId, integer level, string contentEquipment, integer equippedSlotNum, string source)
+		-- 알 아이템 추가 요청 처리
+		local result = self:AddEgg(uniqueKey, count, itemId, level, contentEquipment, equippedSlotNum, source, "")
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddEgg(string uniqueKey, integer count, string itemId, integer level, string contentEquipment, integer equippedSlotNum, string source, string sourceId)
+		-- 알 아이템을 인벤토리에 추가하고 로그 기록
+		local itemData = _ItemDataLogic:GetItemData(itemId)
+		if itemData == nil then
+			return
+		end
+		
+		local newCount = count 
+		local x = 0
+		local y = 0
+		
+		if isvalid(self.storage[uniqueKey]) then
+			newCount += self.storage[uniqueKey].count
+		end
+		
+		self.storage[uniqueKey] = self:SetInventoryItemData(newCount, 100, "", itemId, equippedSlotNum, true, x,y, uniqueKey, level, contentEquipment, 0)
+		
+		self:SetStorageData(false)
+		self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+		self:SendChangedEggEvent(self.userId)
+		_WorldLog:LogInventoryFlow(self.userId, uniqueKey, self.storage[uniqueKey].originalId, source, _WorldLog.FlowType_Get, count,sourceId)
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void ApplyArmorEffect()
+		-- 장착된 방어구의 이팩트를 적용
+		
+		if isvalid(self.equipArmorTable["helmet"])  then
+		self.Entity.PlayerArmorSkillComponent:ResetArmorSkill(_UserService.LocalPlayer)
+		end
+		
+		if isvalid(self.equipArmorTable["suit"]) then
+		self.Entity.PlayerArmorSkillComponent:ResetArmorSkill(_UserService.LocalPlayer)
+		end
+		
+		if isvalid(self.equipArmorTable["glove"]) then
+		self.Entity.PlayerArmorSkillComponent:ResetArmorSkill(_UserService.LocalPlayer)
+		end
+		
+		if isvalid(self.equipArmorTable["shoes"]) then
+		self.Entity.PlayerArmorSkillComponent:ResetArmorSkill(_UserService.LocalPlayer)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ApplyArmorStatus(boolean isField)
+		-- 장착된 방어구의 스탯을 적용하고 클라이언트에 동기화
+		
+		
+		local helmetId = "none"
+		local suitId = "none"
+		local gloveId = "none"
+		local shoesId = "none"
+		
+		local helmetLv = 0
+		local suitLv = 0
+		local gloveLv = 0
+		local shoesLv = 0
+		
+		local player = _UserService:GetUserEntityByUserId(self.userId)
+		
+		if isvalid(player.MultiBattlePlayer) and isvalid(self.Entity.CurrentMap.MultiBattleMap) then
+			if self.Entity.CurrentMap.MultiBattleMap.isMultiMode == true then
+				isField = true 
+			end
+		end
+		if isvalid(self.equipArmorTable["helmet"]) then
+			helmetId = self.equipArmorTable["helmet"]		
+		end
+		
+		if isvalid(self.equipArmorTable["suit"]) then
+			suitId = self.equipArmorTable["suit"]
+		end
+		
+		if isvalid(self.equipArmorTable["glove"]) then
+			gloveId = self.equipArmorTable["glove"]
+		end
+		
+		if isvalid(self.equipArmorTable["shoes"]) then
+			shoesId = self.equipArmorTable["shoes"]
+		end
+		
+		
+		local fTable = _ArmorSpecLogic.armorData
+		local armorLevelData = _ArmorSpecLogic.armorLevelUpData
+		
+		for key, value in pairs(self.storage) do
+			if value.equippedSlotNum ~= 0 then
+				if value.equippedSlotNum == 21 then 
+					helmetLv = tonumber(value.level)
+		
+				elseif value.equippedSlotNum == 22 then 
+					suitLv = tonumber(value.level)
+		
+				elseif value.equippedSlotNum == 23 then 
+					gloveLv = tonumber(value.level)
+		
+				elseif value.equippedSlotNum == 24 then 
+					shoesLv = tonumber(value.level)
+				end
+		
+			end
+		end
+		
+		self.armorStatusTable["maxHp"] 
+		= armorLevelData[helmetLv].helmet_hp + armorLevelData[suitLv].suit_hp + armorLevelData[shoesLv].shoes_hp   
+		+ fTable[helmetId].maxHp + fTable[suitId].maxHp + fTable[shoesId].maxHp 
+		
+		self.armorStatusTable["damageRate"] 
+		= armorLevelData[gloveLv].glove_attack + 
+		fTable[helmetId].addAttackRate + fTable[suitId].addAttackRate + fTable[gloveId].addAttackRate + fTable[shoesId].addAttackRate
+		
+		local multiplicationConstant = 1
+		if isField then
+			multiplicationConstant = 0
+		end
+		
+		self.armorStatusTable["maxHpRate"] 
+		= (fTable[helmetId].addMaxHpRate + fTable[suitId].addMaxHpRate + fTable[gloveId].addMaxHpRate + fTable[shoesId].addMaxHpRate) * multiplicationConstant
+		
+		self.armorStatusTable["attackSpeed"] 
+		=  (fTable[helmetId].attackSpeed  + fTable[suitId].attackSpeed  + fTable[gloveId].attackSpeed  + fTable[shoesId].attackSpeed ) * multiplicationConstant
+		
+		self.armorStatusTable["moveSpeed"]  
+		= (fTable[helmetId].speed + fTable[suitId].speed + fTable[gloveId].speed + fTable[shoesId].speed) * multiplicationConstant
+		
+		self.armorStatusTable["criticalRate"] 
+		= (fTable[helmetId].criticalRate + fTable[suitId].criticalRate + fTable[gloveId].criticalRate + fTable[shoesId].criticalRate) * multiplicationConstant
+		
+		
+		self.armorStatusTable["criticalDamageRate"] 
+		= (fTable[helmetId].criticalDamageRate + fTable[suitId].criticalDamageRate + fTable[gloveId].criticalDamageRate + fTable[shoesId].criticalDamageRate) * multiplicationConstant
+		
+		self.armorStatusTable["evade"]  
+		=  (fTable[helmetId].evade + fTable[suitId].evade + fTable[gloveId].evade + fTable[shoesId].evade) * multiplicationConstant
+		
+		self.armorStatusTable["hpRecovery"]  
+		=  (fTable[helmetId].hpRecovery + fTable[suitId].hpRecovery + fTable[gloveId].hpRecovery + fTable[shoesId].hpRecovery) * multiplicationConstant
+		
+		self.armorStatusTable["range"]  
+		=  (fTable[helmetId].range + fTable[suitId].range + fTable[gloveId].range + fTable[shoesId].range) * multiplicationConstant
+		 
+		self.armorStatusTable["reductDamage"]  
+		=  (fTable[helmetId].reductDamage + fTable[suitId].reductDamage + fTable[gloveId].reductDamage+ fTable[shoesId].reductDamage) * multiplicationConstant
+		
+		self.armorStatusTable["bossDamage"]  
+		= (fTable[helmetId].bossDamage + fTable[suitId].bossDamage + fTable[gloveId].bossDamage+ fTable[shoesId].bossDamage) * multiplicationConstant
+		
+		self.armorStatusTable["reductMeleeDamage"] 
+		= (fTable[helmetId].reductMeleeDamage + fTable[suitId].reductMeleeDamage + fTable[gloveId].reductMeleeDamage+ fTable[shoesId].reductMeleeDamage) * multiplicationConstant
+		
+		self.armorStatusTable["reductProjectileDamage"] 
+		= (fTable[helmetId].reductProjectileDamage + fTable[suitId].reductProjectileDamage + fTable[gloveId].reductProjectileDamage+ fTable[shoesId].reductProjectileDamage) * multiplicationConstant
+		
+		self:SyncArmorStatusTable(self.armorStatusTable)
+		self.Entity.PlayerCharacterData:CalculateStatus()
+	end
+
+	@ExecSpace("Server")
+	method void RequestSellItem(string uniqueKey)
+		-- 아이템 판매 요청 처리 및 권한 검증
+		self:CheckExpiredItems()
+		
+		if self.userId ~= senderUserId then 
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		if not isvalid(self.storage[uniqueKey]) then
+			_LocalizeLogic:ShowToast("toast263", self.userId)
+			
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Try Sell Item : " .. uniqueKey, 0, 0, 0, 0)
+			
+			return
+		end
+		local weaponCnt = self:GetAllWeaponCnt()
+		if weaponCnt == 1 then
+			_LocalizeLogic:ShowToast("toast58", self.userId)
+			return
+		end
+		self:UnEquip(uniqueKey)
+		self:SellItem(uniqueKey)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SellItem(string uniqueKey)
+		-- 아이템을 판매하고 메소 지급
+		local lv = self.storage[uniqueKey].level
+		local weapon = _WeaponSpecLogic.weaponData[self.storage[uniqueKey].originalId]
+		
+		if isvalid(weapon) then
+			local sellingPrice = math.tointeger(_ItemDataLogic.weaponMesoTable[lv].sellingPrice * _GameConfig:GetConfig().WEAPON_SELLING_RATIO)
+			self:RemoveItem(uniqueKey, true,"Sell")
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, sellingPrice, self.userId,"Sell",uniqueKey)
+		else
+			local id = self.storage[uniqueKey].originalId
+			local data = _ItemDataLogic.itemData[id]
+			
+			if not isvalid(data) then
+				data = _ItemDataLogic.equipmentData[id]
+			end
+			
+			self:RemoveItem(uniqueKey, true,"Sell")
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, data.sellingPrice, self.userId,"Sell",uniqueKey)
+		end
+	end
+
+	method integer GetSpawnedItemCount()
+		-- 스폰된 아이템의 개수를 반환
+		local count = 0 
+		
+		for key, value in pairs(_StorageLogic.townStorage.Children) do
+			if isvalid(value.StorageItemComponent) then
+				count = count + 1
+			end
+		end
+		
+		return count
+	end
+
+	method Vector2 FoundNearestOpenCell()
+		-- 가장 가까운 빈 그리드 셀을 찾아 반환
+		local startX = 0
+		local endX = _NewMergeLogic.gridWidth
+		
+		local isArmor = false
+		
+		for y = 0 , _NewMergeLogic.gridHeight do
+			for x = startX, endX do
+				local key = self.gridStorage[_NewMergeLogic:GetGridKey(x,y)]
+				if key == nil then
+					return Vector2(x,y)
+				else
+		
+				end
+			end
+		end
+		return nil
+	end
+
+	method void OnChangePositionForEquipment(string uniqueKey)
+		-- 장비 위치 변경 시 자동 장착/해제 처리
+		local item = self.storage[uniqueKey]
+		if item == nil then
+			return
+		end
+		
+		local itemData = _ItemDataLogic.equipmentData[item.originalId]
+		if itemData == nil then
+			return
+		end
+		
+		local player = self.Entity
+		local x = item.posX
+		local y = item.posY
+		
+		if itemData.category == "weapon" then
+			local maxEquipCnt = player.PlayerCharacteristicData.canEquipCount
+			if y == 0 and x < (maxEquipCnt) then
+				self:Equip(uniqueKey,x + 1)
+			elseif player.PlayerStorageComponent.storage[uniqueKey].equippedSlotNum > 0 then
+				self:UnEquip(uniqueKey)
+			end
+		else
+			if y == 0 and x >= 11 and x <= 14 then
+				self:Equip(uniqueKey,x - 10 + 20)
+			elseif player.PlayerStorageComponent.storage[uniqueKey].equippedSlotNum > 0 then
+				self:UnEquip(uniqueKey)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncArmorStatusTable(table armorStatusTable)
+		-- 클라이언트에서 방어구 스탯 테이블 동기화
+		self.armorStatusTable = armorStatusTable
+	end
+
+	@ExecSpace("Server")
+	method void SetWeaponLock(string uniqueKey, boolean lock)
+		-- 무기의 잠금 상태를 설정
+		local item = self.storage[uniqueKey]
+		if item == nil then
+			return
+		end
+		if item.lock == nil then
+			item.lock = false
+		end
+		if item.lock == lock then
+			return
+		end
+		item.lock = lock
+		
+		self:SetStorageData(false)
+		self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void SortItem(string type)
+		-- 아이템을 타입별로 정렬
+		if  self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		self:SortItemByType(type)
+		
+	end
+
+	@ExecSpace("Client")
+	method void SyncStorageTable(string data)
+		-- 전체 스토리지 테이블을 클라이언트에 동기화
+		self.storage = _HttpService:JSONDecode(data)
+		self.Entity:SendEvent(OnSyncStorageAll(true))
+		for k,v in pairs(self.storage) do
+			self:SyncStorageInClient(k,v)
+		end
+		self.Entity:SendEvent(OnSyncStorageAll(false))
+	end
+
+	method integer GetAllEggCount()
+		-- 모든 알 아이템의 총 개수를 반환
+		local sum = 0
+		
+		for key, value in pairs(_ItemDataLogic.itemData) do
+			if value.category == "egg" and value.grade ~= "tutorial" then
+				if isvalid(self.storage[key]) then
+					sum += self.storage[key].count
+				end
+			end
+		end
+		
+		return sum
+	end
+
+	@ExecSpace("Client")
+	method void SendChangedEggEvent()
+		-- 알 아이템 변경 이벤트 전송
+		_UserService.LocalPlayer:SendEvent(ChangedEggEvent())
+	end
+
+	@ExecSpace("Server")
+	method void RequestUseItem(string uniqueKey, integer count)
+		-- 아이템 사용 요청 처리
+		if senderUserId ~= self.userId then
+			self:SendCompleteUseEvent(self.userId)
+			
+			return
+		end
+		
+		self:CheckExpiredItems()
+		
+		local id = self.storage[uniqueKey].originalId
+		
+		local haveCount = self.storage[uniqueKey].count
+		local consumedCount = 0
+		
+		if haveCount - count < 0 then 
+			_LocalizeLogic:ShowToast("toast264", senderUserId)
+			self:SendCompleteUseEvent(self.userId)
+			
+			return
+		else
+			local canUse = _ConsumeLogic:IsCanUseItemInServer(id, count, senderUserId)
+			
+			if canUse then
+				
+				if _CheckLogic:IsFieldItem(id, senderUserId) then 
+					_ConsumeLogic:UseFieldConsumeItem(id, count, senderUserId)
+					consumedCount = count
+				else
+					for i = 1, count do
+						_ConsumeLogic:UseConsumeItem(id, senderUserId)
+						consumedCount = i
+					
+						if i % 20 == 0 then
+							wait(0.02)
+						end
+					end
+				end
+				
+				if haveCount - count <= 0 then
+					self:RemoveItemByUniqueKey(uniqueKey, count, "Consume")
+				elseif haveCount - count > 0 then
+					self.storage[uniqueKey].count = haveCount - consumedCount
+					_WorldLog:LogInventoryFlow(self.userId, uniqueKey, id, "Consume", _WorldLog.FlowType_Consume, -count,"")
+				end
+		
+			else
+				self:SendCompleteUseEvent(self.userId)
+				return
+			end
+			
+		end
+		
+		
+		self:SetStorageData(false)
+		self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+		self:SendCompleteUseEvent(self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddItemCount(string uniqueKey, string itemId, integer count, string source, string sourceId)
+		-- 기존 아이템의 개수를 증가시키고 최대 개수 초과 시 새 슬롯 생성
+		local sumCount = self.storage[uniqueKey].count + count
+		local remain = 0
+		
+		if sumCount > self.maxCount then
+			remain = sumCount - self.maxCount 
+			self.storage[uniqueKey].count = self.maxCount
+			self:RequestAddItemFromServer(_GameUtil:CreateGUID(), remain, itemId, 1, self.userId, source, sourceId)
+		else
+			self.storage[uniqueKey].count = sumCount
+			_WorldLog:LogInventoryFlow(self.userId, uniqueKey, self.storage[uniqueKey].originalId, source, _WorldLog.FlowType_Get, count,sourceId)
+		end
+		
+		self:SetStorageData(false)
+		self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SyncAll()
+		-- 모든 스토리지 데이터를 클라이언트와 동기화
+		self:SetStorageData(true)
+		self:SyncStorageTable(_HttpService:JSONEncode(self.storage),self.userId)
+	end
+
+	method integer GetAllArmorCount()
+		-- 모든 방어구 아이템의 총 개수를 반환
+		local sum = 0
+		
+		for key, value in pairs(self.storage) do
+			if isvalid(value.originalId) and isvalid(_ItemDataLogic.equipmentData[value.originalId]) and _ItemDataLogic.equipmentData[value.originalId].category == "armor" then
+				sum = sum + 1
+			end
+		end
+		
+		return sum
+	end
+
+	method table GetArmorStorageBySorting(integer enum, Entity player)
+		-- 방어구를 정렬 옵션에 따라 정렬하여 고유 키 목록 반환
+		local sortTable = {}
+		local uniqueKeyList = {}
+		local equipmentData = _ItemDataLogic.equipmentData
+		
+		for k, v in pairs(self.storage) do
+			local itemData = equipmentData[v.originalId]
+			if itemData ~= nil and itemData.category == "armor" then
+				table.insert(sortTable, v)
+			end
+		end
+		
+		if enum == 1 then 
+			table.sort(sortTable, function(a,b)
+					if a.level == b.level then
+						return a.originalId > b.originalId
+					end
+					return a.level > b.level
+				end)
+		elseif enum == 2 then 
+			table.sort(sortTable, function(a,b)
+				if tonumber(equipmentData[a.originalId].mergeLevel) == tonumber(equipmentData[b.originalId].mergeLevel) then
+						return a.originalId > b.originalId	
+				end
+				return tonumber(equipmentData[a.originalId].mergeLevel) > tonumber(equipmentData[b.originalId].mergeLevel)
+			end)
+		
+		elseif enum == 3  then 
+			table.sort(sortTable, function(a,b)
+				return a.originalId < b.originalId
+			end)
+		end
+		
+		for i = 1 , #sortTable do
+			table.insert(uniqueKeyList, sortTable[i].uniqueKey)
+			for k, v in pairs(self.storage) do
+				if sortTable[i].uniqueKey == v.uniqueKey then
+					v.inventoryNum = i
+				end
+			end
+		end
+		
+		
+		
+		return uniqueKeyList
+	end
+
+	method void SortItemByType(string type)
+		-- 무기를 타입별로 정렬하고 그리드에 재배치
+		
+		local sortTable = {}
+		
+		for k,v in pairs(self.storage) do
+			local itemData = _ItemDataLogic:GetItemData(v.originalId)
+			if itemData ~= nil and itemData.category == "weapon" then
+				table.insert(sortTable,v)
+			end
+		end
+		
+		if type == "level_descend" then
+			table.sort(sortTable,function(a,b)
+					if a.level == b.level then
+						if a.mergeExp == b.mergeExp then
+							return a.uniqueKey < b.uniqueKey
+						end
+						return a.mergeExp < b.mergeExp
+					end
+					return a.level < b.level
+			end)
+		elseif type == "level_ascend" then
+			table.sort(sortTable,function(a,b)
+					if a.level == b.level then
+						if a.mergeExp == b.mergeExp then
+							return a.uniqueKey > b.uniqueKey
+						end
+						return a.mergeExp > b.mergeExp
+					end
+					return a.level > b.level
+			end)
+		elseif type == "category" then
+			table.sort(sortTable,function(a,b)
+					if a.originalId == b.originalId then
+						if a.level == b.level then
+							if a.mergeExp == b.mergeExp then
+								return a.uniqueKey < b.uniqueKey
+							end
+							return a.mergeExp < b.mergeExp
+						end
+						return a.level < b.level
+					end
+					return a.originalId < b.originalId
+			end)
+		end
+		
+		table.clear(self.gridStorage)
+		
+		
+		local index = 0
+		for k,v in pairs(sortTable) do
+			local x = index % (_NewMergeLogic.gridWidth + 1)
+			local y = math.floor(index / (_NewMergeLogic.gridWidth + 1))
+			
+			local gridKey =  _NewMergeLogic:GetGridKey(x,y)
+			index = index + 1
+			
+			v.posX = x
+			v.posY = y
+			self.gridStorage[gridKey] = v.uniqueKey
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SyncBulk(table keys)
+		-- 여러 아이템을 일괄로 클라이언트에 동기화
+		local tempStorage = {}
+		for _,key in pairs(keys) do
+			if self.storage[key] ~= nil then
+				tempStorage[key] = _HttpService:JSONEncode(self.storage[key])
+			else
+				tempStorage[key] = ""
+			end
+		end
+		self:OnSyncBulk(_HttpService:JSONEncode(tempStorage),self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncBulk(string data)
+		-- 일괄 동기화 데이터를 받아 처리
+		local tempStorage = _HttpService:JSONDecode(data)
+		for k,v in pairs(tempStorage) do
+			if _UtilLogic:IsNilorEmptyString(v) then
+				self:SyncStorageInClient(k,nil)
+			else
+				self:SyncStorageInClient(k,_HttpService:JSONDecode(v))
+			end
+			
+		end
+	end
+
+	method table GetAllEquippedArmor()
+		-- 장착된 모든 방어구 목록을 반환
+		local armor = {}
+		for k,v in pairs(self.storage) do
+			if isvalid(_ItemDataLogic.equipmentData[v.originalId]) and _ItemDataLogic.equipmentData[v.originalId].category == "armor" then
+				if v.equippedSlotNum > 0 then
+					table.insert(armor,v)
+				end
+			end
+		end
+		return armor
+	end
+
+	@ExecSpace("Server")
+	method void RefreshArmorInventoryNum(table uniqueKeyList, Entity user)
+		-- 방어구 인벤토리 번호를 새로고침하고 동기화
+		local storage = user.PlayerStorageComponent.storage
+		
+		for i = 1 , #uniqueKeyList do
+			for key, value in pairs(storage) do
+				if value.uniqueKey == uniqueKeyList[i] then
+					value.inventoryNum = i
+					self:SyncStorageInClient(value.uniqueKey, storage[value.uniqueKey])
+				end
+			end
+		end
+		
+		
+	end
+
+	method integer GetItemCount(string id)
+		-- 아이템 ID로 해당 아이템의 총 개수를 반환
+		local count = 0
+		
+		for key, value in pairs(self.storage) do
+			if value.originalId == id then
+				count += value.count
+			end
+		end
+		
+		return count
+	end
+
+	@ExecSpace("Server")
+	method void RequestSellItemByCount(string id, integer count)
+		-- 아이템 ID로 지정된 수량만큼 판매 요청 처리
+		if self.userId ~= senderUserId then 
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		self:CheckExpiredItems()
+		
+		if count > self:GetItemCount(id) then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast266"))
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Try Sell More : id" .. "/" .. tostring(count), 0, 0, 0, 0)
+			
+			return
+		end
+		
+		self:SellItemByCount(id, count)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SellItemByCount(string id, integer count)
+		-- 아이템을 지정된 수량만큼 판매하고 메소 지급
+		local total = count
+		local price = 0
+		
+		local itemData = _ItemDataLogic.itemData[id]
+		
+		if not isvalid(itemData) then
+			itemData = _ItemDataLogic.equipmentData[id]
+			
+			if not isvalid(itemData) then
+				
+				return
+			end
+		
+		end
+		
+		price = itemData.sellingPrice * count
+		self:RemoveItemById(id, count, "SellByCount")
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, price, self.userId,"SellByCount",id)
+		self:NoticeSellItem(id, count, self.userId)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeSellItem(string id, integer count)
+		-- 아이템 판매 완료 알림 표시
+		local data = _ItemDataLogic.itemData[id]
+		local str = _LocalizationService:GetTextFormat("toast256", _LocalizationService.LocalTranslator:GetText(data.name), tostring(count), tostring(data.sellingPrice * count))
+		
+		_UIToast:ShowMessage(str)
+		self:SendCompleteUseEvent()
+		_UIGroupManager.uiPlayerStatusPopup.inventoryList:Refresh()
+	end
+
+	@ExecSpace("Server")
+	method void RequestUseItemById(string id, integer count)
+		-- 아이템 ID로 지정된 수량만큼 사용 요청 처리
+		if senderUserId ~= self.userId then
+			self:SendCompleteUseEvent(self.userId)
+			
+			return
+		end
+		
+		self:CheckExpiredItems()
+		
+		local haveCount = self:GetItemCount(id)
+		local consumedCount = 0
+		
+		
+		if haveCount - count < 0 then 
+			_LocalizeLogic:ShowToast("toast264", senderUserId)
+			self:SendCompleteUseEvent(self.userId)
+			
+			return
+		else
+			
+			for i = 1, count do
+				local canUse = _ConsumeLogic:IsCanUseItemInServer(id, count - i, senderUserId)
+				
+				if canUse then
+					_ConsumeLogic:UseConsumeItem(id, senderUserId)
+					consumedCount = i
+					
+		
+					if i % 20 == 0 then
+						wait(0.02)
+					end
+				else
+					self:RequestRemoveItemById(id, i, "ConsumeByCount", senderUserId)
+					_LocalizeLogic:ShowToast("toast272", self.userId)
+					self:SendCompleteUseEvent(self.userId)
+					
+					return
+				end
+			end
+		
+			self:RequestRemoveItemById(id, count, "ConsumeByCount", senderUserId)
+		end
+		
+		if _ItemDataLogic.itemData[id].notNoticeUse == "0" then
+			self:NoticeUseItem(id, count, self.userId)
+		end
+		self:SetStorageData(false)
+		self:SendCompleteUseEvent(self.userId)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeUseItem(string id, integer count)
+		-- 아이템 사용 완료 알림 표시
+		local data = _ItemDataLogic.itemData[id]
+		local str = _LocalizationService:GetTextFormat("toast270", _LocalizationService.LocalTranslator:GetText(string.format("itemName_%s", data.id)), tostring(count))
+		
+		_UIToast:ShowMessage(str)
+		_UIGroupManager.uiPlayerStatusPopup.inventoryList:Refresh()
+		_MultiHUDManager:Refresh()
+	end
+
+	method number GetAllWeaponCnt()
+		-- 모든 무기의 총 개수를 반환
+		local count = 0
+		for key, value in pairs(self.storage) do
+			local id = value.originalId
+			local data = _ItemDataLogic:GetItemData(id)
+			if data ~= nil then
+				if data.category == "weapon" then
+					count = count + 1
+				end
+			end
+		end
+		return count
+	end
+
+	@ExecSpace("Client")
+	method void SendCompleteUseEvent()
+		-- 아이템 사용 완료 이벤트 전송 및 UI 입력 활성화
+		_UIGroupManager.playerStatusPopup.UIPlayerStatusPopup:SetUIInputEnable(true)
+	end
+
+	method table GetAllWeapon()
+		-- 모든 무기 아이템 목록을 반환
+		local weapon = {}
+		for k,v in pairs(self.storage) do
+			if isvalid(_ItemDataLogic.equipmentData[v.originalId]) and _ItemDataLogic.equipmentData[v.originalId].category == "weapon" then
+				table.insert(weapon,v)
+			end
+		end
+		return weapon
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean ShowResurrectPopUp()
+		-- 부활 티켓 사용 팝업 표시 여부 확인 및 표시
+		if _GameSettingLogic.mode ~= _GameConfig:GetConfig().GAMEMODE_BASIC or isvalid(self.Entity.MultiBattlePlayer) then 
+			_TimerLogic:Resume()
+			_UserService.LocalPlayer.BattlePlayer:Dead(false)
+			
+			return false 
+		end
+		
+		local count = 0
+		
+		for key, value in pairs(self.storage) do
+			if value.originalId == "9_000017" then
+				count += value.count
+			end
+		end
+		
+		if count > 0 then
+			local str = string.format(_LocalizeLogic:GetText("popup28"), count)
+			
+			_UIPopup:Open(_LocalizeLogic:GetText("popup27"), str, 
+				function()
+					self:RequestUseResurrectTicket()
+				end, 
+				function()
+					_TimerLogic:Resume()
+					_UserService.LocalPlayer.BattlePlayer:Dead(false)
+				end)
+			return true
+		else
+			_TimerLogic:Resume()
+			_UserService.LocalPlayer.BattlePlayer:Dead(false)
+			
+			return false
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestUseResurrectTicket()
+		-- 부활 티켓 사용 요청 처리
+		if senderUserId ~= self.userId then
+			
+			return
+		end
+		
+		local result = false
+		
+		for key, value in pairs(self.storage) do
+			if value.originalId == "9_000017" and value.count > 0 then
+				self:RemoveItemById("9_000017", 1, "USE RESURRECT TICKET")
+				self.Entity.BattlePlayer:ResurrectByTicket(senderUserId)
+				result = true
+				
+				break
+			end
+		end
+		
+		if not result then
+			_LocalizeLogic:ShowToast("toast269", self.userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void CheckExpiredItems()
+		-- 만료된 아이템들을 확인하고 제거 처리
+		local itemInfos = {}
+		local index = 1
+		
+		for key, value in pairs(self.storage) do
+			local itemData = _ItemDataLogic.itemData[value.originalId]
+			
+			if isvalid(itemData) and itemData.expireDate ~= "" then
+				local isExpire = ( DateTime(itemData.expireDate).Elapsed - _LocalTimeLogic:GetKST().Elapsed) <= 0
+				
+				if isExpire then
+					itemInfos[index] = {["id"] = value.originalId, ["itemType"] = "item", ["count"] = value.count}
+					index += 1
+					
+					self:RemoveItemById(value.originalId, math.maxinteger, "EXPIRED DATE")
+				end
+			end
+		end
+		
+		if #table.keys(itemInfos) > 0 then
+			self:ShowExpiredResult(itemInfos, self.userId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowExpiredResult(table itemInfos)
+		-- 만료된 아이템 목록을 팝업으로 표시
+		_ItemListPopUp:Open(itemInfos, nil, _LocalizeLogic:GetText("etcStr208"))
+		_UIToast:ShowMessage(_LocalizeLogic:GetText("toast273"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveItemByUniqueKey(string uniqueKey, integer count, string source)
+		-- 고유 키로 아이템을 지정된 수량만큼 제거
+		
+		local deleteCount = count
+		local itemId = self.storage[uniqueKey].originalId
+		local tempUniqueKey = uniqueKey 
+		local willRemoveKey = {}
+		if self.storage[uniqueKey].count - deleteCount < 0 then
+			return
+		end
+		self.storage[uniqueKey].count = self.storage[uniqueKey].count - deleteCount
+		
+		if self.storage[uniqueKey].count <= 0 then
+			self.storage[uniqueKey] = nil
+		end
+		
+		self:SyncStorageInClient(uniqueKey, self.storage[uniqueKey], self.userId)
+		self:SetStorageData(false)
+		
+		
+		_WorldLog:LogInventoryFlow(self.userId, tempUniqueKey, itemId, source, _WorldLog.FlowType_Consume, - deleteCount, "")
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestRemoveItemByUniqueKey(string uniqueKey, integer count, string source)
+		-- 고유 키로 아이템 제거 요청 처리 및 권한 검증
+		if uniqueKey == nil then
+			return
+		end
+		if count == 0 then
+			return
+		end
+		if senderUserId ~= self.userId then
+			return
+		end
+		
+		self:RemoveItemByUniqueKey(uniqueKey, count, source)
+	end
+
+	method integer GetCategoryItemCount(string category)
+		-- 특정 카테고리의 아이템 총 개수를 반환
+		local count = 0
+		
+		for key, value in pairs(self.storage) do
+			local itemData = _ItemDataLogic.itemData[value.originalId]
+			
+			if isvalid(itemData) then
+				if itemData.category == category then
+					count += value.count
+				end
+			else
+				itemData = _AccessoryLogic.accessoryData[value.originalId]
+				
+				if isvalid(itemData) then
+					if _ItemDataLogic:GetAccessoryDetailCategory(value.originalId) == category then
+						count += value.count
+					end
+				end
+			end
+		end
+		
+		return count
+	end
+
+	method string GetEquippedKey(integer equippedSlotNum)
+		-- 장착 슬롯 번호로 장착된 아이템의 고유 키를 반환
+		for key, value in pairs(self.storage) do
+			if value.equippedSlotNum == equippedSlotNum then
+				return key
+			end
+		end
+	end
+
+	method string GetMinimumCountUniqueKeyByItemId(string itemId)
+		-- 아이템 ID로 가장 적은 개수를 가진 슬롯의 고유 키를 반환
+		if _UtilLogic:IsNilorEmptyString(itemId) then
+			return ""
+		end
+		
+		local minimumKey = ""
+		local minimumCount = 0
+		
+		for key, value in pairs(self.storage) do
+			
+			if value.originalId == itemId then
+				if minimumKey == "" and minimumCount == 0 then
+					minimumKey = key
+					minimumCount = value.count	
+				else
+					
+					if value.count < minimumCount then
+						minimumKey = key
+						minimumCount = value.count
+					end
+				end
+			end	
+		end
+		
+		return  minimumKey
+	end
+
+end

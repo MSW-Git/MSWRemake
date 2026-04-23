@@ -1,0 +1,581 @@
+@Logic
+script LobbyCameraService extends Logic
+
+	property Entity CameraSettingOnMap = nil
+
+	property SyncTable<string, CameraComponent> lobbyCameras
+
+	property string nowCamera = ""
+
+	property boolean UpInput = false
+
+	property boolean DownInput = false
+
+	property boolean LeftInput = false
+
+	property boolean RightInput = false
+
+	property number cameraMoveSpeed = 0.8
+
+	property Vector2 lastTouchPoint = Vector2(0,0)
+
+	property Vector2 curTouchPoint = Vector2(0,0)
+
+	property number touchCameraMoveSpeed = 0.4
+
+	property Vector2 cameraBoundLB = Vector2(0,0)
+
+	property Vector2 cameraBoundRT = Vector2(0,0)
+
+	property SyncTable<integer, boolean> nowTouchIds
+
+	property Vector2 moveBoundLimit = Vector2(2.2,2.2)
+
+	property Entity CameraSetOptions = "aecf9241-e50c-4618-b1d6-83d5878c8ba3"
+
+	property integer camSwitchIndex = 0
+
+	property Entity CameraSetToggle = "b17ee50f-00f5-4b5e-bb45-9f0a5466d127"
+
+	@ExecSpace("ClientOnly")
+	method void ChangeCameraTo(string key)
+		-- 지정된 키에 해당하는 카메라로 전환하는 함수
+		self.nowCamera = key
+		
+		local nowCamera = self.lobbyCameras[key]
+		
+		if _CameraService:GetCurrentCameraComponent() ~= self.lobbyCameras["MovingCamera"] then
+			_CameraService.TransitionBlendTime = 0
+			_CameraService:SwitchCameraTo(self.lobbyCameras["MovingCamera"])
+		end
+		
+		if isvalid(self._T.initTimer) then
+			_TimerService:ClearTimer(self._T.initTimer)
+			self._T.initTimer = nil
+		end
+		
+		if isvalid(nowCamera) == false then
+			return
+		end
+		
+		if key ~= "MovingCamera" then
+			self:SetCameraSetting("MovingCamera", nowCamera.Entity.TransformComponent.Position, nowCamera.ZoomRatio)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCameraSetting(string key, Vector3 position, integer zoomRatio)
+		-- 카메라의 위치와 줄 비율을 설정하는 함수
+		local camera = self.lobbyCameras[key]
+		
+		
+		camera.Entity.TransformComponent.Position = Vector3(position.x, position.y, position.z)
+		camera.ZoomRatio = self:GetZoomRatio(zoomRatio)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCamerasForExpansion(integer expansionLevel)
+		-- 확장 레벨에 따라 카메라 설정을 적용하는 함수
+		if isvalid(self.CameraSettingOnMap) == false then
+			self:InitCameras()
+		end
+		
+		local cameraData = _CameraDataSetLogic:GetLobbyCameraData(expansionLevel)
+		
+		for k, cameraComponent in pairs(self.lobbyCameras) do
+			---@type LobbyCameraTypeData
+			local typeData = cameraData.CameraTypeData[k]
+			
+			if typeData == nil then
+				continue
+			end
+			
+			if typeData.CustomBoundLB ~= nil then
+				cameraComponent.LeftBottom = Vector2(typeData.CustomBoundLB.x, typeData.CustomBoundLB.y)
+				self.cameraBoundLB = Vector2(typeData.CustomBoundLB.x, typeData.CustomBoundLB.y)
+			end
+			
+			if typeData.CustomBoundRT ~= nil then
+				cameraComponent.RightTop = Vector2(typeData.CustomBoundRT.x, typeData.CustomBoundRT.y)
+				self.cameraBoundRT = Vector2(typeData.CustomBoundRT.x, typeData.CustomBoundRT.y)
+			end
+			
+			local xLength = self.cameraBoundRT.x - self.cameraBoundLB.x
+			local yLength = self.cameraBoundRT.y - self.cameraBoundLB.y
+			self.moveBoundLimit = Vector2(xLength/4, yLength/4)
+			
+			if typeData.PosX ~= nil and typeData.PosY ~= nil then
+				cameraComponent.Entity.TransformComponent.Position = Vector3(typeData.PosX, typeData.PosY, cameraComponent.Entity.TransformComponent.Position.z)
+			end
+			
+			if typeData.ZoomRatio ~= nil then
+		        cameraComponent.ZoomRatio = typeData.ZoomRatio
+			end
+		end
+		
+		self:ChangeCameraTo("FullView")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveMovingCamera(number delta)
+		-- 키보드 입력에 따라 이동 카메라를 이동시키는 함수
+		local dirX = 0
+		local dirY = 0
+		
+		if self.RightInput ~= self.LeftInput then
+			if self.RightInput then
+				dirX = 1
+			else
+				dirX = -1
+			end
+		end
+		
+		if self.UpInput ~= self.DownInput then
+			if self.UpInput then
+				dirY = 1
+			else
+				dirY = -1
+			end
+		end
+		
+		local movingCamera = self.lobbyCameras["MovingCamera"]
+		if isvalid(movingCamera) == false then
+			return
+		end
+		
+		local moveX = dirX * delta * self.cameraMoveSpeed
+		local moveY = dirY * delta * self.cameraMoveSpeed
+		
+		local nowPosX = movingCamera.Entity.TransformComponent.Position.x
+		local nowPosY = movingCamera.Entity.TransformComponent.Position.y
+		
+		if (nowPosX+moveX) < self.cameraBoundLB.x + self.moveBoundLimit.x or (nowPosX+moveX) > self.cameraBoundRT.x - self.moveBoundLimit.x then
+			moveX = 0
+		elseif (nowPosY+moveY) < self.cameraBoundLB.y + self.moveBoundLimit.y or (nowPosY+moveY) > self.cameraBoundRT.y - self.moveBoundLimit.y then
+			moveY = 0
+		end
+		
+		self:ForceCorrectPos()
+		movingCamera.Entity.TransformComponent:Translate(moveX, moveY)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 카메라 업데이트를 처리하는 함수
+		local player = _UserService.LocalPlayer
+		if _UtilLogic:Contains(player.CurrentMap.Name, "Lobby") == false then
+			return
+		end
+		
+		if isvalid(self.CameraSettingOnMap) == false then
+			self:InitCameras()
+			return
+		end
+		
+		if player.TimeManager:CheckCanTimeFlows() == false or _InputService:IsPointerOverUI() then
+		    self:SetEnableCameraZoom(false)
+		    return
+		end
+		
+		self:SetEnableCameraZoom(true)
+		self:MoveMovingCamera(delta)
+		self:MoveMovingCameraByTouchPoint(delta)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveMovingCameraByTouchPoint(number delta)
+		-- 터치 입력에 따라 이동 카메라를 이동시키는 함수
+		
+		local movingCamera = self.lobbyCameras["MovingCamera"]
+		if isvalid(movingCamera) == false then
+			return
+		end
+		
+		local zoomRatio = movingCamera.ZoomRatio
+		local defaultCamera = self.lobbyCameras["FullView"]
+		
+		local zoomCorrection = _LobbyCameraService:GetZoomRatio(defaultCamera.ZoomRatio) / zoomRatio
+		if zoomCorrection < 0.5 then
+			zoomCorrection = 0.5
+		elseif zoomCorrection > 1 then
+			zoomCorrection = 1
+		end
+		
+		local camMoveSpeed = self.touchCameraMoveSpeed * zoomCorrection
+		
+		local vecX = self.curTouchPoint.x - self.lastTouchPoint.x
+		local vecY = self.curTouchPoint.y - self.lastTouchPoint.y
+		
+		local moveX = -vecX * delta * camMoveSpeed
+		local moveY = -vecY * delta * camMoveSpeed
+		
+		local nowPosX = movingCamera.Entity.TransformComponent.Position.x
+		local nowPosY = movingCamera.Entity.TransformComponent.Position.y
+		if (nowPosX+moveX) < self.cameraBoundLB.x + self.moveBoundLimit.x or (nowPosX+moveX) > self.cameraBoundRT.x - self.moveBoundLimit.x then
+			moveX = 0
+		elseif (nowPosY+moveY) < self.cameraBoundLB.y + self.moveBoundLimit.y or (nowPosY+moveY) > self.cameraBoundRT.y - self.moveBoundLimit.y then
+			moveY = 0
+		end
+		
+		if moveX ~= 0 and moveY ~= 0 then
+		end
+		
+		self:ForceCorrectPos()
+		movingCamera.Entity.TransformComponent:Translate(moveX, moveY)
+		
+		self.lastTouchPoint = Vector2(self.curTouchPoint.x, self.curTouchPoint.y)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitCameras()
+		-- 카메라 설정을 초기화하는 함수
+		if isvalid(self.CameraSettingOnMap) then
+			return
+		end
+		
+		if isvalid(self._T.initTimer) == true then
+			_TimerService:ClearTimer(self._T.initTimer)
+			self._T.initTimer = nil
+		end
+		
+		local currentMap = _UserService.LocalPlayer.CurrentMap
+		local cameraSettingOnMap = _EntityService:GetEntityByPath(currentMap.Path.."/CameraSetting")
+		if isvalid(cameraSettingOnMap) == false then
+			self._T.initTimer = _TimerService:SetTimerOnce(function()
+				self:InitCameras()
+			end, 0.5)
+			return
+		end
+		
+		self.CameraSettingOnMap = cameraSettingOnMap
+		
+		for i = 1, #self.CameraSettingOnMap.Children do
+			local entity = self.CameraSettingOnMap.Children[i]
+			local name = entity.Name
+			
+			self.lobbyCameras[name] = entity.CameraComponent
+			entity.CameraComponent.ZoomRatioMin = 40
+			entity.CameraComponent.ZoomRatioMax = 150
+		end
+		
+		_CameraService.TransitionBlendTime = 0.2
+		_CameraService:SwitchCameraTo(self.lobbyCameras["MovingCamera"])
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ToggleCameraSetOptions()
+		-- 카메라 옵션 UI를 토글하는 함수
+		if self._T.isTween then
+			return
+		end
+		
+		local enable = self._T.isOpen
+		self.CameraSetToggle.SpriteGUIRendererComponent.FlipX = not enable
+		
+		if enable == false then
+			self._T.isOpen = true
+			self.CameraSetOptions:GetChildByName("OptionBG").Enable = true
+		end
+		self:StartCameraSetOptionsTween(not enable)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartCameraSetOptionsTween(boolean isOpen)
+		-- 카메라 옵션 UI 애니메이션을 시작하는 함수
+		local options = self.CameraSetOptions:GetChildByName("OptionBG")
+		local transform = options.UITransformComponent
+		if isOpen == true then
+			transform.anchoredPosition = Vector2(self._T.startPos.x, self._T.startPos.y)
+		else
+			transform.anchoredPosition = Vector2(self._T.targetPos.x, self._T.targetPos.y)	
+		end
+		
+		self._T.isTween = true
+		if options.Enable == false then
+			options.Enable = true
+		end
+		
+		local startPos
+		local targetPos
+		if isOpen then
+			startPos = self._T.startPos
+			targetPos = self._T.targetPos
+		else
+			startPos = self._T.targetPos
+			targetPos = self._T.startPos
+		end
+		
+		_TweenLogic:PlayTween(startPos, targetPos, self._T.tweenDuration, EaseType.CubicEaseOut, function(t)
+			options.UITransformComponent.anchoredPosition = t
+		end)
+		
+		_TimerService:SetTimerOnce(function()
+			if isOpen == false then
+				self._T.isOpen = false
+				options.Enable = false
+			end
+			
+			self._T.isTween = false
+		end, self._T.tweenDuration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 로직 시작 시 초기화 작업을 수행하는 함수
+		self._T.isTween = false
+		self._T.isOpen = false
+		
+		self.UpInput = false
+		self.DownInput = false
+		self.LeftInput = false
+		self.RightInput = false
+		
+		self._T.tweenDuration = 0.5
+		
+		local rectSize = self.CameraSetOptions.UITransformComponent.RectSize.x
+		local transform = self.CameraSetOptions:GetChildByName("OptionBG").UITransformComponent
+		self._T.startPos = Vector2(-rectSize, transform.anchoredPosition.y)
+		self._T.targetPos = Vector2(0, transform.anchoredPosition.y)
+		
+		self._T.camIdx = {}
+		self._T.camIdx[1] = "FullView"
+		self._T.camIdx[2] = "EntranceView"
+		self._T.camIdx[3] = "ServingView"
+		self._T.camIdx[4] = "CookingView"
+		self.camSwitchIndex = 1
+		
+		transform.anchoredPosition = Vector2(self._T.startPos.x, self._T.startPos.y)
+		transform.Entity.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickCameraSetOptionBtn(string optionKey)
+		-- 카메라 옵션 버튼 클릭 시 처리하는 함수
+		if self._T.isTween == true then
+			return
+		end
+		
+		_UIGroupManager:ClearAllUI()
+		self:ChangeCameraTo(optionKey)
+		
+		if _UIGroupManager.TutorialGroup.Enable == true then
+			_UIGroupManager:EnableTutorialGroup(false)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ForceCorrectPos()
+		-- 이동 카메라의 위치를 경계 내로 강제 보정하는 함수
+		local movingCamera = self.lobbyCameras["MovingCamera"]
+		if isvalid(movingCamera) == false then
+			return
+		end
+		
+		local nowPosX = movingCamera.Entity.TransformComponent.Position.x
+		local nowPosY = movingCamera.Entity.TransformComponent.Position.y
+		
+		if nowPosX < self.cameraBoundLB.x + self.moveBoundLimit.x then
+			movingCamera.Entity.TransformComponent.Position.x = self.cameraBoundLB.x + self.moveBoundLimit.x
+		elseif nowPosX > self.cameraBoundRT.x - self.moveBoundLimit.x then
+			movingCamera.Entity.TransformComponent.Position.x = self.cameraBoundRT.x - self.moveBoundLimit.x
+		end
+		
+		local posY
+		if nowPosY < self.cameraBoundLB.y + self.moveBoundLimit.y then 
+			movingCamera.Entity.TransformComponent.Position.y = self.cameraBoundLB.y + self.moveBoundLimit.y
+		elseif nowPosY > self.cameraBoundRT.y - self.moveBoundLimit.y then
+			movingCamera.Entity.TransformComponent.Position.y = self.cameraBoundRT.y - self.moveBoundLimit.y
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SwitchCamera()
+		-- 카메라를 순차적으로 전환하는 함수
+		self.camSwitchIndex = self.camSwitchIndex + 1
+		if self.camSwitchIndex >= 5 then
+			self.camSwitchIndex = 1
+		end
+		
+		local camKey = self._T.camIdx[self.camSwitchIndex]
+		
+		self:ChangeCameraTo(camKey)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetEnableCameraZoom(boolean enable)
+		-- 카메라 줄 기능의 활성화 여부를 설정하는 함수
+		local movingCamera = self.lobbyCameras["MovingCamera"]
+		if isvalid(movingCamera) == false then
+			return
+		end
+		
+		movingCamera.IsAllowZoomInOut = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetMovingCameraByKey(string key)
+		-- 키에 따라 이동 카메라의 위치와 줄을 설정하는 함수
+		local player = _UserService.LocalPlayer
+		local expansionLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.ExpansionStep)
+		local cameraData = _CameraDataSetLogic:GetLobbyCameraData(expansionLv)
+		if isvalid(cameraData) == false then
+			return
+		end
+		
+		local typeData = cameraData:GetCameraTypeDataByKey(key)
+		if isvalid(typeData) == false then
+			return
+		end
+		
+		local cameraComponent = self.lobbyCameras["MovingCamera"]
+		
+		local pos = Vector3(typeData.PosX, typeData.PosY, cameraComponent.Entity.TransformComponent.Position.z)
+		self:SetCameraSetting("MovingCamera", pos, typeData.ZoomRatio)
+	end
+
+	@ExecSpace("Client")
+	method void ClearCameraSettingOnMap()
+		-- 맵에서 카메라 설정을 지우는 함수
+		self.CameraSettingOnMap = nil
+	end
+
+	method number GetZoomRatio(number zoomRatio)
+		-- 플랫폼에 따라 조정된 줄 비율을 반환하는 함수
+		if Environment:IsMobilePlatform() then
+			zoomRatio = zoomRatio - 15
+		end
+		
+		return zoomRatio
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 키 눌림 이벤트를 처리하여 카메라 이동 입력을 설정하는 핸들러
+		
+		local key = event.key
+		if key == KeyboardKey.W or key == KeyboardKey.UpArrow then
+			self.UpInput = true
+		elseif key == KeyboardKey.S or key == KeyboardKey.DownArrow then
+			self.DownInput = true
+		elseif key == KeyboardKey.A or key == KeyboardKey.LeftArrow then
+			self.LeftInput = true
+		elseif key == KeyboardKey.D or key == KeyboardKey.RightArrow then
+			self.RightInput = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyUpEvent(KeyUpEvent event)
+		-- 키 떼는 이벤트를 처리하여 카메라 이동 입력을 해제하는 핸들러
+		
+		local key = event.key
+		if key == KeyboardKey.W or key == KeyboardKey.UpArrow then
+			self.UpInput = false
+		elseif key == KeyboardKey.S or key == KeyboardKey.DownArrow then
+			self.DownInput = false
+		elseif key == KeyboardKey.A or key == KeyboardKey.LeftArrow then
+			self.LeftInput = false
+		elseif key == KeyboardKey.D or key == KeyboardKey.RightArrow then
+			self.RightInput = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchHoldEvent(ScreenTouchHoldEvent event)
+		-- 화면 터치 홀드 이벤트를 처리하는 핸들러
+		
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		if TouchId > 1 then
+		    return
+		end
+		
+		if self.curTouchPoint == Vector2.zero then
+			self.lastTouchPoint = Vector2(TouchPoint.x, TouchPoint.y)
+		end
+		
+		self.curTouchPoint = Vector2(TouchPoint.x, TouchPoint.y)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchReleaseEvent(ScreenTouchReleaseEvent event)
+		-- 화면 터치 릴리즈 이벤트를 처리하는 핸들러
+		
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		self.lastTouchPoint = Vector2(0, 0)
+		self.curTouchPoint = Vector2(0, 0)
+		
+	end
+
+	@EventSender("Entity", "4aa3c517-b517-4c96-8dd3-3b1d89cf4e7c")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 요리 시점 카메라 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickCameraSetOptionBtn("CookingView")
+	end
+
+	@EventSender("Entity", "d069edf2-8241-4b3f-9158-b387453f41ec")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 서빙 시점 카메라 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickCameraSetOptionBtn("ServingView")
+	end
+
+	@EventSender("Entity", "b3c79014-7ca2-4fd7-ba82-d38fa8edf523")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 입구 시점 카메라 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickCameraSetOptionBtn("EntranceView")
+	end
+
+	@EventSender("Entity", "b17ee50f-00f5-4b5e-bb45-9f0a5466d127")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 카메라 옵션 토글 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:ToggleCameraSetOptions()
+	end
+
+	@EventSender("Entity", "ef30833b-d643-4035-80ad-ef0b7fef9ba8")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 전체 시점 카메라 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickCameraSetOptionBtn("FullView")
+	end
+
+end

@@ -1,0 +1,436 @@
+@Component
+script PlayerAchievement extends Component
+
+	@TargetUserSync
+	property SyncTable<integer, integer> Progress
+
+	@TargetUserSync
+	property SyncTable<integer, boolean> Complete
+
+	@TargetUserSync
+	property SyncTable<integer, boolean> Achieved
+
+	property integer Version = 1
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 업적 데이터를 데이터베이스에 저장하는 함수
+		local achievementTable = {}
+		
+		achievementTable["Progress"] = _StringUtilLogic:IntIntToString(self.Progress)
+		achievementTable["Complete"] = _StringUtilLogic:IntBoolToString(self.Complete)
+		achievementTable["Achieved"] = _StringUtilLogic:IntBoolToString(self.Achieved)
+		achievementTable["Version"] = self.Version
+		
+		saveData["Achievement"] = achievementTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 업적 데이터를 로드하고 초기화하는 함수
+		local archievementTotalTable = loadedData["Achievement"]
+		if archievementTotalTable == nil then
+			archievementTotalTable = {}
+		end
+		
+		if #table.keys(archievementTotalTable) > 0 then
+		    if archievementTotalTable["Version"] == self.Version then
+				if archievementTotalTable["Progress"] then
+					table.initialize(self.Progress, _StringUtilLogic:IntIntToTable(archievementTotalTable["Progress"]))
+				end
+				
+				if archievementTotalTable["Complete"] then
+					table.initialize(self.Complete, _StringUtilLogic:IntBoolToTable(archievementTotalTable["Complete"]))
+				end
+				
+				if archievementTotalTable["Achieved"] then
+					table.initialize(self.Achieved, _StringUtilLogic:IntBoolToTable(archievementTotalTable["Achieved"]))
+				end
+		    else
+				if archievementTotalTable["Progress"] then
+		        	table.initialize(self.Progress, _UtilLogic:StringToTable(archievementTotalTable["Progress"]))
+				end
+				
+				if archievementTotalTable["Complete"] then
+		        	table.initialize(self.Complete, _UtilLogic:StringToTable(archievementTotalTable["Complete"]))
+				end
+				
+				if archievementTotalTable["Achieved"] then
+		        	table.initialize(self.Achieved, _UtilLogic:StringToTable(archievementTotalTable["Achieved"]))
+				end
+				
+		    end
+		
+		else
+			self:ChangeProgress(_TutorialAchievementTypeEnum.FirstAccess, 1)
+			self:SetInitialTypeValue()
+		end
+		
+		self:CheckCanEventCompleted() 
+		
+		_UIButtonUnlockLogic:SetButtonsUnlock(self.Entity.PlayerComponent.UserId)
+		self.Entity.PlayerEvent:RefreshAllToDoSecretaryInfo()
+		
+		for typeId, value in pairs(self.Progress) do
+			_AchievementLogic:CheckAchievementAchieved(self.Entity, typeId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 업적 컴포넌트를 초기화하는 함수
+		table.clear(self.Progress)
+		table.clear(self.Complete)
+		table.clear(self.Achieved)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeProgress(integer type, integer value)
+		-- 업적 진행도를 변경하는 함수
+		self.Progress[type] = value
+		
+		_AchievementLogic:CheckAchievementAchieved(self.Entity, type)
+		
+		self.Entity.PlayerManagement:SetCurrentGoalsProgress()
+		self.Entity.PlayerManagement:CheckGoalsAchieved()
+	end
+
+	@ExecSpace("Server")
+	method void RequestChangeProgress(integer type, integer value)
+		-- 클라이언트에서 업적 진행도 변경을 요청하는 함수
+		self:ChangeProgress(type, value)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetComplete(integer id, boolean isComplete, boolean isOpenRewardUI)
+		-- 업적 완료 상태를 설정하고 보상을 지급하는 함수
+		self.Complete[id] = isComplete
+		if isComplete == true then
+			self.Achieved[id] = true
+			
+			---@type AchievementIdData
+			local idData = _AchievementDataSetLogic.AchiIdData[id]
+			
+			local type = idData.Type
+			local typeValue = _AchievementLogic:GetFixedTypeValue(self.Entity, idData.Type, idData.TypeValue)
+			local rewardType = idData.RewardType
+			local rewardAmount = idData.RewardAmount
+			
+			if _ItemDataSetLogic.ItemData[rewardType] == nil then
+				return
+			end
+			
+			if rewardType == "G0001" then
+				local stageConfig = _BalanceDataSetLogic:GetStageConfigData(self.Entity.PlayerStage.NowStage)
+				rewardAmount = math.floor(rewardAmount * (1 + stageConfig.AchievementMoneyRate))
+			end
+			
+			self.Entity.PlayerInventory:AddItem(rewardType, rewardAmount,"Complete achievement","Achievement popup")
+			_UIItemRewardService:AddItemToRewardQueue(rewardType, rewardAmount, self.Entity.PlayerComponent.UserId)
+			if isOpenRewardUI then
+				_UIItemRewardService:RequestSetQueueToUI("Achievement", self.Entity.PlayerComponent.UserId)
+			end
+			
+			if rewardType == "G0001" then
+				self.Entity.PlayerSettlement:RequestAddValueForSettlement(_SettlementPropertyEnum.P_Etc, rewardAmount)
+			end
+			
+		
+			---@type AchievementTypeData
+			local achiData = _AchievementDataSetLogic.AchiTypeData[(idData.Type)]
+			
+			if achiData.Category ~= 9 then 
+		
+				local rewardTable = {}
+				rewardTable[rewardType] = rewardAmount
+		
+				self.Entity.PlayerLog:AchievementFlow(achiData.NameKey,rewardTable,tostring(id),"2",tostring(achiData.Category))
+		
+			end
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetComplete(integer id, boolean isOpenRewardUI)
+		-- 업적 완료 요청을 처리하고 조건을 확인하는 함수
+		---@type AchievementIdData
+		local idData = _AchievementDataSetLogic.AchiIdData[id]
+		
+		local type = idData.Type
+		local typeValue = _AchievementLogic:GetFixedTypeValue(self.Entity, idData.Type, idData.TypeValue)
+		local rewardType = idData.RewardType
+		local rewardAmount = idData.RewardAmount
+		
+		local progress = self:ReturnAchievementProgress(type)
+		if progress >= typeValue then
+			self:SetComplete(id, true, isOpenRewardUI)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetAchieved(integer id, boolean isAchieved)
+		-- 업적 달성 상태를 설정하고 관련 이벤트를 처리하는 함수
+		self.Achieved[id] = isAchieved
+		
+		---@type AchievementIdData
+		local idData = _AchievementDataSetLogic.AchiIdData[id]
+		local rewardType = idData.RewardType
+		
+		if rewardType == "Event" then
+			_EventManager:SetEventOccurByAchiId(id, self.Entity)
+		end
+		
+		if self.Entity.PlayerStage.NowStage == 1 and isAchieved == true then
+			self.Entity.PlayerEvent:CheckTutorialEndLog(id)
+		end
+		
+		---@type AchievementTypeData
+		local achiData = _AchievementDataSetLogic.AchiTypeData[(idData.Type)]
+		
+		if achiData.Category ~= 9 then 
+			self.Entity.PlayerLog:AchievementFlow(achiData.NameKey,nil,tostring(id),"1",tostring(achiData.Category))
+		end
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.RecommendedUpgrade)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성 변경 시 UI 업데이트를 처리하는 함수
+		if name == "Complete" then
+			self:RequestUpdateUIAchievement()
+			self:SetAchievementRedDot()
+		elseif name == "Achieved" then
+			_UIButtonUnlockLogic:SetButtonsUnlock()
+			_LobbyHUDService.ManagementUI.UIHUDManagement:Refresh()
+			_ToDoManager:RefreshToDoList()
+			self:SetAchievementRedDot()
+		elseif name == "Progress" then
+			_ToDoManager:RefreshToDoInfos()
+			if self.Entity.PlayerManagement.ManagementLevel < 1 then
+				_BalanceDataSetLogic:SetEarningLevelByEarningRecord(self.Entity)
+			end
+		end
+	end
+
+	method integer ReturnAchievementIdByType(integer type)
+		-- 업적 타입에 따라 해당하는 업적 ID를 반환하는 함수
+		
+		local ids = _AchievementDataSetLogic.AchiIdData
+		
+		local typeIds = {}
+		for k, v in pairs(ids) do
+			---@type AchievementIdData
+			local idData = v
+			local idType = idData.Type
+			if type == idType then
+				table.insert(typeIds, k)
+			end
+		end
+		
+		table.sort(typeIds)
+		
+		local nextId
+		for i, typeId in pairs(typeIds) do
+			local idData = _AchievementDataSetLogic:GetAchievementIdData(typeId)
+			if _UtilLogic:IsNilorEmptyString(idData.ConditionType) == false then
+				if idData.ConditionType == "Stage" then
+					if self.Entity.PlayerStage.NowStage < tonumber(idData.ConditionValue) then
+						return nextId
+					end
+				end
+			end
+				
+			local isComplete = self:IsAchievementComplete(typeId)
+			if isComplete == true then
+				if i == #typeIds then
+					return typeId 
+				end
+				
+			else
+				return typeId
+				
+			end
+			
+			nextId = typeId
+		end
+		
+		return nextId
+	end
+
+	@ExecSpace("Client")
+	method void RequestUpdateUIAchievement()
+		-- 업적 UI 업데이트를 요청하는 함수
+		local uiAchievement = _UIEntityLogic_AchievementGroup.UIAchievementPanel.UIAchievement
+		uiAchievement:SetSelectTab(uiAchievement.SelectTab)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetAchievementRedDot()
+		-- 업적 메뉴의 빨간 점 표시를 설정하는 함수
+		local uiAchievement = _UIEntityLogic_AchievementGroup.UIAchievementPanel.UIAchievement
+		
+		local isMenusEnable = false
+		for i, entity in ipairs(uiAchievement.Tabs) do
+			---@type Entity
+			local tab = entity
+			local tabIndex = tab.UIToggleTypeA.index
+			local redDot = tab:GetChildByName("RedDot")
+			
+			if self:IsAnyAchievementAchievedInTab(i) then
+				redDot.Enable = true
+				isMenusEnable = true
+			else
+				redDot.Enable = false
+			end
+		end
+		
+		if isMenusEnable then
+		    _MainMenuRedDotManager:EnableAchievementRedDot(true)
+			_UIEntityLogic_AchievementGroup.GetAllRewardButton.UIButtonTypeA:SetEnable(true)
+		else
+		    _MainMenuRedDotManager:EnableAchievementRedDot(false)
+			_UIEntityLogic_AchievementGroup.GetAllRewardButton.UIButtonTypeA:SetEnable(false)
+		end
+	end
+
+	method boolean IsAnyAchievementAchievedInTab(integer tab)
+		-- 특정 탭에서 달성된 업적이 있는지 확인하는 함수
+		local isAnyAchieved = false
+		for id, isAchieved in pairs(self.Achieved) do
+			---@type AchievementIdData
+			local idData = _AchievementDataSetLogic.AchiIdData[id]
+			if idData == nil then
+			end
+			local achiType = idData.Type
+			---@type AchievementTypeData
+			local typeData = _AchievementDataSetLogic.AchiTypeData[achiType]
+			
+			if typeData.Category ~= tab then
+				continue
+			end
+			
+			if self:IsAchievementAchieved(id) and not self:IsAchievementComplete(id) then
+				isAnyAchieved = true
+				break
+			end
+		end
+		
+		return isAnyAchieved
+	end
+
+	@ExecSpace("Server")
+	method void RequestGainAllReward()
+		-- 모든 달성된 업적의 보상을 일괄 수령하는 함수
+		local completedIds = {}
+		
+		for typeId, progress in pairs(self.Progress) do
+			_AchievementLogic:CheckAchievementAchieved(self.Entity, typeId)
+		end
+		
+		for id, isAchieved in pairs(self.Achieved) do
+			if not self:IsAchievementComplete(id) and self:IsAchievementAchieved(id) then
+				table.insert(completedIds, id)
+			end
+		end
+		
+		self:RequestSetMultipleComplete(completedIds)
+	end
+
+	method boolean IsAchievementComplete(integer achiId)
+		-- 업적이 완료되었는지 확인하는 함수
+		if self.Complete[achiId] == nil then
+			return false
+		end
+		
+		return self.Complete[achiId]
+	end
+
+	method boolean IsAchievementAchieved(integer achiId)
+		-- 업적이 달성되었는지 확인하는 함수
+		if self.Achieved[achiId] == nil then
+			return false
+		end
+		
+		return self.Achieved[achiId]
+	end
+
+	method integer ReturnAchievementProgress(integer achiType)
+		-- 업적 타입의 현재 진행도를 반환하는 함수
+		if self.Progress[achiType] == nil then
+			return _AchievementLogic:ReturnInitialTypeValue(achiType)
+		end
+		
+		return self.Progress[achiType]
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestSetMultipleComplete(table ids)
+		-- 여러 업적을 동시에 완료 처리하는 함수
+		for i = 1, #ids do
+			local curId = ids[i]
+			self:RequestSetComplete(curId, false)
+		end
+		
+		_UIItemRewardService:RequestSetQueueToUI("Achievement", self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckCanEventCompleted()
+		-- 업적 달성에 따른 이벤트 발생 가능성을 확인하는 함수
+		for id, bool in pairs(self.Achieved) do
+			local groupIds = _EventManager:ReturnOccuredEventGroupId(id)
+			for i = 1, #groupIds do
+				local groupId = groupIds[i]
+				local groupData = _EventDataSetLogic:GetEventGroupData(groupId)
+				if groupData == nil then continue end
+				
+				if groupId == "T5301" or groupId == "T5302" or groupId == "T6003" then
+					if self.Entity.PlayerStage.NowStage == 1 then
+						continue
+					end
+				elseif groupId == "T7001" then
+					if self.Entity.PlayerStage.NowStage == 1 then
+						continue
+					end
+				end
+				
+				if groupData.funcTimingName == "AfterCondition" then
+					local eventQueueStr = _UtilLogic:TableToString(self.Entity.PlayerEvent.EventQueue)
+					local dayEventQueueStr = _UtilLogic:TableToString(self.Entity.PlayerEvent.DayEventQueue)
+					
+					if _UtilLogic:Contains(eventQueueStr, groupId) == false and _UtilLogic:Contains(dayEventQueueStr, groupId) == false and self.Entity.PlayerEvent:IsEventOccured(groupId) == false then
+						self.Entity.PlayerEvent:SetEventOccured(groupId)				
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetInitialTypeValue()
+		-- 업적 타입의 초기값을 설정하는 함수
+		for typeId, data in pairs(_AchievementDataSetLogic.AchiTypeData) do
+			local typeData = _AchievementDataSetLogic:GetAchievementTypeData(typeId)
+			if typeData.InitialValue ~= nil and self.Progress[typeId] == nil then
+				self:ChangeProgress(typeId, _AchievementLogic:ReturnInitialTypeValue(typeId))
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeAllAchieveCompleteForCheat()
+		-- 치트용 모든 업적을 완료 상태로 변경하는 함수
+		local dataTable = _AchievementDataSetLogic.AchiIdData
+		
+		for k, v in pairs(dataTable) do
+		    ---@type AchievementIdData
+		    local achievementData = v
+			self.Progress[k] = achievementData.TypeValue
+			self.Achieved[k] = true
+			self.Complete[k] = true
+		end
+	end
+
+end

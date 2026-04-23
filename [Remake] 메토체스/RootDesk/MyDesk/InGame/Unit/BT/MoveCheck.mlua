@@ -1,0 +1,201 @@
+@BTNode
+script MoveCheck extends BTNode
+
+	property boolean Use = false
+
+	property Entity NowTile = nil
+
+	property Entity nextMoveTile = nil
+
+	property number setGetPathTime = 0.3
+
+	property number getPathTime = 0
+
+	method any OnBehave(number delta)
+		-- 타겟까지의 경로를 탐색하고 이동을 실행하는 BT 노드
+		local pAI = self.ParentAI
+		local myUnit = pAI.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local userId = unitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then
+			return BehaviourTreeStatus.Success
+		end
+		
+		-- 경로 탐색 및 이동 쿨타임 확인
+		if self.Use then
+			self.getPathTime += delta
+			
+			if self.getPathTime > self.setGetPathTime and unitStatus.ActionTimer == 0 then
+				self.Use = false
+				self.getPathTime = 0
+			end
+			
+			return BehaviourTreeStatus.Success
+		elseif pAI.running then		-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+			return BehaviourTreeStatus.Failure
+		end
+		
+		
+		
+		local teamManager = user.TeamManager
+			
+			
+		-- 이동 중이 아니라면
+		local setTile = unitInfo.setTile
+		
+		if not isvalid(setTile) then
+			return BehaviourTreeStatus.Failure
+		end
+		
+		local tileInfo = setTile.TileComponent_New
+		local verticalNum = tileInfo.verticalNum
+		local horizontalNum = tileInfo.horizontalNum
+		local horizontalNode = horizontalNum * 2 - (verticalNum%2)
+		
+		local tileNode = {horizontalNode, verticalNum}
+		
+		local target = unitStatus.Target
+		
+		-- target이 유효한지
+		if not isvalid(target) then
+			unitStatus.Target = nil
+			return BehaviourTreeStatus.Success
+		elseif not isvalid(target.UnitInfo.setTile) then
+			unitStatus.Target = nil
+			return BehaviourTreeStatus.Success
+		end
+		
+		
+		
+		
+		local targetSetTile = target.UnitInfo.setTile
+		local targetTileInfo = targetSetTile.TileComponent_New
+		local targetVerticalNum = targetTileInfo.verticalNum
+		local targetHorizontalNum = targetTileInfo.horizontalNum
+		local targetHorizontalNode = targetHorizontalNum * 2 - (targetVerticalNum%2)
+		
+		local targetTileNode = {targetHorizontalNode, targetVerticalNum}
+		
+		
+		-- 이동할 필요가 있는지 (이미 사거리 내에 존재하는 지)
+		local distanceInfo = _BTLogic_New:getDistance(tileNode, targetTileNode)
+		local distance = distanceInfo[1]
+		
+		local checkRange = unitStatus.AttackRange
+		if unitStatus.MaxMP <= unitStatus.MP and unitStatus.MaxMP > 0 then
+			checkRange = unitStatus.SkillRange
+		end
+		
+		if checkRange >= distance then
+			return BehaviourTreeStatus.Failure
+		end
+		
+		local path = _BTLogic_New:GetPath(tileNode, targetTileNode, myUnit, target, userId)
+		local correctPath = true
+		-- 경로 체크
+		self.Use = true
+		pAI.running = true	-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+		
+		local UnitAnimComponent = myUnit.UnitAnimationComponent
+		
+		-- 경로 x, 기절, 속박
+		if not isvalid(path) then
+			UnitAnimComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+			correctPath = false
+		elseif not isvalid(path[#path-1]) then
+			UnitAnimComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+			correctPath = false
+		end
+		
+		---@type table
+		local nextTilePath
+		
+		if not correctPath then
+			nextTilePath = _BTLogic_New:getNextMoveTile(tileNode, targetTileNode, myUnit, target, userId)
+			pAI.MoveCheckedTarget = unitStatus.Target	-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+			
+			-- 다음 타일도 이동 불가한지
+			if not isvalid(nextTilePath) then
+				UnitAnimComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+				unitStatus.Target = nil
+				return BehaviourTreeStatus.Success
+			elseif not isvalid(nextTilePath[#nextTilePath-1]) then
+				UnitAnimComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+				unitStatus.Target = nil
+				return BehaviourTreeStatus.Success
+			end
+		end
+		
+			
+			
+		-- 기절, 속박
+		if unitStatus.StatusEffect["SE0004"] then
+			--log(myUnit.Name .. "이 기절 상태입니다.")
+			UnitAnimComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+			return BehaviourTreeStatus.Success
+		elseif unitStatus.StatusEffect["SE0005"] then
+			--log(myUnit.Name .. "이 속박 상태입니다.")
+			UnitAnimComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+			return BehaviourTreeStatus.Failure
+		elseif unitStatus.StatusEffect["SE0006"] then
+			--log(myUnit.Name .. "이 무장 해제 상태입니다.")
+			UnitAnimComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+			return BehaviourTreeStatus.Failure
+		end
+		
+		
+		-- 이동 시작할 때 해야하는 거
+		--log(myUnit.Name .. " 이동 시작")
+		
+		---@type table
+		local nextTileNode
+		
+		if correctPath then
+			nextTileNode = path[#path - 1]
+		else
+			nextTileNode = nextTilePath[#nextTilePath - 1]
+		end
+		
+		
+		
+		
+		self.NowTile = unitInfo.setTile
+		self.nextMoveTile = self:GetTile(myUnit, nextTileNode)
+		
+		unitInfo:SetPropertyToServer("setTile", self.nextMoveTile, "OnlySetTile", true)
+		pAI:Move(self.NowTile, self.nextMoveTile)	-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+		
+		-- 레이어 설정
+		local nextTileverticalNum = self.nextMoveTile.TileComponent_New.verticalNum
+		local nextTilehorizontalNum = self.nextMoveTile.TileComponent_New.horizontalNum
+						
+		myUnit.UnitAnimationComponent:SetLayerOrder(nextTileverticalNum, user.OwnerId)
+		
+		-- Move RUID
+		local animComponent = myUnit.UnitAnimationComponent
+		animComponent:PlayAnimation(1, "Move", unitStatus.Target, userId)
+		
+		unitStatus:SetProperty("state", "Move", "")
+		
+		return BehaviourTreeStatus.Success
+	end
+
+	method Entity GetTile(Entity unit, SyncTable<number> tileNode)
+		-- 타일 노드 좌표로부터 실제 타일 엔티티를 가져오는 함수
+		local pAI = self.ParentAI
+		local myUnit = pAI.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		local userId = unitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		local hexaTile = user.GameManager.RoomTile[math.floor(tileNode[1]) .. "," .. math.floor(tileNode[2])]
+		
+		return hexaTile
+	end
+
+end

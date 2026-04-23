@@ -1,0 +1,521 @@
+@Logic
+script UI_Inventory extends Logic
+
+	property Entity UI_Inventory = "36df1686-bd85-4854-bde6-609ccf89e30b"
+
+	property Entity UI_RuneInventory = "309a408e-bb71-4232-b5dd-8e944de2df04"
+
+	property number CurrentShowingPage = 1
+
+	@Description("아이템의 ID에 따라 아이콘 RUID를 미리 캐싱하는 프로퍼티입니다.")
+	property SyncTable<string, string> IconRUID
+
+	property SyncTable<string, string> ItemType
+
+	property SyncTable<string, string> ItemName
+
+	property number ItemSlotCount_Item = 10
+
+	property SyncTable<string, string> TypeBackgroundRUID
+
+	@Description("갖고 있는 아이템 개수입니다. 개수 증감 변화를 확인하는 용도입니다.")
+	property integer ItemCount = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 인벤토리 시스템 초기화 및 UI 갱신
+		self:ResistCache()
+		self:RefreshUI_ItemInventory()
+		self:RefreshPageMoveButton()
+	end
+
+	@ExecSpace("Client")
+	method void ResistCache()
+		-- 아이템 정보를 데이터셋에서 불러와 캐시에 저장
+		local itemInfoTable = _DataService:GetTable("ItemStatus")
+		
+		for i=1, itemInfoTable:GetRowCount() do
+			local row = itemInfoTable:GetRow(i)
+			local key = row:GetItem("ItemID")
+			local ruid = row:GetItem("RUID")
+			local type = row:GetItem("Type")
+			
+			self.IconRUID[key] = ruid
+			self.ItemType[key] = type
+			self.ItemName[key] = _LocalizationService:GetText("Item_"..key.."_Name")
+		end
+		--------------------------------------------------
+		local itemUITable = _DataService:GetTable("ItemUI_Background")
+		for i=1, itemUITable:GetRowCount() do
+			local row = itemUITable:GetRow(i)
+			local type = row:GetItem("Type")
+			local ruid = row:GetItem("RUID")
+			local color = Color.FromHexCode(row:GetItem("ColorCode"))
+			
+			self.TypeBackgroundRUID[type] = ruid
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_ItemInventory()
+		-- 플레이어가 보유한 아이템 목록으로 인벤토리 UI 갱신
+		local ownItems = _UserService.LocalPlayer.TeamManager.OwnItems
+		
+		for i=1, self.ItemSlotCount_Item do
+			local slot = self.UI_Inventory:GetChildByName(string.format("Item_%d", i))
+			
+			local idx = (self.CurrentShowingPage-1) * self.ItemSlotCount_Item + i
+			
+			-- Data
+			local itemID = ownItems[idx]
+			
+			if _UtilLogic:IsNilorEmptyString(itemID) then
+				slot.Enable = false
+				
+			else
+				local type = self.ItemType[itemID]
+				slot.Enable = true
+				
+				slot.UI_InventoryItemSlot.ItemID = itemID
+				
+				-- Entities
+				local ui_icon = slot:GetChildByName("Icon")
+				local ui_background = slot:GetChildByName("Background")
+				
+				ui_icon.SpriteGUIRendererComponent.ImageRUID = self.IconRUID[itemID]
+				slot.SpriteGUIRendererComponent.ImageRUID = self.TypeBackgroundRUID[type]
+			end
+			
+		end
+		
+		-- 보유한 아이템 개수 표기 변경
+		local ui_ownCount = self.UI_Inventory.Parent:GetChildByName("Text_Count_Items")
+		ui_ownCount.TextComponent.Text = string.format("%d/∞", #ownItems)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_ByOnSyncProperty()
+		-- 동기화 프로퍼티 변경 시 인벤토리 UI를 첫 페이지로 초기화하여 갱신
+		self.CurrentShowingPage = 1
+		self:RefreshPageMoveButton()
+		self:RefreshUI_ItemInventory()
+	end
+
+	@ExecSpace("Client")
+	method void ShowItemSelectPopup(boolean enable)
+		-- 아이템 상자 열기/닫기 시 선택 팝업 UI 표시 여부 제어 및 트윈 애니메이션 처리
+		-- 아이템 상자를 열었을 때, 선택 팝업을 등장시키는 함수입니다.
+		---------------------------------------------------
+		local selectPopup = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ItemSelect")
+		---------------------------------------------------
+		-- Enable 여부에 따라 ui를 tween 합니다.
+		if enable == true then
+			--사운드
+			_TimerService:SetTimerOnce(function() _PlaySoundLogic:PlaySound("M0007") end , 0.1)
+			
+			-- shop panel을 disable 합니다.
+			local ui_shopPanel = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel")
+			local alpha = 1
+			local disableShopPanel = function()
+				alpha -= 1/30
+				ui_shopPanel.CanvasGroupComponent.GroupAlpha = alpha
+			end
+			for i=1, 30 do
+				_TimerService:SetTimerOnce(disableShopPanel, i/120)
+			end
+			
+			-- ui tween
+			local t = 0
+			local translateAppearance = function()
+				t += 1/30
+				local posY = _TweenLogic:Ease(-330, -105, 1, EaseType.QuintEaseIn, t)
+				selectPopup.UITransformComponent.anchoredPosition.y = posY
+			end
+			for i=1, 30 do
+				_TimerService:SetTimerOnce(translateAppearance, i/60)
+			end
+			
+		else 
+			-- ui tween
+			local t = 0
+			local translateAppearance = function()
+				t += 1/30
+				local posY = _TweenLogic:Ease(-105, -330, 1, EaseType.QuintEaseIn, t)
+				selectPopup.UITransformComponent.anchoredPosition.y = posY
+			end
+			for i=1, 30 do
+				_TimerService:SetTimerOnce(translateAppearance, i/60)
+			end
+			
+			-- shop panel을 enable 합니다.
+			local ui_shopPanel = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel")
+			local alpha = 0
+			local disableShopPanel = function()
+				alpha += 1/30
+				ui_shopPanel.CanvasGroupComponent.GroupAlpha = alpha
+			end
+			for i=1, 30 do
+				_TimerService:SetTimerOnce(disableShopPanel, 0.5 + i/120)
+			end
+			
+			
+			return -- RETURN
+		end
+		---------------------------------------------------
+		-- 현재 선택지 목록에 따라 UI를 갱신합니다.
+		local bg = selectPopup:GetChildByName("ItemSelectBg")
+		local itemList = _UserService.LocalPlayer.TeamManager.ItemListFromBox
+		for i=1, 4 do
+			local slot = bg:GetChildByName(string.format("Slot_%d", i))
+			
+			local itemID = itemList[i]
+			
+			if _UtilLogic:IsNilorEmptyString(itemID) == true then
+				slot.Enable = false
+			else
+				local type = self.ItemType[itemID]
+				
+				slot.Enable = true
+				
+				slot.UI_ItemSelect_ItemSlot.ItemID = itemID
+				
+				-- Entity
+				local ui_sprite = slot:GetChildByName("ItemSprite")
+				local ui_colorBackground = slot:GetChildByName("DefaultBackground")
+				local ui_favoriteMark = slot:GetChildByName("sp_FavoriteMark")
+				local ui_name = slot:GetChildByName("Name")
+				
+				-- Data
+				local spriteRUID = self.IconRUID[itemID]
+				
+				-- Apply data to entity
+				ui_colorBackground.SpriteGUIRendererComponent.ImageRUID = self.TypeBackgroundRUID[type]
+				ui_sprite.SpriteGUIRendererComponent.ImageRUID = spriteRUID
+				ui_sprite.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(spriteRUID)["scale"]
+				ui_sprite.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(spriteRUID)["pos"]
+				ui_favoriteMark.Enable = _DictionaryFavoriteListManager:IsSettedFave_Item(itemID)
+				ui_name.TextComponent.Text = self.ItemName[itemID]
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshPageMoveButton()
+		-- 인벤토리 페이지 이동 버튼 활성화/비활성화 상태 및 페이지 정보 갱신
+		-- 페이지 이동 버튼을 갱신합니다. 아이템 수가 변경되거나, 페이지를 이동했을 때 호출합니다.
+		---------------------------------------------------
+		local minPage = 1
+		local itemCount = #_UserService.LocalPlayer.TeamManager.OwnItems
+		local maxPage = math.ceil(itemCount / self.ItemSlotCount_Item)
+		if maxPage < 1 then maxPage = 1 end
+		
+		
+		local ui_goToPrevPage = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/InventoryPanel/Button_PrevPage")
+		local ui_goToNextPage = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/InventoryPanel/Button_NextPage")
+		local ui_pageText = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/InventoryPanel/Text_Page")
+		
+		ui_pageText.TextComponent.Text = string.format("%d / %d", self.CurrentShowingPage, maxPage)
+		
+		if self.CurrentShowingPage <= minPage then
+			self.CurrentShowingPage = minPage
+			ui_goToPrevPage.ButtonComponent.Enable = false
+		else
+			ui_goToPrevPage.ButtonComponent.Enable = true
+		end
+		
+		if self.CurrentShowingPage >= maxPage then
+			self.CurrentShowingPage = maxPage
+			ui_goToNextPage.ButtonComponent.Enable = false
+			
+			--레드닷을 끕니다.
+			self:SetReddot(false)
+		else
+			ui_goToNextPage.ButtonComponent.Enable = true
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_RuneInventory()
+		-- 플레이어가 보유한 룬 카드 정보를 UI에 표시하고 시각적 효과 적용
+		-- 보유한 룬 카드 목록을 갱신합니다.
+		--------------------------------------------------------------------------------
+		local runeInfo = _DataService:GetTable("RuneInfo")
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		local ownRunes = _UserService.LocalPlayer.TeamManager.OwnRunes
+		local entityownRunes = _UserService.LocalPlayer.TeamManager.OnEntityUsingToOwnedRunes
+		local newrunecard={} -- 연출용 테이블
+		--------------------------------------------------------------------------------
+		local colorTable = _DataService:GetTable("GradeColor")
+		local gradeColor = {
+			["Normal"] = Color.FromHexCode(colorTable:FindRow("Key", "Rune_Normal"):GetItem("Default")),
+			["Rare"] = Color.FromHexCode(colorTable:FindRow("Key", "Rune_Rare"):GetItem("Default")),
+			["Epic"] = Color.FromHexCode(colorTable:FindRow("Key", "Rune_Epic"):GetItem("Default")),
+			["Legendary"] = Color.FromHexCode(colorTable:FindRow("Key", "Rune_Legendary"):GetItem("Default")),
+		}
+		
+		local gradeNum = {
+			["Normal"] = 	1,
+			["Rare"] = 		2,
+			["Epic"] = 		3,
+			["Legendary"] = 4,
+		}
+		--------------------------------------------------------------------------------
+		-- 각 카드 이미지 및 툴팁 설명을 갱신합니다.
+		local runeCardParent = _UserService.LocalPlayer:GetChildByName("RuneCardParent")
+		for i=1, 5 do
+			local ui_slot = self.UI_RuneInventory:GetChildByName(string.format("Item_%d", i))
+			------------------------------------------------------------------------------------------------
+			-- UI Children
+			local ui_spriteBG = ui_slot:GetChildByName("Sprite_ProductBg")
+			local ui_sprite = ui_spriteBG:GetChildByName("Sprite_Product")
+			local ui_cardbound = ui_slot:GetChildByName("CardBound")
+			local ui_tag_indestructible = ui_slot:GetChildByName("Tag_Indestructible")
+			local ui_tag_incineration = ui_slot:GetChildByName("Tag_Incineration")
+			local ui_tag_deactivated = ui_slot:GetChildByName("Tag_Deactivated")
+			local ui_costIcon = ui_slot:GetChildByName("Text_Cost"):GetChildByName("Sprite_CoinIcon")
+			local ui_costText = ui_slot:GetChildByName("Text_Cost"):GetChildByName("Text")
+			local ui_favorite = ui_slot:GetChildByName("sp_FavoriteMark")
+			local ui_stackText = ui_slot:GetChildByName("StackText")
+			local ui_highValueEffect = ui_slot:GetChildByName("Sprite_ProductBg"):GetChildByName("HighValueEffect")
+			local ui_symbol = ui_slot:GetChildByName("Symbol")
+			------------------------------------------------------------------------------------------------
+			local runeID = ""
+			local runeUID = -1
+			if isvalid(ownRunes[i]) then
+				local runeIDInfo = _UtilLogic:Split(ownRunes[i], "_")
+				runeID = runeIDInfo[1]
+				runeUID = tonumber(runeIDInfo[2])
+			end
+				
+			------------------------------------------------------------------------------------------------
+			-- 룬 카드를 보유 중이라면 (id 존재)
+			if _UtilLogic:IsNilorEmptyString(runeID) == false then
+				
+				local row = runeInfo:FindRow("RuneID", runeID)
+				local grade = row:GetItem("Grade")
+				local iconRUID = row:GetItem("IconRUID")
+				local name = _LocalizationService:GetText("RuneCard_"..runeID.."_Name")
+				
+				-- 이 카드가 새로 얻은 카드인지를 체크합니다.
+				if ui_slot.UI_RuneInventroyItemButton.Name == "" then
+					table.insert(newrunecard,i)
+				end
+				
+				-- 즐겨찾기
+				ui_favorite.Enable = _DictionaryFavoriteListManager:IsSettedFave_Rune(runeID)
+						
+				-- RuneCardComponent에서 데이터를 가져옵니다.
+				local resellCost = 0
+				local runeStack = 0
+				local runeStringTypeValue = ""
+				local tag_indestructible = false
+				local tag_deactivated = false
+				local tag_incineration = 0
+				for j=1, 5 do
+					local runeCardEntity = runeCardParent:GetChildByName(string.format("PlayerRune%d", j))
+					---@type RuneCardComponent
+					local rcComponent = runeCardEntity:GetComponent(runeID)
+					if isvalid(rcComponent) and rcComponent.UID == runeUID then
+						if not rcComponent.Copied then
+							resellCost = rcComponent.ResellCost
+							runeStack = rcComponent.RuneStack
+							runeStringTypeValue = rcComponent.RuneStringTypeValue
+							tag_indestructible = not rcComponent.IsDestructible
+							tag_deactivated = not rcComponent.OnActive
+							tag_incineration = rcComponent.IsRemovedCount
+							break
+						end
+					end
+				end
+				
+				ui_tag_indestructible.Enable = tag_indestructible
+				ui_tag_deactivated.Enable = tag_deactivated
+				if tag_incineration > 0 then
+					ui_tag_incineration.Enable = true
+					ui_tag_incineration.TextComponent.Text = string.format("%d", tag_incineration)
+				else
+					ui_tag_incineration.Enable = false
+				end
+				
+				local desc_isUseStack = row:GetItem("Desc_UseStack")
+				local desc_isUseString = row:GetItem("Desc_UseString")
+				local desc = ""
+				if desc_isUseStack == "TRUE" then
+					desc = _LocalizationService:GetTextFormat("RuneCard_"..runeID.."_Desc", runeStack)
+				elseif desc_isUseString == "TRUE" then
+					if isvalid(synergyTable:FindRow("SynergyID", runeStringTypeValue)) then
+						runeStringTypeValue = synergyTable:FindRow("SynergyID", runeStringTypeValue):GetItem("Name")
+					else
+						runeStringTypeValue = _LocalizationService:GetText("RuneCard_AddDesc_"..runeStringTypeValue)
+					end
+					desc = _LocalizationService:GetTextFormat("RuneCard_"..runeID.."_Desc", runeStringTypeValue)
+				else
+					desc = _LocalizationService:GetText("RuneCard_"..runeID.."_Desc")
+				end
+				
+				-- 가져온 데이터를 ui에 반영합니다.
+				ui_cardbound.SpriteGUIRendererComponent.Color = gradeColor[grade]
+				ui_sprite.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				ui_sprite.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(iconRUID)["scale"]	
+				ui_sprite.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(iconRUID)["pos"]
+				ui_slot.UI_RuneInventroyItemButton:SetProperty(name, desc, gradeNum[grade], tonumber(resellCost), 
+					tag_indestructible, tag_deactivated, tag_incineration)
+				ui_costIcon.Enable = true
+				ui_costText.TextComponent.Text = string.format("%d", resellCost)
+			
+				---------------------------------------------------------
+				--룬 카드 연출 관련 코드입니다.
+				--카드 판매가가 18코인을 넘어가면 금빛 머티리얼을 씌웁니다.
+				local isdirector=false -- 연출 적용됐는지 체크하는 프로퍼티
+				
+				if resellCost>=20 then
+					_RuneCardDirector:InitDirector(i,"FillAmount")
+					isdirector=_RuneCardDirector:GoldenMaterial(i)
+				elseif isvalid(_RuneCardDirector.RuneCardManagingValue[runeID]) or runeID=="RC40003" then -- 팬텀 복사까지 포함
+					isdirector=_RuneCardDirector:CheckRuneCardManagingValue(runeID,i)
+				end
+				
+				--아무 연출도 적용안시켰으면 초기화 한 번 시켜주기
+				if isdirector==false then
+					_RuneCardDirector:InitDirector(i,"All")
+				end
+				
+				--팬텀인 경우, 옆 카드 체크해서 회색조처리
+				if runeID=="RC40003" then
+					_RuneCardDirector:RC40003Director(i,false,false)
+				end		
+				
+				ui_slot.Enable = true
+			------------------------------------------------------------------------------------------------
+			-- 룬 카드가 없다면 (빈 칸)
+			else
+				ui_slot.Enable = false
+				
+				--[[
+				ui_slot.UI_RuneInventroyItemButton:SetProperty("", "", 0, 0, false, false, 0)
+				ui_slot.SpriteGUIRendererComponent.Color = Color.FromHexCode("#808080")
+				ui_sprite.SpriteGUIRendererComponent.ImageRUID = ""
+				ui_costText.TextComponent.Text = ""
+				ui_costIcon.Enable = false
+				]]--
+				_RuneCardDirector:InitDirector(i, "All")
+			end
+			------------------------------------------------
+			
+			
+			--ui_slot.Enable = true
+		end
+		--------------------------------------------------------------------------------
+		-- 보유한 카드 수 표시를 변경합니다.
+		local ui_ownCount = self.UI_RuneInventory.Parent:GetChildByName("Text_Count_RuneCards")
+		local maxSlotCount = _UserService.LocalPlayer.TM_PropertyControl.Rune_UseRuneSlotCount
+		ui_ownCount.TextComponent.Text = string.format("%d/%d", #ownRunes, maxSlotCount)
+		
+		local ui_runeInventoryBGList = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/InventoryPanel/RuneCardInventory_BG")
+		for i=1, 5 do
+			local ui_bg = ui_runeInventoryBGList:GetChildByName(string.format("Item_%d", i))
+			
+			if i > maxSlotCount then
+				ui_bg.Enable = false
+			else
+				ui_bg.Enable = true
+			end 
+		end
+		-------------------------------------------------------------------------------
+		-- 스폰 연출
+		--for i=1,#newrunecard do
+		--    _GeneralDirectorLogic:SpawnRuneCard(newrunecard[i])
+		--end
+	end
+
+	@ExecSpace("Client")
+	method void SetReddot(boolean enable)
+		-- 인벤토리 다음 페이지 버튼에 레드닷 표시 여부 제어
+		
+		--페이지넘김 버튼에 레드닷을 표시하거나 없앨 때 호출합니다.
+		local reddot=_EntityService:GetEntity("35568b5a-2b93-493a-8e13-6d3d808d5ef5") -- /ui/Arena_ReadyPhase/InventoryPanel/Button_NextPage/Reddot
+		reddot.Enable=enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshUI_BattleRuneList()
+		-- 전투 단계에서 플레이어의 룬 카드 설명 정보를 갱신
+		local runeCardDB = _DataService:GetTable("RuneInfo")
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		--------------------------------------------------------------------------
+		local ui_userRuneList = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/TeamInfo/TeamInfo_User/RuneList")
+		local userEntity = _UserService.LocalPlayer
+		local runeCardParent = userEntity:GetChildByName("RuneCardParent")
+		--------------------------------------------------------------------------
+		-- 각 슬롯의 desc를 갱신합니다.
+		for i=1, 5 do
+			local ui_runeCard = ui_userRuneList:GetChildByName(string.format("Rune_%d", i))
+			local runeIDs = userEntity.TeamManager.OwnRunes[i]
+			
+			if isvalid(runeIDs) then
+				local runeIDInfo = _UtilLogic:Split(runeIDs, "_")
+				local runeID = runeIDInfo[1]
+				--------------------------------------------------------------------------
+				-- 룬 카드를 보유 중이라면
+				if _UtilLogic:IsNilorEmptyString(runeID) == false then
+					local row = runeCardDB:FindRow("RuneID", runeID)
+					--------------------------------------------------------------------------
+					-- 실제 룬카드 엔티티에서 데이터를 받아옵니다.
+					---@type RuneCardComponent
+					local runeCardComponent = nil
+					for j=1, 5 do
+						local runeEntity = runeCardParent:GetChildByName(string.format("PlayerRune%d", j))
+						---@type RuneCardComponent
+						local currentRCCompo = runeEntity:GetComponent(runeID)
+						if isvalid(currentRCCompo) == true and currentRCCompo.UID == tonumber(runeIDInfo[2]) and currentRCCompo.Copied == false then
+							runeCardComponent = currentRCCompo
+							break
+						end
+					end
+					--------------------------------------------------------------------------
+					local desc_isUseStack = row:GetItem("Desc_UseStack")
+					local desc_isUseString = row:GetItem("Desc_UseString")
+					local desc = ""
+					if desc_isUseStack == "TRUE" then
+						desc = _LocalizationService:GetTextFormat("RuneCard_"..runeID.."_Desc", runeCardComponent.RuneStack)
+					elseif desc_isUseString == "TRUE" then
+						local stringTypeValue = runeCardComponent.RuneStringTypeValue
+						if isvalid(synergyTable:FindRow("SynergyID", stringTypeValue)) then
+							stringTypeValue = synergyTable:FindRow("SynergyID", stringTypeValue):GetItem("Name")
+						else
+							stringTypeValue = _LocalizationService:GetText("RuneCard_AddDesc_"..stringTypeValue)
+						end
+						desc = _LocalizationService:GetTextFormat("RuneCard_"..runeID.."_Desc", stringTypeValue)
+					else
+						desc = _LocalizationService:GetText("RuneCard_"..runeID.."_Desc")
+					end
+			
+					ui_runeCard.UI_BattleTeamInfo_RuneButton.Desc = desc
+				end
+			end
+		end
+		--------------------------------------------------------------------------
+		-- 적팀은 무의미하므로 갱신 X
+		--local ui_enemyRuneList = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/TeamInfo/TeamInfo_Enemy/RuneList")
+		--------------------------------------------------------------------------
+	end
+
+	@EventSender("Entity", "93b5adf6-b34f-444d-8c70-f7986bb1ea61")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 인벤토리 이전 페이지 버튼 클릭 시 페이지 이동 및 UI 갱신
+		self.CurrentShowingPage -= 1
+		
+		self:RefreshPageMoveButton()
+		self:RefreshUI_ItemInventory()
+	end
+
+	@EventSender("Entity", "e67819d5-55f0-451e-b2d9-445509fa54aa")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 인벤토리 다음 페이지 버튼 클릭 시 페이지 이동 및 UI 갱신
+		self.CurrentShowingPage += 1
+		
+		self:RefreshPageMoveButton()
+		self:RefreshUI_ItemInventory()
+	end
+
+end

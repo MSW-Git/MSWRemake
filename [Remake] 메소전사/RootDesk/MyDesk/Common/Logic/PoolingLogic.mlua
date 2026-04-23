@@ -1,0 +1,238 @@
+@Logic
+script PoolingLogic extends Logic
+
+	property table pool = {}
+
+	property integer timer = 0
+
+	property string effModelId = "model://3da546fa-bd66-4cc2-ba70-afc85161a7b6"
+
+	method Entity SpawnModel(string modelId, Vector3 pos, Entity parent)
+		-- 모델 스폰 및 풀링 관리
+		---@type LuaQueue
+		local poolQueue = self.pool[modelId]
+		local isFirstSpawn = false
+		
+		if poolQueue == nil then
+			poolQueue = _DataStructLogic:GetQueue()
+			self.pool[modelId] = poolQueue
+			isFirstSpawn = true
+		end
+		
+		if #poolQueue == 0 then
+			local entity = nil
+			
+			local spawnFunc = function()
+				entity = _SpawnService:SpawnByModelId(modelId, "pool", pos, parent)
+			end
+			
+			local result, error = pcall(spawnFunc)
+			
+			if result then
+				if isFirstSpawn and self:CheckRemovableEntity(entity) then
+					table.insert(self._T.removableModelId, modelId)
+				end
+			else
+			end
+			
+			return entity
+		end
+		local pop = poolQueue:Dequeue()
+		pop.TransformComponent.Position = pos
+		pop.Enable = true
+		
+		return pop
+	end
+
+	method void DestroyEntity(Entity entity)
+		-- 엔티티를 풀로 반환 또는 제거
+		if not isvalid(entity) then return end
+		
+		local modelId = "model://"..entity.Model.Id
+		---@type LuaQueue
+		local poolQueue = self.pool[modelId]
+		if poolQueue == nil then
+			entity:Destroy()
+			return
+		end
+		entity.Enable = false
+		entity.TransformComponent.Position = self._T.InitVector3 
+		
+		poolQueue:Enqueue(entity)
+	end
+
+	method void ClearAll()
+		-- 모든 풀 데이터 초기화
+		for k,v in pairs(self.pool) do
+			for k2,v2 in pairs(v) do
+				if isvalid(v2) then
+					v2:Destroy()
+				end
+			end
+			table.clear(v)
+		end
+		
+		table.clear(self.pool)
+		table.clear(self._T.spawnQueue)
+		
+		table.clear(self._T.spawnQueueForPending)
+		table.clear(self._T.removableModelId)
+	end
+
+	method void SpawnModelAsync(string modelId, Vector3 pos, Entity parent, any callback)
+		-- 비동기 모델 스폰 요청 대기열에 추가
+		local spawnReq = {
+			modelId = modelId,
+			pos = pos,
+			parent = parent,
+			callback = callback
+		}
+		
+		self._T.spawnQueue:Enqueue(spawnReq)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 대기열 업데이트 처리
+		self:UpdateQueue()
+	end
+
+	method void PreLoad(string modelId, Entity parent, number cnt)
+		-- 지정된 수만큼 모델 미리 로드
+		local pool = self._T.preLoadBuffer
+		for i =1 , cnt do
+			pool[i] = _PoolingLogic:SpawnModel(modelId,Vector3(8888, 8888, 0),parent)
+		end
+		
+		for i =1 , cnt do
+			_PoolingLogic:DestroyEntity(pool[cnt-i + 1])
+		end
+		
+		for i = 1, cnt do
+			pool[i] = nil
+		end
+	end
+
+	method void PreLoadOneForce(string modelId, Entity parent)
+		-- 모델 하나를 강제로 미리 로드
+		---@type LuaQueue
+		local poolQueue = self.pool[modelId]
+		local isFirstSpawn = false
+		
+		if poolQueue == nil then
+			poolQueue = _DataStructLogic:GetQueue()
+			self.pool[modelId] = poolQueue
+			isFirstSpawn = true
+		end
+		
+		---@type Entity
+		local entity = nil
+		
+		local spawnFunc = function()
+			entity = _SpawnService:SpawnByModelId(modelId, "pool", Vector3(8888, 8888, 0), parent)
+		end
+		
+		local result, error = pcall(spawnFunc)
+		
+		if not result then
+		else	
+			if isFirstSpawn and self:CheckRemovableEntity(entity) then
+				table.insert(self._T.removableModelId, modelId)
+			end
+		end
+		
+		_PoolingLogic:DestroyEntity(entity)
+	end
+
+	method void OnBeginPlay()
+		-- 풀링 로직 초기화
+		self._T.spawnQueue = _DataStructLogic:GetQueue()
+		self._T.preLoadBuffer = {}
+		self._T.spawnQueueForPending = _DataStructLogic:GetQueue()
+		self._T.removableModelId = {}
+		self._T.InitVector3 = Vector3(8888, 8888, 8888)
+	end
+
+	method void UpdateQueue()
+		-- 스폰 대기열 처리
+		---@type LuaQueue
+		local spawnQueue = self._T.spawnQueue
+		if not spawnQueue:IsEmpty() then
+			local req = self._T.spawnQueue:Dequeue()
+			local entity = self:SpawnModel(req.modelId, req.pos, req.parent)
+			local status, err = pcall(req.callback, entity)
+			if status == false then
+				_WorldLog:LogLogicError(err, req.modelId, "PoolLogic callbackList")
+			end
+		end
+		
+		---@type LuaQueue
+		local spawnQueueForPending = self._T.spawnQueueForPending
+		if not spawnQueueForPending:IsEmpty() then
+			if #self.pool[self._T.spawnQueueForPending:Peek().modelId] > 0 then
+				local req = self._T.spawnQueueForPending:Dequeue()
+				local entity = self:SpawnModel(req.modelId, req.pos, req.parent)
+				local status, err = pcall(req.callback, entity)
+				if status == false then
+					_WorldLog:LogLogicError(err, req.modelId, "PoolLogic callbackList_Pending")
+				end
+			end
+		end
+	end
+
+	method void SpawnModelForPendingAsync(string modelId, Vector3 pos, Entity parent, any callback)
+		-- 대기 중인 비동기 스폰 요청 추가
+		
+		local spawnReq = {
+			modelId = modelId,
+			pos = pos,
+			parent = parent,
+			callback = callback
+		}
+		
+		self._T.spawnQueueForPending:Enqueue(spawnReq)
+	end
+
+	method void ClearModels(string modelId)
+		-- 특정 모델 ID의 모든 풀 오브젝트 제거
+		---@type LuaQueue
+		local poolQueue = self.pool[modelId]
+		if poolQueue == nil then
+			return
+		end
+		
+		while(not poolQueue:IsEmpty()) do
+			---@type Entity
+			local entity = poolQueue:Dequeue()
+			if isvalid(entity) then
+				entity:Destroy()
+			else
+				continue
+			end
+		end
+	end
+
+	method void ClearRemovableEntities()
+		-- 제거 가능한 엔티티들 정리
+		for i, modelId in pairs(self._T.removableModelId) do
+			self:ClearModels(modelId)
+		end
+		table.clear(self._T.removableModelId)
+	end
+
+	method boolean CheckRemovableEntity(Entity entity)
+		-- 엔티티가 제거 가능한지 확인
+		if not isvalid(entity) then
+			return false
+		end
+		
+		if entity.SkillEffectObject ~= nil then
+			return not entity.SkillEffectObject.isPlayerSkill
+		elseif entity.MonsterWaveSkill ~= nil then
+			return true
+		end
+		
+		return false
+	end
+
+end

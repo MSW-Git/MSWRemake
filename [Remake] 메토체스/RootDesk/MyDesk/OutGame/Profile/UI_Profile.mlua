@@ -1,0 +1,1301 @@
+@Logic
+script UI_Profile extends Logic
+
+	property string TargetUserID = ""
+
+	property Entity UI_ProfileAccessButton = "1a191d1f-e451-4541-922f-3487409278c8"
+
+	property boolean IsCooltime_DataRequest = false
+
+	property boolean Record_IsPublic = false
+
+	property integer Record_HighestTier = 0
+
+	property string Record_HighestTier_Season = ""
+
+	property integer Record_HighestRank = 0
+
+	property integer Record_HighestRankRate = 0
+
+	property string Record_HighestRank_Season = ""
+
+	property number Record_HighestRank_Ordinal = 0
+
+	property SyncTable<string, number> Record_PlayRecords
+
+	property boolean History_IsPublic = false
+
+	property SyncTable<number, boolean> History_IsWin
+
+	property SyncTable<number, string> History_ModeType
+
+	property SyncTable<number, string> History_ModeSeason
+
+	property SyncTable<number, number> History_ModeLevel
+
+	property SyncTable<number, string> History_LastRound
+
+	property SyncTable<number, string> History_UnitInfo
+
+	property SyncTable<number, string> History_RuneList
+
+	property SyncTable<number, string> History_CoachList
+
+	property SyncTable<number, number> History_GetTeamHP
+
+	property SyncTable<number, number> History_GetCoinAmount
+
+	property SyncTable<number, string> History_EndTime
+
+	property Entity UI_Profile = "98596403-c356-472f-abc5-5dc43917cbc2"
+
+	property Entity UI_Panel_Loading = "2bf5153e-04ae-4e64-9e8a-ede5c8248993"
+
+	property Entity UI_Avatar = "f0daaf0c-3ec2-47b3-8561-33e17009a62b"
+
+	property Entity UI_Nickname = "2c7c80d2-7159-4215-9f9d-9d3820c0aec9"
+
+	property Entity UI_Title = "48a6100b-1d7c-4d51-8744-afef2dea903a"
+
+	property Entity UI_Level = "d3bb92a5-6ec5-4436-b190-a957dabc9aec"
+
+	property number Record_HighestTier_Ordinal = 0
+
+	property SyncTable<string, boolean> IsLoadComplete
+
+	property Entity UI_TabList = "194993f0-e237-461d-a35d-ff117aa72be0"
+
+	property Entity UI_Page_Record = "5de9bc81-a5bf-4b23-b653-49efe4251686"
+
+	property Entity UI_Page_History = "2258507a-baa3-43d7-8ab3-b008bc1c813a"
+
+	property boolean IsPublicChangeCooldown = false
+
+	@ExecSpace("Server")
+	method void RequestData(string userID)
+		-- 지정된 사용자의 프로필 데이터를 요청하고 UI에 표시할 정보를 설정
+		-- 데이터를 가져오고, UI를 초기화합니다.
+		------------------------------------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		if isvalid(user) == false then
+			return
+		end
+		
+		local playerDataCompo = user.PlayerDataComponent
+		------------------------------------------------------------------------------------------------------------
+		-- 기본 정보
+		local equipTitleValue = string.format("%s/%s", user.TitleManager.EquippedTitle["KeyWordFront"], user.TitleManager.EquippedTitle["KeyWordBack"])
+		self:SetData_DefaultProfile(equipTitleValue, playerDataCompo.Level, senderUserId)
+		------------------------------------------------------------------------------------------------------------
+		-- 프로필 공개 여부
+		self:SetData_IsPublic(playerDataCompo.Profile_Record_IsPublic, playerDataCompo.Profile_History_IsPublic, senderUserId)
+		------------------------------------------------------------------------------------------------------------
+		-- [기록] 탭의 데이터를 받아옵니다.
+		if userID ~= senderUserId and playerDataCompo.Profile_Record_IsPublic == false then
+			-- 비공개인 경우
+			self:SetData_Record(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, senderUserId)
+		else
+			-- 최고 티어 / 최고 랭킹 / 플레이 게임 / 승리 수 / 
+			local highestTier = playerDataCompo.HighClearLevelInfo -- "Level/SeasonNumber/OrdinalNumber"
+			local highestRank = playerDataCompo.HighRankInfo -- "RankNum/RankPercent/SeasonNumber/OrdinalNumber"
+			local playedGameCount = playerDataCompo.PlayGameCount
+			local winGameCount = playerDataCompo.WinGameCount
+			------------------------------------------------------------------------------
+			-- 업적 점수 및 달성률
+			local achi_score = 0
+			local achi_maxCount = 0
+			local achi_doneCount = 0
+			
+			for id, value in pairs(user.AchievementManager.PlayerAchievementData) do
+				for i=1, #value["state"] do
+					achi_maxCount += 1
+					if value["state"][i] == _AchievementStateEnum.Complete then
+						achi_doneCount += 1
+						
+						local achieveInfo = _AchievementService:GetAchievementInfo(id)
+						achi_score += achieveInfo.Score[i]
+					end
+				end
+			end
+			
+			log("maxCount = ", achi_maxCount, ", doneCount = ", achi_doneCount)
+			
+			-- 업적 달성률
+			local achiRate = achi_doneCount / achi_maxCount
+			------------------------------------------------------------------------------
+			-- 칭호 수집률
+			local totalTitleCount = 0
+			local ownedTitleCount = 0
+			for id, value in pairs(user.TitleManager.NameTagTable) do
+				totalTitleCount += 1
+				if value == true then
+					ownedTitleCount += 1
+				end
+			end
+			for id, value in pairs(user.TitleManager.KeyWordFrontTable) do
+				totalTitleCount += 1
+				if value == true then
+					ownedTitleCount += 1
+				end
+			end
+			for id, value in pairs(user.TitleManager.KeyWordBackTable) do
+				totalTitleCount += 1
+				if value == true then
+					ownedTitleCount += 1
+				end
+			end
+			local titleCollectRate = ownedTitleCount / totalTitleCount
+			------------------------------------------------------------------------------
+			-- 코치 수집률
+			local totalCoachCount = #table.keys(_CoachService.CoachData)
+			local ownedCoachCount = 0
+			for key, value in pairs(user.CoachManager.PlayerOwnedCoachesID) do
+				if value >= 1 then
+					ownedCoachCount += 1
+				end
+			end
+			local coachCollectRate = ownedCoachCount / totalCoachCount
+			------------------------------------------------------------------------------
+			local collectionCompo = user.PlayerCollectionDataComponent
+			
+			-- 캐릭터 도감 수집률
+			local totalCharCollectionCount = 0
+			local ownedCharCollectionCount = 0
+			
+			for charID, value in pairs(collectionCompo.CharacterCollection) do
+				ownedCharCollectionCount += value
+				totalCharCollectionCount += 3
+			end
+			
+			local charCollectRate = ownedCharCollectionCount / totalCharCollectionCount
+			------------------------------------------------------------------------------
+			-- 시너지 도감 수집률
+			local totalSynCollectionCount = 0
+			local ownedSynCollectionCount = 0
+			
+			local synergyTable = _DataService:GetTable("SynergyInfo")
+			for i=1, synergyTable:GetRowCount() do
+				local row = synergyTable:GetRow(i)
+				for j=1, 5 do
+					local needStep = row:GetItem(string.format("NeedCount_step%d", j))
+					if needStep ~= "-" then
+						totalSynCollectionCount += 1
+					end
+				end
+			end
+			
+			for synID, value in pairs(collectionCompo.SynergyCollection) do
+				if value == 3 then
+					ownedSynCollectionCount += 1 	-- 고유만 있는 경우
+				elseif value > 3 then
+					ownedSynCollectionCount += (value-1)	-- 고유가 아니고 그 이상을 수집한 경우, 고유 등급 뱃지를 제외하고 수집한 것으로 간주
+				else
+					ownedSynCollectionCount += value
+				end
+			end
+			
+			local synCollectRate = ownedSynCollectionCount / totalSynCollectionCount
+			------------------------------------------------------------------------------
+			self:SetData_Record(highestTier, highestRank, 
+				playedGameCount, winGameCount, achi_score, achiRate, 
+				titleCollectRate, coachCollectRate, charCollectRate, synCollectRate,
+				senderUserId)
+		end
+		------------------------------------------------------------------------------------------------------------
+		-- [전적] 탭의 데이터를 받아옵니다.
+		if userID ~= senderUserId and playerDataCompo.Profile_History_IsPublic == false then
+			self:SetData_History(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, senderUserId)
+		else
+			self:SetData_History(
+				_UtilLogic:TableToString(playerDataCompo.Profile_IsWin),
+				_UtilLogic:TableToString(playerDataCompo.Profile_ModeType),
+				_UtilLogic:TableToString(playerDataCompo.Profile_ModeSeason),
+				_UtilLogic:TableToString(playerDataCompo.Profile_ModeLevel),
+				_UtilLogic:TableToString(playerDataCompo.Profile_LastRound),
+				
+				_UtilLogic:TableToString(playerDataCompo.Profile_EndTime),
+				_UtilLogic:TableToString(playerDataCompo.Profile_UnitInfo),	-- "유닛ID_별수_아이템-아이템-아이템"/"..."
+				_UtilLogic:TableToString(playerDataCompo.Profile_RuneList),
+				_UtilLogic:TableToString(playerDataCompo.Profile_CoachList),
+				_UtilLogic:TableToString(playerDataCompo.Profile_GetTeamHP),
+				
+				_UtilLogic:TableToString(playerDataCompo.Profile_GetCoinAmount),
+				
+				senderUserId
+			)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnOpenUI()
+		-- 프로필 UI를 열고 로딩 상태를 초기화하며 데이터 로딩 완료를 감시
+		self.UI_Panel_Loading.Enable = true
+		self.UI_Panel_Loading.CanvasGroupComponent.GroupAlpha = 1
+		
+		self.UI_Profile.Enable = true
+		
+		self.IsLoadComplete["Default"] = false
+		self.IsLoadComplete["Public"] = false
+		self.IsLoadComplete["Record"] = false
+		self.IsLoadComplete["History"] = false
+		
+		-- 0.5초마다 로딩 완료 여부를 검사합니다.
+		local timerID = 0
+		local checkLoadComplete = function()
+			for key, value in pairs(self.IsLoadComplete) do
+				if value == false then
+					return
+				end
+			end
+			
+			-- 로딩 완료
+			self.UI_TabList.TabComponent:ChangeTab(1)	-- 기본으로 Record 페이지를 보여줍니다.
+			local alpha = 1
+			local setLoadingPanelAlpha = function()
+				alpha -= 0.025
+				self.UI_Panel_Loading.CanvasGroupComponent.GroupAlpha = alpha
+			end
+			for i=1, 40 do
+				_TimerService:SetTimerOnce(setLoadingPanelAlpha, i/80)
+			end
+			_TimerService:SetTimerOnce(function()
+				self.UI_Panel_Loading.Enable = false
+			end, 0.5)
+			
+			
+			_TimerService:ClearTimer(timerID)
+		end
+		timerID = _TimerService:SetTimerOnce(checkLoadComplete, 0.5)
+	end
+
+	@ExecSpace("Client")
+	method void SetData_DefaultProfile(string title, integer level)
+		-- 사용자의 기본 프로필 정보(칭호, 레벨, 닉네임, 아바타)를 UI에 설정
+		local userEntity =  _UserService:GetUserEntityByUserId(self.TargetUserID)
+		------------------------------------------------------------------------------------------------------
+		-- 자기 자신의 정보라면
+		if self.TargetUserID == _UserService.LocalPlayer.OwnerId then
+			self.UI_Title:GetChildByName("TitleUIButton").Enable = true
+		else
+			self.UI_Title:GetChildByName("TitleUIButton").Enable = false
+		end
+		------------------------------------------------------------------------------------------------------
+		self.UI_Avatar.CostumeManagerComponent.DefaultEquipUserId = self.TargetUserID
+		self.UI_Nickname.TextComponent.Text = userEntity.NameTagComponent.Name
+		self.UI_Level.TextComponent.Text = string.format("Lv. %d", level)
+		------------------------------------------------------------------------------------------------------
+		-- 칭호
+		if title == "LoadFail" then
+			self.UI_Title.Enable = false
+		else
+			self.UI_Title.Enable = true
+			local titleValueTable = _UtilLogic:Split(title, "/") -- 타이틀 요소 분해
+			
+			local title_front = ""
+			local title_back = ""
+			
+			if _UtilLogic:IsNilorEmptyString(titleValueTable[1]) == false then
+				local title_frontDataSet = _DataService:GetTable("Title_KeyWordFrontDataset")
+				local row = title_frontDataSet:FindRow("KeyWordID", titleValueTable[1])
+				--공백 여부 확인
+				if titleValueTable[1] == "KWF10000" then
+					title_front = ""
+				else
+					title_front = _LocalizationService:GetText(row:GetItem("Name"))
+				end
+				
+			end
+			if _UtilLogic:IsNilorEmptyString(titleValueTable[2]) == false then
+				local title_backDataSet = _DataService:GetTable("Title_KeyWordBackDataset")
+				local row = title_backDataSet:FindRow("KeyWordID", titleValueTable[2])
+				--공백 여부 확인
+				if titleValueTable[2] == "KWB10000" then
+					title_back = ""
+				else
+					title_back = _LocalizationService:GetText(row:GetItem("Name"))
+				end
+				
+			end
+				
+			if _UtilLogic:IsNilorEmptyString(title_front) == true then
+				self.UI_Title.TextComponent.Text = string.format("%s", title_back)
+			elseif _UtilLogic:IsNilorEmptyString(title_back) == true then
+				self.UI_Title.TextComponent.Text = string.format("%s", title_front)
+			else
+				self.UI_Title.TextComponent.Text = string.format("%s %s", title_front, title_back)
+			end
+			
+		    --    -- 프로퍼티
+		    --local keywordBDataset = _DataService:GetTable("Title_KeyWordBackDataset")
+		    --local keywordFDataset = _DataService:GetTable("Title_KeyWordFrontDataset")
+		    --
+		    --local titleFrontText = ""
+		    --local titleBackText = ""
+		    --
+		    ---- 각 요소의 텍스트 추출하고 태그 플레이트 적용
+		    --for titleMaterialNum = 1, 3 do
+		    --    log("titleValueTable[titleMaterialNum] = ", titleValueTable[titleMaterialNum])
+		    --    local titleTemp = _UtilLogic:Split(titleValueTable[titleMaterialNum], "_")
+		    --    if titleTemp[1] == "KeyWordFront" then -- 프론트
+		    --        if titleTemp[2] ~= "KWF10000" then -- 타이틀이 공백일 경우의 예외처리
+		    --            for fTitleNum = 1, keywordFDataset:GetRowCount() do
+		    --                if titleTemp[2] == keywordFDataset:GetCell(fTitleNum, "KeyWordID") then
+		    --                    titleFrontText = _LocalizationService:GetText(keywordFDataset:GetCell(fTitleNum, "Name"))
+		    --                    break
+		    --                end
+		    --            end
+		    --        end
+		    --        
+		    --    elseif titleTemp[1] == "KeyWordBack" then -- 백
+		    --        if titleTemp[2] ~= "KWB10000" then -- 타이틀이 공백일 경우의 예외처리
+		    --            for bTitleNum = 1, keywordBDataset:GetRowCount() do
+		    --                if titleTemp[2] == keywordBDataset:GetCell(bTitleNum, "KeyWordID") then
+		    --                    titleBackText = _LocalizationService:GetText(keywordBDataset:GetCell(bTitleNum, "Name"))
+		    --                    break
+		    --                end
+		    --            end
+		    --        end
+		    --    else
+		    --        for tagNum = 1, nameTagDataset:GetRowCount() do -- 태그 플레이트 --는 적용 불가. 폰트 색상만 적용
+		    --            if titleTemp[2] == nameTagDataset:GetCell(tagNum, "NameTagID") then
+		    --                --titleEntity.SpriteGUIRendererComponent.ImageRUID = string.format("thumbnail://%s", nameTagDataset:GetCell(tagNum, "ImageRUID")) 
+		    --                self.UI_Title.TextComponent.FontColor = Color.FromHexCode(nameTagDataset:GetCell(tagNum, "FontColor"))
+		    --                break
+		    --            end
+		    --        end
+		    --    end
+			--end
+			--
+		end
+		
+		self.IsLoadComplete["Default"] = true
+	end
+
+	@ExecSpace("Client")
+	method void SetData_IsPublic(boolean isPublic_record, boolean isPublic_history)
+		-- 프로필 기록과 전적의 공개/비공개 설정을 UI에 반영
+		self.Record_IsPublic = isPublic_record
+		self.History_IsPublic = isPublic_history
+		
+		self.IsLoadComplete["Public"] = true
+		
+		if self.TargetUserID == _UserService.LocalPlayer.OwnerId then
+			local ui_recordPublicButton = self.UI_Page_Record:GetChildByName("Button_IsPublic")
+			ui_recordPublicButton.Enable = true
+			if self.Record_IsPublic == true then
+				ui_recordPublicButton:GetChildByName("Sprite_Checkbox"):GetChildByName("Sprite_Check").Enable = true
+			else
+				ui_recordPublicButton:GetChildByName("Sprite_Checkbox"):GetChildByName("Sprite_Check").Enable = false
+			end
+			
+			
+			local ui_historyPublicButton = self.UI_Page_History:GetChildByName("Button_IsPublic")
+			ui_historyPublicButton.Enable = true
+			if self.History_IsPublic == true then
+				ui_historyPublicButton:GetChildByName("Sprite_Checkbox"):GetChildByName("Sprite_Check").Enable = true
+			else
+				ui_historyPublicButton:GetChildByName("Sprite_Checkbox"):GetChildByName("Sprite_Check").Enable = false
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetData_Record(string highestTier, string highestRank, number playedGameCount, number winGameCount, number achi_score, number achiRate, number titleCollectRate, number coachCollectRate, number charCollectRate, number synCollectRate)
+		-- 플레이어의 기록 탭 데이터(최고 티어, 랭킹, 플레이 통계, 수집률)를 설정
+		-- 비공개
+		if highestTier == nil then
+			self.Record_HighestTier = nil
+			self.Record_HighestTier_Season = nil
+			self.Record_HighestTier_Ordinal = nil
+			
+			self.Record_HighestRank = nil
+			self.Record_HighestRankRate = nil
+			self.Record_HighestRank_Season = nil
+			self.Record_HighestRank_Ordinal = nil
+			
+			self.Record_PlayRecords["GameCount"] = -1
+			self.Record_PlayRecords["WinCount"] = -1
+			self.Record_PlayRecords["Achi_Score"] = -1
+			self.Record_PlayRecords["Achi_Rate"] = -1
+			self.Record_PlayRecords["TitleCollectRate"] = -1
+			self.Record_PlayRecords["CoachCollectRate"] = -1
+			self.Record_PlayRecords["CharCollectRate"] = -1
+			self.Record_PlayRecords["SynCollectRate"] = -1
+			
+		else
+			local highestTierInfo = _UtilLogic:Split(highestTier, "/")	-- "Level/SeasonNumber/OrdinalNumber"
+			if highestTierInfo[1] == "NIL" then
+				self.Record_HighestTier = -1
+				self.Record_HighestTier_Season = highestTierInfo[2]
+				self.Record_HighestTier = -1
+				
+			else
+				self.Record_HighestTier = tonumber(highestTierInfo[1])
+				self.Record_HighestTier_Season = highestTierInfo[2]
+				self.Record_HighestTier_Ordinal = tonumber(highestTierInfo[3])
+			end
+			
+			local highestRankInfo = _UtilLogic:Split(highestRank, "/") -- "RankNum/RankPercent/SeasonNumber/OrdinalNumber"
+			if highestRankInfo[1] == "NIL" then
+				self.Record_HighestRank = -1
+				self.Record_HighestRankRate = -1
+				self.Record_HighestRank_Season = highestRankInfo[3]
+				self.Record_HighestRank_Ordinal = -1
+			else
+				self.Record_HighestRank = tonumber(highestRankInfo[1])
+				self.Record_HighestRankRate = tonumber(highestRankInfo[2])
+				self.Record_HighestRank_Season = highestRankInfo[3]
+				self.Record_HighestRank_Ordinal = tonumber(highestRankInfo[4])
+			end
+			
+			self.Record_PlayRecords["GameCount"] = playedGameCount
+			self.Record_PlayRecords["WinCount"] = winGameCount
+			self.Record_PlayRecords["Achi_Score"] = achi_score
+			self.Record_PlayRecords["Achi_Rate"] = achiRate
+			self.Record_PlayRecords["TitleCollectRate"] = titleCollectRate
+			self.Record_PlayRecords["CoachCollectRate"] = coachCollectRate
+			self.Record_PlayRecords["CharCollectRate"] = charCollectRate
+			self.Record_PlayRecords["SynCollectRate"] = synCollectRate
+		end
+		
+		
+		self.IsLoadComplete["Record"] = true
+	end
+
+	@ExecSpace("Client")
+	method void SetData_History(string IsWin_str, string ModeType_str, string Season_str, string Level_str, string LastRound_str, string GameEndTime_str, string UnitInfo_str, string RuneList_str, string CoachList_str, string TeamHP_str, string CoinAmount_str)
+		-- 플레이어의 게임 전적 데이터(승패, 모드, 라운드, 유닛 정보 등)를 설정
+		-- 비공개
+		if IsWin_str == nil then
+			table.clear(self.History_IsWin)
+			table.clear(self.History_ModeType)
+			table.clear(self.History_ModeSeason)
+			table.clear(self.History_ModeLevel)
+			table.clear(self.History_LastRound)
+			
+			table.clear(self.History_EndTime)
+			table.clear(self.History_UnitInfo)
+			table.clear(self.History_RuneList)
+			table.clear(self.History_CoachList)
+			table.clear(self.History_GetTeamHP)
+			
+			table.clear(self.History_GetCoinAmount)
+		else
+			table.initialize(self.History_IsWin, _UtilLogic:StringToTable(IsWin_str))
+			table.initialize(self.History_ModeType, _UtilLogic:StringToTable(ModeType_str))
+			table.initialize(self.History_ModeSeason, _UtilLogic:StringToTable(Season_str))
+			table.initialize(self.History_ModeLevel, _UtilLogic:StringToTable(Level_str))
+			table.initialize(self.History_LastRound, _UtilLogic:StringToTable(LastRound_str))
+			
+			table.initialize(self.History_EndTime, _UtilLogic:StringToTable(GameEndTime_str))
+			table.initialize(self.History_UnitInfo, _UtilLogic:StringToTable(UnitInfo_str))
+			table.initialize(self.History_RuneList, _UtilLogic:StringToTable(RuneList_str))
+			table.initialize(self.History_CoachList, _UtilLogic:StringToTable(CoachList_str))
+			table.initialize(self.History_GetTeamHP, _UtilLogic:StringToTable(TeamHP_str))
+			
+			table.initialize(self.History_GetCoinAmount, _UtilLogic:StringToTable(CoinAmount_str))
+		end
+		
+		
+		self.IsLoadComplete["History"] = true
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_Record()
+		-- 기록 탭의 UI 요소들을 데이터에 맞춰 갱신하고 표시
+		-- [기록] 탭의 내용을 갱신합니다.
+		--------------------------------------------------------------------
+		if self.TargetUserID == _UserService.LocalPlayer.OwnerId then
+			self.UI_Page_Record:GetChildByName("Panel_IsPrivate").Enable = false
+			
+		-- 타인의 기록인 경우, 
+		else
+			local ui_Button_publicCheckbox = self.UI_Page_Record:GetChildByName("Button_IsPublic")
+			ui_Button_publicCheckbox.Enable = false
+			
+			-- 기록 비공개 상태인 경우, 갱신 없이 패널만 활성화
+			if self.Record_IsPublic == false then
+				self.UI_Page_Record:GetChildByName("Panel_IsPrivate").Enable = true
+				self.UI_Page_Record.Enable = true
+				self.UI_Page_History.Enable = false
+				return
+			else
+				self.UI_Page_Record:GetChildByName("Panel_IsPrivate").Enable = false
+			end
+		end
+		--------------------------------------------------------------------
+		-- 랭크 모드 정보
+		local rankModeInfo = _DataService:GetTable("RankModeInfo")
+		
+		-- 최고 티어
+		local ui_bestTier = self.UI_Page_Record:GetChildByName("Rank_BestTier")
+		if self.Record_HighestTier == nil or self.Record_HighestTier == 0 then
+			ui_bestTier:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = "3e9d52ed52d64794bbd6f72bab8ee3d9"
+			ui_bestTier:GetChildByName("Text_Tier").TextComponent.Text = "NoRecord"
+			ui_bestTier:GetChildByName("Text_Time").TextComponent.Text = ""
+		else
+			local row_bestTier = rankModeInfo:FindRow("Level", string.format("%d", self.Record_HighestTier))
+			local rankGrade_bestTier = row_bestTier:GetItem("Tier_Grade")
+			if rankGrade_bestTier == "-" then
+				rankGrade_bestTier = ""
+			end
+			ui_bestTier:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = row_bestTier:GetItem("BigIconRUID")
+			ui_bestTier:GetChildByName("Text_Tier").TextComponent.Text = _LocalizationService:GetText(string.format("RankMode_%s", row_bestTier:GetItem("Tier"))).." "..rankGrade_bestTier
+			ui_bestTier:GetChildByName("Text_Time").TextComponent.Text = _LocalizationService:GetTextFormat("SeasonOrdinary", self.Record_HighestTier_Season, string.format("%d", self.Record_HighestTier_Ordinal))
+			--string.format("%s시즌 %s분기", self.Record_HighestTier_Season, self.Record_HighestTier_Ordinal)
+		end
+		
+		
+		-- 최고 랭크
+		local ui_bestRank = self.UI_Page_Record:GetChildByName("Rank_BestRank")
+		if self.Record_HighestRank == nil or self.Record_HighestRank == -1 then
+			ui_bestRank:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = "3e9d52ed52d64794bbd6f72bab8ee3d9"
+			ui_bestRank:GetChildByName("Text_Tier").TextComponent.Text = _LocalizationService:GetText("OutOfRank")
+			ui_bestRank:GetChildByName("Text_Time").TextComponent.Text = ""
+		elseif self.Record_HighestRank == -1 then
+			ui_bestRank:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = "3e9d52ed52d64794bbd6f72bab8ee3d9"
+			ui_bestRank:GetChildByName("Text_Tier").TextComponent.Text = _LocalizationService:GetText("NoRecord")
+			ui_bestRank:GetChildByName("Text_Time").TextComponent.Text = ""
+		else
+			ui_bestRank:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = _GameModeDataManager.Rank_BigIconRUID[self.Record_HighestRank]
+			local row_bestRank = _GameModeDataManager.Rank_Tier[self.Record_HighestRank]
+			local rankGrade_bestRank = _GameModeDataManager.Rank_TierGrade[self.Record_HighestRank]
+			if rankGrade_bestRank == "-" then
+				rankGrade_bestRank = ""
+			end
+				
+			local rankText = _LocalizationService:GetTextFormat("GameResult_Text", self.Record_HighestRank) -- "?위"
+			
+			local rankRateText = ""
+			if (self.Record_HighestRankRate == nil) or (self.Record_HighestRankRate == -1) then
+				rankRateText = ""
+			else
+				local rankRate = self.Record_HighestRankRate * 100
+				if		rankRate > 1 then
+					rankRateText = _LocalizationService:GetTextFormat("RankRate", string.format("%.1f", rankRate))
+				elseif 	rankRate > 0.1 then
+					rankRateText = _LocalizationService:GetTextFormat("RankRate", string.format("%.2f", rankRate))
+				elseif 	rankRate > 0.01 then
+					rankRateText = _LocalizationService:GetTextFormat("RankRate", string.format("%.3f", rankRate))
+				else
+					rankRateText = _LocalizationService:GetTextFormat("RankRate", string.format("%.4f", rankRate))
+				end
+			end
+			
+			ui_bestRank:GetChildByName("Text_Tier").TextComponent.Text = rankText.." "..rankRateText
+			ui_bestRank:GetChildByName("Text_Time").TextComponent.Text = _LocalizationService:GetTextFormat("SeasonOrdinary", self.Record_HighestRank_Season, string.format("%d", self.Record_HighestRank_Ordinal))
+		end 
+		
+		--------------------------------------------------------------------
+		-- 그 외 기록
+		local ui_recordList = self.UI_Page_Record:GetChildByName("List_PlayRecord")
+		local recordFormat = {
+			"%d",
+			"%d",
+			"%d",
+			"%.2f%%",
+			"%.2f%%",
+			"%.2f%%",
+			"%.2f%%",
+			"%.2f%%",
+			"%.2f%%",
+		}
+		
+		local records = {
+			self.Record_PlayRecords["GameCount"],
+			self.Record_PlayRecords["WinCount"],
+			self.Record_PlayRecords["Achi_Score"],
+			self.Record_PlayRecords["Achi_Rate"] * 100,
+			self.Record_PlayRecords["TitleCollectRate"] * 100,
+			self.Record_PlayRecords["CoachCollectRate"] * 100,
+			self.Record_PlayRecords["CharCollectRate"] * 100,
+			self.Record_PlayRecords["SynCollectRate"] * 100
+		}
+		
+		for i=1, 8 do
+			local ui_record = ui_recordList:GetChildByName(string.format("Record_%d", i))
+			ui_record:GetChildByName("Record").TextComponent.Text = string.format(recordFormat[i], records[i])
+		end
+		--------------------------------------------------------------------
+		self.UI_Page_Record.Enable = true
+		self.UI_Page_History.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_History()
+		-- 전적 탭의 게임 기록 목록을 UI에 갱신하고 표시
+		-- [전적] 탭의 내용을 갱신합니다.
+		--------------------------------------------------------------------
+		-- 자신의 기록인 경우, '공개 여부 선택' 버튼을 활성화합니다.
+		if self.TargetUserID == _UserService.LocalPlayer.OwnerId then
+			self.UI_Page_History:GetChildByName("Panel_IsPrivate").Enable = false
+				
+		-- 타인의 기록인 경우
+		else
+			local ui_Button_publicCheckbox = self.UI_Page_History:GetChildByName("Button_IsPublic")
+			ui_Button_publicCheckbox.Enable = false
+			
+			-- 기록 비공개 상태인 경우, 갱신 없이 패널만 활성화
+			if self.History_IsPublic == false then
+				self.UI_Page_History:GetChildByName("Panel_IsPrivate").Enable = true
+				self.UI_Page_Record.Enable = false
+				self.UI_Page_History.Enable = true
+				return
+			else
+				self.UI_Page_History:GetChildByName("Panel_IsPrivate").Enable = false
+			end
+		end
+		--------------------------------------------------------------------
+		local ui_gameList = self.UI_Page_History:GetChildByName("List_Games")
+		local ui_originSlot = ui_gameList:GetChildByName("Game")
+		for i=1, #self.History_IsWin do	
+			local ui_game = ui_gameList:GetChildByName(string.format("Game_%d", i))
+			if isvalid(ui_game) == false then
+				ui_game = ui_originSlot:Clone(string.format("Game_%d", i))
+			end
+			
+			if self.History_IsWin[i] == nil then
+				ui_game.Enable = false
+				continue
+			end
+			
+			ui_game:GetChildByName("Icon_Win").Enable = self.History_IsWin[i]
+			
+			local modeType = self.History_ModeType[i]
+			local modeSeason = self.History_ModeSeason[i]
+			local modeLevel = self.History_ModeLevel[i]
+			
+			-- "XX 모드(n.m) Y단계" 
+			if modeType == "Single" then
+				ui_game:GetChildByName("Icon_Mode").SpriteGUIRendererComponent.ImageRUID = _GameModeDataManager.Single_IconRUID[modeLevel]
+				ui_game:GetChildByName("Text_Mode").TextComponent.Text =
+					 _LocalizationService:GetText("GameMode_Single")..string.format(" (%s) ",modeSeason).._LocalizationService:GetTextFormat("SingleMode_LevelText", modeLevel)
+			elseif modeType == "Rank" then
+				ui_game:GetChildByName("Icon_Mode").SpriteGUIRendererComponent.ImageRUID = _GameModeDataManager.Rank_IconRUID[modeLevel]
+				ui_game:GetChildByName("Text_Mode").TextComponent.Text =
+					 _LocalizationService:GetText("GameMode_Rank")..string.format(" (%s) ",modeSeason).._LocalizationService:GetTextFormat("SingleMode_LevelText", modeLevel)
+			elseif modeType == "Challenge" then
+				ui_game:GetChildByName("Icon_Mode").SpriteGUIRendererComponent.ImageRUID = _GameModeDataManager.Single_IconRUID[modeLevel]
+				ui_game:GetChildByName("Text_Mode").TextComponent.Text =
+					 _LocalizationService:GetText("GameMode_Challenge")..string.format(" (%s) ",modeSeason).._LocalizationService:GetTextFormat("SingleMode_LevelText", modeLevel)
+			end
+			
+			local playedTime = DateTime(self.History_EndTime[i])
+			local timeGap = DateTime.UtcNow - playedTime
+			
+			if timeGap.Days >= 30 then
+				local months = math.floor(timeGap.Days / 30)
+				ui_game:GetChildByName("Text_Date").TextComponent.Text = _LocalizationService:GetTextFormat("MonthsAgo", months)  --string.format("%d개월 전", months)
+			elseif timeGap.Days >= 1 then
+				ui_game:GetChildByName("Text_Date").TextComponent.Text = _LocalizationService:GetTextFormat("DaysAgo", timeGap.Days) --string.format("%d일 전", timeGap.Days)
+			elseif timeGap.Hours >= 1 then
+				ui_game:GetChildByName("Text_Date").TextComponent.Text = _LocalizationService:GetTextFormat("HoursAgo", timeGap.Hours) --string.format("%d시간 전", timeGap.Hours)
+			elseif timeGap.Minutes >= 10 then
+				ui_game:GetChildByName("Text_Date").TextComponent.Text = _LocalizationService:GetTextFormat("MinutesAgo", timeGap.Minutes) -- string.format("%d분 전", timeGap.Minutes)
+			else
+				ui_game:GetChildByName("Text_Date").TextComponent.Text = _LocalizationService:GetText("JustNow")
+			end
+		end
+		ui_gameList.TabComponent:SetChildren()
+		ui_gameList.TabComponent:ChangeTab(0)
+		--------------------------------------------------------------------
+		self.UI_Page_Record.Enable = false
+		self.UI_Page_History.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUI_History_GameDetail(integer slotIdx)
+		-- 선택한 게임의 상세 정보(라운드, 하트, 유닛, 시너지 등)를 UI에 표시
+		local ui_result = self.UI_Page_History:GetChildByName("Area_GameResult")
+		------------------------------------------------------------------
+		if slotIdx == 0 then
+			-- 라운드
+			local ui_round = ui_result:GetChildByName("Text_Round")
+			ui_round.TextComponent.Text = ""
+			-- 하트
+			local ui_hearts = ui_result:GetChildByName("List_Hearts")
+			for i=1, 5 do
+				local heart = ui_hearts:GetChildByName(string.format("Heart_%d", i))
+				heart.TextComponent.FontColor = Color.FromHexCode("#1a4a65")
+			end
+			-- 남은 코인
+			local ui_leftCoins = ui_result:GetChildByName("Text_LeftCoins"):GetChildByName("Text")
+			ui_leftCoins.TextComponent.Text = ""
+			
+			-- 사용한 유닛
+			local ui_usedUnits = ui_result:GetChildByName("List_UsedUnits")
+			for _, child in pairs(ui_usedUnits.Children) do
+				child.Enable = false
+			end
+			
+			-- 사용한 시너지
+			local ui_usedSynergies = ui_result:GetChildByName("List_UsedSynergies")
+			for _, child in pairs(ui_usedSynergies.Children) do
+				child.Enable = false
+			end
+			
+			-- 사용한 룬
+			local ui_usedRunes = ui_result:GetChildByName("List_UsedRune")
+			for _, child in pairs(ui_usedRunes.Children) do
+				child.Enable = false
+			end
+			
+			-- 사용한 코치
+			local ui_usedCoaches = ui_result:GetChildByName("List_UsedCoach")
+			for _, child in pairs(ui_usedCoaches.Children) do
+				child.Enable = false
+			end
+		------------------------------------------------------------------
+		else
+			-- 라운드
+			local ui_round = ui_result:GetChildByName("Text_Round")
+			ui_round.TextComponent.Text = self.History_LastRound[slotIdx]
+			-- 하트
+			local ui_hearts = ui_result:GetChildByName("List_Hearts")
+			for i=1, self.History_GetTeamHP[slotIdx] do
+				local heart = ui_hearts:GetChildByName(string.format("Heart_%d", i))
+				heart.TextComponent.FontColor = Color.FromHexCode("#76cdff")
+			end
+			for i=self.History_GetTeamHP[slotIdx] + 1, 5 do
+				local heart = ui_hearts:GetChildByName(string.format("Heart_%d", i))
+				heart.TextComponent.FontColor = Color.FromHexCode("#1a4a65")
+			end
+			-- 남은 코인
+			ui_result:GetChildByName("Text_LeftCoins"):GetChildByName("Text").TextComponent.Text = string.format("%d", self.History_GetCoinAmount[slotIdx])
+			
+			-- 사용한 시너지 목록 검증을 위한 파라미터 및 함수 --------------------------
+			local UsedSynergies = {}	-- 사용한 시너지 목록
+			local addPlayerSynergy = function(synergyID) -- 시너지를 등록하거나 카운트를 올리는 함수
+				if UsedSynergies[synergyID] == nil then
+					UsedSynergies[synergyID] = 1
+				else
+					UsedSynergies[synergyID] += 1
+				end
+			end
+			---@type table<string, table<string>>
+			local charMedalPairList = {} -- 메달을 사용 중인 페어.   key = CharID, value = 시너지ID 목록.    이미 페어(동일 캐릭+동일 메달)가 존재하는 경우에는 시너지 수 추가 X.
+			local charList_deduplicated = {} -- 중복을 제거한 사용 중인 캐릭터 목록. (charID)
+			------------------------------------------------------------------------------
+			
+			-- 사용한 유닛 
+			local unitList = _UtilLogic:Split(self.History_UnitInfo[slotIdx], "/")
+			local ui_usedUnits = ui_result:GetChildByName("List_UsedUnits")
+			local ui_originUnitSlot = ui_usedUnits:GetChildByName("Unit")
+			for i=1, #unitList do
+				local ui_usedUnit = ui_usedUnits:GetChildByName(string.format("Unit_%d", i))
+				if isvalid(ui_usedUnit) == false then
+					ui_usedUnit = ui_originUnitSlot:Clone(string.format("Unit_%d", i))
+				end
+				ui_usedUnit.Enable = true
+				-- 데이터
+				local unitInfo_str = unitList[i] -- "유닛ID_별수_아이템-아이템-아이템"
+				local unitInfo = _UtilLogic:Split(unitInfo_str, "_")
+				local charID = unitInfo[1]
+				local starLevel = tonumber(unitInfo[2])
+				local items = _UtilLogic:Split(unitInfo[3], "-")
+				
+				---@type CharDictionaryData
+				local charData = _DictionaryDataManager.CharDataList[charID]
+				if isvalid(charData) == false then
+					continue
+				end
+				
+				-- 시너지 체크를 위한 '사용 캐릭터 목록'에 이 캐릭터 ID를 넣습니다. 이미 존재한다면 포함 x
+				local synergyCheck_charList = false
+				for j=1, #charList_deduplicated do
+					if charList_deduplicated[i] == charID then
+						synergyCheck_charList = true
+					end
+				end
+				if synergyCheck_charList == false then
+					-- 사용한 시너지 목록에 추가
+					for j=1, #charData.Synergies do
+						addPlayerSynergy(charData.Synergies[j])
+					end
+					
+					table.insert(charList_deduplicated, charID)
+				end
+				--------------------------
+				-- ui 반영
+				
+				-- 초상화
+				local ui_portraitOutline = ui_usedUnit:GetChildByName("Portrait_Outline")
+				ui_portraitOutline.SpriteGUIRendererComponent.Color = _UI_Color.CharCost[charData.Cost]
+				ui_portraitOutline.UI_GameResultTooltipEnabler.TooltipMessage = charID.."_Name"
+				ui_usedUnit:GetChildByName("Portrait"):GetChildByName("CharImage").SpriteGUIRendererComponent.ImageRUID = charData.IdleRUID
+				
+				-- 별 레벨
+				local ui_stars = ui_usedUnit:GetChildByName("Stars")
+				for j=1, 3 do
+					ui_stars:GetChildByName(string.format("Star_%d", j)).Enable = (j <= starLevel)
+				end
+				
+				-- 아이템
+				local ui_items = ui_usedUnit:GetChildByName("Items")
+				for j=1, 3 do
+					local ui_item = ui_items:GetChildByName(string.format("Item_%d", j))
+					local itemID = items[j]
+					
+					if _UtilLogic:IsNilorEmptyString(itemID) == true or itemID == "NIL" then
+						ui_item.Enable = false
+					else
+						ui_item.Enable = true
+						ui_item.UI_GameResultTooltipEnabler.TooltipMessage = "Item_"..itemID.."_Name"
+						
+						---@type ItemStatusDictionaryData
+						local itemData = _DictionaryDataManager.ItemDataList[itemID]
+						
+						ui_item.SpriteGUIRendererComponent.ImageRUID = itemData.BackgroundRUID
+						
+						local ui_icon = ui_item:GetChildByName("Icon")
+						ui_icon.SpriteGUIRendererComponent.ImageRUID = itemData.RUID
+						ui_icon.SpriteGUIRendererComponent.LocalScale = itemData.RUID_LocalScale
+						ui_icon.SpriteGUIRendererComponent.LocalPosition = itemData.RUID_LocalPos
+						
+						-- 시너지 체크를 위한 '사용 아이템 목록'에 메달 아이템 ID를 넣습니다. 이미 존재한다면 포함 x
+						if string.sub(itemID, 1, 2) == "EI" then
+							local usedSynergyID = "S"..string.sub(itemID, 3, -1)
+							local synergyCheck_medalList = false 
+							for key, medalItemList in pairs(charMedalPairList) do	 -- key = charID, value = synergyID
+								if key == charID then
+									for k=1, #medalItemList do
+										if medalItemList[k] == usedSynergyID then
+											synergyCheck_medalList = true
+										end
+									end
+								end
+							end
+							
+							if synergyCheck_medalList == false then
+								addPlayerSynergy(usedSynergyID)
+								charMedalPairList[charID] = usedSynergyID
+							end
+						end
+						
+					end
+				end 
+			end
+			for i=#unitList+1, 100 do
+				local ui_usedUnit = ui_usedUnits:GetChildByName(string.format("Unit_%d", i))
+				if isvalid(ui_usedUnit) == false then
+					break
+				end
+				ui_usedUnit.Enable = false
+			end
+			
+			-- 사용한 룬
+			local runeList = _UtilLogic:Split(self.History_RuneList[slotIdx], "_")
+			local ui_usedRunes = ui_result:GetChildByName("List_UsedRune")
+			for i=1, 5 do
+				local ui_rune = ui_usedRunes:GetChildByName(string.format("Rune_%d", i))
+				local runeID = runeList[i]
+				
+				if _UtilLogic:IsNilorEmptyString(runeID) == true or runeID == "NIL" then
+					ui_rune.Enable = false
+				else
+					---@type RuneCardDictionaryData
+					local runeData = _DictionaryDataManager.RuneDataList[runeID]
+					
+					ui_rune.SpriteGUIRendererComponent.Color = _UI_Color.RuneGrade[runeData.Grade]
+					ui_rune:GetChildByName("Sprite").SpriteGUIRendererComponent.ImageRUID = runeData.IconRUID
+					ui_rune.UI_GameResultTooltipEnabler.TooltipMessage = "RuneCard_"..runeID.."_Name"
+					
+					if string.sub(runeData.UseType, 1, 11) == "Synergy_Add" then
+						addPlayerSynergy(string.sub(runeData.UseType, 13, -1))
+					end
+					
+					ui_rune.Enable = true
+				end
+			end
+			
+			
+			-- 사용한 코치
+			local coachList = _UtilLogic:Split(self.History_CoachList[slotIdx], "_")
+			local ui_usedCoaches = ui_result:GetChildByName("List_UsedCoach")
+			for i=1, 4 do
+				local ui_coach = ui_usedCoaches:GetChildByName(string.format("Coach_%d", i))
+				local coachID = coachList[i]
+				
+				if _UtilLogic:IsNilorEmptyString(coachID) == true or coachID == "NIL" then
+					ui_coach.Enable = false
+				else
+					ui_coach.Enable = true
+					
+					---@type CoachInfo
+					local coachData = _CoachService.CoachData[coachID]
+					
+					ui_coach.UI_GameResultTooltipEnabler.TooltipMessage = coachData.Name
+					local iconBG = ui_coach:GetChildByName("IconBG")
+					iconBG.SpriteGUIRendererComponent.Color = _UI_Color.CoachCost[coachData.Cost]
+					iconBG:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = coachData.ProfileRUID
+					ui_coach:GetChildByName("Cost").TextComponent.Text = string.format("%d", coachData.Cost)
+					
+					for _, tag in pairs(coachData.Tags) do
+						if string.sub(tag, 1, 11) == "Synergy_Add" then
+							addPlayerSynergy(string.sub(tag, 13, -1))
+						end
+					end
+				end
+			end
+			
+			-- 사용한 시너지
+			local sortedSynergyList = self:GetSortedUsedSynergyList(UsedSynergies) -- { {syID, count, checkStep}, {syID, count, checkStep}, ... }
+			local ui_usedSynergies = ui_result:GetChildByName("List_UsedSynergies")
+			local ui_originSlot = ui_usedSynergies:GetChildByName("Synergy")
+			for i=1, #sortedSynergyList do
+				local ui_synergy = ui_usedSynergies:GetChildByName(string.format("Synergy_%d", i))
+				if isvalid(ui_synergy) == false then
+					ui_synergy = ui_originSlot:Clone(string.format("Synergy_%d", i))
+				end
+				ui_synergy.Enable = true
+				
+				local synergyID = sortedSynergyList[i][1] 
+				---@type SynergyDictionaryData
+				local synergyData = _DictionaryDataManager.SynergyDataList[synergyID]
+				ui_synergy.SpriteGUIRendererComponent.MaterialId = _UI_Color.SynergyStepMaterial[sortedSynergyList[i][3]]
+				ui_synergy.UI_GameResultTooltipEnabler.TooltipMessage = synergyID.."_Name"
+				
+				local icon = ui_synergy:GetChildByName("Icon")
+				icon.SpriteGUIRendererComponent.ImageRUID = synergyData.IconRUID
+				if sortedSynergyList[i][3] == 0 then
+					icon.SpriteGUIRendererComponent.Color = Color.FromHexCode("#464a52")
+				else
+					icon.SpriteGUIRendererComponent.Color = Color.FromHexCode("#1d1d21")
+				end
+			end
+			
+			for i=#sortedSynergyList+1, 99 do
+				local ui_synergy = ui_usedSynergies:GetChildByName(string.format("Synergy_%d", i))
+				if isvalid(ui_synergy) == false then
+					break
+				end
+				ui_synergy.Enable = false
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method table GetSortedUsedSynergyList(SyncTable<string, integer> synergyList)
+		-- 사용한 시너지를 우선순위(단계, 개수)에 따라 정렬하여 반환
+		------------------------------------------------------------
+		-- 사용한 시너지 목록을 정렬하여 반환하는 함수
+		-------------------------------------------------------------
+		
+		-- Properties
+		local synergyDataList = _DictionaryDataManager.SynergyDataList
+		local synergyDB = _DataService:GetTable("SynergyInfo")
+		local colorDB = _DataService:GetTable("GradeColor")
+		
+		--------------------------------------------------
+		-- 우선순위를 체크하여 checkTable에 insert합니다.
+		local checkTable = {}
+		
+		for syID, count in pairs(synergyList) do
+			if count == nil or count == 0 then
+				continue
+			end
+			
+			---@type SynergyDictionaryData
+			local syRow = synergyDataList[syID]
+		
+			if not isvalid(syRow) then
+				log("synergyID = ", syID)
+				break
+			end
+			
+			-- 우선 순위 체크
+			-- 1. 시너지 완성 단계
+			-- 2. 시너지 내 유닛 개수
+			local priority = count
+			
+			local checkStep = 0
+			for i = 1, 5 do
+				local needCount = syRow.NeedCount_step[i]  -- syRow:GetItem(string.format("NeedCount_step%d", i))
+				if needCount ~= "-" then
+					if tonumber(needCount) <= count then	-- 보유한 시너지 수가 조건보다 많다면
+						checkStep = i
+					else
+						break
+					end
+				end 
+			end
+			
+			priority += checkStep * 100
+			
+			-- 예외처리 : [전직교관] 하나 또는 다섯일 때에만 활성화
+			if syID == "S10024" then
+				if count == 1 then
+					checkStep = 1
+				elseif count == 5 then
+					checkStep = 4
+				else
+					checkStep = 0
+				end
+			end
+			
+			table.insert(checkTable, {syID, count, checkStep})
+		end
+		--------------------------------------------------
+		-- 테이블 정렬 및 반영 (step > count 순으로 정렬)
+		
+		local sortedSynergyList = {}
+		
+		table.insert(sortedSynergyList, checkTable[1])
+		for i=2, #checkTable do
+			for j=1, #sortedSynergyList do
+				if checkTable[i][3] > sortedSynergyList[j][3] then
+					table.insert(sortedSynergyList, j, checkTable[i])
+					break
+				elseif checkTable[i][3] < sortedSynergyList[j][3] then
+					if j == #sortedSynergyList then
+						table.insert(sortedSynergyList, checkTable[i])
+					else
+						continue
+					end
+					
+				else -- same step
+					if checkTable[i][2] > sortedSynergyList[j][2] then
+						table.insert(sortedSynergyList, j, checkTable[i])
+						break
+					else -- lower or same count
+						if j == #sortedSynergyList then
+							table.insert(sortedSynergyList, checkTable[i])
+						else
+							continue
+						end	
+					end
+				end
+			end
+		end
+		
+		--for i=1, #sortedSynergyList do
+		--    log("id = ", sortedSynergyList[i][1], ", count = ", sortedSynergyList[i][2], ", step = ", sortedSynergyList[i][3])
+		--end
+		--
+		return sortedSynergyList
+	end
+
+	@ExecSpace("Server")
+	method void RequestChangePublicInfo(boolean isPublic_Record, boolean isPublic_History)
+		-- 클라이언트에서 요청한 프로필 공개/비공개 설정을 서버에 저장
+		-- Client > Server로 호출되며, public 정보를 변경 요청하는 함수입니다.
+		
+		local userID = senderUserId
+		local user = _UserService:GetUserEntityByUserId(userID)
+		
+		user.PlayerDataComponent.Profile_Record_IsPublic = isPublic_Record
+		user.PlayerDataComponent.Profile_History_IsPublic = isPublic_History
+		
+		_PlayerDataLogic:SetPlayerProfileIsPublicData(userID)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Model", "defaultplayer")
+	handler HandlePlayerTouchEvent(PlayerTouchEvent event)
+		-- 플레이어를 터치했을 때 프로필 보기 버튼을 표시
+		-- 유저 엔티티를 터치했을 때, '프로필 보기' 툴팁을 띄웁니다.
+		---------------------------------------------------------
+		-- Parameters
+		local TouchedUserEntity = event.TouchedUserEntity
+		---------------------------------------------------------
+		if _InputService:IsPointerOverUI() == true then
+			return
+		end
+		
+		self.TargetUserID = TouchedUserEntity.PlayerComponent.UserId
+		
+		self.UI_ProfileAccessButton.UITransformComponent.anchoredPosition = _Util:ScreenPostoUIPos(_InputService:GetCursorPosition())
+		self.UI_ProfileAccessButton:GetChildByName("Text_Nickname").TextComponent.Text = TouchedUserEntity.NameTagComponent.Name
+		self.UI_ProfileAccessButton.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "e2553b5f-8523-4557-8b4a-77af92f8ecc6")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 프로필 보기 버튼 클릭 시 프로필 UI를 열고 데이터 요청
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		if self.IsCooltime_DataRequest == true then
+			_UIToast:ShowMessageByLocalizingKey("FailToLoadProfileData")
+			return
+		end
+		
+		self.UI_ProfileAccessButton.Enable = false
+		self:OnOpenUI()
+		self:RequestData(self.TargetUserID)
+		
+		-- 데이터 요청 쿨타임 적용
+		self.IsCooltime_DataRequest = true
+		_TimerService:SetTimerOnce(function()
+			self.IsCooltime_DataRequest = false
+		end, 10)
+	end
+
+	@EventSender("Entity", "194993f0-e237-461d-a35d-ff117aa72be0")
+	handler HandleTabChangedEvent(TabChangedEvent event)
+		-- 프로필 탭(기록/전적) 변경 시 해당 UI를 갱신하고 탭 스타일 업데이트
+		-- Parameters
+		local ChangedIdx = event.ChangedIdx
+		---------------------------------------------------------
+		if ChangedIdx == 1 then
+			self:SetUI_Record()
+			
+		elseif ChangedIdx == 2 then
+			self:SetUI_History()
+		end
+		
+		-- 탭 이미지 변경
+		for i=1, 100 do
+			local ui_tabButton = self.UI_TabList:GetChildByName(string.format("Tab_%d", i))
+			
+			if isvalid(ui_tabButton) == false then
+				break
+			end
+			
+			if i == ChangedIdx then
+				ui_tabButton.TextComponent.FontColor = Color.white
+				ui_tabButton:GetChildByName("deco_line").Enable = true
+			else
+				ui_tabButton.TextComponent.FontColor = Color.FromHexCode("#6078b8")
+				ui_tabButton:GetChildByName("deco_line").Enable = false
+			end
+		end
+	end
+
+	@EventSender("Entity", "a5f67681-a21b-4a7e-a9c0-37366a46f763")
+	handler HandleTabChangedEvent2(TabChangedEvent event)
+		-- 게임 기록 목록에서 특정 게임 선택 시 상세 정보 표시 및 선택 스타일 업데이트
+		-- Parameters
+		local ChangedIdx = event.ChangedIdx
+		---------------------------------------------------------
+		self:SetUI_History_GameDetail(ChangedIdx)
+		
+		-- 탭 이미지 변경
+		local tabList = self.UI_Page_History:GetChildByName("List_Games")
+		for i=1, 200 do
+			local tab = tabList:GetChildByName(string.format("Game_%d", i))
+			
+			if isvalid(tab) == false then
+				break
+			end
+			
+			if i == ChangedIdx then
+				tab.SpriteGUIRendererComponent.Color = Color.FromHexCode("#4f748e")
+			else
+				tab.SpriteGUIRendererComponent.Color = Color.FromHexCode("#1a253a")
+			end
+		end
+	end
+
+	@EventSender("Entity", "69606a1e-f78c-416e-93d9-40029ccef5c6")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 기록 공개/비공개 토글 버튼 클릭 처리
+		if self.TargetUserID ~= _UserService.LocalPlayer.OwnerId then
+			return
+		end
+		
+		self.Record_IsPublic = not self.Record_IsPublic
+		self:SetData_IsPublic(self.Record_IsPublic, self.History_IsPublic)
+		
+		if self.IsPublicChangeCooldown == true then
+			return
+		end
+		
+		-- 서버에 데이터 변경을 요청합니다. 3초에 1회만 요청 가능.
+		local timerID = 0
+		local tryRequest = function()
+			if self.IsPublicChangeCooldown == false then
+				self:RequestChangePublicInfo(self.Record_IsPublic, self.History_IsPublic)
+				
+				-- 쿨타임
+				self.IsPublicChangeCooldown = true
+				_TimerService:SetTimerOnce(function()
+					self.IsPublicChangeCooldown = false
+				end, 3)
+				
+				_TimerService:ClearTimer(timerID)
+				return
+			end
+		end
+		timerID = _TimerService:SetTimerRepeat(tryRequest, 0.5)
+		
+	end
+
+	@EventSender("Entity", "ab287645-1eff-4426-b911-e136af073602")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 전적 공개/비공개 토글 버튼 클릭 처리
+		if self.TargetUserID ~= _UserService.LocalPlayer.OwnerId then
+			return
+		end
+		
+		self.History_IsPublic = not self.History_IsPublic 
+		self:SetData_IsPublic(self.Record_IsPublic, self.History_IsPublic)
+		
+		if self.IsPublicChangeCooldown == true then
+			return
+		end
+		
+		-- 서버에 데이터 변경을 요청합니다. 3초에 1회만 요청 가능.
+		local timerID = 0
+		local tryRequest = function()
+			if self.IsPublicChangeCooldown == false then
+				self:RequestChangePublicInfo(self.Record_IsPublic, self.History_IsPublic)
+				
+				-- 쿨타임
+				self.IsPublicChangeCooldown = true
+				_TimerService:SetTimerOnce(function()
+					self.IsPublicChangeCooldown = false
+				end, 3)
+				
+				_TimerService:ClearTimer(timerID)
+				return
+			end
+		end
+		timerID = _TimerService:SetTimerRepeat(tryRequest, 0.5)
+	end
+
+	@EventSender("Entity", "b641447e-2a09-43dd-a3d0-457c7bcc50cb")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 내 프로필 보기 버튼 클릭 시 자신의 프로필 UI 열기
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		self.TargetUserID = _UserService.LocalPlayer.OwnerId
+		---------------------------------------------------------
+		if self.IsCooltime_DataRequest == true then
+			_UIToast:ShowMessageByLocalizingKey("FailToLoadProfileData")
+			return
+		end
+		
+		self.UI_ProfileAccessButton.Enable = false
+		self:OnOpenUI()
+		self:RequestData(self.TargetUserID)
+		
+		-- 데이터 요청 쿨타임 적용
+		self.IsCooltime_DataRequest = true
+		_TimerService:SetTimerOnce(function()
+			self.IsCooltime_DataRequest = false
+		end, 10)
+	end
+
+	@EventSender("Entity", "545434b2-f0e5-474d-90f8-81005b905480")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 칭호 설정 버튼 클릭 시 칭호 설정 UI 열기
+		local player = _UserService.LocalPlayer
+		self.UI_Profile.Enable = false
+		
+		_UI_CameraZoomLogic:Zoom()
+		
+		if _UI_PlayerTitleSetting.itsOn == false then
+			_UI_PlayerTitleSetting.itsOn = true
+			_UI_PlayerTitleSetting:InitOwnedTable()
+		end
+				
+		player.TitleManager.currentSelectedElements = "NameTag"
+		player.TitleManager.titleSettingUI.UI_PlayerTitleButton:TitleSettingInit()
+		player.TitleManager.titleSettingUI.UI_PlayerTitleButton.NameTagButton.UI_PlayerTitleButton:ActivateButton()
+		player.TitleManager.titleSettingUI.Enable = true
+	end
+
+end

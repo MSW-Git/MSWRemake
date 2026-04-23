@@ -1,0 +1,497 @@
+@Component
+script NewMergeWeaponItem extends Component
+
+	property string originalId = ""
+
+	@HideFromInspector
+	property SpriteRendererComponent outglow = nil
+
+	property boolean selected = false
+
+	property string uniqueKey = ""
+
+	property table itemData = {}
+
+	property table weaponSpec = {}
+
+	property boolean enableMergeState = false
+
+	property boolean isEgg = false
+
+	property number randomTime = 0
+
+	property SpriteRendererComponent star = nil
+
+	property table storageData = {}
+
+	property number count = 0
+
+	property number lastTouchTime = 0
+
+	property SpriteRendererComponent starActive = nil
+
+	property integer x = -1
+
+	property integer y = -1
+
+	property TextComponent mergeLvTag = nil
+
+	property boolean isArmor = false
+
+	property boolean mergeEnableNoti = false
+
+	property Entity itemEntity = nil
+
+	property number glowTime = 0
+
+	property Entity expEntity = nil
+
+	property boolean isTweening = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 시작 시 초기화 및 터치 이벤트 연결
+		
+		self.randomTime = _UtilLogic:RandomDouble()*10
+		self.glowTime = _UtilLogic:RandomDouble()*10
+		self.Entity.Visible = false
+		self:InitSprite()
+		local sprite = self.itemEntity.SpriteRendererComponent
+		self.itemEntity:ConnectEvent(TouchEvent,function(e) self:OnTouchItem() end)
+		
+		local tween = _TweenLogic:MakeTween(0,1,0.5,EaseType.Linear,function(value) 
+				sprite.Color.a = value
+		end)
+		tween:Play()
+		
+		
+		
+	end
+
+	method void SetWeaponID(table storageData)
+		-- 저장된 무기 데이터로 아이템 설정
+		local weaponId= storageData.originalId
+		
+		self.Entity.Visible = true
+		self.isEgg = false
+		self.storageData = storageData
+		
+		local uniqueKey = storageData.uniqueKey
+		
+		self.originalId = weaponId
+		self.uniqueKey = uniqueKey
+		local weaponSpec = _WeaponSpecLogic.weaponData[weaponId] 
+		if weaponSpec == nil then
+			weaponSpec = _ArmorSpecLogic.armorData[weaponId]
+		end
+		local equipmentData = _ItemDataLogic.equipmentData[weaponId]
+		self.itemData = equipmentData
+		
+		local type = self.itemData.category
+		local pos = _NewMergeLogic:ConvertSnapPosition(Vector3(storageData.posX,storageData.posY,0))
+		
+		self.weaponSpec = weaponSpec
+		if self.itemData.category ~= "weapon" then
+			self.isArmor = true
+		end
+		
+		self.mergeLvTag = self.Entity:GetChildByName("text").TextComponent
+		self.mergeLvTag.Enable = false
+		self.mergeLvTag.Enable = true
+		self:InitSprite()
+		self:SetGrowColor()
+		
+		local ruid = equipmentData.ruid
+		if _UtilLogic:IsNilorEmptyString(ruid) == true then
+			self.itemEntity.SpriteRendererComponent.SpriteRUID = weaponSpec.ruid
+		else
+			self.itemEntity.SpriteRendererComponent.SpriteRUID = equipmentData.ruid
+		end
+		
+		local scale = tonumber(equipmentData.scale)
+		self.itemEntity.TransformComponent.Scale = Vector3(scale,scale,1)
+		
+		self:CheckMergeEnable()
+		
+		self.mergeLvTag.Text = string.format("%d",self.storageData.level)
+		
+		
+		
+	end
+
+	method void OnDrag(Vector2 delta)
+		-- 드래그 시 아이템 이동
+		self.Entity.TransformComponent:Translate(delta.x,delta.y)
+	end
+
+	method void OnSelected(boolean selected)
+		-- 아이템 선택 상태 설정
+		self.selected = selected
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 머지 가능 상태에서 애니메이션 처리
+		if isvalid(self.itemEntity) == false then
+			return
+		end
+		if self.enableMergeState then
+			if isvalid(_NewMergeLogic.selectedItem) then
+				local diff = _NewMergeLogic.selectedItem.TransformComponent.Position - self.Entity.TransformComponent.Position
+				diff.z = 0
+				
+				local dist = Vector3.Magnitude(diff)
+				local speed = 10
+				if dist < 0.1 then
+					dist = 0.1
+				end	
+				if dist < 1 then
+					speed = 50
+				end
+				self.randomTime = self.randomTime + delta * speed
+				
+				self.itemEntity.TransformComponent.ZRotation = math.sin(self.randomTime) * 10
+			end
+		elseif self.mergeEnableNoti then
+			if isvalid(_NewMergeLogic.selectedItem) == false then
+				self.randomTime = self.randomTime + delta * 10
+				self.itemEntity.TransformComponent.ZRotation = math.sin(self.randomTime) * 3
+			end
+		else
+			self.itemEntity.TransformComponent.ZRotation = 0
+		end
+	end
+
+	method void SetGrowColor()
+		-- 아이템 등급에 따른 색상과 이팩트 설정
+		local star =  tonumber(self.itemData.star)
+		local grade = self.itemData.grade
+		if _UtilLogic:IsNilorEmptyString(self.weaponSpec.outglow) == false then
+			self.outglow.SpriteRUID = self.weaponSpec.outglow
+			self.outglow.Color = _WeaponSpecLogic:GetColorByGrade(grade)
+		else
+			self.outglow.Color.a = 0
+		end
+		if self.isEgg == false then	
+			self.expEntity = self.Entity:GetChildByName("exp")
+			if isvalid(self.expEntity) then
+				
+				local maxStar = self.itemData.maxStar
+				local expSprite = self.expEntity.SpriteRendererComponent
+				
+				expSprite.Color = _WeaponSpecLogic:GetColorByGrade(grade)
+				expSprite.OrderInLayer = 10
+				local totalExp = _ItemDataLogic:GetWeaponMaxExp(self.storageData.level)
+				local minExp = _ItemDataLogic:GetWeaponMaxExp(self.storageData.level - 1)
+				if minExp == 1 then
+					minExp = 0
+				end
+				
+				local mergeExp = self.storageData.mergeExp
+				if mergeExp == nil or mergeExp == 0 then
+					mergeExp =  minExp
+				end
+				if self.storageData.level > 1 then
+					expSprite.TiledSize.x = 8 * (mergeExp - minExp)/(totalExp - minExp)
+				else
+					expSprite.TiledSize.x = 0			
+				end
+				if _UtilLogic:IsNilorEmptyString(self.itemData.nextEquipment) then
+					expSprite.TiledSize.x = 0
+				end
+			end
+			return
+		end
+		
+		
+		
+		local scale = self.Entity.TransformComponent.Scale.x
+		self.star.Entity.TransformComponent.Scale.x = 1 / scale
+		self.star.Entity.TransformComponent.Scale.y = 1 / scale
+		self.starActive.Entity.TransformComponent.Scale = self.star.Entity.TransformComponent.Scale
+		
+		
+		local size = star
+		local maxStar = star
+		if self.isEgg == false then
+			local mergeExp = self.storageData.mergeExp 
+			local maxExp = 2^(star + 1)
+			local preMaxExp = 2^star
+			if mergeExp == nil or mergeExp == 0 then
+				mergeExp = preMaxExp
+			end
+			
+			size = math.log(mergeExp,2)
+			maxStar = self.itemData.maxStar
+			
+			
+			if size > maxStar then
+				self.star.TiledSize.x = size
+				self.starActive.TiledSize.x = maxStar
+			else
+				self.star.TiledSize.x = maxStar
+				self.starActive.TiledSize.x = size
+			end
+			
+			
+			self.star.Entity.TransformComponent.Position.x = (maxStar - 1) * -0.17 * 0.5 / scale
+			self.starActive.Entity.TransformComponent.Position.x = (maxStar - 1) * -0.17 * 0.5 / scale
+			self.starActive.Entity.TransformComponent.Position.y = -0.5/scale
+			self.star.Entity.TransformComponent.Position.y = -0.5/scale
+			self.star.Color.a = 1
+			self.starActive.Color.a = 1
+			self.star.Enable = true
+			self.starActive.Enable = true
+		else
+			self.star.Enable = false
+			self.starActive.Enable = false
+		end
+	end
+
+	method void SetEggItem(table storageData)
+		-- 알 아이템 데이터로 설정
+		self.Entity.Visible = true
+		local pos = _NewMergeLogic:ConvertSnapPosition(Vector3(storageData.posX,storageData.posY,0))
+		self.storageData = storageData
+		local eggId= storageData.originalId
+		local uniqueKey= storageData.uniqueKey
+		self.itemData = _ItemDataLogic.itemData[eggId]
+		self.uniqueKey = uniqueKey
+		self.originalId = eggId
+		
+		
+		
+		
+		
+		self.isEgg = true
+		
+		self.count = 0
+		self:InitSprite()
+		self:SetGrowColor()
+		
+		self:RefreshEggCount()
+		
+		self.itemEntity.SpriteRendererComponent.SpriteRUID = self.itemData.ruid
+		local scale = tonumber(self.itemData.scale)
+		self.itemEntity.TransformComponent.Scale = Vector3(scale,scale,1)
+	end
+
+	method void InitSprite()
+		-- 스프라이트 컴포넌트 초기화
+		
+		if isvalid(self.itemEntity) == false then
+			self.itemEntity = self.Entity:GetChildByName("item")
+			if isvalid(self.outglow) == false then
+				self.outglow = self.itemEntity:GetChildByName("glow").SpriteRendererComponent
+				self.outglow.OrderInLayer = 1
+			end
+		
+		end
+		if self.isEgg == false then
+			return
+		end
+		
+		if isvalid(self.star) == false then
+			self.star = self.Entity:GetChildByName("star").SpriteRendererComponent
+			self.star.OrderInLayer = 2
+			
+		end
+		if isvalid(self.starActive) == false then
+			self.starActive = self.Entity:GetChildByName("star_active").SpriteRendererComponent
+			self.starActive.OrderInLayer = 3	
+		end
+	end
+
+	method void HatchEgg()
+		-- 알을 부화시켜 새로운 무기 생성
+		
+		
+		
+		_NewMergeLogic:HatchEgg(self.storageData.uniqueKey,self.Entity.TransformComponent.Position,_UserService.LocalPlayer)
+	end
+
+	method void RefreshEggCount()
+		-- 알 개수 UI 업데이트
+		
+		self.count = self.storageData.count
+		
+		self.itemEntity:GetChildByName("text").TextComponent.Text = string.format("%d",self.count)
+	end
+
+	method void CheckMergeEnable()
+		-- 다른 아이템과 머지 가능 여부 확인
+		
+		self.mergeEnableNoti = false
+		for k,v in pairs(_NewMergeLogic.mergeItems) do
+			---@type Entity
+			local item = v
+			if isvalid(item) then
+				if item ~= self.Entity then
+						if self.itemData.mergeId ==	item.NewMergeWeaponItem.itemData.mergeId then
+							self.mergeEnableNoti = true
+							item.NewMergeWeaponItem.mergeEnableNoti = true
+						end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 아이템 삭제 시 다른 아이템들의 머지 알림 상태 업데이트
+		if _UtilLogic:IsNilorEmptyString(self.itemData.nextEquipment) then
+			return
+		end
+		local mergeGroup = {}
+		for k,v in pairs(_NewMergeLogic.mergeItems) do
+			---@type Entity
+			local item = v
+			if isvalid(item) then
+				if item ~= self.Entity then
+					if _UtilLogic:IsNilorEmptyString(item.NewMergeWeaponItem.itemData.nextEquipment) == false then
+						if self.itemData.mergeId ==	item.NewMergeWeaponItem.itemData.mergeId then
+							table.insert(mergeGroup,item)
+						end
+					end
+				end
+			end
+		end
+		
+		if #mergeGroup == 1 then
+			for k,v in pairs(mergeGroup) do
+				v.NewMergeWeaponItem.mergeEnableNoti = false
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void TestBattlePower(string uniqueKey)
+		-- 전투력 테스트 (현재 비어있음)
+	end
+
+	method void OnTouchItem()
+		-- 아이템 터치 시 처리 (알 부화 또는 선택)
+		if self.isTweening then
+			return
+		end
+		local delta = _UtilLogic.ElapsedSeconds -  self.lastTouchTime
+		self.lastTouchTime = _UtilLogic.ElapsedSeconds
+		
+		
+		
+		if self.isEgg and delta < 0.2 then
+			_EffectService:PlayEffect("01d0d3816cca4992bc4a71e7c93601e4",self.Entity,self.Entity.TransformComponent.WorldPosition,0,Vector3.one)
+			self:HatchEgg()
+			return
+		end
+		
+		_NewMergeLogic:SelectWeaponItem(self.Entity)
+		if self.isEgg == false then
+		end
+	end
+
+	@EventSender("Logic", "NewMergeLogic")
+	handler HandleOnSelectedNewMergeItem(OnSelectedNewMergeItem event)
+		-- 다른 아이템 선택 시 머지 가능 상태 업데이트
+		if self.isEgg then
+			return
+		end
+		
+		local type = event.type
+		local uniqueKey = event.uniqueKey
+		local selected = event.selected
+		local originalId = event.originalId
+		
+		self:InitSprite()
+		
+		
+		self.enableMergeState = false
+		if selected == false then
+			self.itemEntity.SpriteRendererComponent.Color.a = 1
+			self.outglow.Enable = true
+			self.expEntity.Enable = true
+		
+			self.mergeLvTag.Entity.Enable = true
+			return
+		end
+		local itemData = _ItemDataLogic.equipmentData[originalId]
+		if itemData == nil then
+			return
+		end
+		local mergeId = itemData.mergeId
+		
+		if self.itemData.mergeId ~= mergeId  then
+			self.itemEntity.SpriteRendererComponent.Color.a = 0.25
+			self.outglow.Enable = false
+			self.expEntity.Enable = false
+		
+			self.mergeLvTag.Entity.Enable = false
+		else
+			self.itemEntity.SpriteRendererComponent.Color.a = 1
+			self.outglow.Enable = true
+			self.expEntity.Enable = true
+		
+			self.mergeLvTag.Entity.Enable = true
+			if self.uniqueKey ~= uniqueKey then
+				
+				
+				if self.storageData.level < _GameConfig:GetConfig().MAX_ITEM_LEVEL then
+					self.enableMergeState = true
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 플레이어가 아이템에 근접했을 때 미니팝업 표시
+		
+		local InteractionEntity = event.InteractionEntity
+		
+		if InteractionEntity == _UserService.LocalPlayer then
+			if self.isEgg then
+				_UIToast:ShowMessage("알을 빠르게 클릭해서 부화시켜보세요")
+				return
+			end
+			local category = _UtilLogic:Split(self.originalId, "_")[1]
+			if category == _GameConfig:GetConfig().ITEMTYPE_WEAPON then
+				category = "weapon"
+			elseif category == _GameConfig:GetConfig().ITEMTYPE_ARMOR then
+				category = "armor"
+			end
+			_HUDManager.weaponMinipopup:Show(self.uniqueKey)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 플레이어가 아이템에서 멀어졌을 때 미니팝업 숨김
+		
+		local InteractionEntity = event.InteractionEntity
+		if self.isEgg then
+			
+			return
+		end
+		
+		if InteractionEntity == _UserService.LocalPlayer then
+			_HUDManager.weaponMinipopup:Hide(self.uniqueKey)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchEvent(ScreenTouchEvent event)
+		-- 화면 터치 이벤트 처리 (현재 비어있음)
+		
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+				
+		if _InputService:IsPointerOverUI() then
+			return
+		end
+		
+	end
+
+end

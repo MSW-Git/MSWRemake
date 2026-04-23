@@ -1,0 +1,104 @@
+@Component
+script UIRecipeDebug extends Component
+
+	property TextComponent MakingText = nil
+
+	property TextComponent ResultText = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 레시피 디버그 UI 초기화 및 버튼 이벤트 연결
+		self.MakingText = self.Entity:GetChildByName("MakingText").TextComponent
+		self.ResultText = self.Entity:GetChildByName("ResultText").TextComponent
+		
+		self.Entity:GetChildByName("MakingTitleBtn"):ConnectEvent(ButtonClickEvent, function()
+			self:OpenTab("Making")	
+		end)
+		
+		self.Entity:GetChildByName("ResultTitleBtn"):ConnectEvent(ButtonClickEvent, function()
+			self:OpenTab("Result")	
+		end)
+	end
+
+	method void OpenTab(string tabKey)
+		-- 지정된 탭을 열고 해당 정보를 새로고침
+		if _UtilLogic:IsNilorEmptyString(tabKey) == true then
+			tabKey = "Making"
+		end
+		
+		self.MakingText.Entity.Enable = tabKey == "Making"
+		self.ResultText.Entity.Enable = tabKey == "Result"
+		
+		if tabKey == "Making" then
+			self:RefreshMakingText()
+		elseif tabKey == "Result" then
+			self:RefreshResultText()
+		end
+	end
+
+	method void RefreshMakingText()
+		-- 레시피 제작 중 정보를 새로고침 (밸런스, 맵기, 맛 점수, 가격)
+		local player = _UserService.LocalPlayer
+		local uiRecipeMaking = _UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking
+		
+		local balanceText = string.format("밸런스: %d / %d", uiRecipeMaking.BalancePoint, _IngredientDataSetLogic:GetBalanceThreshold(player))
+		local spicyText = string.format("맵기: %d / %d", uiRecipeMaking.SpicyPoint, _IngredientDataSetLogic:GetSpicyThreshold(player))
+		local tastePointText = string.format("맛 점수 원본: %d", uiRecipeMaking.TasteScore)
+		
+		local cost = 0
+		for i, data in pairs(uiRecipeMaking.SelectedIngres) do
+			---@type RecipeIngreDrawData
+			local drawData = data
+			
+			if drawData.DrawType == _RecipeIngreDrawEnum.Bun then
+				local bunData = _IngredientDataSetLogic:GetBunDetailData(drawData.Id, drawData.DrawDetailType)
+				cost += bunData.BaseCost
+			else
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(drawData.Id)
+				cost += ingreData:GetCost(player.PlayerStage.NowStage, player)
+			end
+		end
+		local costText = string.format("가격 원본: %d", cost)
+		
+		self.MakingText.Text = string.format("%s\n%s\n%s\n%s", balanceText, spicyText, tastePointText, costText)
+	end
+
+	method void RefreshResultText()
+		-- 레시피 결과 정보를 새로고침 (태그, 콤보, 빵 보너스, 밸런스 보너스)
+		local player = _UserService.LocalPlayer
+		local uiRecipeMaking = _UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking
+		local uiRecipeResult = uiRecipeMaking.ResultEntities.UIRecipeResult
+		
+		local tagKey = _RecipeTagDataSetLogic:ReturnMainTypeOfIngres(uiRecipeMaking.SelectedIngres, player)
+		local tagData = _RecipeTagDataSetLogic:GetRecipeTagData(tagKey)
+		local tagText = string.format("예상 태그: %s", _GetLocalizationTextLogic:GetText(tagData.TagNameKey))
+		
+		local maxComboText = string.format("최대 콤보: %d (최대 콤보 보너스: %.2f (%.2f))", uiRecipeMaking.MaxCombo, _TasteGradeDataSetLogic:GetFinalComboBonus(player) * uiRecipeMaking.MaxCombo, _TasteGradeDataSetLogic:GetFinalComboBonus(player))
+		
+		---@type RecipeIngreDrawData
+		local bunDrawData = uiRecipeMaking.SelectedIngres[1]
+		local bunData = _IngredientDataSetLogic:GetBunData(bunDrawData.Id)
+		local bunDetailData = _IngredientDataSetLogic:GetBunDetailData(bunDrawData.Id, bunDrawData.DrawDetailType)
+		local isTagMatch = tagKey == bunData.Tag
+		
+		local bunBonus = isTagMatch and _TasteGradeDataSetLogic.BunTypeBonus or 0
+		local bunText = string.format("사용한 번: %d, %s (빵 상성 보너스: %.2f)", bunDrawData.Id, _GetLocalizationTextLogic:GetText(bunDetailData.NameKey), bunBonus)
+		
+		local isBalanced = math.abs(uiRecipeMaking.BalancePoint) <= _IngredientDataSetLogic:GetBalanceThreshold(player)
+		local balanceBonus = _TasteGradeDataSetLogic:GetFinalBalanceBonus(player)
+		local balancePanelty = _TasteGradeDataSetLogic.FinalBalancePenalty
+		local balancedColorCode = isBalanced and "#FFFF00" or "#FFFFFF"
+		local notBalancedColorCode = isBalanced and "#FFFFFF" or "#FFFF00"
+		local balanceBonusText = string.format("<color=%s>밸런스 보너스: %.2f</color> / <color=%s>밸런스 패널티: %.2f</color>", balancedColorCode, balanceBonus, notBalancedColorCode, balancePanelty)
+		
+		local sideMenuData = _StrategyDataSetLogic:GetSideMenuData(player.PlayerIngameManager.StageSideMenu)
+		local sideMenuContents = ""
+		if sideMenuData ~= nil then	
+			sideMenuContents = string.format("%d, %s (%s)", sideMenuData.Id, _GetLocalizationTextLogic:GetText(sideMenuData.NameKey), _StrategyDataSetLogic:GetSideMenuDescText(sideMenuData.Id))
+		end
+		local sideMenuBonusText = string.format("사용한 사이드 메뉴: %s", sideMenuContents)
+		
+		self.ResultText.Text = string.format("%s\n%s\n%s\n%s\n%s", tagText, maxComboText, bunText, balanceBonusText, sideMenuBonusText)
+	end
+
+end

@@ -1,0 +1,166 @@
+@Component
+script SpotComponent extends Component
+
+	property string SpotKey = ""
+
+	property Entity EnteredTChar = nil
+
+	property number CustomerCount = 0
+
+	property table EventList = {}
+
+	property table hintIdTable = {}
+
+	property table HintIconTable = {}
+
+	@ExecSpace("ClientOnly")
+	method void OnSelectLastSpot()
+		-- 마지막 스팟을 선택할 때 처리하는 함수
+		_UserService.LocalPlayer.PlayerTrainingManager:OnSelectLastSpot(self.Entity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 스팟 초기화하는 함수
+		self.SpotKey = self.Entity.Name
+		self.Entity:GetChildByName("NameTag").TextComponent.Text = _UserService.LocalPlayer.PlayerTrainingManager:GetSpotNameFromKey(self.SpotKey)
+		
+		self:ClearEnteredTChar()
+		
+		local hintScrollView = _EntityService:GetEntityByPath(self.Entity.Path.."/HintScroll")
+		for i = 1, 3 do
+			local hintIconEntity = hintScrollView:GetChildByName("HintIcon".._StringUtilLogic:NumToString(i))
+			table.insert(self.HintIconTable, hintIconEntity)
+			hintIconEntity:ConnectEvent(ButtonClickEvent, function() 
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_FindItemHint"], 1)
+				self:OnClickHintIcon(i) 
+			end)
+		end
+	end
+
+	method void ClearSpotHintScroll()
+		-- 스팟 힌트 스크롤을 초기화하는 함수
+		local hintScroll = self.Entity:GetChildByName("HintScroll")
+		
+		for _, child in pairs(hintScroll.Children) do
+			child.Enable = false
+			table.clear(self.hintIdTable)
+		end
+		
+		for _, child in pairs(self.Entity.Children) do
+			if _UtilLogic:Contains(child.Name, "Crowd") then
+				child.Enable = false
+			end
+		end
+		
+		self:ClearEnteredTChar()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AddHintIcon(string hintItemId)
+		-- 힌트 아이콘을 추가하는 함수
+		
+		local hintScrollView = _EntityService:GetEntityByPath(self.Entity.Path.."/HintScroll")
+		table.insert(self.hintIdTable, hintItemId)
+		
+		for i = 1, #self.hintIdTable do
+			local hintIconEntity = hintScrollView:GetChildByName("HintIcon".._StringUtilLogic:NumToString(i))
+			if not isvalid(hintIconEntity) then
+				continue
+			end
+			local hintId = self.hintIdTable[i]
+			local ruid = _HintItemDataSetLogic:ReturnIconRuidById(hintId)
+			hintIconEntity.SpriteGUIRendererComponent.ImageRUID = ruid
+			hintIconEntity.Enable = true
+			self:ChangeMaterial(hintIconEntity, _IconRuidEnum.BounceMaterial, 1)
+		end
+	end
+
+	method void ClearEnteredTChar()
+		-- 입장한 캐릭터 정보를 초기화하는 함수
+		self.EnteredTChar = nil
+		
+	end
+
+	method void OnClickHintIcon(integer hintNum)
+		-- 힌트 아이콘 클릭 시 처리하는 함수
+		local hintScrollView = _EntityService:GetEntityByPath(self.Entity.Path.."/HintScroll")
+		local hintIconEntity = hintScrollView:GetChildByName("HintIcon".._StringUtilLogic:NumToString(hintNum))
+		local hintNameBalloon = hintIconEntity.Parent.Parent:GetChildByName("ItemNameBalloon")
+		
+		local hintId = self.hintIdTable[hintNum]
+		local hintName = _HintItemDataSetLogic:ReturnItemName(hintId)
+		hintNameBalloon.TextComponent.Text = hintName
+		hintNameBalloon.UITransformComponent.anchoredPosition.x = hintIconEntity.UITransformComponent.anchoredPosition.x
+		
+		hintNameBalloon.Enable = true
+		
+		_TimerService:SetTimerOnce(function() hintNameBalloon.Enable = false end, 3)
+	end
+
+	method void GoLastSpot()
+		-- 마지막 스팟으로 이동할 때 처리하는 함수
+		
+		local entity = self.Entity:GetChildByName("BurgerSign"):GetChildByName("TruckIcon")
+		self:ChangeMaterial(entity, _IconRuidEnum.BounceMaterial, 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BounceSpot()
+		-- 스팟을 바운스 효과로 표시하는 함수
+		self:ChangeMaterial(self.Entity, _IconRuidEnum.BounceMaterial, 2)
+	end
+
+	method void ChangeMaterial(Entity entity, string material, integer duration)
+		-- 엔티티의 머티리얼을 변경하는 함수
+		
+		entity.SpriteGUIRendererComponent:ChangeMaterial(material)
+		_TimerService:SetTimerOnce(function() 
+			entity.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+		end, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BigBounceSpot()
+		-- 스팟을 큰 바운스 효과로 표시하는 함수
+		self:ChangeMaterial(self.Entity, _IconRuidEnum.ChuChuMovementMaterial, 5)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		
+		if _UserService.LocalPlayer.PlayerTrainingManager.CanClickSpot == false then
+			return
+		end
+		
+		if _UserService.LocalPlayer.PlayerTrainingManager.Turn ~= "SecondMorning" then
+			local spotHints = _UserService.LocalPlayer.PlayerTrainingManager.SpotHintItemList[self.SpotKey]
+			if #table.keys(spotHints) < 1 then
+				return 
+			end
+			
+			if not isvalid(self.EnteredTChar) then
+				local char = _UserService.LocalPlayer.PlayerTrainingManager.SelectedTCharEntity
+				self.EnteredTChar = char
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1) 
+				char.TrainingChar:OnEnterSpot(self.Entity)
+				
+			else
+			end
+			
+		else
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1) 
+			self:OnSelectLastSpot()
+		end
+		
+	end
+
+end

@@ -1,0 +1,283 @@
+@Component
+script UIVIPOrderPreview extends Component
+
+	property SyncTable<integer, UIVIPOrderPreviewSlot> OrderSlots
+
+	property Entity OrderList = nil
+
+	property Entity NowRequirementsList = nil
+
+	property Entity NoPinnedOrderText = nil
+
+	property Entity RedDot = nil
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- VIP 주문 미리보기 UI 컴포넌트들을 초기화하고 이벤트 연결
+		self.OrderList = self.Entity:GetChildByName("Orders")
+		local orderList = self.OrderList:GetChildByName("OrderList")
+		for i, entity in pairs(orderList.Children) do
+			local slotIndex = math.floor(tonumber(_UtilLogic:Replace(entity.Name, "VIPOrderPreviewSlot", "")))
+			self.OrderSlots[slotIndex] = entity.UIVIPOrderPreviewSlot
+			
+			entity:ConnectEvent(ButtonClickEvent, function()
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+				self:OnPinOrder(entity.UIVIPOrderPreviewSlot.OrderIndex)
+			end)
+		end
+		
+		local requirements = self.Entity:GetChildByName("Requirements")
+		self.NowRequirementsList = requirements:GetChildByName("RequirementsList")
+		self.NoPinnedOrderText = requirements:GetChildByName("NoPinnedOrderText")
+		
+		local moveToVIPOrderBtn = self.OrderList:GetChildByName("MoveToVIPOrderBtn")
+		moveToVIPOrderBtn:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			_UIGroupManager:EnableRecipeGroup(false)
+			_VIPOrderDataSetLogic.UIVIPOrderPanel:Open()	
+		end)
+		
+		local resetBtn = self.OrderList:GetChildByName("ResetBtn")
+		resetBtn:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			self:OnPinOrder(0)	
+		end)
+		
+		local openOrderListBtn = self.Entity:GetChildByName("OpenOrderListBtn")
+		openOrderListBtn:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			self:OpenOrderList()
+		end)
+		
+		self.RedDot = openOrderListBtn:GetChildByName("RedDot")
+		
+		self._T.uiKey = function()
+			local uiRecipeMaking = _UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking
+			local uiIngreCardSetting = _UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting
+			local uiRecipeResult = _UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking.ResultEntities.UIRecipeResult
+			
+			if uiRecipeMaking.Entity.Enable then
+				if uiRecipeMaking.ResultEntities.Enable then
+					return "RecipeResult"
+				else
+					return "RecipeMaking"
+				end
+			end
+			
+			if uiIngreCardSetting.Entity.Enable then
+				return "IngreCardSetting"
+			end
+			
+			return nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh(integer slotIndex)
+		-- 주문 목록을 새로고침하고 선택된 슬롯 정보를 업데이트
+		if self.OrderList == nil then
+			self:Init()
+		end
+		
+		if slotIndex == nil then
+			slotIndex = _VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot
+		end
+		
+		self._T.recipeOrderList = {}
+		local isRedDotEnable = false
+		local player = _UserService.LocalPlayer
+		for slotIndex, slotData in pairs(player.PlayerVIPOrder.VIPOrderSlotData) do
+			if slotData["OrderType"] == _VIPOrderTypeEnum.Recipe then
+				isRedDotEnable = true
+				table.insert(self._T.recipeOrderList, {slotIndex, _VIPOrderDataSetLogic:ReturnRequirementDatasTableForUI(slotData)})
+			end
+		end
+		
+		if isvalid(self.RedDot) then
+			self.RedDot.Enable = isRedDotEnable
+		end
+		
+		local noPinnedText = function()
+			local maxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.VIPOrderCount)
+			local userCount = player.PlayerVIPOrder.SeasonCompleteCount
+			if maxCount <= userCount then
+				return _GetLocalizationTextLogic:GetText("CompletedVIPOrderText")
+			else
+				return _GetLocalizationTextLogic:GetText("NoPinnedVIPOrderText")
+			end
+		end
+		self.NoPinnedOrderText.TextComponent.Text = noPinnedText()
+		
+		self:CloseOrderList()
+		self:OnPinOrder(slotIndex)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenOrderList()
+		-- 주문 목록을 열거나 이미 열려있으면 닫기
+		if self.OrderList.Enable then
+			self:CloseOrderList()
+			return
+		end
+		
+		self.OrderList.Enable = true
+		self:RefreshOrderList()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseOrderList()
+		-- 주문 목록을 닫기
+		self.OrderList.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshOrderList()
+		-- 각 주문 슬롯의 데이터를 새로고침하고 선택 상태 표시
+		for i, slot in pairs(self.OrderSlots) do
+			local orderData = self._T.recipeOrderList[i]
+			if orderData == nil then
+				slot:Refresh(0, false)
+			else
+				local slotIndex = orderData[1]
+				local requirements = orderData[2]
+				slot:Refresh(slotIndex, _VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot == slotIndex)
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshNowRequirements()
+		-- 현재 선택된 주문의 요구사항을 새로고침하고 조건 충족 여부 확인
+		if self.Entity.Enable == false then
+			return
+		end
+		
+		if self.NoPinnedOrderText == nil then
+			self:Init()
+		end
+		
+		local uiRecipeMaking = _UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking
+		local uiIngreCardSetting = _UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting
+		local uiRecipeResult = _UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking.ResultEntities.UIRecipeResult
+		
+		if self._T.uiKey() == "RecipeMaking" then
+			_UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking:SetChoiceButtons(_UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking.ChoiceIndex)
+		end
+		
+		local notPinned = _VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot==nil or _VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot==0
+		
+		self.NoPinnedOrderText.Enable = notPinned
+		self.NowRequirementsList.Enable = not notPinned
+		
+		if notPinned then
+			return
+		end
+		
+		local player = _UserService.LocalPlayer
+		local slotData = player.PlayerVIPOrder.VIPOrderSlotData[_VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot]
+		local requirements = _VIPOrderDataSetLogic:ReturnRequirementDatasTableForUI(slotData)
+		
+		local isCheckEnable = function(reqKey, reqValue) 
+			
+			if _UtilLogic:IsNilorEmptyString(self._T.uiKey()) then
+				return false
+			end
+			
+			if reqKey == "TasteGrade" then
+				if self._T.uiKey() == "RecipeResult" then
+					local tasteGrade = _TasteGradeDataSetLogic:ReturnGradeDataByScore(uiRecipeResult.FinalTasteScore).Index
+		
+					if tasteGrade >= reqValue then
+						return true
+					end
+					
+				end
+				
+			elseif reqKey == "Tag" then
+				if self._T.uiKey() == "RecipeResult" then
+		
+					if uiRecipeMaking.Tag == reqValue then
+						return true
+					end
+				end
+				
+			elseif reqKey == "Ingre1" or reqKey == "Ingre2" then
+				if self._T.uiKey() == "RecipeMaking" or self._T.uiKey() == "RecipeResult" then
+					local selectedIngres = uiRecipeMaking.SelectedIngres
+					local isContained = _RecipeDataSetLogic:IsRecipeIncludeIngredient(selectedIngres, reqValue)
+		
+					if isContained then
+						return true
+					end
+					
+				elseif self._T.uiKey() == "IngreCardSetting" then
+					local selectedIngres = _IngreCardSetLogic.SelectedIngreList
+					for i = 1, #selectedIngres do
+						if reqValue == selectedIngres[i] then
+		
+							return true
+						end
+					end
+					
+				end
+			end
+			
+			return false	
+		end
+		
+		for i = 1, #requirements do
+			local reqEntity = _UIEntityService:GetOrCreateEntityOfModel("Model_VIPOrderPreviewRequirement", i, self.NowRequirementsList)
+			
+			local reqKey = requirements[i][1]
+			local reqValue = requirements[i][2]
+			
+			local checkEnable = isCheckEnable(reqKey, reqValue)
+			_VIPOrderDataSetLogic:RefreshRequirementSlotIcon(reqKey, reqValue, reqEntity, reqEntity:GetChildByName("Icon"), checkEnable, nil)
+			reqEntity.Enable = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnPinOrder(integer slotIndex)
+		-- 특정 주문을 고정하고 미리보기 상태를 업데이트
+		local player = _UserService.LocalPlayer
+		local slotData = player.PlayerVIPOrder.VIPOrderSlotData[slotIndex]
+		if _UtilLogic:IsNilorEmptyString(player.PlayerVIPOrder.NowSeasonMainTag) == true then
+			self.Entity.Enable = false
+			return
+		end
+		
+		self.Entity.Enable = true
+		if isvalid(slotData) then
+			if slotData["OrderType"] ~= _VIPOrderTypeEnum.Recipe then
+				slotIndex = 0
+			end
+		end
+		
+		_VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot = slotIndex
+		
+		if self._T.uiKey() == "IngreCardSetting" then
+			_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting:RefreshIngreCardList(nil)
+		end
+		self:RefreshNowRequirements()
+		self:RefreshOrderList()
+	end
+
+end

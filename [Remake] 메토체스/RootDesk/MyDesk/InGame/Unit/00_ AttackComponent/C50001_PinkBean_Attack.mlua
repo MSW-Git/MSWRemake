@@ -1,0 +1,144 @@
+@Component
+script C50001_PinkBean_Attack extends Component
+
+	@Sync
+	property number playRate = 0
+
+	@Sync
+	property Entity projectile = nil
+
+	property string hitEffectRUID = "339040e9f3cb49578cde94c25f3ebd9c"
+
+	property table Particletable = {}
+
+	@ExecSpace("Server")
+	method void Attack(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local animComponent = myUnit.UnitAnimationComponent
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- ATTACK RUID
+		unitStatus:SetProperty("state", "Attack", "")
+		
+		self.playRate = (unitStatus.AttackSpeed * 2.28) * _BTLogic_New.ASpeedValue
+		animComponent:PlayAnimation(self.playRate, "Attack", targetUnit, unitInfo.OwnerId)
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		
+		
+		local function damage()
+			local enemies = {}
+			if unitInfo.TeamType == "User" then
+				enemies = teamManager.EnemyUnits
+			elseif unitInfo.TeamType == "Enemy" then
+				enemies = teamManager.OwnUnits
+			end
+			
+			local attackEnemies = _BTLogic_New:getTargets(unitInfo.setTile, enemies, string.format("Around_1_%d", unitStatus.AttackRange) )
+			attackEnemies = _BTLogic_New:getEntities(attackEnemies, "AttackAble")
+			
+			
+			for _, enemy in pairs(attackEnemies) do
+				if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Attack") then
+					self:SetDamage(enemy)
+				end
+			end
+			
+			--연출
+			self:AttackEffect(unitInfo.OwnerId)
+		end
+		
+		_TimerService:SetTimerOnce(damage, 0.7 / self.playRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0128",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+		
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			local physicalDamage = unitStatus.PhysicalAttack
+			local physicalDamageInfo = _StatusChangeLogic:CheckDamage(physicalDamage, myUnit, targetUnit, 0, "Physical")
+			
+			local magicalDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C50001_Passive_Attack_Magic[unitInfo.level]
+			local magicalDamageInfo = _StatusChangeLogic:CheckDamage(magicalDamage, myUnit, targetUnit, 0, "Magical")
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, physicalDamageInfo[1], magicalDamageInfo[1], physicalDamageInfo[2] + magicalDamageInfo[2], "defaultAttack")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+	end
+
+	@ExecSpace("Client")
+	method void AttackEffect()
+		--기본 공격 파티클을 띄웁니다. 자주 표시되는 파티클이라 엔터티를 삭제하지 않고 최대한 재활용합니다.
+		--빈 테이블이라면 먼저 자식 엔터티에 파티클 엔터티가 있는지 확인합니다.
+		if #self.Particletable==0 then
+			local children=self.Entity.Children
+			
+			for i=1,#children do
+				if children[i].Name=="SpriteParticleBattle" then
+					table.insert(self.Particletable,children[i])
+				end
+			end
+		end
+		
+		-- 테이블에 있는 엔터티 중 enable이 꺼져있는 것을 켜서 표시합니다.
+		local IsSpawn=false
+		for i=1,#self.Particletable do
+			if self.Particletable[i].Enable==false then
+				self.Particletable[i].Enable=true
+				
+				_TimerService:SetTimerOnce(function() self.Particletable[i].Enable=false end , 1)
+				IsSpawn=true
+				
+				break
+			end
+		end
+		
+		--만약 자식엔터티에 파티클이 없거나 파티클이 모두 켜져 있는 상태라면 새 엔터티 스폰합니다.
+		if IsSpawn==false then
+			local entity=_SpawnService:SpawnByModelId("model://6c7ba8dd-5135-4f26-bc36-100c0542e1ab","SpriteParticleBattle",Vector3(0,0.3,0),self.Entity)
+			entity.Enable=false
+			entity.SpriteParticleComponent.ParticleType=SpriteParticleType.BurstNova
+			entity.SpriteParticleComponent.SpriteRUID="8d696051384d47249f98e3cb07204cb3"
+			entity.SpriteParticleComponent.Loop=false
+			entity.TransformComponent.Scale=Vector3(0.7,0.7,1)
+			entity.SpriteParticleComponent.Color=Color.FromHexCode("#fad1ff")
+			entity.SpriteParticleComponent.Color.a=_ESCMenuService.skillEffectAlpha/100
+			
+			entity.Enable=true
+			
+			table.insert(self.Particletable,entity)
+			
+			_TimerService:SetTimerOnce(function() entity.Enable=false end , 1)
+		end
+	end
+
+end

@@ -1,0 +1,171 @@
+@Logic
+script EventDialogManager extends Logic
+
+	property integer Timer = 0
+
+	property boolean IsTyping = false
+
+	property string OriginText = ""
+
+	property number interval = 0.02
+
+	property TextComponent TargetTextComp = nil
+
+	method table ParseDialog(string richText)
+		-- 리치 텍스트를 파싱하여 일반 텍스트와 포맷 정보를 분리하는 함수
+		local richInfo = {} 
+		
+		local richIdx = 1
+		local isRichFormat = false
+		local nowRichFormat = ""
+		
+		local isRichText = false
+		local isRichEnd = false
+		
+		local index = 1
+		local plainText = {} 
+		local richMap = {} 
+		
+		local convertedText, _ = string.gsub(richText, "\\n", "\n")
+		
+		for i = 1, utf8.len(convertedText) do
+			local element = _UtilLogic:SubString(convertedText, i, 1)
+			
+			if element == "<" then
+				if isRichFormat == false then
+					isRichFormat = true
+					isRichText = true
+				end		
+			end
+			
+			if isRichFormat == true then
+				nowRichFormat = nowRichFormat..element
+			else
+				table.insert(plainText, {index, element})
+				
+				if isRichText == true then
+					richMap[index] = richIdx
+				end
+			end
+			
+			if element == "/" then
+				isRichEnd = true
+			end
+			
+			if element == ">" then
+				isRichFormat = false
+				if richInfo[richIdx] == nil then
+					richInfo[richIdx] = {}
+				end
+				table.insert(richInfo[richIdx], nowRichFormat)
+				
+				if isRichEnd then
+					richIdx += 1
+					isRichText = false
+					isRichEnd = false
+				end
+				
+				nowRichFormat = ""
+			end
+			
+			index += 1
+			
+		end
+		
+		
+		
+		return {plainText, richMap, richInfo}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TypeWriter(table plainText, table richMap, table richInfo, number interval, any outputCallback)
+		-- 텍스트를 타이핑 효과로 출력하는 함수
+		local typedText = ""
+		local currentIndex = 1
+		
+		local function step()
+			if currentIndex > #table.keys(plainText) then 
+				self:EndTypeWriter()
+				return 
+			end
+			
+			local drawData = plainText[table.keys(plainText)[currentIndex]]
+			local drawIdx = drawData[1]
+			local char = drawData[2]
+				
+			if _UtilLogic:IsNilorEmptyString(char) then
+				self:EndTypeWriter()
+				return
+			end
+			
+			local richIdx = richMap[drawIdx] or nil
+			if richIdx then
+				local nowRich = richInfo[richIdx]
+				local nowRichStart = nowRich[1]
+				local nowRichEnd = nowRich[2]
+				char = nowRichStart..char..nowRichEnd
+			end
+			
+			typedText = typedText..char
+				
+			outputCallback(typedText)
+			
+			currentIndex += 1
+			
+			if currentIndex <= #plainText then
+				self.Timer = _TimerService:SetTimerOnce(step, interval)
+			else
+				self:EndTypeWriter()
+			end
+			
+		end
+		
+		step()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayTypeWriter(TextComponent textComp, string text)
+		-- 타이핑 애니메이션을 시작하는 함수
+		self.OriginText = text
+		self.IsTyping = true
+		
+		local data = self:ParseDialog(text)
+		
+		local plainText = data[1]
+		local richMap = data[2]
+		local richInfo = data[3]
+		
+		self.TargetTextComp = textComp
+		
+		self.TargetTextComp.Text = ""
+		
+		self:TypeWriter(plainText, richMap, richInfo, self.interval, function(t)
+			self.TargetTextComp.Text = t
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SkipTypeWriter()
+		-- 타이핑 애니메이션을 스킵하는 함수
+		if self.IsTyping == false then
+			return
+		end
+		
+		self.TargetTextComp.Text = self.OriginText
+		self:EndTypeWriter()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndTypeWriter()
+		-- 타이핑 애니메이션을 종료하고 정리 작업을 수행하는 함수
+		self.IsTyping = false
+		self.OriginText = ""
+		self.TargetTextComp = nil
+		
+		_TimerService:ClearTimer(self.Timer)
+		self.Timer = 0
+		
+		_EventManager:SetCanMoveNext(true)
+	end
+
+end

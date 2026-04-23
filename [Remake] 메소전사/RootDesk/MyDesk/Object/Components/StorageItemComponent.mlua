@@ -1,0 +1,499 @@
+@Component
+script StorageItemComponent extends Component
+
+	@HideFromInspector
+	property string itemId = ""
+
+	@HideFromInspector
+	property string uniqueKey = ""
+
+	@HideFromInspector
+	property string owner = ""
+
+	@HideFromInspector
+	property boolean isDragged = false
+
+	property string category = ""
+
+	@HideFromInspector
+	property Entity overlappedItem = nil
+
+	@HideFromInspector
+	property any itemData = nil
+
+	@HideFromInspector
+	property number updateRatio = 0.95
+
+	@HideFromInspector
+	property boolean canControl = true
+
+	@HideFromInspector
+	property boolean isInteractionEntity = false
+
+	@HideFromInspector
+	property boolean holdingNow = false
+
+	@HideFromInspector
+	property number touchStartedTime = 0
+
+	@HideFromInspector
+	property NameTagComponent levelNameTag = nil
+
+	property NameTagComponent starNameTag = nil
+
+	@HideFromInspector
+	property boolean needRefreshNameTag = true
+
+	property boolean canEquip = false
+
+	property Vector3 touchOffset = Vector3(0,0,0)
+
+	@HideFromInspector
+	property Entity beanChick = nil
+
+	@HideFromInspector
+	property boolean attracted = false
+
+	@HideFromInspector
+	property TransformComponent targetTransform = nil
+
+	@HideFromInspector
+	property boolean canMerge = true
+
+	@HideFromInspector
+	property string buttonState = ""
+
+	method void OnUpdate(number delta)
+		-- 창고 아이템의 물리 이동과 드래그 상태를 업데이트
+		local kinematic = self.Entity.KinematicbodyComponent
+		
+		if kinematic.MoveVelocity.x ~= 0 or kinematic.MoveVelocity.y ~= 0 then
+			if math.abs(kinematic.MoveVelocity.x) > 0 then
+				kinematic.MoveVelocity = kinematic.MoveVelocity * self.updateRatio
+				if math.abs(kinematic.MoveVelocity.x) < 0.1 then
+					kinematic.MoveVelocity = Vector2.zero
+					self.Entity.TriggerComponent.Enable = true
+					self.Entity.KinematicbodyComponent.Enable = false
+					self:SetPos()
+				end
+			end
+		end
+		
+		if self:IsClient() then
+			if self.isDragged then
+				self.Entity.TransformComponent.WorldPosition = _UILogic:ScreenToWorldPosition(_InputService:GetCursorPosition()):ToVector3() + self.touchOffset
+				self.Entity.KinematicbodyComponent.Enable = false
+				_WeaponDetailUILogic.weaponDetailUI:Close()
+			end
+		
+			if self.attracted and isvalid(self.targetTransform) then
+				local targetPos = _UILogic:ScreenToWorldPosition(self.targetTransform.WorldPosition:Clone():ToVector2()):ToVector3()
+				local diff = targetPos - self._T.transform.WorldPosition
+				diff.z = 0
+				if diff:Magnitude() < 0.3 then
+					diff = diff:Normalize() * 0.1
+					local slotNum = self.targetTransform.Entity.Name
+					slotNum = tonumber(_UtilLogic:Split(slotNum, "_")[2])
+					self.targetTransform.Entity.Parent.BeanChickUIComponent:SetSlot(slotNum, self.uniqueKey, self.Entity)
+					self.attracted = false
+				end
+				
+				local speed = 4
+				if isvalid(self.Entity) and isvalid(self.Entity.TransformComponent) then
+					self.Entity.TransformComponent:Translate(diff.x * delta * speed,diff.y * delta * speed)
+				end
+			end
+		end
+	end
+
+	method void OnBeginPlay()
+		-- 창고 아이템 컴포넌트 초기화 및 자동 삭제 타이머 설정
+		if self:IsServer() then
+			local callback = function()
+				if isvalid(self.Entity) then
+					self.Entity:Destroy()
+				end
+			end
+			
+			_TimerService:SetTimerOnce(callback, 120)
+		end
+		
+		local data = _DataService:GetTable("ItemData")
+		local row = _ItemDataLogic.equipmentData[self.itemId]
+		
+		if self.Entity.CurrentMapName == "Town" then
+			self.Entity.TriggerComponent.Enable = true
+		end
+		
+		self.starNameTag = self.Entity.NameTagComponent
+		self.levelNameTag = self.Entity.Children[1].NameTagComponent
+		self._T.transform = self.Entity.TransformComponent
+		self.starNameTag.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void SetPos()
+		-- 아이템의 위치를 플레이어 창고 데이터에 저장
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		local pos = self.Entity.TransformComponent.Position
+		
+		if isvalid(storage[self.Entity.Name]) then
+			storage[self.Entity.Name].posX = pos.x
+			storage[self.Entity.Name].posY = pos.y
+		end
+		
+		storage:SetPos(self.Entity.Name, pos,false)
+	end
+
+	@ExecSpace("Client")
+	method void Init(string itemId, string uniqueKey)
+		-- 아이템 ID와 고유키로 창고 아이템을 초기화하고 스프라이트 설정
+		self.itemId = itemId
+		self.uniqueKey = uniqueKey
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		--[[
+		if isvalid(self.Entity.Parent.BeanChickSlotComponent) then
+			self.Entity.Parent.BeanChickSlotComponent:ClearItem()
+			self.Entity:AttachTo(_StorageLogic.townStorage)
+		end]]--
+		
+		if isvalid(_ItemDataLogic.equipmentData[itemId]) then
+			if _ItemDataLogic.equipmentData[itemId].category == "weapon" then
+				self.category = "weapon"
+			else
+				self.category = "armor"
+			end
+			
+			local equipmentData = _ItemDataLogic.equipmentData[self.itemId]
+			local grade = equipmentData.grade
+			local scale = equipmentData.scale
+			local ruid = equipmentData.ruid
+			
+			scale = tonumber(scale)
+			self.Entity.SpriteRendererComponent.OrderInLayer = 1
+			self.Entity.TransformComponent.Scale = Vector3.one * scale
+			
+			if _ItemDataLogic.equipmentData[self.itemId].category == "weapon" then
+				local weaponSpec = _WeaponSpecLogic:GetWeaponSpec(self.itemId)
+				if _UtilLogic:IsNilorEmptyString(ruid) == true then
+					self.Entity.SpriteRendererComponent.SpriteRUID = weaponSpec.ruid
+				else
+					self.Entity.SpriteRendererComponent.SpriteRUID = equipmentData.ruid
+				end
+				self.canEquip = true
+			elseif string.sub(_ItemDataLogic.equipmentData[self.itemId].category,1, 5) == "armor" then
+				local armorSpec = _ArmorSpecLogic:GetArmorSpec(self.itemId)
+				if _UtilLogic:IsNilorEmptyString(ruid) == true then
+					self.Entity.SpriteRendererComponent.SpriteRUID = armorSpec.ruid
+				else
+					self.Entity.SpriteRendererComponent.SpriteRUID = equipmentData.ruid
+				end
+				self.canEquip = true
+			end
+			
+			self.needRefreshNameTag = true
+		else
+			self.category = "item"
+			
+			local itemData = _ItemDataLogic.itemData[self.itemId]
+			local scale = itemData.scale
+			local ruid = itemData.ruid
+			
+			scale = tonumber(scale)
+			self.Entity.SpriteRendererComponent.OrderInLayer = 1
+			self.Entity.TransformComponent.Scale = Vector3.one * scale
+			self.Entity.SpriteRendererComponent.SpriteRUID = itemData.ruid
+			
+			self.Entity.EggComponent:Init(self.uniqueKey, self.itemId)
+			if storage.storage[self.uniqueKey].content ~= "" then
+				self.Entity.SpriteRendererComponent.SpriteRUID = "a32eb7aabc9548d48fc2e2d4808370ae"
+			end
+		end
+		
+		self:RefreshNameTag()
+	end
+
+	@ExecSpace("Client")
+	method void Equip()
+		-- 아이템을 장비하거나 해제하는 기능 처리
+		if not self.canEquip then return end
+		
+		_InteractionUtil:OnInteraction(self.Entity)
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		
+		if storage.storage[self.uniqueKey].equippedSlotNum > 0 then
+			storage:UnEquip(self.uniqueKey)
+			_InteractionUtil:ShowInteraction(self.Entity, "등록", "E", 0.5)
+		else
+			local equipSlot = {}
+			local minSlot = 1
+			
+			for i = 1, _GameConfig:GetConfig().MAX_EQUIPMENT_CNT do
+				equipSlot[i] = false
+			end
+			
+			for key, value in pairs(storage.storage) do
+				if _UserService.LocalPlayer.PlayerStorageComponent:GetCategoryByUniqueKey(value.uniqueKey) == "weapon" then
+					if value.equippedSlotNum > 0 then
+						equipSlot[value.equippedSlotNum] = true
+					end
+				end
+			end
+			
+			for i = 1, #equipSlot do
+				if not equipSlot[i] then
+					minSlot = i
+					break
+				end
+			end
+			
+			local playerCharacter = _UserService.LocalPlayer.PlayerCharacteristicData
+			local currentEquipCount = #storage:GetAllEquippedWeapon()
+			local category = _UtilLogic:Split(storage.storage[self.uniqueKey].originalId, "_")[1]
+			
+			if category == _GameConfig:GetConfig().ITEMTYPE_WEAPON then
+				if currentEquipCount >= playerCharacter.canEquipCount then
+					_UIToast:ShowMessage(_LocalizeLogic:GetText("toast178"))
+					return
+				end
+			end
+			
+			
+			storage:Equip(self.uniqueKey, minSlot)
+			local str = ""
+			for i = 1, tonumber(_ItemDataLogic.equipmentData[self.itemId].star) do
+				str = str .. "★"
+			end
+			self.levelNameTag.Name = "[E] Level." .. storage.storage[self.uniqueKey].level
+			_InteractionUtil:ShowInteraction(self.Entity, "해제", "E", 0.5)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshNameTag()
+		-- 아이템의 레벨과 별표 네임태그를 갱신
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		local uniqueKey = self.uniqueKey
+		local data = _ItemDataLogic.equipmentData[self.itemId]
+		if not isvalid(data) then
+			data = _ItemDataLogic.itemData[self.itemId]
+		end
+		
+		if isvalid(storage.storage[uniqueKey]) then
+			local equippedSlotNum = storage.storage[uniqueKey].equippedSlotNum
+			local str = ""
+			self.starNameTag.Enable = false
+			
+			for i = 1, tonumber(data.star) do
+				str = str .. "★"
+			end
+			
+			self.starNameTag.Name = str
+			if equippedSlotNum == 0 then
+				self.levelNameTag.Name = "Level." .. storage.storage[uniqueKey].level
+			else
+				self.levelNameTag.Name = "[E] Level." .. storage.storage[uniqueKey].level
+			end
+			
+			self.needRefreshNameTag = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Attract(Entity target)
+		-- 아이템을 특정 타겟으로 끌어당기는 기능
+		if self.attracted then return end
+		
+		self.attracted = true
+		self.targetTransform = target.TransformComponent
+		self.canControl = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 플레이어가 아이템 근처에 들어왔을 때 상호작용 UI 표시
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		if self.category == "armor" then
+			return
+		end
+		if TriggerBodyEntity == _UserService.LocalPlayer and self.canEquip then
+			local item = _UserService.LocalPlayer.PlayerStorageComponent:GetItem(self.uniqueKey)
+			if not isvalid(item) then 
+				self.isInteractionEntity = false
+				_HUDManager.interactionEntity = nil
+				
+				return 
+			end
+			
+			if item.equippedSlotNum == 0 then
+				_InteractionUtil:ShowInteraction(self.Entity, "등록", "E", 0.5)
+			else
+				_InteractionUtil:ShowInteraction(self.Entity, "해제", "E", 0.5)
+			end
+			self.isInteractionEntity = true
+			_HUDManager.interactionEntity = self.Entity
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchEvent(TouchEvent event)
+		-- 아이템 터치 시작 시 무기 상세 UI 표시
+		if not self.canControl then return end
+		if _StorageLogic.isScrolling then return end
+		if _InputService:IsPointerOverUI() then return end
+		
+		if self.canEquip then
+			self.touchStartedTime = _UtilLogic.ServerElapsedSeconds
+			self.Entity.TriggerComponent.CollisionGroup = CollisionGroups.StorageItem
+			_WeaponDetailUILogic.weaponDetailUI:Show(self.uniqueKey, self.Entity, self.category)
+			_StorageLogic.canScroll = false
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerLeaveEvent(TriggerLeaveEvent event)
+		-- 플레이어가 아이템에서 멀어졌을 때 상호작용 UI 숨김
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		if isvalid(TriggerBodyEntity.StorageItemComponent) then
+			self.overlappedItem = nil
+		elseif TriggerBodyEntity == _UserService.LocalPlayer then
+			_InteractionUtil:HideInteraction(self.Entity)
+			self.isInteractionEntity = false
+			_HUDManager.interactionEntity = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerStayEvent(TriggerStayEvent event)
+		-- 다른 아이템과 겹쳐있는 상태를 감지
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		if isvalid(TriggerBodyEntity.StorageItemComponent) then -- isvalid(TriggerBodyEntity.BeanChickSlotComponent) then
+			self.overlappedItem = TriggerBodyEntity
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- E키 입력 시 아이템 장비/해제 처리
+		
+		local key = event.key
+		if not self.isInteractionEntity and self.Entity ~= _HUDManager.interactionEntity then return end
+		
+		if self.category == "armor" then
+			return
+		end
+		
+		if key == KeyboardKey.E then
+			self:Equip()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchHoldEvent(TouchHoldEvent event)
+		-- 터치 홀드 시 아이템 드래그 모드 시작
+		
+		if not self.isDragged then
+			if not self.canControl then return end
+			if _InputService:IsPointerOverUI() then return end
+		end
+		
+		if not self.holdingNow then
+			if _UserService.LocalPlayer.CurrentMapName == "Town" and not isvalid(_ItemReinforceLogic.draggedItem) and self.touchStartedTime + 0.08 < _UtilLogic.ServerElapsedSeconds then
+				_ItemReinforceLogic.draggedItem = self.Entity
+				self.isDragged = true
+				self.holdingNow = true
+				_StorageLogic.canScroll = false
+				-- _StorageUIManager.onAutoMergeButton = false
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchReleaseEvent(TouchReleaseEvent event)
+		-- 터치 릴리즈 시 드래그 종료 및 UI 처리
+		
+		if self.isDragged then
+			_WeaponDetailUILogic.weaponDetailUI:Close()
+		--[[
+			if isvalid(self.Entity.Parent.BeanChickSlotComponent) then
+				self.Entity.Parent.BeanChickSlotComponent:ClearItem()
+			end]]--
+			
+			self.isDragged = false
+			_StorageLogic.canScroll = true
+			self:SetPos()
+			
+			if self.buttonState == "Hover" then
+				local beanChick = _StorageLogic.beanChickUI.BeanChickUIComponent
+				beanChick:SetSlot(_StorageLogic:GetEmptySlotNum(), self.uniqueKey, self.Entity)
+			end
+		elseif not self.holdingNow and not isvalid(_ItemReinforceLogic.draggedItem) and not isvalid(self.overlappedItem) and self.canEquip then
+			_WeaponDetailUILogic.weaponDetailUI:Show(self.uniqueKey, self.Entity, self.category)
+		end
+		
+		
+		
+		self.holdingNow = false
+		_ItemReinforceLogic.draggedItem = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEquipEvent(EquipEvent event)
+		-- 장비 이벤트 발생 시 네임태그 갱신
+		local slotNum = event.slotNum
+		local isEquip = event.isEquip
+		local uniqueKey = event.uniqueKey
+		if self.uniqueKey == uniqueKey then
+			self.needRefreshNameTag = true
+			_StorageLogic:RefreshNameTag()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "6f4de645-09a1-4ea8-ba8f-bc6326607997")
+	handler HandleButtonStateChangeEvent(ButtonStateChangeEvent event)
+		-- 버튼 상태 변경 이벤트 처리
+		
+		local state = event.state
+		self.buttonState = tostring(state)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchReleaseEvent(ScreenTouchReleaseEvent event)
+		-- 화면 터치 릴리즈 시 드래그 상태 정리
+		
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		if self.isDragged then
+			_WeaponDetailUILogic.weaponDetailUI:Close()
+		--[[
+			if isvalid(self.Entity.Parent.BeanChickSlotComponent) then
+				self.Entity.Parent.BeanChickSlotComponent:ClearItem()
+			end]]--
+			
+			self.isDragged = false
+			_StorageLogic.canScroll = true
+			self:SetPos()
+			
+			if self.buttonState == "Hover" then
+				local beanChick = _StorageLogic.beanChickUI.BeanChickUIComponent
+				beanChick:SetSlot(_StorageLogic:GetEmptySlotNum(), self.uniqueKey, self.Entity)
+			end
+		end
+		
+		self.holdingNow = false
+		_ItemReinforceLogic.draggedItem = nil
+	end
+
+end

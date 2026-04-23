@@ -1,0 +1,651 @@
+@Logic
+script IntroDialogLogic extends Logic
+
+	property Entity DialogGroup = "aa901ee8-170d-4502-b146-1e9df295139f"
+
+	property Entity Dim = "143c75f2-4726-4be4-8238-cb331280734b"
+
+	property Entity Fade = "7b2dde78-38cb-4df1-a3fe-0d2721eda6ff"
+
+	property string IntroDialogId1 = "Intro1"
+
+	property string IntroDialogId2 = "Intro2"
+
+	property string OutroDialogId1 = "Test1"
+
+	property Entity SkipButton = "77a5e4e6-65de-4106-b1d0-31cd0c415c19"
+
+	property integer OutroYear = 0
+
+	property string AnimTypeDefault = "Default"
+
+	property string CurrentDialogId = ""
+
+	property Entity PopupNodeStartPlay = "d55a9f53-1332-45de-b32f-de2e6207e106"
+
+	property string ActionStartPlayPopup = "StartPlayPopup"
+
+	property string ActionPlayCutSceneIntro = "PlayCutSceneIntro"
+
+	property Entity CutSceneBg = "90179e8c-f7e1-4f44-af10-8edfedd59002"
+
+	property integer IntroVideoAutoEndTimerId = 0
+
+	property string DialogStartViewEntityId = "f6fd7dec-6e4a-4b88-be76-7bead2403918"
+
+	property Vector3 Camera1Pos = Vector3(5,11,0)
+
+	property integer ZoomRationClose = 160
+
+	property integer ZoomRationMid = 80
+
+	property integer ZoomRationFar = 40
+
+	property string IntroPictureShowDialogId = "Intro1_9"
+
+	property string IntroLookAtThisDialogId = "Intro1_8"
+
+	property string EndSceneRUID = "3a9d9cacd4b54cdc8539d1d37ccba64d"
+
+	property string PictureSceneRUID = "e5c5177bc75647478a032669f1e507e2"
+
+	property Entity IntroOpeningCaption = "03b6c4d4-09cd-4ac5-b51f-5cf294c672fe"
+
+	property Vector2 CutSceneBgDefaultSize = Vector2(1920,1080)
+
+	property boolean IsShowingPicture = false
+
+	property Entity IntroLetterBox = "57838f4f-8e06-4e4f-96fc-035c069b26df"
+
+	property string YoutubeURLen = "https://www.youtube.com/watch?v=6v8eK3c-xAw"
+
+	property string YoutubeURLko = "https://www.youtube.com/watch?v=-mk5qAG2wvc"
+
+	property string YoutubeURLzhtw = "https://www.youtube.com/watch?v=ain7KHV8L04"
+
+	property string YoutubeURLzhcn = "https://www.youtube.com/watch?v=MH7BB5HURO8"
+
+	property string YoutubeURLes = "https://www.youtube.com/watch?v=UNIhy-v1hRI"
+
+	property Entity YoutubePlayer = "5f140b05-fe90-496f-a555-7563fd6050e5"
+
+	@ExecSpace("ClientOnly")
+	method void EnableUIDialogGroup(boolean enable)
+		-- 다이얼로그 UI 그룹의 활성화 상태를 설정하는 함수
+		self.DialogGroup:SetEnable(enable)
+		self.DialogGroup.UIGroupComponent.DefaultShow = enable
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetActor()
+		-- 인트로 관련 액터들을 초기 상태로 리셋하는 함수
+		self.Dim:SetEnable(false)
+		self.IntroOpeningCaption:SetEnable(false)
+		self.SkipButton:SetEnable(false)
+		self.CurrentDialogId = ""
+		self.IsShowingPicture = false
+		
+		self:StopYoutubeVideo()
+		
+		local player = _UserService.LocalPlayer
+		if player.CurrentMapName == player.PlayerDialog.IntroMapName then
+			self.PopupNodeStartPlay:SetEnable(false)
+			self.CutSceneBg.UITransformComponent.RectSize = self.CutSceneBgDefaultSize
+			self.CutSceneBg.SpriteGUIRendererComponent.LocalPosition.y = 0
+			self.CutSceneBg.UITransformComponent.anchoredPosition.y = 0
+			self.CutSceneBg:SetEnable(false)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void StartIntro()
+		-- 인트로 시퀀스를 시작하고 카메라, 페이드, 캡션을 설정하는 함수
+		_BGMService:StopBGM()
+		self.IntroLetterBox:SetEnable(false)
+		_UIGroupManager:EnableLobbyHUDGroup(false)
+		_UIGroupManager.MoneyBarGroup:SetEnable(false)
+		self:DialogDimShow()
+		
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)	
+		local dialogStartView = _EntityService:GetEntity(self.DialogStartViewEntityId)
+		dialogStartView.CameraComponent.ZoomRatio = self.ZoomRationClose
+		_CameraService:SwitchCameraTo(dialogStartView.CameraComponent)
+		
+		local preLoadRUIDs = { self.PictureSceneRUID , self.EndSceneRUID }
+		local preLoadComplete = function()
+		end
+		_ResourceLoadLogic:PreLoadResources( preLoadRUIDs , preLoadComplete)
+		
+		local interval = 0.01
+		local canvasGroup = self.Fade.CanvasGroupComponent
+		canvasGroup.GroupAlpha = 1
+		self.Fade:SetEnable(true)
+		
+		self.Fade.SpriteGUIRendererComponent.Color = _ColorCodeEnum:GetColor("#000000")
+		
+		local fadeOffFunction = function()
+			if canvasGroup.GroupAlpha <= 0 then
+				_TimerService:ClearTimer(self._T.FadeOffFunction)
+				self.Fade.Enable = false
+			else
+				canvasGroup.GroupAlpha -= interval * 0.5
+			end
+		end
+		self._T.FadeOffFunction = _TimerService:SetTimerRepeat(fadeOffFunction, interval, 1)
+		
+		self:EnableUIDialogGroup(true)
+		
+		local playCaption = function()
+			self:StartIntroOpeningCaption()
+		end
+		
+		_TimerService:SetTimerOnce( playCaption , 3 )
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartCutSceneIntro()
+		-- 컷신 인트로를 시작하고 유튜브 비디오를 재생하는 함수
+		_BGMService:StopBGM()
+		self.CurrentDialogId = self.ActionPlayCutSceneIntro
+		
+		local dimOff = function()
+			self:DialogDimFade(false,1)
+		end
+		_TimerService:SetTimerOnce( dimOff , 1)
+		
+		
+		local playVideo = function()
+			local endCallback  = function()
+				self:StopYoutubeVideo()
+				self:EndCutSceneIntro()
+				self:DialogDimFade(true, 2)
+			end
+			
+			local youtubeUrl = self.YoutubeURLen 
+			
+			if _LocalizationService.CurrentLocaleId == "ko" then
+				youtubeUrl = self.YoutubeURLko
+			elseif _LocalizationService.CurrentLocaleId == "zh-tw" then
+				youtubeUrl = self.YoutubeURLzhtw
+			elseif _LocalizationService.CurrentLocaleId == "zh-cn" then
+				youtubeUrl = self.YoutubeURLzhcn
+			elseif _LocalizationService.CurrentLocaleId == "es" then
+				youtubeUrl = self.YoutubeURLes
+			end
+			
+			if self.YoutubePlayer and self.YoutubePlayer.YoutubePlayerGUIComponent then
+				self.YoutubePlayer:SetEnable(true)
+				local component = self.YoutubePlayer.YoutubePlayerGUIComponent
+				component.PlayOnAwake = false
+				component.Loop = false
+				component.Volume = 1.0
+				component.Urls = {youtubeUrl}
+				
+				local executePlay = function()
+					component:Play()
+				end
+				_TimerService:SetTimerOnce(executePlay, 0.5)
+		
+				local autoEndTimer = function()
+					if endCallback then
+						endCallback()
+					end
+				end
+				self.IntroVideoAutoEndTimerId = _TimerService:SetTimerOnce(autoEndTimer, 60) 
+			else
+				if endCallback then
+					endCallback()
+				end
+			end
+		
+		end
+		_TimerService:SetTimerOnce( playVideo , 1)
+		
+		
+		local enableSkip = function()
+			self.SkipButton:SetEnable(true)	
+		end
+		_TimerService:SetTimerOnce( enableSkip , 4)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StopYoutubeVideo()
+		-- 유튜브 비디오 재생을 중단하고 플레이어를 비활성화하는 함수
+		
+		if self.YoutubePlayer and self.YoutubePlayer.YoutubePlayerGUIComponent then
+			self.YoutubePlayer.YoutubePlayerGUIComponent:ClearScreen()
+			self.YoutubePlayer:SetEnable(false)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndCutSceneIntro()
+		-- 컷신 인트로를 종료하고 다음 단계로 전환하는 함수
+		_TimerService:ClearTimer(self.IntroVideoAutoEndTimerId)
+		
+		local dimfade = function()
+			self:DialogDimFade(false, 1)
+		end
+		_TimerService:SetTimerOnce( dimfade , 2)
+		
+		_BGMService:ApplyBGM(_BGMService.IntroEndBgm)
+		self.CutSceneBg.UITransformComponent.RectSize = self.CutSceneBgDefaultSize
+		self.CutSceneBg.UITransformComponent.ZRotation = 0
+		self.CutSceneBg.SpriteGUIRendererComponent.ImageRUID = self.EndSceneRUID
+		self.CutSceneBg.SpriteGUIRendererComponent.LocalPosition.y = 0
+		self.CutSceneBg.UITransformComponent.anchoredPosition.y = 0
+		self.CutSceneBg.CanvasGroupComponent.GroupAlpha = 1
+		self.CutSceneBg:SetEnable(true)
+		self.IntroLetterBox:SetEnable(true)
+		self.SkipButton:SetEnable(false)
+		self.CurrentDialogId = ""
+		self:DialogDimShow()
+		
+		
+		local startNextDialog = function()
+			self:StartIntro2()
+		end
+		
+		_TimerService:SetTimerOnce( startNextDialog , 1 )
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartIntro2()
+		-- 두 번째 인트로 다이얼로그를 시작하는 함수
+		
+		local playDialog = function()
+			local callback = function(result)
+					
+				if result == self.ActionStartPlayPopup then
+					self:StartPlayPopup()
+				end
+			
+			end
+			self.CurrentDialogId = self.IntroDialogId2 
+			_UIDialogLogic:MakeDialog(self.IntroDialogId2,callback)
+		
+		end
+		_TimerService:SetTimerOnce( playDialog , 0.2 )
+		
+		local enableSkip = function()
+			self.SkipButton:SetEnable(true)	
+		end
+		_TimerService:SetTimerOnce( enableSkip , 4)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartPlayPopup()
+		-- 게임 시작 팝업을 생성하고 표시하는 함수
+		local popup = _SpawnService:SpawnByModelId("model://21bfa55b-c2b1-4a0b-8f5a-c00c807c7c3d","IntroPopupStartPlay",Vector3.zero,self.PopupNodeStartPlay)
+		
+		self.SkipButton:SetEnable(false)
+		local showPopup = function()
+			self.PopupNodeStartPlay:SetEnable(true)
+		end	
+		_TimerService:SetTimerOnce( showPopup , 0.5)
+			
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SkipIntroDialog1()
+		-- 첫 번째 인트로 다이얼로그를 스킵하는 함수
+		self.SkipButton:SetEnable(false)
+		self:SkipPictureShow()
+		_UIDialogLogic:EndDialog(self.ActionPlayCutSceneIntro)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SkipCutScene()
+		-- 컷신을 스킵하고 다음 단계로 이동하는 함수
+		self.SkipButton:SetEnable(false)
+		
+		_TimerService:ClearTimer(self.IntroVideoAutoEndTimerId)
+		self.IntroVideoAutoEndTimerId = 0
+		
+		self:StopYoutubeVideo()
+		self:EndCutSceneIntro()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SkipIntroDialog2()
+		-- 두 번째 인트로 다이얼로그를 스킵하는 함수
+		self.SkipButton:SetEnable(false)
+		_UIDialogLogic:EndDialog(self.ActionStartPlayPopup)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndIntro()
+		-- 인트로를 완전히 종료하고 게임으로 전환하는 함수
+		self.PopupNodeStartPlay:SetEnable(false)
+		self.CutSceneBg:SetEnable(false)
+		
+		local interval = 0.01
+		local canvasGroup = self.Fade.CanvasGroupComponent
+		canvasGroup.GroupAlpha = 1
+		self.Fade:SetEnable(true)
+		
+		self.Fade.SpriteGUIRendererComponent.Color = _ColorCodeEnum:GetColor("#000000")
+		
+		local fadeOffFunction = function()
+			if canvasGroup.GroupAlpha <= 0 then
+				_TimerService:ClearTimer(self._T.FadeOffFunction)
+				self.Fade.Enable = false
+			else
+				canvasGroup.GroupAlpha -= interval * 0.2
+			end
+		end
+		self._T.FadeOffFunction = _TimerService:SetTimerRepeat(fadeOffFunction, interval, 0)
+		
+		
+		_UIGroupManager.TitleUIGroup.UITitle:OnGameStartButton(true) 
+		
+		_UserService.LocalPlayer.PlayerOutgameManager:RequestSetHasSeenIntro(true) 
+		
+		local uiOff = function()
+			self:ResetActor()
+			self.IntroLetterBox:SetEnable(false)
+		end
+		_TimerService:SetTimerOnce(uiOff,1)
+		
+		
+		local groupOff = function()
+			self:EnableUIDialogGroup(false)
+			_LobbyHUDService:OpenHUD( _UserService.LocalPlayer )
+		end
+		_TimerService:SetTimerOnce(groupOff,1.2)
+		
+		local unload = function()
+			local preLoadRUIDs = { self.PictureSceneRUID , self.EndSceneRUID }
+			_ResourceLoadLogic:UnloadResources( preLoadRUIDs)
+		end
+		_TimerService:SetTimerOnce(unload,2)
+		
+	end
+
+	@ExecSpace("Client")
+	method void StartOutro()
+		-- 아웃트로 시퀀스를 시작하는 함수
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)	
+		self:EnableUIDialogGroup(true)
+		self:DialogDimShow()
+		
+		_TimerService:SetTimerOnce(function()
+			_UIGroupManager:EnableRewardGroup(false)
+		end, 0.5)
+		
+		_BGMService:ApplyBGM(_BGMService.OutroBGM)
+		
+		self.CurrentDialogId = self.OutroDialogId1 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndOutro()
+		-- 아웃트로를 종료하고 게임 상태를 복원하는 함수
+		self:EnableUIDialogGroup(false)
+		self:ResetActor()
+		
+		_UserService.LocalPlayer.TimeManager:RequestTimeFlowClient() 
+		
+		_UserService.LocalPlayer.PlayerManagement:RequestSetIsEndingEventSeen(true) 
+	end
+
+	@ExecSpace("Client")
+	method void SetOutroYear(integer year)
+		-- 아웃트로에서 사용할 연도를 설정하는 함수
+		self.OutroYear = year
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowFade1()
+		-- 페이드 인/아웃 효과를 실행하는 함수 (타입 1)
+		
+		_TimerService:ClearTimer(self._T.FadeOnFunction)
+		_TimerService:ClearTimer(self._T.FadeOffFunction)
+		
+		local canvasGroup = self.Fade.CanvasGroupComponent
+		
+		local interval = 0.1
+		
+		canvasGroup.GroupAlpha = 0
+		self.Fade.SpriteGUIRendererComponent.Color = _ColorCodeEnum:GetColor("#000000")
+		self.Fade:SetEnable(true) 
+		
+		local fadeOffFunction = function()
+			if canvasGroup.GroupAlpha <= 0 then
+				_TimerService:ClearTimer(self._T.FadeOffFunction)
+				canvasGroup.GroupAlpha= 0
+				self.Fade:SetEnable(false) 
+			else
+				canvasGroup.GroupAlpha -= interval * 0.5
+			end
+		end
+		
+		local fadeOnFunction = function()
+			if canvasGroup.GroupAlpha >= 1 then
+				self._T.FadeOffFunction = _TimerService:SetTimerRepeat(fadeOffFunction, interval, 0.1)
+				_TimerService:ClearTimer(self._T.FadeOnFunction)
+			else
+				canvasGroup.GroupAlpha += interval * 0.5
+			end
+		end
+		self._T.FadeOnFunction = _TimerService:SetTimerRepeat(fadeOnFunction, interval, 1)
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowFade2()
+		-- 페이드 인 효과만 실행하는 함수 (타입 2)
+		
+		_TimerService:ClearTimer(self._T.FadeOnFunction)
+		_TimerService:ClearTimer(self._T.FadeOffFunction)
+		
+		local canvasGroup = self.Fade.CanvasGroupComponent
+		
+		local interval = 0.02
+		
+		canvasGroup.GroupAlpha = 0
+		self.Fade.SpriteGUIRendererComponent.Color = _ColorCodeEnum:GetColor("#000000")
+		self.Fade:SetEnable(true) 
+		local fadeOnFunction = function()
+			if canvasGroup.GroupAlpha >= 1 then
+				self.Fade:SetEnable(false) 
+				 canvasGroup.GroupAlpha = 0
+				_TimerService:ClearTimer(self._T.FadeOnFunction)
+			else
+				canvasGroup.GroupAlpha += interval
+			end
+		end
+		self._T.FadeOnFunction = _TimerService:SetTimerRepeat(fadeOnFunction, interval, 1)
+	end
+
+	@ExecSpace("Client")
+	method void SetIntroCamera()
+		-- 인트로용 카메라로 전환하고 줌 비율을 설정하는 함수
+		local introCamera = _EntityService:GetEntity(_IntroDialogLogic.DialogStartViewEntityId).CameraComponent
+		_CameraService:SwitchCameraTo(introCamera)
+		
+		introCamera.ZoomRatio = self.ZoomRationFar
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayCameraWalk1()
+		-- 첫 번째 카메라 워킹 애니메이션을 재생하는 함수
+		local camera1 = _EntityService:GetEntityByPath("/maps/IntroMap/IntroCameraGroup/DialogCameraWalk1").CameraComponent
+		
+		
+		local changeCamera1 = function()
+			_CameraService:SwitchCameraTo(camera1)
+			_CameraService:ZoomTo( self.ZoomRationMid , 2 )
+			
+		end
+		_TimerService:SetTimerOnce( changeCamera1 , 0.5 )
+		
+		local cameraPatrol = function()
+			local startPos = self.Camera1Pos.x
+			local targetPos = self.Camera1Pos.x + 8
+			
+			_TweenLogic:PlayTween( startPos , targetPos , 6 , EaseType.CubicEaseOut , function(t)
+				camera1.Entity.TransformComponent.Position.x = t
+			end)
+		end
+		
+		_TimerService:SetTimerOnce( cameraPatrol , 3 )
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayCameraWalk2()
+		-- 두 번째 카메라 워킹 애니메이션을 재생하는 함수
+		local camera3 = _EntityService:GetEntityByPath("/maps/IntroMap/IntroCameraGroup/DialogCameraWalk3").CameraComponent
+		
+		local changeCamera3 = function()
+			_CameraService:SwitchCameraTo(camera3)
+			_CameraService:ZoomTo( self.ZoomRationFar , 5 )
+		end
+		_TimerService:SetTimerOnce( changeCamera3 , 0.1 )
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SkipPictureShow()
+		-- 그림 표시를 스킵하고 배경을 리셋하는 함수
+		
+		self.CutSceneBg:SetEnable(false)
+		self.CutSceneBg.UITransformComponent.RectSize = self.CutSceneBgDefaultSize
+		self.CutSceneBg.SpriteGUIRendererComponent.ImageRUID = self.EndSceneRUID
+		self.CutSceneBg.SpriteGUIRendererComponent.LocalPosition.y = 0
+		self.CutSceneBg.UITransformComponent.anchoredPosition.y = 0
+		self.CutSceneBg.CanvasGroupComponent.GroupAlpha = 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowPickture()
+		-- 인트로 그림을 화면에 표시하고 애니메이션을 재생하는 함수
+		self.CutSceneBg.UITransformComponent.RectSize = Vector2 ( 1200 , 800 )
+		self.CutSceneBg.SpriteGUIRendererComponent.ImageRUID = self.PictureSceneRUID
+		self.CutSceneBg.SpriteGUIRendererComponent.LocalPosition.y = 0
+		self.CutSceneBg.UITransformComponent.anchoredPosition.y = 0
+		
+		self.CutSceneBg.CanvasGroupComponent.GroupAlpha = 0
+		self.IsShowingPicture = true
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["System_StoryBook_Next_01"], 1)
+		
+		local disableNext = function()
+		
+			self.IsShowingPicture = false
+		end
+		_UIEntityService:PlayUIOpenAnim(self.CutSceneBg, Vector2( 0 , 150), Vector2.up, 0.5, 0.1 , nil, nil , disableNext )
+		self.CutSceneBg:SetEnable(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartIntroOpeningCaption()
+		-- 인트로 오프닝 캡션을 시작하는 함수
+		self.IntroOpeningCaption:SetEnable(true)
+		self.IntroOpeningCaption.IntroOpeningCaption:Init()
+		
+		_DialogDataLogic:GetDialogTable(self.IntroDialogId1)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndIntroOpeningCaption()
+		-- 인트로 오프닝 캡션을 종료하고 다이얼로그를 시작하는 함수
+		local playDialog = function()
+			local callback = function(result)
+					
+				if result == self.ActionPlayCutSceneIntro then
+					self.CutSceneBg:SetEnable(false)
+					self:StartCutSceneIntro()
+				end
+			
+			end
+			self.CurrentDialogId = self.IntroDialogId1 
+			_UIDialogLogic:MakeDialog(self.IntroDialogId1,callback)
+		end
+		_TimerService:SetTimerOnce( playDialog , 1 )
+		
+		_BGMService:ApplyBGM(_BGMService.IntroStartBGM)
+		_IntroDialogLogic:DialogDimFade(false,1)
+		self.IntroOpeningCaption.IntroOpeningCaption:Close()
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 인트로 관련 초기화를 수행하는 함수
+		self:EnableUIDialogGroup(false)
+		self.Fade:SetEnable(false)
+		self:ResetActor()
+		self.CurrentDialogId = ""
+		self.IntroOpeningCaption:SetEnable(false)
+		_EntityService:GetEntityByPath("/ui/NewDialogGroup/UIDialog"):SetEnable(false)
+		
+		self.PictureSceneRUID = _ResourceLoadLogic:OptimizeMobileResource(self.PictureSceneRUID)
+		self.EndSceneRUID = _ResourceLoadLogic:OptimizeMobileResource(self.EndSceneRUID)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DialogDimFade(boolean enable, integer speed)
+		-- 다이얼로그 딤 효과를 페이드 인/아웃하는 함수
+		_TimerService:ClearTimer(self._T.FadeOnFunction)
+		_TimerService:ClearTimer(self._T.FadeOffFunction)
+		
+		if enable == false then
+			
+			local canvasGroup = self.Dim.CanvasGroupComponent
+			local interval = 0.02
+			canvasGroup.GroupAlpha = 1
+			
+			self.Dim:SetEnable(true) 
+			
+			local fadeOffFunction = function()
+				if canvasGroup.GroupAlpha <= 0 then
+					_TimerService:ClearTimer(self._T.FadeOffFunction)
+					self.Dim:SetEnable(false)
+				else
+					canvasGroup.GroupAlpha -= interval * 1.5 * speed
+				end
+			end
+		
+		self._T.FadeOffFunction = _TimerService:SetTimerRepeat(fadeOffFunction, interval, 0.2)
+			
+		elseif 	enable == true then
+				
+			local canvasGroup = self.Dim.CanvasGroupComponent
+			local interval = 0.02
+			canvasGroup.GroupAlpha = 0
+		
+			self.Dim:SetEnable(true) 
+		
+			local fadeOnFunction = function()
+				if canvasGroup.GroupAlpha >= 1 then
+		
+		
+					 canvasGroup.GroupAlpha = 1
+					_TimerService:ClearTimer(self._T.FadeOnFunction)
+				else
+					canvasGroup.GroupAlpha += interval *1.5 * speed
+				end
+			end
+			self._T.FadeOnFunction = _TimerService:SetTimerRepeat(fadeOnFunction, interval, 0)
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DialogDimShow()
+		-- 다이얼로그 딤을 즉시 표시하는 함수
+		local canvasGroup = self.Dim.CanvasGroupComponent
+		canvasGroup.GroupAlpha = 1
+		self.Dim:SetEnable(true)
+	end
+
+end

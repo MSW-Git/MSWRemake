@@ -1,0 +1,143 @@
+@Component
+script C20008_Lioner_Skill extends Component
+
+	property number skillAnimLength = 1.1
+
+	property number skillSetTime = 5
+
+	property number skillCheck = 0
+
+	property table Particletable = {}
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+			self:SetBuff()
+		end
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0075",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBuff()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		self.skillCheck += 1
+		_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0018", self.skillSetTime)
+		unitInfo.AttackComponent.onSkill = true
+		
+		local function onSkillTimer()
+			self.skillCheck -= 1
+			
+			if self.skillCheck <= 0 then
+				unitInfo.AttackComponent.onSkill = false
+				unitInfo.AttackComponent.AttackCount = 0
+			end
+		end
+		
+		_TimerService:SetTimerOnce(onSkillTimer, self.skillSetTime)
+		
+		--연출
+		self:PlaySkillEffect(unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		self.skillCheck = 0
+		unitInfo.AttackComponent.onSkill = false
+		unitInfo.AttackComponent.AttackCount = 0
+	end
+
+	@ExecSpace("Client")
+	method void PlaySkillEffect()
+		--라이오너 뿔에 파티클표시
+		--빈 테이블이라면 먼저 자식 엔터티에 파티클 엔터티가 있는지 확인합니다.
+		if #self.Particletable == 0 then
+			local children = self.Entity.Children
+			
+			for i = 1, #children do
+				if children[i].Name == "BasicParticleBattle" then
+					table.insert(self.Particletable,children[i])
+				end
+			end
+		end
+		
+		-- 테이블에 있는 엔터티 중 enable이 꺼져있는 것을 켜서 표시합니다.
+		local particle = nil
+		for i = 1, #self.Particletable do
+			if self.Particletable[i].Enable == false then
+				particle = self.Particletable[i]
+				break
+			end
+		end
+		
+		--만약 자식엔터티에 파티클이 없거나 파티클이 모두 켜져 있는 상태라면 새 엔터티 스폰합니다.
+		if particle == nil then
+			particle =_SpawnService:SpawnByModelId("model://02d2af27-0dd9-46bf-921c-7f094991054f","BasicParticleBattle",Vector3(0,0,0),self.Entity)
+			particle.Enable = false
+			table.insert(self.Particletable, particle)
+		end
+			
+		--기본정보
+		particle.BasicParticleComponent.ParticleType = BasicParticleType.LightningOrbSharp
+		particle.BasicParticleComponent.Loop = true
+		particle.BasicParticleComponent.Color = Color.FromHexCode("#e99926")
+		particle.BasicParticleComponent.Color.a = _ESCMenuService.skillEffectAlpha/100
+		particle.TransformComponent.Scale = Vector3(0.5, 0.5, 1)
+		
+		--레벨과 flip여부에 따라 위치 다르게 설정
+		local flip = 0.5
+		if self.Entity.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX == false then
+			flip =- 0.5
+		end
+		
+		particle.TransformComponent.Position = Vector3(flip, 0.5, 1)
+		
+		particle.Enable = true
+		
+		--파티클은 5초만 잔존
+		local destroyandparticle = function()
+			particle.Enable = false
+		end
+		self._T.timer = _TimerService:SetTimerOnce(destroyandparticle, 5)
+	end
+
+	@ExecSpace("Client")
+	method void RemoveEffect()
+		--파티클 삭제
+		for i = 1, #self.Particletable do
+			self.Particletable[i].Enable =- false
+		end
+		
+		--타이머파티클 삭제
+		_TimerService:ClearTimer(self._T.timer)
+	end
+
+end

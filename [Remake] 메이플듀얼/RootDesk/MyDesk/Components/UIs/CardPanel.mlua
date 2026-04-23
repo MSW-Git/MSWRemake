@@ -1,0 +1,952 @@
+@Component
+script CardPanel extends Component
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property CardBackManager cardBackManager = "d31aa203-b026-4ad8-b8d3-1d8cea99398c"
+
+	property DeckManager deckManager = "e920267e-c338-457c-af06-67081552ceca"
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property DeckEditPanel deckEditPanel = nil
+
+	property TextComponent titleText = nil
+
+	property Entity commonButtonEntity = nil
+
+	property ButtonComponent commonButton = nil
+
+	property Entity warriorButtonEntity = nil
+
+	property ButtonComponent warriorButton = nil
+
+	property Entity magicianButtonEntity = nil
+
+	property ButtonComponent magicianButton = nil
+
+	property Entity bowmanButtonEntity = nil
+
+	property ButtonComponent bowmanButton = nil
+
+	property Entity thiefButtonEntity = nil
+
+	property ButtonComponent thiefButton = nil
+
+	property Entity pirateButtonEntity = nil
+
+	property ButtonComponent pirateButton = nil
+
+	property Entity cardBackButtonEntity = nil
+
+	property ButtonComponent cardBackButton = nil
+
+	property Entity unownedEntity = nil
+
+	property ButtonComponent unownedButton = nil
+
+	property SpriteGUIRendererComponent unownedIcon = nil
+
+	property ButtonComponent leftArrowButton = nil
+
+	property ButtonComponent rightArrowButton = nil
+
+	property Vector2 gridSize = Vector2(0,0)
+
+	property Vector2 gridCenter = Vector2(0,0)
+
+	property Vector2 gridOffset = Vector2(0,0)
+
+	property table infoArray = {}
+
+	property table cardArray = {}
+
+	property table cardBackArray = {}
+
+	property table cardCountArray = {}
+
+	property table warningSignArray = {}
+
+	property table newSignArray = {}
+
+	property SelectedSign selectedSign = nil
+
+	property boolean isDeckEditMode = false
+
+	property string class = ""
+
+	property boolean back = false
+
+	property boolean unowned = false
+
+	property integer pageIndex = 1
+
+	property any panelTweener = nil
+
+	property table cardTweenerArray = {}
+
+	property table cardCountTweenerArray = {}
+
+	property table warningSignTweenerArray = {}
+
+	property table newSignTweenerArray = {}
+
+	property any selectedSignTweener = nil
+
+	property any warriorButtonTweener = nil
+
+	property any magicianButtonTweener = nil
+
+	property any bowmanButtonTweener = nil
+
+	property any thiefButtonTweener = nil
+
+	property any pirateButtonTweener = nil
+
+	property any cardBackButtonTweener = nil
+
+	property Card puttingCard = nil
+
+	property Card sourceCard = nil
+
+	property Card erasingCard = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 카드 패널 초기화 시 카드 프리로드, 그리드 생성, 이벤트 연결 등을 수행
+		local character = _UserService.LocalPlayer.Character
+		
+		self:SpawnAndSetPuttingCard()
+		self:SpawnAndSetErasingCard()
+		
+		_ResourceService:PreloadAsync(_DataService:GetTable("AvatarItem"):GetColumn("ruid"), function()
+			for _, info in ipairs(self.cardManager:GetInfos()) do
+				local frontModelName = string.format("%s%s%sCardFront", info.name, info.variant, info.quality)
+				local frontModelId = _EntryService:GetModelIdByName(frontModelName)
+				_SpawnService:SpawnByModelId(frontModelId, frontModelName, Vector3(100, 100, 0), self.Entity.CurrentMap):Destroy()
+				
+				wait(0.05)
+			end
+			
+			for _, cardBack in ipairs(self.cardBackManager:GetCardBacks()) do
+				local backModelName = string.format("%sCardBack", cardBack)
+				local backModelId = _EntryService:GetModelIdByName(backModelName)
+				_SpawnService:SpawnByModelId(backModelId, backModelName, Vector3(100, 100, 0), self.Entity.CurrentMap):Destroy()
+				
+				wait(0.05)
+			end
+		end)
+		
+		local classArray = {"Common", "Warrior", "Magician", "Bowman", "Thief", "Pirate"}
+		local classTable = {Common = 1, Warrior = 2, Magician = 3, Bowman = 4, Thief = 5, Pirate = 6}
+		
+		self.leftArrowButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			if self.back then
+				if self.pageIndex > 1 then
+					self:ShowCards(self.pageIndex - 1)
+				end
+			else
+				if self.pageIndex > 1 then
+					self:ShowCards(self.pageIndex - 1)
+				else
+					if self.isDeckEditMode then
+						if self.class ~= "Common" then
+							self:SetCards("Common", false, self.unowned, true)
+						end
+					else
+						local index = classTable[self.class]
+						if index > 1 then
+							self:SetCards(classArray[index - 1], false, self.unowned, true)
+						end
+					end
+				end
+			end
+		end)
+		
+		self.rightArrowButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			if self.back then
+				if self.pageIndex < math.ceil(#self.cardBackArray / (self.gridSize.x * self.gridSize.y)) then
+					self:ShowCards(self.pageIndex + 1)
+				end
+			else
+				if self.pageIndex < math.ceil(#self.infoArray / (self.gridSize.x * self.gridSize.y)) then
+					self:ShowCards(self.pageIndex + 1)
+				else
+					if self.isDeckEditMode then
+						if self.class == "Common" then
+							self:SetCards(character:GetDeck().class, false, self.unowned, false)
+						end
+					else
+						local index = classTable[self.class]
+						if index < #classArray then
+							self:SetCards(classArray[index + 1], false, self.unowned, false)
+						end
+					end
+				end
+			end
+		end)
+		
+		self.commonButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			self:SetCards("Common", false, self.unowned, false)
+		end)
+		self.warriorButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			self:SetCards("Warrior", false, self.unowned, false)
+		end)
+		self.magicianButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			self:SetCards("Magician", false, self.unowned, false)
+		end)
+		self.bowmanButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			self:SetCards("Bowman", false, self.unowned, false)
+		end)
+		self.thiefButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			self:SetCards("Thief", false, self.unowned, false)
+		end)
+		self.pirateButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			self:SetCards("Pirate", false, self.unowned, false)
+		end)
+		self.cardBackButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			self:SetCards("", true, self.unowned, false)
+		end)
+		
+		self.unownedButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickRawSound, 1)
+			
+			self:SetCards(self.class, self.back, not self.unowned, false)
+		end)
+		
+		character.Entity:ConnectEvent(SetCardBack, function()
+			for _, card in ipairs(self.cardArray) do
+				if card.backName == character.cardBack then
+					local cardTransform = card.actor.Entity.TransformComponent
+					local selectedSignTransform = self.selectedSign.Entity.TransformComponent
+					selectedSignTransform.Position.x = cardTransform.Position.x
+					selectedSignTransform.Position.y = cardTransform.Position.y
+					selectedSignTransform.Scale.x = 0
+					selectedSignTransform.Scale.y = 0
+					if self.selectedSignTweener then
+						self.selectedSignTweener:Destroy()
+					end
+					self.selectedSignTweener = _Tween:ScaleTo(self.selectedSign.Entity, Vector2.one, 0.125, EaseType.Linear)
+				end
+			end
+		end)
+		
+		character.Entity:ConnectEvent(BuyCard, function(event)
+			local info = event.info
+			
+			for i, card in ipairs(self.cardArray) do
+				if _Table:Compare(info, card.info) then
+					local cardCount = self.cardCountArray[i]
+					local warningSign = self.warningSignArray[i]
+					local warningSignTweener = self.warningSignTweenerArray[i]
+					
+					---@type table
+					local rendererArray = card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+					for _, renderer in ipairs(rendererArray) do
+						renderer.Color.r = 1
+						renderer.Color.g = 1
+						renderer.Color.b = 1
+					end
+					rendererArray = card.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true)
+					for _, renderer in ipairs(rendererArray) do
+						renderer:SetColor(1, 1, 1, 1)
+					end
+					
+					local count = cardCount.count + 1
+					local cardCountTransform = cardCount.Entity.TransformComponent
+					cardCountTransform.Scale.x = 1
+					cardCountTransform.Scale.y = 1
+					cardCount.count = count
+					cardCount.text.Text = string.format("×%d", count)
+					
+					if warningSignTweener then
+						warningSignTweener:Destroy()
+					end
+					self.warningSignTweenerArray[i] = _Tween:ScaleTo(warningSign.Entity, Vector2.zero, 0.125, EaseType.Linear)
+				end
+			end
+		end)
+		
+		character.Entity:ConnectEvent(SellCard, function(event)
+			local info = event.info
+			
+			for i, card in ipairs(self.cardArray) do
+				if _Table:Compare(info, card.info) then
+					local cardCount = self.cardCountArray[i]
+					local count = cardCount.count - 1
+					cardCount.count = count
+					cardCount.text.Text = string.format("×%d", count)
+				end
+			end
+		end)
+		
+		for row = 1, self.gridSize.y do
+			for col = 1, self.gridSize.x do
+				local x = self.gridCenter.x - (self.gridSize.x - 1) * self.gridOffset.x * 0.5 + (col - 1) * self.gridOffset.x
+				local y = self.gridCenter.y + (self.gridSize.y - 1) * self.gridOffset.y * 0.5 - (row - 1) * self.gridOffset.y
+			
+				local card = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Card"), "Card", Vector3.zero, self.Entity).Card
+				table.insert(self.cardArray, card)
+				card:SpawnAndSetActor()
+				local cardTransform = card.actor.Entity.TransformComponent
+				cardTransform.Position.x = x
+				cardTransform.Position.y = y
+				cardTransform.Position.z = -3
+				cardTransform.Scale.x = 0
+				cardTransform.Scale.y = 0
+				
+				local cardCount = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("CardCount"), "CardCount", Vector3(x, y, -4), self.Entity).CardCount
+				table.insert(self.cardCountArray, cardCount)
+				local cardCountTransform = cardCount.Entity.TransformComponent
+				cardCountTransform.Scale.x = 0
+				cardCountTransform.Scale.y = 0
+				
+				local warningSign = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("WarningSign"), "WarningSign", Vector3(x, y, -4), self.Entity).WarningSign
+				table.insert(self.warningSignArray, warningSign)
+				local warningSignTransform = warningSign.Entity.TransformComponent
+				warningSignTransform.Scale.x = 0
+				warningSignTransform.Scale.y = 0
+				
+				local newSign = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("NewSign"), "NewSign", Vector3(x, y, -3.02), self.Entity)
+				table.insert(self.newSignArray, newSign)
+				local newSignTransform = newSign.TransformComponent
+				newSignTransform.Scale.x = 0
+				newSignTransform.Scale.y = 0 
+			end
+		end
+		
+		self.selectedSign = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("SelectedSign"), "SelectedSign", Vector3(0, 0, -4), self.Entity).SelectedSign
+		local selectedSignTransform = self.selectedSign.Entity.TransformComponent
+		selectedSignTransform.Scale.x = 0
+		selectedSignTransform.Scale.y = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 카드 패널을 화면에 표시하는 애니메이션
+		if self.panelTweener then
+			self.panelTweener:Destroy()
+		end
+		self.panelTweener = _Tween:ScaleTo(self.Entity, Vector2.one, 0.175, EaseType.Linear)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 카드 패널을 닫고 모든 카드를 정리
+		local transform = self.Entity.TransformComponent
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+		if self.panelTweener then
+			self.panelTweener:Destroy()
+		end
+		
+		self:SetMode(false)
+		self:ClearCards()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetButtonsEnable(boolean enable)
+		-- 카드 패널의 모든 버튼들의 활성화 상태를 설정
+		self.commonButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.warriorButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.magicianButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.bowmanButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.thiefButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.pirateButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.cardBackButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.unownedButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.leftArrowButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.rightArrowButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCards(string class, boolean back, boolean unowned, boolean lastPage)
+		-- 지정된 클래스와 조건에 따라 카드들을 설정하고 표시
+		local character = _UserService.LocalPlayer.Character
+		if not character.isLoaded then
+			return
+		end
+		
+		self.class = class
+		self.back = back
+		self.unowned = unowned
+		self.unownedIcon.Entity.Enable = unowned
+		
+		local resource = self.resourceManager:GetResource("CardPanel")
+		if class == "Common" then
+			self.commonButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["CommonSelected"]
+		else
+			self.commonButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["CommonUnselected"]
+		end
+		if class == "Warrior" then
+			self.warriorButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["WarriorSelected"]
+		else
+			self.warriorButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["WarriorUnselected"]
+		end
+		if class == "Magician" then
+			self.magicianButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["MagicianSelected"]
+		else
+			self.magicianButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["MagicianUnselected"]
+		end
+		if class == "Bowman" then
+			self.bowmanButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["BowmanSelected"]
+		else
+			self.bowmanButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["BowmanUnselected"]
+		end
+		if class == "Thief" then
+			self.thiefButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["ThiefSelected"]
+		else
+			self.thiefButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["ThiefUnselected"]
+		end
+		if class == "Pirate" then
+			self.pirateButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["PirateSelected"]
+		else
+			self.pirateButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["PirateUnselected"]
+		end
+		if back then
+			self.cardBackButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["CardBackSelected"]
+		else
+			self.cardBackButton.Entity.SpriteGUIRendererComponent.ImageRUID = resource["CardBackUnselected"]
+		end
+		
+		if back then
+			self.titleText.Text = "CardBack"
+			
+			local cardBackArray
+			if unowned then
+				cardBackArray = self.cardBackManager:GetCardBacks()
+			else
+				cardBackArray = {}
+				for _, cardBack in ipairs(self.cardBackManager:GetCardBacks()) do
+					if character:HasCardBack(cardBack) then
+						table.insert(cardBackArray, cardBack)
+					end
+				end
+			end
+			self.cardBackArray = cardBackArray
+		elseif not _UtilLogic:IsNilorEmptyString(class) then
+			self.titleText.Text = class
+			
+			local infoArray
+			if unowned then
+				infoArray = self.cardManager:GetInfosByClass(class)
+			else
+				infoArray = {}
+				for _, info in ipairs(self.cardManager:GetInfosByClass(class)) do
+					if character:GetCardCount(info) > 0 then
+						table.insert(infoArray, info)
+					end
+				end
+			end
+			self.infoArray = infoArray
+		end
+		
+		self:ShowCards(lastPage and math.ceil(#self.infoArray / (self.gridSize.x * self.gridSize.y)) or 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowCards(integer pageIndex)
+		-- 지정된 페이지의 카드들을 화면에 표시
+		self.pageIndex = pageIndex
+		
+		for i = 1, #self.cardArray do
+			local card = self.cardArray[i]
+			local cardCount = self.cardCountArray[i]
+			local warningSign = self.warningSignArray[i]
+			local newSign = self.newSignArray[i]
+			local cardTweener = self.cardTweenerArray[i]
+			local cardCountTweener = self.cardCountTweenerArray[i]
+			local warningSignTweener = self.warningSignTweenerArray[i]
+			local newSignTweener = self.newSignTweenerArray[i]
+			
+			card:ClearBlueprint()
+			card:ClearBackName()
+			local cardTransform = card.actor.Entity.TransformComponent
+			cardTransform.Scale.x = 0
+			cardTransform.Scale.y = 0
+			if cardTweener then
+				cardTweener:Destroy()
+			end
+			
+			cardCount.text.Text = ""
+			local cardCountTransform = cardCount.Entity.TransformComponent
+			cardCountTransform.Scale.x = 0
+			cardCountTransform.Scale.y = 0
+			if cardCountTweener then
+				cardCountTweener:Destroy()
+			end
+			
+			warningSign.text.Text = ""
+			local warningSignTransform = warningSign.Entity.TransformComponent
+			warningSignTransform.Scale.x = 0
+			warningSignTransform.Scale.y = 0
+			if warningSignTweener then
+				warningSignTweener:Destroy()
+			end
+			
+			local newSignTransform = newSign.TransformComponent
+			newSignTransform.Scale.x = 0
+			newSignTransform.Scale.y = 0
+			if newSignTweener then
+				newSignTweener:Destroy()
+			end
+		end
+		local selectedSignTransform = self.selectedSign.Entity.TransformComponent
+		selectedSignTransform.Scale.x = 0
+		selectedSignTransform.Scale.y = 0
+		if self.selectedSignTweener then
+			self.selectedSignTweener:Destroy()
+		end
+		
+		local character = _UserService.LocalPlayer.Character
+		if self.back then
+			local cardBackArray = {}
+			local cardsPerPage = self.gridSize.x * self.gridSize.y
+			local start = 1 + cardsPerPage * (pageIndex - 1)
+			local finish = math.min(cardsPerPage * pageIndex, #self.cardBackArray)
+			for index = start, finish do
+				local cardIndex = (index - 1) % cardsPerPage + 1
+				local card = self.cardArray[cardIndex]
+				local cardCount =  self.cardCountArray[cardIndex]
+				local warningSign = self.warningSignArray[cardIndex]
+				local newSign = self.newSignArray[cardIndex]
+				local cardBack = self.cardBackArray[index]
+				table.insert(cardBackArray, cardBack)
+				
+				local isNewCardBack = character:IsNewCardBack(cardBack)
+				local hasCardBack = character:HasCardBack(cardBack)
+				
+				card:SetBackName(cardBack)
+				---@type table
+				local rendererArray = card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+				for _, renderer in ipairs(rendererArray) do
+					renderer.SortingLayer = "UI"
+					renderer.OrderInLayer = 5
+					if not hasCardBack then
+						renderer.Color.r = 0.5
+						renderer.Color.g = 0.5
+						renderer.Color.b = 0.5
+					end
+				end
+				self.cardTweenerArray[cardIndex] = _Tween:ScaleTo(card.actor.Entity, Vector2.one, 0.125, EaseType.Linear)
+				
+				if cardBack == character.cardBack then
+					local cardTransform = card.actor.Entity.TransformComponent
+					selectedSignTransform.Position.x = cardTransform.Position.x
+					selectedSignTransform.Position.y = cardTransform.Position.y
+					self.selectedSignTweener = _Tween:ScaleTo(self.selectedSign.Entity, Vector2.one, 0.125, EaseType.Linear)
+				elseif not hasCardBack then
+					warningSign.text.Text = _LocalizationService:GetText("Unowned")
+					self.warningSignTweenerArray[cardIndex] = _Tween:ScaleTo(warningSign.Entity, Vector2.one, 0.125, EaseType.Linear)
+				end
+				
+				if isNewCardBack then
+					self.newSignTweenerArray[cardIndex] = _Tween:ScaleTo(newSign, Vector2.one, 0.125, EaseType.Linear)
+				end
+			end
+			
+			_Server:Request(character, "RemoveNewCardBacks", {cardBackArray})
+		else
+			local infoArray = {}
+			local cardsPerPage = self.gridSize.x * self.gridSize.y
+			local start = 1 + cardsPerPage * (pageIndex - 1)
+			local finish = math.min(cardsPerPage * pageIndex, #self.infoArray)
+			for index = start, finish do
+				local cardIndex = (index - 1) % cardsPerPage + 1
+				local card = self.cardArray[cardIndex]
+				local cardCount =  self.cardCountArray[cardIndex]
+				local warningSign = self.warningSignArray[cardIndex]
+				local newSign = self.newSignArray[cardIndex]
+				local info = self.infoArray[index]
+				table.insert(infoArray, info)
+				
+				local isNewCard = character:IsNewCard(info)
+				local ownCount = character:GetCardCount(info)
+				local deckInfoCount = self.isDeckEditMode and self.deckManager:GetCardCountByInfo(self.deckEditPanel.deck, info) or 0
+				local deckNameCount = self.isDeckEditMode and self.deckManager:GetCardCountByName(self.deckEditPanel.deck, info.name) or 0
+				local count = ownCount - deckInfoCount
+				
+				card:SetBlueprint({info = info, enchantmentArray = {}, independentVariableTable = {}})
+				---@type table
+				local rendererArray = card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+				for _, renderer in ipairs(rendererArray) do
+					renderer.SortingLayer = "UI"
+					renderer.OrderInLayer = 5
+					if count <= 0 or deckNameCount >= 2 then
+						renderer.Color.r = 0.5
+						renderer.Color.g = 0.5
+						renderer.Color.b = 0.5
+					end
+				end
+				rendererArray = card.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true)
+				for _, renderer in ipairs(rendererArray) do
+					renderer.SortingLayer = "UI"
+					renderer.OrderInLayer = 5
+					if count <= 0 or deckNameCount >= 2 then
+						renderer:SetColor(0.5, 0.5, 0.5, 1)
+					end
+				end
+				self.cardTweenerArray[cardIndex] = _Tween:ScaleTo(card.actor.Entity, Vector2.one, 0.125, EaseType.Linear)
+				
+				cardCount.count = count
+				if ownCount > 0 then
+					if isNewCard then
+						self.newSignTweenerArray[cardIndex] = _Tween:ScaleTo(newSign, Vector2.one, 0.125, EaseType.Linear)
+					end
+					cardCount.text.Text = string.format("×%d", count)
+					self.cardCountTweenerArray[cardIndex] = _Tween:ScaleTo(cardCount.Entity, Vector2.one, 0.125, EaseType.Linear)
+				end
+				if count <= 0 or deckNameCount >= 2 then
+					if ownCount <= 0 then
+						warningSign.text.Text = _LocalizationService:GetText("Unowned")
+					elseif deckNameCount >= 2 then
+						warningSign.text.Text = _LocalizationService:GetText("Max2Cards")
+					else
+						warningSign.text.Text = _LocalizationService:GetText("NoCardsLeft")
+					end
+					self.warningSignTweenerArray[cardIndex] = _Tween:ScaleTo(warningSign.Entity, Vector2.one, 0.125, EaseType.Linear)
+				end
+			end
+			
+			_Server:Request(character, "RemoveNewCards", {infoArray})
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearCards()
+		self.class = ""
+		self.back = false
+		self.unowned = false
+		self.infoArray = {}
+		self.cardBackArray = {}
+		
+		for i = 1, #self.cardArray do
+			local card = self.cardArray[i]
+			local cardCount = self.cardCountArray[i]
+			local warningSign = self.warningSignArray[i]
+			local cardTweener = self.cardTweenerArray[i]
+			local cardCountTweener = self.cardCountTweenerArray[i]
+			local warningSignTweener = self.warningSignTweenerArray[i]
+			
+			card:ClearBlueprint()
+			card:ClearBackName()
+			local cardTransform = card.actor.Entity.TransformComponent
+			cardTransform.Scale.x = 0
+			cardTransform.Scale.y = 0
+			if cardTweener then
+				cardTweener:Destroy()
+			end
+			
+			cardCount.text.Text = ""
+			local cardCountTransform = cardCount.Entity.TransformComponent
+			cardCountTransform.Scale.x = 0
+			cardCountTransform.Scale.y = 0
+			if cardCountTweener then
+				cardCountTweener:Destroy()
+			end
+			
+			warningSign.text.Text = ""
+			local warningSignTransform = cardCount.Entity.TransformComponent
+			warningSignTransform.Scale.x = 0
+			warningSignTransform.Scale.y = 0
+			if warningSignTweener then
+				warningSignTweener:Destroy()
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetMode(boolean isDeckEditMode)
+		self.isDeckEditMode = isDeckEditMode
+		
+		if self.warriorButtonTweener then
+			self.warriorButtonTweener:Destroy()
+		end
+		if self.magicianButtonTweener then
+			self.magicianButtonTweener:Destroy()
+		end
+		if self.bowmanButtonTweener then
+			self.bowmanButtonTweener:Destroy()
+		end
+		if self.thiefButtonTweener then
+			self.thiefButtonTweener:Destroy()
+		end
+		if self.pirateButtonTweener then
+			self.pirateButtonTweener:Destroy()
+		end
+		if self.cardBackButtonTweener then
+			self.cardBackButtonTweener:Destroy()
+		end
+		
+		self:SetCards("Common", false, self.unowned, false)
+		
+		if isDeckEditMode then	
+			local class = _UserService.LocalPlayer.Character:GetDeck().class
+			if class ~= "Warrior" then
+				self.warriorButton.Enable = false
+				self.warriorButtonTweener = _Tween:MoveTo(self.warriorButtonEntity, Vector2(0, -0.25), 0.25, EaseType.CubicEaseOut, false)
+			end
+			if class ~= "Magician" then
+				self.magicianButton.Enable = false
+				self.magicianButtonTweener = _Tween:MoveTo(self.magicianButtonEntity, Vector2(0, -0.25), 0.25, EaseType.CubicEaseOut, false)
+			end
+			if class ~= "Bowman" then
+				self.bowmanButton.Enable = false
+				self.bowmanButtonTweener = _Tween:MoveTo(self.bowmanButtonEntity, Vector2(0, -0.25), 0.25, EaseType.CubicEaseOut, false)
+			end
+			if class ~= "Thief" then
+				self.thiefButton.Enable = false
+				self.thiefButtonTweener = _Tween:MoveTo(self.thiefButtonEntity, Vector2(0, -0.25), 0.25, EaseType.CubicEaseOut, false)
+			end
+			if class ~= "Pirate" then
+				self.pirateButton.Enable = false
+				self.pirateButtonTweener = _Tween:MoveTo(self.pirateButtonEntity, Vector2(0, -0.25), 0.25, EaseType.CubicEaseOut, false)
+			end
+			self.cardBackButton.Enable = false
+			self.cardBackButtonTweener = _Tween:MoveTo(self.cardBackButtonEntity, Vector2(0, -0.25), 0.25, EaseType.CubicEaseOut, false)
+		else
+			self.warriorButton.Enable = true
+			self.warriorButtonTweener = _Tween:MoveTo(self.warriorButtonEntity, Vector2.zero, 0.25, EaseType.CubicEaseOut, false)
+			self.magicianButton.Enable = true
+			self.magicianButtonTweener = _Tween:MoveTo(self.magicianButtonEntity, Vector2.zero, 0.25, EaseType.CubicEaseOut, false)
+			self.bowmanButton.Enable = true
+			self.bowmanButtonTweener = _Tween:MoveTo(self.bowmanButtonEntity, Vector2.zero, 0.25, EaseType.CubicEaseOut, false)
+			self.thiefButton.Enable = true
+			self.thiefButtonTweener = _Tween:MoveTo(self.thiefButtonEntity, Vector2.zero, 0.25, EaseType.CubicEaseOut, false)
+			self.pirateButton.Enable = true
+			self.pirateButtonTweener = _Tween:MoveTo(self.pirateButtonEntity, Vector2.zero, 0.25, EaseType.CubicEaseOut, false)
+			self.cardBackButton.Enable = true
+			self.cardBackButtonTweener = _Tween:MoveTo(self.cardBackButtonEntity, Vector2.zero, 0.25, EaseType.CubicEaseOut, false)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetPuttingCard()
+		self.puttingCard = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Card"), "Card", 
+			Vector3.zero, self.Entity).Card
+		self.puttingCard:SpawnAndSetActor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetCardCount(Card card)
+		for i, item in ipairs(self.cardArray) do
+			if item == card then
+				return self.cardCountArray[i].count
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BeginPuttingCard(Card card)
+		self.sourceCard = card
+		self.puttingCard:SetBlueprint(card:GetBlueprint())
+		
+		---@type table
+		local rendererArray = _Table:Concat(self.puttingCard.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true), 
+			self.puttingCard.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true))
+		for _, renderer in ipairs(rendererArray) do
+			renderer.SortingLayer = "UI"
+			renderer.OrderInLayer = 5
+		end
+		
+		local cardIndex
+		local cardCount
+		local warningSign
+		local warningSignTweener
+		for i, item in ipairs(self.cardArray) do
+			if item == card then
+				cardIndex = i
+				cardCount = self.cardCountArray[i]
+				warningSign = self.warningSignArray[i]
+				warningSignTweener = self.warningSignTweenerArray[i]
+			end
+		end
+		
+		local count = cardCount.count - 1
+		
+		cardCount.count = count
+		cardCount.text.Text = string.format("×%d", count)
+		if count <= 0 then
+			rendererArray = card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+			for _, renderer in ipairs(rendererArray) do
+				renderer.Color.r = 0.5
+				renderer.Color.g = 0.5
+				renderer.Color.b = 0.5
+			end
+			rendererArray = card.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true)
+			for _, renderer in ipairs(rendererArray) do
+				renderer:SetColor(0.5, 0.5, 0.5, 1)
+			end
+			warningSign.text.Text = _LocalizationService:GetText("NoCardsLeft")
+			if warningSignTweener then
+				warningSignTweener:Destroy()
+			end
+			self.warningSignTweenerArray[cardIndex] = _Tween:ScaleTo(warningSign.Entity, Vector2.one, 0.125, EaseType.Linear)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndPuttingCard(boolean success)
+		self.puttingCard:ClearBlueprint()
+		local transform = self.puttingCard.actor.Entity.TransformComponent
+		transform.WorldPosition.x = 100
+		transform.WorldPosition.y = 100
+		
+		if success then
+			local deckNameCount = self.deckManager:GetCardCountByName(self.deckEditPanel.deck, self.sourceCard.name)
+			
+			if deckNameCount >= 2 then
+				for i, card in ipairs(self.cardArray) do
+					if card.name == self.sourceCard.name then
+						local cardCount = self.cardCountArray[i]
+						local warningSign = self.warningSignArray[i]
+						local warningSignTweener = self.warningSignTweenerArray[i]
+					
+						---@type table
+						local rendererArray = card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+						for _, renderer in ipairs(rendererArray) do
+							renderer.Color.r = 0.5
+							renderer.Color.g = 0.5
+							renderer.Color.b = 0.5
+						end
+						rendererArray = card.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true)
+						for _, renderer in ipairs(rendererArray) do
+							renderer:SetColor(0.5, 0.5, 0.5, 1)
+						end
+						
+						warningSign.text.Text = _LocalizationService:GetText("Max2Cards")
+						if warningSignTweener then
+							warningSignTweener:Destroy()
+						end
+						self.warningSignTweenerArray[i] = _Tween:ScaleTo(warningSign.Entity, Vector2.one, 0.125, EaseType.Linear)
+					end
+				end
+			end
+		else
+			for i, card in ipairs(self.cardArray) do
+				if card == self.sourceCard then
+					local cardCount = self.cardCountArray[i]
+					local warningSign = self.warningSignArray[i]
+					local warningSignTweener = self.warningSignTweenerArray[i]
+							
+					local count = cardCount.count + 1
+					
+					---@type table
+					local rendererArray = card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+					for _, renderer in ipairs(rendererArray) do
+						renderer.Color.r = 1
+						renderer.Color.g = 1
+						renderer.Color.b = 1
+					end
+					rendererArray = card.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true)
+					for _, renderer in ipairs(rendererArray) do
+						renderer:SetColor(1, 1, 1, 1)
+					end
+					
+					cardCount.count = count
+					cardCount.text.Text = string.format("×%d", count)
+					if warningSignTweener then
+						warningSignTweener:Destroy()
+					end
+					self.warningSignTweenerArray[i] = _Tween:ScaleTo(warningSign.Entity, Vector2.zero, 0.125, EaseType.Linear)
+				end
+			end
+		end
+		
+		self.sourceCard = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetErasingCard()
+		self.erasingCard = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Card"), "Card", 
+			Vector3.zero, self.Entity).Card
+		self.erasingCard:SpawnAndSetActor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BeginErasingCard(Thumbnail thumbnail)
+		self.erasingCard:SetBlueprint(thumbnail:GetBlueprint())
+		
+		---@type table
+		local rendererArray = _Table:Concat(self.erasingCard.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true), 
+			self.erasingCard.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true))
+		for _, renderer in ipairs(rendererArray) do
+			renderer.SortingLayer = "UI"
+			renderer.OrderInLayer = 5
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndErasingCard(boolean success)
+		if success then
+			for i, card in ipairs(self.cardArray) do
+				if card.name == self.erasingCard.name then
+					local cardCount = self.cardCountArray[i]
+					local warningSign = self.warningSignArray[i]
+					local warningSignTweener = self.warningSignTweenerArray[i]
+					
+					local count = cardCount.count
+					if _Table:Compare(card.info, self.erasingCard.info) then
+						count += 1
+					end
+					
+					if count == 0 then
+						warningSign.text.Text = _LocalizationService:GetText("NoCardsLeft")
+					else
+						---@type table
+						local rendererArray = card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+						for _, renderer in ipairs(rendererArray) do
+							renderer.Color.r = 1
+							renderer.Color.g = 1
+							renderer.Color.b = 1
+						end
+						rendererArray = card.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true)
+						for _, renderer in ipairs(rendererArray) do
+							renderer:SetColor(1, 1, 1, 1)
+						end
+						
+						cardCount.count = count
+						cardCount.text.Text = string.format("×%d", count)
+						if warningSignTweener then
+							warningSignTweener:Destroy()
+						end
+						self.warningSignTweenerArray[i] = _Tween:ScaleTo(warningSign.Entity, Vector2.zero, 0.125, EaseType.Linear)
+					end
+				end
+			end
+		end
+		
+		self.erasingCard:ClearBlueprint()
+		local transform = self.erasingCard.actor.Entity.TransformComponent
+		transform.WorldPosition.x = 100
+		transform.WorldPosition.y = 100
+		
+	end
+
+end

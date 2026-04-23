@@ -1,0 +1,1631 @@
+@Component
+script UnitItem extends Component
+
+	property SyncTable<string, number> ItemAbilityStacks
+
+	property SyncTable<number> InBattleAbilityStacks
+
+	property boolean IsBattlePhase = false
+
+	property SyncTable<string, number> AddedStatus
+
+	property SyncTable<string, number> MultiplyStatus
+
+	property number DefaultAttackCount = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 아이템 컴포넌트 초기화 및 스택 초기화
+		self:ClearAllStacks()
+		self:InitAllProperties()
+		
+		local statusType = {
+			"MaxHP",						-- 최대 체력
+		
+			"MaxMP",						-- 최대 마나
+			"MP",							-- 시작 마나
+		
+			"PhysicalAttack",				-- 공격력
+			"MagicalAttack",				-- 마력
+			"Defence",						-- 물리 방어력
+			"MagicalResistance",			-- 마법 방어력
+			"AttackSpeed",					-- 공격속도
+			"AttackRange",					-- 공격 사거리
+			"SkillRange",					-- 스킬 사거리
+			"CriticalPercent",				-- 크리티컬 확률
+			"CriticalDamagePercent",		-- 크리티컬 데미지
+			"BloodAbsorptionPercent",		-- 흡혈률
+			"MoveSpeed",					-- 이동속도
+			"DealingDamageRate",			-- 가해량 비율
+		--	"TakingDamageRate",				-- 피해량 비율
+		--	"TakingDamageBonusAmount",		-- 피해량 증가
+			"MPBonusWhenAttack",			-- 공격 시 마나 획득량
+			"MPBonusWhenBeAttacked",		-- 피격 시 마나 획득량
+			"HPRecoverRate", 				-- 체력 회복 효과 비율
+			"StatusEffectRemainTimeRate",	-- 제어 효과 지속시간 비율
+		}
+		
+		-- 초기화 : 매 함수 실행마다 모든 값을 다시 계산하므로, 기본값으로 리셋합니다. 
+		for i=1, #statusType do
+			self.AddedStatus[statusType[i]] = 0
+			self.MultiplyStatus[statusType[i]] = 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshItemStatus()
+		-- 아이템을 장착할 때, 아이템으로 얻는 스탯 효과를 갱신하는 함수입니다.
+		--------------------------------------------------------------------------
+		local itemTable = _DataService:GetTable("ItemStatus")
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		local equippedItemList = unitStatus.EquippedItemIDList
+		--------------------------------------------------------------------------
+		local beforeValue_add = {}
+		local beforeValue_multi = {}
+		local isChanged = {}
+		
+		-- 모든 아이템으로 얻은 스탯값을 초기화합니다.
+		for k,v in pairs(self.AddedStatus) do
+			beforeValue_add[k] = v
+			self.AddedStatus[k] = 0
+			isChanged[k] = false
+		end
+		
+		for k,v in pairs(self.MultiplyStatus) do
+			beforeValue_multi[k] = v
+			self.MultiplyStatus[k] = 0
+			isChanged[k] = false
+		end
+		--------------------------------------------------------------------------
+		-- 시너지 관련 체크 필요 아이템들
+		local s31_items = {"SI10002", "SI10003", "SI10004", "SI10005", "SI10006", "SI10007", "SI10008"}
+		--------------------------------------------------------------------------
+		for i=1, #equippedItemList do
+			local itemID = _UtilLogic:Split(equippedItemList[i], "_")[1]
+			local row = itemTable:FindRow("ItemID", itemID)
+			
+			-- 기본 스탯
+			self.MultiplyStatus["PhysicalAttack"] += tonumber(row:GetItem("PhysicalAttack")) 
+			self.MultiplyStatus["MagicalAttack"] += tonumber(row:GetItem("MagicalAttack")) 
+			self.AddedStatus["MaxHP"] += tonumber(row:GetItem("MaxHP")) 
+			self.AddedStatus["MP"] += tonumber(row:GetItem("MP")) 
+			self.AddedStatus["Defence"] += tonumber(row:GetItem("Defence")) 
+			self.AddedStatus["MagicalResistance"] += tonumber(row:GetItem("MagicalResistance")) 
+			self.MultiplyStatus["AttackSpeed"] += tonumber(row:GetItem("AttackSpeed"))
+			self.AddedStatus["CriticalPercent"] += tonumber(row:GetItem("CriticalPercent")) 
+			self.AddedStatus["CriticalDamagePercent"] += tonumber(row:GetItem("CriticalDamagePercent")) 
+			self.AddedStatus["BloodAbsorptionPercent"] += tonumber(row:GetItem("BloodAbsorptionPercent")) 
+			self.MultiplyStatus["MoveSpeed"] += tonumber(row:GetItem("MoveSpeed"))
+			
+			-- 아랫마을 유닛이 시너지 관련 아이템을 장착한다면, 최대 체력 100 증가
+			for _, checkItemID in pairs(s31_items) do
+				if checkItemID == itemID then
+					if unitInfo:DoesHaveSynergy("S10031") then
+						self.AddedStatus["MaxHP"] += 100
+					end
+				end
+			end
+		end
+		
+		for k, v in pairs(beforeValue_add) do
+			if v ~= self.AddedStatus[k] then
+				isChanged[k] = true
+			end
+		end
+		
+		for k, v in pairs(beforeValue_multi) do
+			if v ~= self.MultiplyStatus[k] then
+				isChanged[k] = true
+			end
+		end
+		
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local gameManager = user.GameManager
+		for k, v in pairs(isChanged) do
+			if v == true then
+				if gameManager.PhaseType == "Battle" then
+					self.Entity.UnitStatus:SetUnitStatusByStat(true, k)
+				else
+					self.Entity.UnitStatus:SetUnitStatusByStat(false, k)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitAllProperties()
+		self.ItemAbilityStacks["SI10002"] = 1	-- 분노의 옥석 : 무적 처리 체크
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnSettingPhase()
+		-- 준비 > 세팅 > 전투 중 '세팅' 단계가 시작되면 실행합니다.
+		-------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		
+		for i=1, #equippedItem do
+			if equippedItem[i] == "NI10033" then
+				self:UseItemAbility_NI10033()
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBattleStart()
+		-- 전투 시작 시 효과
+		self.IsBattlePhase = true
+		------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		
+		for i=1, #equippedItem do
+			local itemID = _UtilLogic:Split(equippedItem[i], "_")[1] -- string.sub(equippedItem[i], 1, 6)
+			
+			if itemID == "NI10001" then		-- 화염의 카타나
+				self:UseItemAbility_NI10001()
+				
+			elseif itemID == "NI10002" then -- 스틸 미셀 
+				self:UseItemAbility_NI10002()
+				
+			elseif itemID == "NI10017" then -- 에스터 실드
+				self:UseItemAbility_NI10017()
+				
+			elseif itemID == "NI10019" then -- 타임리스 귀고리
+				self:UseItemAbility_NI10019()
+				
+			elseif itemID == "NI10021" or itemID == "NI10026" then -- 2초마다 최대 체력의 4% 회복
+				self:UseItemAbility_NI10021()
+		
+			elseif itemID == "NI10024" then -- 사파이어 귀고리
+				self:UseItemAbility_NI10024()
+				
+			elseif itemID == "NI10027" then	-- 전투 시작 후 5초마다 마력 +30 (중첩 가능)
+				self:UseItemAbility_NI10027()
+				
+			elseif itemID == "NI10030" then -- 별빛 팔찌
+				self:UseItemAbility_NI10030()
+				
+			elseif itemID == "SI10001" then --방해꾼의 가면
+				self:UseItemAbility_SI10001()
+		
+			elseif itemID == "SI10003" then -- 질투의 옥석
+				self:UseItemAbility_SI10003()
+						
+			elseif itemID == "SI10005" then -- 후회의 옥석
+				local function Set()
+					if self.IsBattlePhase then
+						self.InBattleAbilityStacks[i] += 1
+					end
+				end
+				_TimerService:SetTimerOnce(Set, 10)
+				
+			elseif itemID == "SI10008" then -- 시기의 옥석
+				self:UseItemAbility_SI10008()
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEquippedChangedDuringBattlePhase(number idx)
+		-- 전투 중 idx번 슬롯에 아이템을 장착한 경우, 해당 아이템의 전투 시작 효과를 발동시키기 위한 함수입니다.
+		--------------------------------------------------------------------------------
+		-- 예외처리 : 전투 중이 아닌데 이 함수를 호출한 경우 (아이템 장착 시 자동 호출), return
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		if user.GameManager.PhaseType ~= "Battle" then return end
+		--------------------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		local itemID = _UtilLogic:Split(equippedItem[idx], "_")[1]
+		
+		
+		if itemID == "NI10001" then -- 화염의 카타나
+			self:UseItemAbility_NI10001()
+			
+		elseif itemID == "NI10019" then --타임리스 귀고리
+			self:UseItemAbility_NI10019()
+			
+		elseif itemID == "NI10021" then --파란색 가운
+			self:UseItemAbility_NI10021()
+		
+		elseif itemID == "NI10024" then --사파이어 귀고리
+			self:UseItemAbility_NI10024()
+			
+		elseif itemID == "NI10027" then -- 자쿰의 나뭇가지
+			self:UseItemAbility_NI10027()	
+			
+		elseif itemID == "NI10033" then --산타 장갑
+			self:UseItemAbility_NI10033()
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnAttacked()
+		-- 피격 시 발동되는 효과
+		------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		
+		local hpRate = self.Entity.UnitStatus.HP / self.Entity.UnitStatus.MaxHP
+		for i=1, #equippedItem do
+			local itemID =  _UtilLogic:Split(equippedItem[i], "_")[1]
+		
+			if itemID == "NI10002" or itemID == "NI10030" then	-- 전투 당 1번, 남은 체력이 30%가 되면 최대 체력의 20%만큼 보호막 획득.
+				if hpRate <= 0.3 and self.InBattleAbilityStacks[i] < 1 then
+					self:UseItemAbility_ShieldByHP()
+					self.InBattleAbilityStacks[i] += 1
+				end
+				
+			elseif itemID =="NI10004" or itemID == "NI10018" then -- 전투 당 1번, 체력이 60%가 되면 2초간 은신 및 무적
+				if hpRate <=0.6 and self.InBattleAbilityStacks[i] < 1 then
+					self:UseItemAbility_NI10004()
+					self.InBattleAbilityStacks[i] += 1
+				end			
+		
+			elseif 	itemID =="NI10015" then -- 권투 글러브
+				self:UseItemAbility_NI10015(i)
+			end
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnAttacked_Damage(Entity attacker, table finalDamages)
+		-- 공격자가 특정 아이템을 가지고 있을 경우 발동되는 효과 
+		------------------------------------------------------------------
+		if isvalid(attacker) == false then
+			return
+		end
+		------------------------------------------------------------------
+		local totalDamage = 0
+		for _, damage in pairs(finalDamages) do
+			totalDamage += damage
+		end
+		------------------------------------------------------------------
+		local equippedItem = attacker.UnitStatus.EquippedItemIDList
+		for i=1, #equippedItem do
+			local itemID =  _UtilLogic:Split(equippedItem[i], "_")[1]
+		
+			if itemID == "NI10003" or itemID == "NI10023" then 		-- 가해량의 일부만큼 체력 가장 낮은 아군 치유
+				self:UseItemAbility_NI10023(attacker, totalDamage)
+			elseif itemID == "NI10006" or itemID == "NI10028" then	-- 화상 상태인 적을 공격 시 8%의 추가 고정 피해를 입힙니다.
+				if self.Entity.UnitStatus.StatusTime["SE0017"] > 0 then
+					_StatusChangeLogic:HitDamage(attacker, self.Entity, 0, 0, totalDamage*0.08, "finalBonusDamage")
+				end
+			elseif itemID == "NI10007" then
+				local prob = _UtilLogic:RandomIntegerRange(1, 100)
+				if finalDamages[1] > 0 and prob <= 20 then	-- 물리 피해 적중 시 20% 확률로
+					attacker.UnitItem:UseItemAbility_NI10007(self.Entity)
+				end
+				
+			elseif itemID == "NI10010" then							-- 물리 방어 약화 상태인 적을 공격 시 8%의 추가 고정 피해
+				if self.Entity.UnitStatus.StatusTime["SE0008"] > 0 then
+					_StatusChangeLogic:HitDamage(attacker, self.Entity, 0, 0, totalDamage*0.08, "finalBonusDamage")
+				end
+			elseif itemID == "NI10011" then							-- 마법 방어 약화 상태인 적을 공격 시 8%의 추가 고정 피해
+				if self.Entity.UnitStatus.StatusTime["SE0009"] > 0 then
+					_StatusChangeLogic:HitDamage(attacker, self.Entity, 0, 0, totalDamage*0.08, "finalBonusDamage")
+				end
+			elseif itemID == "NI10029" then
+				local prob = _UtilLogic:RandomIntegerRange(1, 100)
+				if finalDamages[2] > 0 and prob <= 40 then -- 마법 피해 적중 시 40% 확률로
+					attacker.UnitItem:UseItemAbility_NI10007(self.Entity)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUseSkill()
+		-- 스킬 사용 시 효과
+		------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		
+		for i=1, #equippedItem do
+			local itemID =  _UtilLogic:Split(equippedItem[i], "_")[1]
+			
+			if itemID == "NI10012" then --드래곤 샤인 보우
+				self.InBattleAbilityStacks[i] = self.InBattleAbilityStacks[i] +1 -- 스킬 사용 후 기본 공격시 특수 효과 적용 
+			
+			elseif itemID == "NI10020" or itemID == "NI10025" then	
+				self:UseItemAbility_NI10020(itemID)	-- 스킬 사용 시, 4초동안 최대 마나만큼 보호막 획득
+				
+			elseif itemID == "NI10034" then -- 스킬 사용 시, 가장 가까운 아군 2명 및 자신에게 MP 10 제공
+				self:UseItemAbility_NI10034()
+				
+			elseif itemID == "NI10032" then	--골드 드롭 귀고리
+				self:UseItemAbility_NI10032()
+				
+			elseif itemID == "NI10035" then -- 스킬 사용 시 체력이 가장 낮은 아군에게 4초간 소모한 마나의 200%만큼 보호막 부여
+				self:UseItemAbility_NI10035()
+				
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnKillUnit()
+		-- 스킬 사용 시 효과
+		------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		
+		for i=1, #equippedItem do
+			local itemID =  _UtilLogic:Split(equippedItem[i], "_")[1]
+			
+			if itemID == "SI10004" then -- 식탐의 옥석 보유
+				self:UseItemAbility_SI10004()
+			elseif itemID == "SI10001" then
+				self:UseItemAbility_KillUnit_SI10001()
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnDefaultAttack(Entity target)
+		-- 공격 시 효과
+		------------------------------------------------------------------
+		--기본 공격 횟수 기록 
+		self.DefaultAttackCount = self.DefaultAttackCount + 1
+		------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		
+		for i=1, #equippedItem do
+			local itemID =  _UtilLogic:Split(equippedItem[i], "_")[1]
+			
+			if itemID == "NI10009" then 		-- 신속의 날개
+				self.InBattleAbilityStacks[i] += 1
+				self:UseItemAbility_NI10009()
+				
+			elseif itemID == "NI10015" then 	-- 파란색 권투 글러브
+				self:UseItemAbility_NI10015(i)
+				
+			elseif itemID == "SI10007" then 	-- 탐욕의 옥석
+				self:UseItemAbility_SI10007()
+			end	
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnDefaultAttackHit(Entity target, integer hitCount)
+		-- 기본 공격 적중 시 효과
+		------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		
+		for i=1, #equippedItem do
+			local itemID =  _UtilLogic:Split(equippedItem[i], "_")[1]
+			
+			if itemID == "NI10006" then --소드 귀고리 : 기본 공격 적중 시 적 화상
+				self:UseItemAbility_NI10006(target)
+					
+						
+			elseif itemID == "NI10008" then --붉은 채찍
+				-- 첫 번째 타격이면서 세 번째 기본 공격 적중 시 효과 적용 
+				if hitCount == 1 and self.DefaultAttackCount % 3 == 0 then 
+					self:UseItemAbility_NI10008(target)
+				end
+				
+			elseif itemID == "NI10010" then --냄비 뚜껑
+				self:UseItemAbility_NI10010(target)
+		        --if self.AbilityStatkcs[i] % 3 == 0 then --세번째 기본 공격 시 특수효과 적용
+		        --    self:UseItemAbility_NI10010(target)
+		        --end	
+				
+			elseif itemID == "NI10011" then --화이트 네쉐르
+				self:UseItemAbility_NI10011(target)
+		        --if self.AbilityStatkcs[i] % 3 == 0 then --세번째 기본 공격 시 특수효과 적용
+		        --    self:UseItemAbility_NI10011(target)
+		        --end	
+		
+			elseif itemID == "NI10012" then --드래곤 샤인 보우
+				if self.InBattleAbilityStacks[i] > 0 then 
+					self:UseItemAbility_NI10012(target)
+					self.InBattleAbilityStacks[i] = 0
+				end
+		
+				
+			elseif itemID == "NI10028" then --레드 해골 귀고리		
+				self:UseItemAbility_NI10028(target)
+		
+			elseif itemID == "SI10005" then -- 후회의 옥석
+				if self.InBattleAbilityStacks[i] >= 1 then
+					self:UseItemAbility_SI10005(target)
+				end
+				
+			elseif itemID == "SI10006" then -- 후회의 옥석
+				self:UseItemAbility_SI10006(target)
+			end
+		
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnSkillHit(Entity target)
+		-- 스킬 적중 시 효과
+		------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		
+		for i=1, #equippedItem do
+			local itemID =  _UtilLogic:Split(equippedItem[i], "_")[1]
+		
+			if itemID == "NI10006" then --소드 귀고리
+				self:UseItemAbility_NI10006(target)
+				
+			elseif itemID == "NI10010" then	-- 냄비 뚜껑
+				self:UseItemAbility_NI10010(target)	
+				
+			elseif itemID == "NI10011" then	-- 화이트 네쉐르
+				self:UseItemAbility_NI10011(target)		
+				
+			elseif itemID == "NI10028" then --레드 해골 귀고리		
+				self:UseItemAbility_NI10028(target)
+		
+			end
+		
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnVamp(number vampAmount, number vampRate)
+		-- 흡혈 시 발동되는 효과
+		------------------------------------------------------------------
+		local equippedItem = self.Entity.UnitStatus.EquippedItemIDList
+		for i=1, #equippedItem do
+			local itemID =  _UtilLogic:Split(equippedItem[i], "_")[1]
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllStacks()
+		-- 모든 아이템의 사용 효과, 누적 스택 등의 값을 초기화하는 함수
+		-- 라운드가 종료되면 호출됩니다.
+		self.IsBattlePhase = false
+		-------------------------------------------
+		for i=1, 3 do
+			self.InBattleAbilityStacks[i] = 0
+		end
+		self.DefaultAttackCount = 0 --기본 공격 타수 기록
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10001()
+		-- 화염의 카타나 : 전투 시작 후 5초마다 공격력 +15% (중첩 가능)
+		local gameManager = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId).GameManager
+		local timerID = 0
+		local castingRound = string.format("%d-%d", gameManager.Stage, gameManager.Round)
+		local getBuff = function()	
+			local phaseType = gameManager.PhaseType
+			local currentRound = string.format("%d-%d", gameManager.Stage, gameManager.Round)
+			if phaseType ~= "Battle" or self.Entity.UnitStatus:IsDead() or castingRound ~= currentRound then
+				_TimerService:ClearTimer(timerID)
+			else
+				_StatusChangeLogic:GetBuff(self.Entity, "Multi_PhysicalAttack", 15, -1)
+			end
+		end
+		
+		timerID = _TimerService:SetTimerRepeat(getBuff, 5, 5)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10002()
+		--NI10002 스틸 미셀: 전투 시작 후 15초간 기절 등 상태이상으로부터 면역 상태가 됩니다.
+		
+		_StatusChangeLogic:SetStatus(self.Entity, self.Entity, "SE0016", 15)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_ShieldByHP()
+		-- 전투 당 1번, 남은 체력이 30%가 되면 최대 체력의 20%만큼 보호막 획득.
+		_StatusChangeLogic:SetShield(self.Entity, self.Entity, self.Entity.UnitStatus.MaxHP*0.2, -1, "NI10002")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10004()
+		--NI10004 도깨비 방망이: 체력이 60%가 되면 2초간 은신 및 무적 상태가 됩니다. 
+		-----------------------------------------------------------------
+		_StatusChangeLogic:SetStatus(self.Entity, self.Entity, "SE0001", 2)
+		_StatusChangeLogic:SetStatus(self.Entity, self.Entity, "SE0002", 2)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10006(Entity target)
+		--NI10006 소드 이어링: 기본 공격 및 스킬로 피해를 입힌 대상을 6초동안 화상 및 회복력 감소 상태로 만듭니다.
+		-----------------------------------------------------------------
+		-- 회복력 감소
+		_StatusChangeLogic:SetStatus(self.Entity, target, "SE0010", 6)
+		
+		-- 불태우기
+		_StatusChangeLogic:SetStatus(self.Entity, target, "SE0017", 6)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10007(Entity target)
+		-- (NI10007) 물리 공격 적중 시 20% 확률로 대상을 마나 과부하 상태로 만듭니다. 
+		-- (NI10029) 마법 공격 적중 시 40% 확률로 대상을 마나 과부하 상태로 만듭니다. 
+		-- (공통) 이 효과로 적을 마나 과부하 상태로 만들 때마다 전투 종료 시까지 최종 가해량이 6% 증가합니다. (중첩 가능)
+		-----------------------------------------------------------------
+		-- 마나 과부하가 걸린 상태가 아니라면, 버프 획득
+		if target.UnitStatus.StatusEffect["SE0013"] == false then
+			_StatusChangeLogic:GetBuff(self.Entity, "Add_DealingDamageRate", 6, -1)
+		end
+		
+		_StatusChangeLogic:SetStatus(self.Entity, target, "SE0013", -1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10008(Entity target)
+		--NI10008 붉은 채찍: 세 번째 기본 공격 적중 시 주변 1칸 내 적에게 70%의 추가 물리 피해
+		-----------------------------------------------------------------
+		-- 예외 및 종료 처리
+		if self.Entity.UnitAIWanderComponent.Enable == false then
+			return
+		end
+		
+		local unitInfo = self.Entity.UnitInfo
+		
+		local userId = unitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local teamManager = user.TeamManager
+		
+		if user.GameManager.PhaseType ~= "Battle" then
+			return
+		end
+		--------------------------------------------------------
+		-- 대상 주변 1칸 내 적에게 70%의 추가 물리 피해
+		local enemies = nil
+		if unitInfo.TeamType == "User" then
+			enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits,"Alive") 
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = _BTLogic_New:getEntities(teamManager.OwnUnits,"Alive") 
+		end
+		
+		if isvalid(target) == false or isvalid(target.UnitInfo.setTile) == false then
+			log("target is nil 이어서 붉은채찍 효과 발동 안함")
+			return
+		end
+		
+		local targets = _BTLogic_New:getTargets(target.UnitInfo.setTile, enemies, "Around_1_1" )
+		if targets ~= nil then
+			
+			_CustomizedBattleEffectService:PlayEffectAttached(
+				"17f01e6848794daa8dba0e4b542d9d14",
+				target,
+				Vector3.zero,
+				0,
+				1 * Vector3.one,
+				false,
+				nil,
+				unitInfo.OwnerId)
+			
+			for i=1, #targets do
+				
+				local attackDamange = self.Entity.UnitStatus.PhysicalAttack * 0.7
+		
+				_StatusChangeLogic:HitDamage(self.Entity, targets[i], attackDamange, 0, 0, "item")			
+			end
+		
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10009()
+		--NI10009 신속의 날개: 기본 공격 시 공격속도가 3% 증가합니다. 이 효과는 중첩됩니다.
+		--------------------------------------------------------
+		_StatusChangeLogic:GetBuff(self.Entity, "Multi_AttackSpeed", 3, -1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10010(Entity target)
+		--NI10010 냄비 뚜껑: 3번째 기본 공격 적중 대상에게 30의 물리 피해를 입히고 4초간 물리 방어 약화 상태로 만듦
+		--------------------------------------------------------
+		--_StatusChangeLogic:HitDamage(self.Entity, target, 30, 0, 0, "item")
+		_StatusChangeLogic:SetStatus(self.Entity, target, "SE0008", 4)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10011(Entity target)
+		--NI10011 화이트 네쉐르: 기본 공격 적중 대상에게 30의 마법 피해를 입히고 4초간 마법 방어 약화 상태로 만듦
+		--------------------------------------------------------
+		--_StatusChangeLogic:HitDamage(self.Entity, target, 0, 30, 0, "item")
+		_StatusChangeLogic:SetStatus(self.Entity, target, "SE0009", 4)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10012(Entity target)
+		--NI10012 드래곤 샤인 보우: 스킬 사용 후 다음 기본 공격시 마력의 200%에 해당하는 추가 마법 피해를 줍니다.
+		-----------------------------------------------------------------
+		local damage = self.Entity.UnitStatus.MagicalAttack * 2.0 --마력의 200%
+		
+		_CustomizedBattleEffectService:PlayEffectAttached(
+			"76ebb9ee4acc4ef19e6917c10c42b83e",
+			target,
+			Vector3.zero,
+			0,
+			Vector3.one,
+			false,
+			{["Color"]=Color.FromHexCode("#c2fff1")},
+			self.Entity.UnitInfo.OwnerId)
+		
+		_StatusChangeLogic:HitDamage(self.Entity, target, 0, damage, 0, "item")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10015(integer equippedItemIdx)
+		--NI10015 파란색 권투 글러브: 공격하거나 피해를 받으면 입는 피해량 -0.4%, 가해량 +0.8% (최대 25스택)
+		------------------------------------------------------
+		local maxStack = 25 -- 최대 중첩 가능 수
+		------------------------------------------------------
+		-- 최대 중첩 시 호출 X
+		if self.InBattleAbilityStacks[equippedItemIdx] >= maxStack then
+			return
+		end
+		
+		----공격하거나 피해를 받으면 공격력 1% 증가, 주문력 1 증가
+		--_StatusChangeLogic:GetBuff(self.Entity, "Multi_PhysicalAttack", 1, -1)
+		--_StatusChangeLogic:GetBuff(self.Entity, "Add_MagicalAttack", 1, -1)
+		--
+		
+		-- 공격하거나 피해를 받으면 입는 피해량 -0.4%, 가해량 +0.8%
+		_StatusChangeLogic:GetBuff(self.Entity, "Add_DealingDamageRate", 0.8, -1)
+		_StatusChangeLogic:GetBuff(self.Entity, "DamageDecrease_Per", 0.4, -1)
+		
+		-- 중첩 회수 증가
+		self.InBattleAbilityStacks[equippedItemIdx] += 1
+		
+		---- 최대 스택 도달 시 버프
+		--if self.AbilityStatkcs[equippedItemIdx] >= maxStack then
+		--    _StatusChangeLogic:GetBuff(self.Entity, "Multi_AttackSpeed", 40, -1)
+		--end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10017()
+		--NI10017 에스터 실드:--전투 시작: 본인을 제외한 주변 1칸 내 아군에게 물리 방어력 +20, 마법방어력 +20 제공 
+		-----------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local mainTile = unitInfo.setTile
+		local ownerUserID = unitInfo.OwnerId
+		
+		local user = _UserService:GetUserEntityByUserId(ownerUserID)
+		local teamManager = user.TeamManager
+		
+		---@type table<Entity>
+		local allies = nil
+		
+		if unitInfo.TeamType == "User" then
+			allies = _BTLogic_New:getEntities(teamManager.OwnUnits,"Alive") 
+		
+		elseif unitInfo.TeamType == "Enemy" then
+			allies = _BTLogic_New:getEntities(teamManager.EnemyUnits,"Alive") 
+		end
+		-----------------------------------------------------------------
+		
+		local magicalDefence = 20 --물리 방어력 +20
+		local physicalDefence = 20 --마법 방어력 +20
+		
+		local targets = _BTLogic_New:getTargets(mainTile, allies, "Around_1_1")
+		
+		if targets ~= nil then
+			for i=1, #targets do
+				
+				if targets[i] == self.Entity then --본인 제외
+					continue
+				end
+				
+				_StatusChangeLogic:GetBuff(targets[i], "Add_MagicalResistance", magicalDefence, -1) --아군에게 마법 방어력 제공
+				_StatusChangeLogic:GetBuff(targets[i], "Add_Defence", physicalDefence, -1) --아군에게 마법 방어력 제공
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10019()
+		--NI10019 타임리스 귀고리: 2초마다 파동을 일으켜 주변 2칸 내 무작위 적 하나에게 75의 물리 피해를 입히고, 6초간 물리 방어 약화 적용
+		--------------------------------------------------------
+		local timerID = 0
+		local makeWave = function()
+			-- 예외 및 종료 처리
+			if self.Entity.UnitAIWanderComponent.Enable == false then	-- 이 유닛이 사망하면 종료
+				_TimerService:ClearTimer(timerID)
+				return
+			end
+			
+			local unitInfo = self.Entity.UnitInfo
+			local userId = unitInfo.OwnerId
+			
+			local user = _UserService:GetUserEntityByUserId(userId)
+			
+			if not isvalid(user) then return end
+			local teamManager = user.TeamManager
+			
+			if user.GameManager.PhaseType ~= "Battle" then	-- 전투 단계가 아니면 종료
+				_TimerService:ClearTimer(timerID)
+				return
+			end
+			--------------------------------------------------------
+			-- 2칸 내 무작위 적 하나에게 물리 피해를 입히고, 6초간 물리 방어 약화 적용
+			local enemies = nil
+			if unitInfo.TeamType == "User" then
+				enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits,"Alive") 
+				
+			elseif unitInfo.TeamType == "Enemy" then
+				enemies = _BTLogic_New:getEntities(teamManager.OwnUnits,"Alive")
+			end
+			
+			local targets = _BTLogic_New:getTargets(self.Entity.UnitInfo.setTile, enemies, "Around_1_2")
+			
+			if targets ~= nil then
+				local targetIdx = _UtilLogic:RandomIntegerRange(1, #targets)
+				local target = targets[targetIdx]
+				
+				if isvalid(target) then
+					_StatusChangeLogic:HitDamage(self.Entity, target, 75, 0, 0, "item") -- 75의 물리 피해
+					_StatusChangeLogic:SetStatus(self.Entity, target, "SE0008", 6) -- 6초간 물리 방어 약화
+				
+					--연출용 이펙트
+					_CustomizedBattleEffectService:PlayEffectAttached(
+					"86163af626a44495aeee476d2b4e0c8b",
+					target,
+					Vector3(0,0.3,0),
+					0,
+					1.5 * Vector3.one,
+					false,
+					nil,
+					userId)
+					
+					--파동 연출
+					if not isvalid(self.Entity:GetChildByName("NI10019Wave")) then
+						local particle=_SpawnService:SpawnByModelId("model://6c7ba8dd-5135-4f26-bc36-100c0542e1ab","NI10019Wave",Vector3(0,0.3,0),self.Entity)
+						
+						self.Entity:GetChildByName("NI10019Wave").SpriteParticleComponent.Enable=false
+						
+						particle.SpriteParticleComponent.SpriteRUID=""
+						particle.SpriteParticleComponent.Color=Color.yellow
+						_GeneralDirectorLogic:SetEffectAlpha(particle,userId)
+					end
+		
+					self.Entity:GetChildByName("NI10019Wave").SpriteParticleComponent.Enable=true
+					_TimerService:SetTimerOnce(function() self.Entity:GetChildByName("NI10019Wave").Enable=false end , 1)
+				end
+			end
+		end
+		timerID = _TimerService:SetTimerRepeat(makeWave, 2, 2)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10020(string itemID)
+		-- NI10020, NI10025 : 스킬 사용 시 4초동안 최대 마나의 100%만큼 보호막 획득
+		----------------------------------------------------------------------------
+		local shieldAmount = self.Entity.UnitStatus.MaxMP
+		
+		_StatusChangeLogic:SetShield(self.Entity, self.Entity, shieldAmount, 4, itemID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10021()
+		--NI10021 파란색 가운: 2초마다 최대 체력의 5% 회복
+		--------------------------------------------------------
+		local timerID = 0
+		local recover = function()
+			-- 예외 및 종료 처리
+			if self.Entity.UnitAIWanderComponent.Enable == false then -- 이 유닛이 사망하면 종료
+				_TimerService:ClearTimer(timerID)
+				return
+			end
+			
+			local unitInfo = self.Entity.UnitInfo
+			local userId = unitInfo.OwnerId
+			local user = _UserService:GetUserEntityByUserId(userId)
+			
+			local teamManager = user.TeamManager
+			
+			if user.GameManager.PhaseType ~= "Battle" then	-- 전투 단계가 아니면 종료
+				_TimerService:ClearTimer(timerID)
+				return
+			end
+			--------------------------------------------------------
+			-- 최대 체력의 3%만큼 회복
+			local recoverAmount = self.Entity.UnitStatus.MaxHP * 0.03
+			_StatusChangeLogic:SetVariableStatus(self.Entity, self.Entity, "HP", recoverAmount, "item")
+		end
+		timerID = _TimerService:SetTimerRepeat(recover, 2, 2)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10023(Entity attaker, number amount)
+		-- 가한 피해량의 20%만큼 체력 비율이 가장 낮은 아군 치유
+		--------------------------------------------------------
+		local unit = attaker
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local mainTile = unitInfo.setTile
+		local ownerUserID = unitInfo.OwnerId
+		
+		local user = _UserService:GetUserEntityByUserId(ownerUserID)
+		local teamManager = user.TeamManager
+		
+		-- 치유 대상을 결정합니다.
+		---@type table<Entity>
+		local allies = nil
+		
+		if unitInfo.TeamType == "User" then
+			allies = _BTLogic_New:getEntities(teamManager.OwnUnits,"Alive")
+			
+		elseif unitInfo.TeamType == "Enemy" then
+			allies = _BTLogic_New:getEntities(teamManager.EnemyUnits,"Alive")
+		
+		end
+		--------------------------------------------------------
+		-- 치유를 적용합니다.
+		
+		local cureAmount = amount * 0.2
+		local targets = _BTLogic_New:getTargets(mainTile, allies, "HPper_Low_1") --체력이 가장 낮은 아군
+		
+		if targets ~= nil then
+			for i=1, #targets do
+		--		log("백의의서 / 회복량: ",cureAmount,"치유 대상:",targets[i].UnitInfo.unitName,"아이템 착용자:",attaker.UnitInfo.unitName)
+				_StatusChangeLogic:SetVariableStatus(attaker, targets[i], "HP", cureAmount, "item") --아군 회복
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10024()
+		--NI10024 사파이어  귀고리: 2초마다 마법 폭발을 일으켜 주변 2칸 내 무작위 적 하나에게 75의 마법 피해를 입히고, 6초간 마법 방어 약화 적용
+		--------------------------------------------------------
+		local timerID = 0
+		local explosion = function()
+			-- 예외 및 종료 처리
+			if self.Entity.UnitAIWanderComponent.Enable == false then	-- 이 유닛이 사망하면
+				_TimerService:ClearTimer(timerID)
+				return
+			end
+			
+			local unitInfo = self.Entity.UnitInfo
+			local userId = unitInfo.OwnerId
+			
+			local user = _UserService:GetUserEntityByUserId(userId)
+			if not isvalid(user) then return end
+			local teamManager = user.TeamManager
+			
+			if user.GameManager.PhaseType ~= "Battle" then		-- 전투 단계가 아니라면 종료
+				_TimerService:ClearTimer(timerID)
+				return
+			end
+			--------------------------------------------------------
+			-- 2칸 내 무작위 적 하나에게 120의 마법 피해를 입히고, 6초간 마법 방어 약화 적용
+			local enemies = nil
+			if unitInfo.TeamType == "User" then
+				enemies =  _BTLogic_New:getEntities(teamManager.EnemyUnits, "Alive")
+			elseif unitInfo.TeamType == "Enemy" then
+				enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "Alive")
+			end
+			
+			local targets = _BTLogic_New:getTargets(self.Entity.UnitInfo.setTile, enemies, "Around_1_2")
+			if targets ~= nil then
+				local targetIdx = _UtilLogic:RandomIntegerRange(1, #targets)
+				local target = targets[targetIdx]
+				
+				if isvalid(target) then
+					_StatusChangeLogic:HitDamage(self.Entity, target, 0, 75, 0, "item")
+					_StatusChangeLogic:SetStatus(self.Entity, target, "SE0009", 6)
+					
+					--연출용 이펙트
+					_CustomizedBattleEffectService:PlayEffectAttached(
+					"fe94ad1182714953b695e42a8ee57d27",
+					target,
+					Vector3(0,0.3,0),
+					0,
+					Vector3.one*1,
+					false,
+					nil,
+					unitInfo.OwnerId)	
+				end
+			end
+		end
+		timerID = _TimerService:SetTimerRepeat(explosion, 2, 2)
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10027()
+		-- 전투 시작 후 5초마다 마력 +15% (중첩 가능)
+		--------------------------------------------------------------------
+		local gameManager = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId).GameManager
+		local timerID = 0
+		local castingRound = string.format("%d-%d", gameManager.Stage, gameManager.Round)
+		local getBuff = function()	
+			local phaseType = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId).GameManager.PhaseType
+			local currentRound = string.format("%d-%d", gameManager.Stage, gameManager.Round)
+			if phaseType ~= "Battle" or self.Entity.UnitStatus:IsDead() or castingRound ~= currentRound then
+				_TimerService:ClearTimer(timerID)
+			else
+				_StatusChangeLogic:GetBuff(self.Entity, "Multi_MagicalAttack", 15, -1)
+			end
+		end
+		
+		timerID = _TimerService:SetTimerRepeat(getBuff, 5, 5)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10028(Entity target)
+		--NI10028 레드 해골 귀고리: 기본 공격 및 스킬로 피해를 입힌 대상을 6초동안 화상 및 회복력 감소 상태로 만듭니다.
+		--------------------------------------------------------
+		-- 회복력 감소
+		_StatusChangeLogic:SetStatus(self.Entity, target, "SE0010", 6)
+		
+		-- 불태우기
+		_StatusChangeLogic:SetStatus(self.Entity, target, "SE0017", 6)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10030()
+		-- NI10030 별빛 팔찌: 전투 시작 후 15초간 기절 등 상태이상으로부터 면역 상태가 됩니다.
+		------------------------------------------------------------
+		
+		-- 15초간 기절 등 상태이상으로부터 면역 상태
+		_StatusChangeLogic:SetStatus(self.Entity, self.Entity, "SE0016", 15)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10032()
+		--NI10032 골드 드롭 귀고리: 스킬 사용 시 MP MAX의 30%만큼 크리티컬 확률 증가 (중첩 가능)
+		--------------------------------------------------------
+		local amount = self.Entity.UnitStatus.MaxMP * 0.3
+		
+		_StatusChangeLogic:GetBuff(self.Entity, "Add_CriticalPercent", amount, -1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10033()
+		-- NI10033 산타 장갑: 
+			-- 이 아이템을 장착하면 다른 아이템을 장착할 수 없습니다. 
+			-- 전투 시작 시, 무작위 아이템 2개를 장착합니다.
+		--------------------------------------------------------
+		local unitInfo = self.Entity.UnitInfo
+		
+		local userId = unitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		
+		-- 룬 체크 여부
+		local rc20033Checked = false
+		
+		-- 유닛 팀 타입 확인
+		if unitInfo.TeamType == "User" then
+			-- 유저의 유닛인 경우
+			if userPControl.Rune_SetCheck["RC20033"] > 0 then
+				rc20033Checked = true
+			end
+		else
+			-- 적 유닛인 경우
+			for _, runeID in pairs(teamManager.EnemyOwnedRunes) do
+				if runeID == "RC20033" then
+					rc20033Checked = true
+					break
+				end
+			end
+		end
+		
+		
+		-- 룬 On
+		if rc20033Checked then
+			-- RC20033 룬 On
+			local RC20033_DataSet = _DataService:GetTable("CharMostItemSet")
+			local charBestItemRow = RC20033_DataSet:FindRow("CharID", unitInfo.charID)
+			
+			---@type table<string>
+			local setItemList = {}
+			
+			for i = 1, 8 do
+				table.insert(setItemList, charBestItemRow:GetItem( string.format("ItemID_%d", i) ).."_copied" )
+			end
+			
+			for i = 1, 2 do
+				local randItemIdx = _UtilLogic:RandomIntegerRange(1, #setItemList)
+				local randItemID = setItemList[randItemIdx]
+				self.Entity.UnitStatus:SetProperty("EquippedItemIDList", randItemID, "insert,-1")
+				
+				table.remove(setItemList, randItemIdx)
+			end
+		-- 룬 Off
+		else
+			local stage = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId).GameManager.Stage
+			local isFullNI = false
+			-- 1~6스테이지 : 스테이지에 따라 무작위 확률로 (완성템1개+재료템1개) 또는 (완성템 2개) 착용
+			if stage <= 6 then
+				local prob = 15*stage -- 스테이지 * 15%
+				local randValue = _UtilLogic:RandomIntegerRange(1, 100)
+				if randValue <= prob then
+					isFullNI = true
+				else
+					isFullNI = false
+				end
+			end
+			
+			local getTargetNormalItemIndex = function()
+				local index = _UtilLogic:RandomIntegerRange(1,35)
+				if index < 33 then
+					return index
+				else
+					return index+1
+				end
+			end
+			-- 모두 완성 아이템인 경우
+			if isFullNI then
+				for i=1,2 do
+					local randItemID = "NI100".. string.format("%02d", getTargetNormalItemIndex()).."_copied"
+					self.Entity.UnitStatus:SetProperty("EquippedItemIDList", randItemID, "insert,-1")
+				end
+			-- 완성템1개 + 재료템1개 인 경우
+			else
+				local randItemID1 = "NI100".. string.format("%02d", getTargetNormalItemIndex()).."_copied"
+				self.Entity.UnitStatus:SetProperty("EquippedItemIDList", randItemID1, "insert,-1")
+				
+				local randItemID2 = "MI100".. string.format("%02d",_UtilLogic:RandomIntegerRange(1,8)).."_copied"
+				self.Entity.UnitStatus:SetProperty("EquippedItemIDList", randItemID2, "insert,-1")
+			end
+		end
+		
+		
+		self.Entity.UnitItem:RefreshItemStatus()
+		--self.Entity.UnitStatus:SetUnitStatus(false)	-- 아이템 장착한 유닛의 스탯 갱신
+		
+		_ItemSetLogic:PlayItemEquipDirection(self.Entity, user.OwnerId)-- 아이템 장착 연출
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10034()
+		--NI10034 : 스킬 사용 시, 가장 가까운 아군 1명 및 자신에게 MP 10 제공
+		-----------------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		
+		local ownerUserID = unitInfo.OwnerId
+		
+		local user = _UserService:GetUserEntityByUserId(ownerUserID)
+		local teamManager = user.TeamManager
+		
+		---@type table<Entity>
+		local allies = nil
+		
+		if unitInfo.TeamType == "User" then
+			allies = _BTLogic_New:getEntities(teamManager.OwnUnits,"Alive")
+		
+		elseif unitInfo.TeamType == "Enemy" then
+			allies = _BTLogic_New:getEntities(teamManager.EnemyUnits,"Alive")
+		end
+		-----------------------------------------------------------------------
+		local unitStatus = unit.UnitStatus
+		local recoverAmount = 10 --unitStatus.MaxMP * 0.3 -- 유닛 MaxMP의 30%
+		
+		-- 자기 자신이 마나 획득
+		local castRound = string.format("%d-%d", user.GameManager.Stage, user.GameManager.Round)
+		local getMPSelf = function()
+			-- 예외 처리 : 전투 종료 상태인지
+			if user.GameManager.PhaseType ~= "Battle" then
+				return
+			end
+			
+			-- 예외 처리 : 다른 라운드인지
+			local currentRound = string.format("%d-%d", user.GameManager.Stage, user.GameManager.Round) 
+			if castRound ~= currentRound then
+				return
+			end
+			------------------------------------------------
+			_StatusChangeLogic:SetVariableStatus(self.Entity, self.Entity, "MP", recoverAmount, "item")
+		end
+		_TimerService:SetTimerOnce(getMPSelf, 0.5)
+		
+		_GeneralDirectorLogic:BattleBuffEffect(self.Entity, _RuneCardDirectEnum.MP, self.Entity.UnitInfo.OwnerId)
+		
+		-- 가장 가까운 아군 1명이 마나 획득
+		local mainTile = unitInfo.setTile
+		local targets = _BTLogic_New:getTargets(mainTile, allies, "Nearest_2") --가장 가까운 아군 2명 가져온 후 자기 자신 제외
+		
+		if targets ~= nil then
+			for i=1, #targets do
+				
+				if targets[i] == self.Entity then --자기 자신 제외
+					continue
+				end
+		
+				_StatusChangeLogic:SetVariableStatus(self.Entity, targets[i], "MP", recoverAmount, "item")
+				
+				--연출용 이펙트
+				_GeneralDirectorLogic:BattleBuffEffect(targets[i],_RuneCardDirectEnum.MP,self.Entity.UnitInfo.OwnerId)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_NI10035()
+		-- 스킬 사용 시 자기 자신을 제외한 체력 비율이 가장 낮은 아군에게 4초간 소모한 마나의 200%만큼 보호막 부여
+		--------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local mainTile = unitInfo.setTile
+		local ownerUserID = unitInfo.OwnerId
+		
+		local user = _UserService:GetUserEntityByUserId(ownerUserID)
+		local teamManager = user.TeamManager
+		--------------------------------
+		-- 타겟 검색
+		---@type table<Entity>
+		local allies = nil
+		if unitInfo.TeamType == "User" then
+			allies =  _BTLogic_New:getEntities(teamManager.OwnUnits,"Alive")
+		elseif unitInfo.TeamType == "Enemy" then
+			allies = _BTLogic_New:getEntities(teamManager.EnemyUnits,"Alive")
+		end
+		local target = _BTLogic_New:getTarget(mainTile, allies, "HPper_Low_ExceptionMe")
+		--------------------------------
+		local shieldAmount = unitStatus.MaxMP * 2 -- 보호막 획득량
+		--------------------------------
+		-- 타겟에게 보호막 적용
+		if isvalid(target) == true then
+			_StatusChangeLogic:SetShield(self.Entity, target, shieldAmount, 4, "NI10035")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_SI10001()
+		--[[
+		 [방해꾼]의 가면 : 
+		아군 방해꾼 캐릭터 중 하나에게 가면을 줄 수 있습니다. 
+		전투 시작 시 가면을 가진 아군 캐릭터와 반대편에 있는 적 캐릭터가 서로 위치를 바꿉니다. 
+		위치를 바꾼 아군 방해꾼은 은신 상태가 됩니다.
+		]]
+		--------------------------------------------------------------------
+		local owner = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = owner.TeamManager
+		local synergyManager = owner.SynergyManager_New
+		local teamType = self.Entity.UnitInfo.TeamType
+		--------------------------------------------------------------------
+		-- 룬카드 시너지 활성화 체크
+		local runeCheckedAddPer = 1
+		--------------------------------------------------------------------
+		local duration = 4
+		
+		-- 활성화된 시너지 숫자 체크
+		local activatedSynergyCount = 0
+		if teamType == "Enemy" then
+			activatedSynergyCount = teamManager.EnemyOwnedFieldSynergy["S10011"]
+			
+			if synergyManager.Enemy_SynergyRuneOn["S10011"] then
+				runeCheckedAddPer += 0.5 * synergyManager.Enemy_SynergyRuneOn["S10011"]
+			end
+		else
+			activatedSynergyCount = teamManager.OnFieldSynergy["S10011"]
+			
+			if synergyManager.SynergyRuneOn["S10011"] > 0 then
+				runeCheckedAddPer += 0.5 * synergyManager.SynergyRuneOn["S10011"]
+			end
+		end
+		
+		-- 활성화된 시너지 숫자에 따라 지속시간 변경
+		if isvalid(activatedSynergyCount) == false or activatedSynergyCount < 3 then
+			log_error("activatedSynergyCount is nil")
+			return
+		elseif activatedSynergyCount < 5 then
+			duration = 3
+		elseif activatedSynergyCount < 7 then
+			duration = 4.5
+		elseif activatedSynergyCount < 9 then
+			duration = 6
+		else
+			duration = -1
+		end
+		
+		duration *= runeCheckedAddPer
+		--------------------------------------------------------
+		-- 서로 위치를 바꿉니다.
+		
+		-- 	1. 바꿀 위치를 찾습니다.
+		local standingTile = self.Entity.UnitInfo.setTile
+		local verIdx = standingTile.TileComponent_New.verticalNum
+		local horIdx = 18 - standingTile.TileComponent_New.horizontalNum*2 + (verIdx%2)
+		local standardTile = owner.GameManager.RoomTile[string.format("%d,%d", horIdx, verIdx)]
+		
+		
+		--  2. 적 후보를 가져옵니다.
+		---@type table<Entity>
+		local enemies = {}
+		if teamType == "Enemy" then
+			table.initialize(enemies, teamManager.OwnUnits)
+			for i=#enemies, 1, -1 do
+				-- 필드 위 유닛이 아닌 경우
+				if enemies[i].UnitInfo:IsOnFieldUnit() == false then
+					table.remove(enemies, i)
+				-- 제외 유닛 (C00003)
+				elseif enemies[i].UnitInfo.charID == "C00003" then
+					table.remove(enemies, i)
+				else
+					-- 방해꾼의 가면 아이템을 든 유닛의 경우
+					for _, itemID in pairs(enemies[i].UnitStatus.EquippedItemIDList) do
+						if isvalid(itemID) and itemID == "SI10001" then
+							table.remove(enemies, i)
+						end
+					end
+				end
+			end
+		else
+			table.initialize(enemies, teamManager.EnemyUnits)
+			for i=#enemies, 1, -1 do
+				-- 필드 위 유닛이 아닌 경우
+				if enemies[i].UnitInfo:IsOnFieldUnit() == false then
+					table.remove(enemies, i)
+				-- 제외 유닛 (C00003)
+				elseif enemies[i].UnitInfo.charID == "C00003" then
+					table.remove(enemies, i)
+				else
+					-- 방해꾼의 가면 아이템을 든 유닛의 경우
+					for _, itemID in pairs(enemies[i].UnitStatus.EquippedItemIDList) do
+						if isvalid(itemID) and itemID == "SI10001" then
+							table.remove(enemies, i)
+						end
+					end
+				end
+			end
+		end
+		
+		
+		-- A. 룬카드 시너지 활성화 시, 같은 행의 적 유닛에게 마나 과부하를 부여합니다.
+		if runeCheckedAddPer > 1 then
+			for _, enemy in pairs(enemies) do
+				if self.Entity.UnitInfo.setTileVerticalNum == enemy.UnitInfo.setTileVerticalNum then
+					_StatusChangeLogic:SetStatus(self.Entity, enemy, "SE0013", -1)
+				end
+			end
+		end
+		
+		
+		--  3. 바꿀 위치에서 가장 가까운 적을 가져옵니다. (빈 칸일 경우 대비)
+		local target = _BTLogic_New:getTarget(standardTile, enemies, "Nearest")
+		if isvalid(target) == false then
+			--log("위치를 바꿀 대상이 없습니다.")
+			return
+		end
+		
+		--  4. 해당 유닛이 가진 타일을 찾습니다.
+		local targetTile = target.UnitInfo.setTile
+		
+		--  5. 위치를 바꿉니다. (셋하면 자동 교체)
+		self.Entity.UnitInfo:SetPropertyToServer("setTile", targetTile, "All", true)
+		target.UnitInfo:SetPropertyToServer("setTile", standingTile, "All", true)
+		
+		--  5.1 시너지가 5 시너지 이상인 경우, 물리 방어력 및 마법 방어력의 50%를 강탈합니다.
+		if activatedSynergyCount >= 5 then
+			-- 획득
+			_StatusChangeLogic:GetBuff(self.Entity, "Add_Defence", target.UnitStatus.Defence * 0.5, -1)
+			_StatusChangeLogic:GetBuff(self.Entity, "Add_MagicalResistance", target.UnitStatus.MagicalResistance * 0.5, -1)
+			-- 감소
+			_StatusChangeLogic:GetBuff(target, "Add_Defence", -target.UnitStatus.Defence * 0.5, -1)
+			_StatusChangeLogic:GetBuff(target, "Add_MagicalResistance", -target.UnitStatus.MagicalResistance * 0.5, -1)
+			
+			-- 이펙트
+			_TimerService:SetTimerOnce(function() _SynergyBattleDirectorLogic:S10011TakePower(self.Entity,target,self.Entity.UnitInfo.OwnerId) end , 0.2)
+		end 
+		
+		
+		--  6. 위치 변경 이펙트 재생
+		_SynergyBattleDirectorLogic:S10011ChangePos(self.Entity,target,self.Entity.UnitInfo.OwnerId)
+		
+		--------------------------------------------------------
+		-- 은신 상태가 됩니다.
+		if duration > 0 then	-- (3)(5)(7) : 지속시간동안 은신
+			_StatusChangeLogic:SetStatus(self.Entity, self.Entity, "SE0002", duration)
+		else					-- (9) 방해꾼 : 모든 아군이 처치될 때까지 은신
+			local gameManager = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId).GameManager
+			local timerID = 0
+			local castRound = string.format("%d-%d", gameManager.Stage, gameManager.Round)
+			local hide = function()
+				-- 종료 조건1. 모든 아군이 처치됨 (나만 남음)
+				local leftTeamMatesCount = 0
+				if self.Entity.UnitInfo.TeamType == "User" then
+					leftTeamMatesCount = gameManager.MyUnitCount 
+				elseif self.Entity.UnitInfo.TeamType == "Enemy" then
+					leftTeamMatesCount = gameManager.EnemyCount
+				end
+				
+				if leftTeamMatesCount <= 1 then
+					_TimerService:ClearTimer(timerID)
+				end
+				
+				-- 종료 조건2. 전투가 끝나거나 라운드 다름
+				local thisRound = string.format("%d-%d", gameManager.Stage, gameManager.Round) 
+				if gameManager.PhaseType ~= "Battle" or thisRound ~= castRound then
+					_TimerService:ClearTimer(timerID)
+				end
+				----------------------------------------------------------------------------
+				_StatusChangeLogic:SetStatus(self.Entity, self.Entity, "SE0002", 1)
+			end
+			timerID = _TimerService:SetTimerRepeat(hide, 1, 0)
+			
+			local timerID2 = 0
+			local makeSlow = function()
+				-- 종료 조건
+				local thisRound = string.format("%d-%d", gameManager.Stage, gameManager.Round) 
+				if gameManager.PhaseType ~= "Battle" or thisRound ~= castRound then
+					_TimerService:ClearTimer(timerID2)
+				end
+				----------------------------------------------------------------------------
+				-- 주변 1칸 내 모든 적 3초간 둔화
+				local targets = _BTLogic_New:getTargets(self.Entity.UnitInfo.setTile, enemies, "Around_1_1") 
+				for _, target in pairs(targets) do
+					_StatusChangeLogic:SetStatus(self.Entity, target, "SE0014", 3)
+				end
+			end
+			timerID2 = _TimerService:SetTimerRepeat(makeSlow, 3, 0)
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_KillUnit_SI10001()
+		--[[
+		 [방해꾼]의 가면 : 
+		아군 방해꾼 캐릭터 중 하나에게 가면을 줄 수 있습니다. 
+		전투 시작 시 가면을 가진 아군 캐릭터와 반대편에 있는 적 캐릭터가 서로 위치를 바꿉니다. 
+		위치를 바꾼 아군 방해꾼은 은신 상태가 됩니다.
+		]]
+		--------------------------------------------------------------------
+		local owner = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = owner.TeamManager
+		local synergyManager = owner.SynergyManager_New
+		local teamType = self.Entity.UnitInfo.TeamType
+		--------------------------------------------------------------------
+		-- 활성화된 시너지 숫자 체크
+		local activatedSynergyCount = 0
+		if teamType == "Enemy" then
+			activatedSynergyCount = teamManager.EnemyOwnedFieldSynergy["S10011"]
+		else
+			activatedSynergyCount = teamManager.OnFieldSynergy["S10011"]
+		end
+		--------------------------------------------------------------------
+		if isvalid(activatedSynergyCount) == false or activatedSynergyCount < 7 then
+			return
+		end
+		
+		-- 7 방해꾼 이상 : 해당 유닛이 킬을 먹으면, 2초간 은신
+		_StatusChangeLogic:SetStatus(self.Entity, self.Entity, "SE0002", 2)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_SI10002()
+		-- 분노의 옥석
+		-- 죽음에 다다를 때 죽지 않고 2.4초간 무적
+		--------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------
+		self.ItemAbilityStacks["SI10002"] -= 1
+		--------------------------------------------------------------
+		_StatusChangeLogic:SetVariableStatus(unit, unit, "HP", 1, "Item")
+		_StatusChangeLogic:SetStatus(unit, unit, "SE0001", 2.4)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_SI10003()
+		-- 질투의 옥석
+		-- 인접한 아군 유닛 수만큼 방어력 및 마법 방어력 15씩 증가
+		--------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------
+		local teamTable = {}
+		if unitInfo.TeamType == "User" then
+			teamTable = teamManager.OwnUnits
+		else
+			teamTable = teamManager.EnemyUnits
+		end
+		
+		local checkUnits = _BTLogic_New:getTargets(unitInfo.setTile, teamTable, "Around_1_1")
+		
+		_StatusChangeLogic:GetBuff(unit, "Add_Defence", 15 * #checkUnits, -1)
+		_StatusChangeLogic:GetBuff(unit, "Add_MagicalResistance", 15 * #checkUnits, -1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_SI10004()
+		-- 식탐의 옥석
+		-- 상대 유닛을 죽일 때마다 체력 200 회복
+		--------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------
+		_StatusChangeLogic:SetVariableStatus(unit, unit, "HP", 200, "Item")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_SI10005(Entity target)
+		-- 후회의 옥석
+		-- 전투 시작 10초 후, 기본 공격이 강화됩니다. 추가 고정 데미지 30
+		--------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------
+		_StatusChangeLogic:HitDamage(unit, target, 0, 0, 30, "item")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_SI10006(Entity target)
+		-- 나태의 옥석
+		-- 기본 공격 적중 시, 자신은 0.8초 기절, 상대는 1.2초 기절
+		--------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------
+		_StatusChangeLogic:SetStatus(unit, unit, "SE0004", 0.8)
+		_StatusChangeLogic:SetStatus(unit, target, "SE0004", 1.2)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_SI10007()
+		-- 탐욕의 옥석
+		-- 기본 공격 시, 2% 확률로 골드 1원 획득
+		--------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------
+		local per = _UtilLogic:RandomDouble()
+		
+		if per < 0.02 then
+			teamManager:AddGolds(1, "item")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItemAbility_SI10008()
+		-- 시기의 옥석
+		-- 전투 시작 시, 가해량 +100%, 피해량 -50%, 공속 +300%
+		--------------------------------------------------------------
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		
+		local user = _UserService:GetUserEntityByUserId(self.Entity.UnitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------
+		_StatusChangeLogic:GetBuff(unit, "Multi_DealingDamageRate", 100, -1)
+		_StatusChangeLogic:GetBuff(unit, "DamageDecrease_Per", 50, -1)
+		_StatusChangeLogic:GetBuff(unit, "Multi_AttackSpeed", 300, -1)
+	end
+
+	method boolean IsEquipingItem(string itemID)
+		-- 이 유닛이 itemID에 해당하는 아이템을 장착하고 있는지 여부를 검사, 장착하고 있으면 true를 반환합니다.
+		----------------------------------------------------------------
+		local equippedIDList = self.Entity.UnitStatus.EquippedItemIDList
+		
+		for i=1, #equippedIDList do
+			local targetID = _UtilLogic:Split(equippedIDList[1])[1]
+			
+			if itemID == targetID then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleDefaultAttack(DefaultAttack event)
+		self:OnDefaultAttack(event.target)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleSkillUse(SkillUse event)
+		self:OnUseSkill()
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleAttacked(Attacked event)
+		-- Parameters
+		local Attacker = event.Attacker
+		local Target = event.Target
+		local InitialDamages = event.InitialDamages
+		local FinalDamages = event.FinalDamages
+		local IsCritical = event.IsCritical
+		local AttackType = event.AttackType
+		---------------------------------------------------------
+		self:OnAttacked()
+		self:OnAttacked_Damage(Attacker, FinalDamages)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleDefaultAttackHit(DefaultAttackHit event)
+		-- Parameters
+		local Attacker = event.Attacker
+		local Target = event.Target
+		local InitialDamages = event.InitialDamages
+		local FinalDamages = event.FinalDamages
+		local IsCritical = event.IsCritical
+		local HitCount = event.HitCount
+		---------------------------------------------------------
+		self:OnDefaultAttackHit(Target,HitCount)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleSkillHit(SkillHit event)
+		-- Parameters
+		local Attacker = event.Attacker
+		local Target = event.Target
+		local InitialDamages = event.InitialDamages
+		local FinalDamages = event.FinalDamages
+		local IsCritical = event.IsCritical
+		---------------------------------------------------------
+		self:OnSkillHit(Target)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleVamp(Vamp event)
+		-- Parameters
+		local VampRate = event.VampRate
+		local VampAmount = event.VampAmount
+		local Attacker = event.Attacker
+		local Victim = event.Victim
+		---------------------------------------------------------
+		if Attacker == self.Entity then 
+			self:OnVamp(VampAmount, VampRate)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleKillUnit(KillUnit event)
+		-- Parameters
+		local Attacker = event.Attacker
+		local Target = event.Target
+		-- local DeadTile = event.DeadTile
+		-- local AttackType = event.AttackType
+		---------------------------------------------------------
+		-- 상대 유닛을 킬할 때
+		if self.Entity == Attacker then
+			self:OnKillUnit()
+		end
+	end
+
+end

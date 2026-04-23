@@ -1,0 +1,348 @@
+@Component
+script PlayerDBManager extends Component
+
+	property integer Version = 0
+
+	property string DBVersion = ""
+
+	property boolean IsDBLoaded = false
+
+	property boolean IsOnStage = false
+
+	property string CurrentLocaleId = ""
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 데이터베이스 초기화 및 로드를 수행하는 함수
+		self.DBVersion = string.format("%s_%d", self.Entity.PlayerComponent.UserId, self.Version)
+		
+		self._T.isFirstEnter = false
+		self.IsOnStage = false 
+		
+		self:LoadFromDB()
+		
+		self.Entity.PlayerAccount:OnLogin()
+		
+		local period = 60 * 5
+		self._T.saveTimer = _TimerService:SetTimerRepeat(function()
+			self:SaveToDB(false)
+		end, period, period)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 맵 진입 시 로비 관련 초기화를 수행하는 함수
+		if _UtilLogic:Contains(enteredMap.Name, "Lobby") then
+			
+			self.Entity.TitleManager.UserPlayType = "2"
+			
+			if self.Entity.PlayerStage.TempMoveToStage ~= 0 then
+				self.Entity.PlayerStage.NowStage = self.Entity.PlayerStage.TempMoveToStage
+				self.Entity.PlayerStage.TempMoveToStage = 0
+			end
+			
+			_LobbyEntityLogic:SetEntities(self.Entity.PlayerComponent.UserId)
+			_LobbyRenovationService:SetEntities(self.Entity.PlayerComponent.UserId)
+			
+			self:OnLoadedDataFromStageDB() 
+			
+			self.Entity.LobbyManager:RequestInit()
+			self.Entity.PlayerStage:OnLoadedStage(self.Entity.PlayerStage.NowStage)
+			
+			if self._T.isFirstEnter == false then
+				self.Entity.PlayerSettlement:RequestOpenUIOfflineReward()
+				self._T.isFirstEnter = true
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(boolean isWait)
+		-- 플레이어 데이터를 데이터베이스에 저장하는 함수
+		if self.IsDBLoaded == false then
+			return
+		end
+		
+		local ds = _DataStorageService:GetUserDataStorage(self.DBVersion)
+		local dbTotal = {}
+		
+		local outgameSaveData = {}		
+		self.Entity.PlayerAccount:SaveToDB(outgameSaveData)
+		self.Entity.PlayerOutgameManager:SaveToDB(outgameSaveData)
+		self.Entity.PlayerStage:SaveToDB(outgameSaveData)
+		self.Entity.PlayerCollection:SaveToDB(outgameSaveData)
+		self.Entity.EmployeeManager:SaveToOutDB(outgameSaveData)
+		self.Entity.ChuchuCollectionDB:SaveToDB(outgameSaveData)
+		self.Entity.PlayerBadge:SaveToDB(outgameSaveData)
+		self.Entity.PlayerTutorialEvent:SaveToDB(outgameSaveData)
+		
+		dbTotal["OutgameTotal"] = _HttpService:JSONEncode(outgameSaveData)
+		
+		if self.IsOnStage == true then
+			local stageId = self.Entity.PlayerStage.NowStage
+			local stageDBKey = string.format("Stage%02d", stageId)
+			
+			local ingameSaveData = {}		
+			self.Entity.PlayerIngameManager:SaveToDB(ingameSaveData)
+			self.Entity.PlayerRecipe:SaveToDB(ingameSaveData)
+			self.Entity.PlayerIngredient:SaveToDB(ingameSaveData)
+			self.Entity.PlayerInventory:SaveToDB(ingameSaveData)
+			self.Entity.PlayerEvent:SaveToDB(ingameSaveData)
+			self.Entity.PlayerAchievement:SaveToDB(ingameSaveData)
+			self.Entity.PlayerUpgrade:SaveToDB(ingameSaveData)
+			self.Entity.PlayerManagement:SaveToDB(ingameSaveData)
+			self.Entity.TimeManager:SaveToDB(ingameSaveData)
+			self.Entity.EmployeeManager:SaveToDB(ingameSaveData)
+			self.Entity.PlayerTrial:SaveToDB(ingameSaveData)
+			self.Entity.PlayerEmployment:SaveToDB(ingameSaveData)
+			self.Entity.PlayerSettlement:SaveToDB(ingameSaveData)
+			self.Entity.PlayerAutoTrainingManager:SaveToDB(ingameSaveData)
+			self.Entity.PlayerVIPOrder:SaveToDB(ingameSaveData)
+			
+			dbTotal[stageDBKey] = _HttpService:JSONEncode(ingameSaveData)
+		end
+		
+		if isWait == true then
+			local error, _ = ds:BatchSetAndWait(dbTotal)
+			if error ~= 0 then
+				self:DBErrorLog(error, 3)
+			end
+		else
+			local callback = function(error, values)
+				if error ~= 0 then
+					self:DBErrorLog(error, 3)
+				end
+				
+			end
+			ds:BatchSetAsync(dbTotal, callback)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearStageDB(integer stageId)
+		-- 스테이지 데이터베이스를 삭제하는 함수
+		local ds = _DataStorageService:GetUserDataStorage(self.DBVersion)
+		local stageDBKey = string.format("Stage%02d", stageId)
+		ds:DeleteAndWait(stageDBKey) 
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadFromDB()
+		-- 데이터베이스에서 플레이어 데이터를 로드하는 함수
+		local ds = _DataStorageService:GetUserDataStorage(self.DBVersion)
+		
+		local error, outgameDBstring = ds:GetAndWait("OutgameTotal")
+		if error ~= 0 then
+			self:DBErrorLog(error, 1) 
+			_UserService:KickUser(self.Entity.PlayerComponent.UserId, KickReason.WorldError) 
+			return
+		end
+		
+		local outgameDBTable = {}
+		if _UtilLogic:IsNilorEmptyString(outgameDBstring) == false then
+			outgameDBTable = _HttpService:JSONDecode(outgameDBstring)
+		end
+		self.Entity.PlayerAccount:OnLoadedDataFromDB(outgameDBTable)
+		self.Entity.PlayerOutgameManager:OnLoadedDataFromDB(outgameDBTable)
+		self.Entity.PlayerStage:OnLoadedDataFromDB(outgameDBTable)
+		self.Entity.PlayerCollection:OnLoadedDataFromDB(outgameDBTable)
+		self.Entity.EmployeeManager:OnLoadedDataFromOutDB(outgameDBTable)
+		self.Entity.ChuchuCollectionDB:OnLoadedDataFromDB(outgameDBTable)
+		self.Entity.PlayerBadge:OnLoadedDataFromDB(outgameDBTable)
+		self.Entity.PlayerTutorialEvent:OnLoadedDataFromDB(outgameDBTable)
+		
+		
+		
+		
+		self.IsDBLoaded = true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromStageDB()
+		-- 스테이지 데이터베이스에서 데이터를 로드하는 함수
+		local ds = _DataStorageService:GetUserDataStorage(self.DBVersion)
+		
+		local stageId = self.Entity.PlayerStage.NowStage
+		local stageDBKey = string.format("Stage%02d", stageId)
+		
+		if stageId == 0 or _StageDataSetLogic:GetStageData(stageId) == nil then 
+			return
+		end
+		
+		local error, ingameDBString = ds:GetAndWait(stageDBKey)
+		if error ~= 0 then
+			self:DBErrorLog(error, 2) 
+			_UserService:KickUser(self.Entity.PlayerComponent.UserId, KickReason.WorldError) 
+			return
+		end
+		
+		
+		local ingameDBTable = {}
+		if _UtilLogic:IsNilorEmptyString(ingameDBString) == false then
+			ingameDBTable = _HttpService:JSONDecode(ingameDBString)
+		end
+		self:InitComponents()
+		
+		self.Entity.PlayerIngameManager:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.TimeManager:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerRecipe:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerIngredient:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerInventory:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerEvent:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerAchievement:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerUpgrade:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerManagement:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.EmployeeManager:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerTrial:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerEmployment:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerSettlement:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerAutoTrainingManager:OnLoadedDataFromDB(ingameDBTable)
+		self.Entity.PlayerVIPOrder:OnLoadedDataFromDB(ingameDBTable)
+		
+		self:CallAfterEveryDataLoaded()
+		self.IsOnStage = true 
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CallAfterEveryDataLoaded()
+		-- 모든 데이터 로드 완료 후 초기화 작업을 수행하는 함수
+		local player = self.Entity
+		
+		table.clear(self.Entity.CustomerManager.CustomerSpawnDataTable)
+		self.Entity.CustomerManager:RefreshSpawnTable()
+		
+		if player.PlayerStage.NowStage > 1 then
+			return
+		end
+		
+		local trainingBtn = _UIButtonUnlockLogic:GetButtonUnlockData("MainMenuTraining")
+		local isTrainingOpened = player.PlayerEvent:IsEventOccured(trainingBtn.EventCondition)
+		if isTrainingOpened and player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.TrainingEndCount) < 1 then
+			
+			
+			local events = {"T1302", "T1303", "T1304", "T1305"}
+			for i, eventId in pairs(events) do
+				player.PlayerTutorialEvent.TutorialEvents[eventId] = false
+			end
+			
+		end
+		
+		
+		
+		local recipeEvent = _UIButtonUnlockLogic:GetButtonUnlockData("MainMenuRecipe").EventCondition
+		
+		if player.PlayerEvent:IsEventOccured(recipeEvent) and player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.RecipeMakeCount) < 1 then
+			local playerIngreCount = 0
+			for id, count in pairs(player.PlayerIngredient.IngredientCards) do
+				playerIngreCount += count
+			end
+			
+			if playerIngreCount <= 0 then
+				player.PlayerIngredient:InitIngreCards(true)
+			end
+			
+			local events = {"T1102"}
+			for i, eventId in pairs(events) do
+				player.PlayerTutorialEvent.TutorialEvents[eventId] = false
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ConnetLog()
+		-- 연결 로그를 기록하는 함수
+		
+		if not isvalid(self.Entity) then return end 
+		
+		local logFail,value = pcall(
+			
+		function()
+				
+		
+		local userId = self.Entity.PlayerComponent.UserId
+		local userName = self.Entity.PlayerComponent.Nickname
+		local manageLv = string.format("%d", self.Entity.PlayerManagement.ManagementLevel )
+		local manageIdx = self.Entity.PlayerManagement:GetGoalCount()
+		local money = string.format("%d",self.Entity.PlayerInventory.Money)
+		local arcaneSymbol = string.format("%d",self.Entity.PlayerInventory.ArcaneSymbol)
+		local heart = string.format("%d",self.Entity.PlayerInventory.Heart)
+		local lunchBox = string.format("%d",self.Entity.PlayerInventory.LunchBox)
+		
+		
+		_LogStorageLogic:LogValue(userId,_LogEnumType.ConnectFlowLobby,userName,
+		{
+			
+			manageLevel = manageLv,
+			manageIndex = manageIdx,
+			money = money,
+			arcaneSymbol = arcaneSymbol,
+			heart = heart,
+			lunchBox = lunchBox
+		})
+		
+		
+		end)
+		
+		if not logFail then  end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DBErrorLog(integer errorcode, integer flow)
+		-- 데이터베이스 오류 로그를 기록하는 함수
+		local logEnum = "!DBErrorFlow"
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		local success,value = pcall(function()
+			_LogStorageLogic:LogValue(
+				userId, logEnum, userId,
+				{
+					flow = tostring(flow),
+					errorcode = tostring(errorcode)
+				
+				}
+			)
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponents()
+		-- 모든 플레이어 컴포넌트를 초기화하는 함수
+		self.Entity.PlayerIngameManager:InitComponent()
+		self.Entity.TimeManager:InitComponent()
+		self.Entity.PlayerRecipe:InitComponent()
+		self.Entity.PlayerIngredient:InitComponent()
+		self.Entity.PlayerInventory:InitComponent()
+		self.Entity.PlayerEvent:InitComponent()
+		self.Entity.PlayerAchievement:InitComponent()
+		self.Entity.PlayerUpgrade:InitComponent()
+		self.Entity.PlayerManagement:InitComponent()
+		self.Entity.EmployeeManager:InitComponent()
+		self.Entity.PlayerTrial:InitComponent()
+		self.Entity.PlayerEmployment:InitComponent()
+		self.Entity.PlayerSettlement:InitComponent()
+		self.Entity.PlayerAutoTrainingManager:InitComponent()
+		self.Entity.PlayerVIPOrder:InitComponent()
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserLeaveEvent(UserLeaveEvent event)
+		-- 사용자 나가기 이벤트를 처리하는 핸들러
+		
+		local UserId = event.UserId
+		if UserId == self.Entity.PlayerComponent.UserId then	
+			self.Entity.PlayerAccount:OnLogout()
+			self.Entity.PlayerOutgameManager:SetLogoutTimeElapsed()
+			
+			if isvalid(self._T.saveTimer) then
+				_TimerService:ClearTimer(self._T.saveTimer)
+			end
+			
+			self:SaveToDB(true)
+		end
+	end
+
+end

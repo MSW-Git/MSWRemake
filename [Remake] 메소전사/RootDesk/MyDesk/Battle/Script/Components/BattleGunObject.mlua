@@ -1,0 +1,1068 @@
+@Component
+script BattleGunObject extends Component
+
+	property Entity player = nil
+
+	property number slot = 0
+
+	property table monsters = {}
+
+	property Entity target = nil
+
+	property number angleOffset = -20
+
+	property number coolTime = 1
+
+	property boolean physicalWeapon = false
+
+	property table weaponSpec = {}
+
+	property Vector3 knockback = Vector3(0,0,0)
+
+	property number rotateSpeed = 2000
+
+	property table boxes = {}
+
+	property table charTable = {}
+
+	property string uniqueKey = ""
+
+	property number originalRadius = 0
+
+	property integer shotTimer = 0
+
+	property number bulletDelay = 0
+
+	property boolean childWeapon = false
+
+	property number damage = 0
+
+	property boolean bulletMelee = false
+
+	property number meleeSpeed = 10
+
+	property number slotAngle = 30
+
+	property number cardLevel = 1
+
+	property number meleeWeaponContinueAttackCount = 5
+
+	property boolean isMeleeWeapon = false
+
+	property string material = ""
+
+	property boolean isMyWeapon = true
+
+	property string name = ""
+
+	property boolean isBossWeapon = false
+
+	property number bossWeaponAtk = 0
+
+	property number accDamageRate = 1
+
+	method void SetPlayer(Entity player, number slot, table weaponSpec, string uniqueKey, boolean isLobbyWeapon)
+		-- 무기 플레이어 설정 및 초기화 (무기 타입별 액세서리 보너스 적용)
+		self._T.childWeapon = self.childWeapon
+		self._T.meleeWeaponReturnTime = self.coolTime
+		self._T.meleeWeaponReturnState = true
+		self._T.meleeWeaponReturnDelay = 0
+		
+		self._T.maxEquipmentWeaponCount = _GameConfig:GetConfig().MAX_EQUIPMENT_CNT
+		self.slotAngle = 360 / self._T.maxEquipmentWeaponCount
+		local sprite = self.Entity.SpriteRendererComponent
+		
+		sprite:ChangeMaterial("material://a42cdbe3-5687-4fe0-8b02-e157d7d8521b")
+		
+		_Tweener:PlayTween(0.05,0,1,0,EaseType.Linear,
+		
+				function(value) 
+				
+		   			local changeValue = {["Scale"] = value}
+				
+					_MaterialService:ChangeMaterialProperty("material://a42cdbe3-5687-4fe0-8b02-e157d7d8521b",changeValue)
+				end,
+				function()
+					if isvalid(sprite) then
+						sprite:ChangeMaterial(self.material)
+		
+					end
+				end,
+				"BattleGunObject_SetPlayer")
+		
+		
+		local equipData = _ItemDataLogic.equipmentData[weaponSpec.id]
+		local grade = equipData.grade
+		self._T.replica = false
+		self._T.playerReturn = true
+		self._T.meleeWeaponAttackCount = 0
+		self._T.originScale = self.Entity.TransformComponent.Scale
+		
+		self.weaponSpec = weaponSpec
+		local weaponType = weaponSpec.type
+		if self:IsClient() then
+			self.name = _LocalizationService.LocalTranslator:GetText(weaponSpec.type)
+		end
+		
+		if self.weaponSpec.attribute == "physical" then
+			self.physicalWeapon = true
+		else
+			self.physicalWeapon = false
+		end
+		
+		self.uniqueKey = uniqueKey
+		self.player = player
+		self._T.playerKinematicbody = player.KinematicbodyComponent
+		
+		self._T.damageRatio = 1 
+		
+		self._T.bulletMelleFireTime = 0
+		local playerVelopcity = self.player.KinematicbodyComponent.MoveVelocity
+		self._T.playerAngle = math.deg(math.atan(playerVelopcity.y,playerVelopcity.x))
+		
+		self._T.transform = self.Entity.TransformComponent
+		self._T.playerTransform = player.TransformComponent
+		self._T.trigger = self.Entity.TriggerComponent
+		self._T.vector3Zero = Vector3.zero
+		self._T.currentMap = self.Entity.CurrentMap
+		self.slot = slot
+		
+		local gunAngle = math.rad(self.slot * 30)
+		local x = math.cos(gunAngle)
+		local y = math.sin(gunAngle)
+		self._T.offset = Vector3(x,y,0) * self._T.gunRadius
+		
+		self._T.fireTip = self.Entity.Children[1].TransformComponent
+		self._T.shieldAttackTime = 0
+		self._T.gunAngle = 0
+		self._T.attackSpeedBuff = 1
+		self._T.shieldVelopcity = Vector3.zero
+		self._T.sameTypePlayerChar = false
+		if self.childWeapon then
+			self._T.gunAngle = math.rad((math.deg(_UtilLogic:RandomDouble()) * self.rotateSpeed) % 360)
+		
+		end
+		if isLobbyWeapon then
+			return
+		end
+		
+		self.damage = _CalcLogic:GetWeaponAttackDamageByKey(self.uniqueKey, self.player)
+		local charaterData = nil
+		if self.player.PlayerCharacterData ~= nil then
+			charaterData= _CharacterLogic.characterTable[string.format("%d",self.player.PlayerCharacterData.charIndex)]
+		end
+		if charaterData ~=nil and self.weaponSpec.class == charaterData.type then
+			self._T.sameTypePlayerChar = true
+		
+		end
+		
+		
+		self.accDamageRate = 0
+		if player.PlayerComponent ~= nil then
+			local accStat = _AccessoryLogic:GetStatusTable(player.PlayerComponent.UserId)
+			if weaponType == "pistol" then 
+				self.accDamageRate += accStat["1"]
+			elseif weaponType == "wristband" then
+				self.accDamageRate += accStat["10"]
+			elseif weaponType == "fireStaff" then
+				self.accDamageRate += accStat["7"]
+			elseif weaponType == "polearm" then
+				self.accDamageRate += accStat["13"]
+			elseif weaponType == "bow" then
+				self.accDamageRate += accStat["4"]
+			elseif weaponType == "fan" then
+				self.accDamageRate += accStat["11"]
+			elseif weaponType == "demonSword" then
+				self.accDamageRate += accStat["15"]
+			elseif weaponType == "cannon" then
+				self.accDamageRate += accStat["2"]
+			elseif weaponType == "breathShooter" then
+				self.accDamageRate += accStat["5"]
+			elseif weaponType == "lightningWand" then
+				self.accDamageRate += accStat["8"]
+			elseif weaponType == "soundShooter" then
+				self.accDamageRate += accStat["3"]
+			elseif weaponType == "chessPiece" then
+				self.accDamageRate += accStat["9"]
+			elseif weaponType == "hammer" then
+				self.accDamageRate += accStat["14"]
+			elseif weaponType == "birdBow" then
+				self.accDamageRate += accStat["6"]
+			elseif weaponType == "dagger" then
+				self.accDamageRate += accStat["12"]
+			end
+		end
+		
+		if self.accDamageRate ~= 0 then
+			self.accDamageRate /= 100
+		end
+		
+		local getDamage = function(isBoss)
+		
+			local damage = self:CalculateDamage()
+				
+			if isBoss then
+				local bossDamageRatio = _BuffLogic:GetBossDamage()
+				if bossDamageRatio == 0 then
+					bossDamageRatio = 1
+				end
+				damage = math.tointeger(damage * bossDamageRatio)
+			end
+			
+			return damage
+		end
+		
+		if self.isMeleeWeapon == false then
+			
+		else
+			
+			local meleeAttackToMonster = function(TriggerBodyEntity)
+				---@type MonsterObject
+				local monster = TriggerBodyEntity.MonsterObject
+				local fireEffect = weaponSpec.fireEffect
+					
+				if isvalid(monster) then
+					if self.bulletMelee == false then
+						local scale = self._T.fireTip.Scale*self._T.transform.Scale.x
+						local option = {["Color"] = Color(1, 1, 1, _OptionLogic.myEffectTransparency)}
+						_EffectService:PlayEffect(weaponSpec.fireEffect,self.Entity,self.Entity.TransformComponent.Position,0,scale,false,option)
+						
+						if _UtilLogic:IsNilorEmptyString(_ItemDataLogic.equipmentData[self.weaponSpec.id].effectSound) == false then
+							_SoundService:PlaySound(_ItemDataLogic.equipmentData[self.weaponSpec.id].effectSound, _SoundLogic.effectRatio)
+						end
+					end
+					
+					local damage = getDamage(monster.isBoss)
+					
+					
+					local criticalRate = self.weaponSpec.criticalRate + self:GetCriticalBuffRate()
+					local isCritical = false
+					
+					if _UtilLogic:RandomDouble() * 100 < criticalRate then
+						isCritical = true
+						damage = math.tointeger(damage + damage * (self.weaponSpec.criticalDamage + _BuffLogic:GetCriticalDamage()) * 0.01)
+					
+					end
+					if self.isBossWeapon then
+						damage = self.bossWeaponAtk
+					end
+					
+					if _BuffLogic.appliedBuff.terrorist and not monster.attachedBomb then
+						local rand = _UtilLogic:RandomIntegerRange(1, 1000)
+		
+						if rand <= 5 then
+							monster:Explode()
+						end
+					end
+					if isvalid(self.Entity.InstantaneousDeath) and monster.isBoss == false and not isvalid(self.Entity.CurrentMap.MultiBattleMap) then
+						local randomNum = _UtilLogic:RandomIntegerRange(1,100)
+						if randomNum <= self.Entity.InstantaneousDeath.percent then
+							
+							local str = _LocalizeLogic:GetText("systemMessage28")
+							str = string.format(str, _LocalizeLogic:GetMonsterName(monster.monsterId) , _LocalizationService.LocalTranslator:GetText(weaponType))
+							_SystemMessageLogic:ShowMessage(str, "equ")
+							
+							monster:SetDamage(-1, self._T.shieldVelopcity:ToVector2():Normalize()*weaponSpec.knockback, false, self.uniqueKey)
+							_EffectService:PlayEffectAttached("0224a00456c54a6bb8ae18ba9d41c66c",TriggerBodyEntity,Vector3.zero,0,Vector3.one)
+		
+						else
+							monster:SetDamage(damage, self._T.shieldVelopcity:ToVector2():Normalize()*weaponSpec.knockback, isCritical, self.uniqueKey)
+			
+						end
+					else
+						monster:SetDamage(damage, self._T.shieldVelopcity:ToVector2():Normalize()*weaponSpec.knockback, isCritical, self.uniqueKey)
+					end
+		
+				
+					if _BuffLogic.appliedBuff.gloveFlameLevel >= 1 then 
+						monster:Ignited(_BuffLogic.appliedBuff.gloveFlameLevel, damage)
+					end
+					
+		
+					if isvalid(weaponSpec.stunDuration) then
+						monster:ApplyStun(weaponSpec.stunDuration)
+					end
+			
+				
+					if self.bulletMelee and self:IsValidTarget() then
+						local deltaCoolTime = _TimerLogic.ElapsedSeconds - self._T.bulletMelleFireTime
+						if deltaCoolTime > weaponSpec.coolTime then
+							self._T.bulletMelleFireTime = _TimerLogic.ElapsedSeconds
+							local scale = self._T.fireTip.Scale*self._T.transform.Scale.x
+							local option = {["Color"] = Color(1, 1, 1, _OptionLogic.myEffectTransparency)}
+							_EffectService:PlayEffect(weaponSpec.fireEffect,self.Entity,self.Entity.TransformComponent.Position,0,scale,false,option)
+							self:SpawnBullet_Optimized(weaponSpec)
+						end
+					end
+				
+				
+				elseif TriggerBodyEntity.BoxObjectComponent then
+					TriggerBodyEntity.BoxObjectComponent:SetDamage(weaponSpec.boxDamage,Vector2.zero,false,"")
+				
+					if not _UtilLogic:IsNilorEmptyString(fireEffect) then
+						local scale = self._T.fireTip.Scale*self._T.transform.Scale.x
+						local option = {["Color"] = Color(1, 1, 1, _OptionLogic.myEffectTransparency)}
+						_EffectService:PlayEffect(weaponSpec.fireEffect,self.Entity,self.Entity.TransformComponent.Position,0,scale,false,option)
+					end
+				elseif TriggerBodyEntity.MonsterWaveSkillObject ~= nil then
+					local damage = getDamage(false)
+					
+					
+					local criticalRate = self.weaponSpec.criticalRate + self:GetCriticalBuffRate()
+					local isCritical = false
+					
+					if _UtilLogic:RandomDouble() * 100 < criticalRate then
+						isCritical = true
+						damage = math.tointeger(damage + damage * (self.weaponSpec.criticalDamage + _BuffLogic:GetCriticalDamage()) * 0.01)
+					end
+					
+					---@type MonsterWaveSkillObject
+					local monsterWave =TriggerBodyEntity.MonsterWaveSkillObject
+					monsterWave:SetDamage(damage, Vector2.zero, isCritical, "")
+				
+					if not _UtilLogic:IsNilorEmptyString(fireEffect) then
+						local scale = self._T.fireTip.Scale*self._T.transform.Scale.x
+						local option = {["Color"] = Color(1, 1, 1, _OptionLogic.myEffectTransparency)}
+						_EffectService:PlayEffect(weaponSpec.fireEffect,self.Entity,self.Entity.TransformComponent.Position,0,scale,false,option)
+					end
+				end 
+			end
+		
+			if isvalid(self._T.meleeOnTriggerEventId) then
+				self._T.fireTip.Entity:DisconnectEvent(TriggerEnterEvent, self._T.meleeOnTriggerEventId)
+			end
+			
+			self._T.meleeHandler = function(e)
+				local TriggerBodyEntity = e.TriggerBodyEntity
+				meleeAttackToMonster(TriggerBodyEntity)			
+			end
+			
+			self._T.meleeOnTriggerEventId = self._T.fireTip.Entity:ConnectEvent(TriggerEnterEvent, self._T.meleeHandler)
+			
+			
+		end
+		
+		self._T.attack = function(force,chargeCount)
+			if not isvalid(self) or not isvalid(self.Entity) then
+				return
+			end
+			self:SearchTarget()
+			if self._T.chargeSkillStart then
+				return
+			end
+			
+			if force == false then
+				if self:IsValidTarget() == false then
+					return
+				end
+			end
+			if self.isMeleeWeapon and self.childWeapon == false then
+				
+				local angle = math.rad(self.Entity.TransformComponent.ZRotation + 225) + chargeCount * 30
+		
+				
+				if self:IsValidTarget() then
+					local diff = self.target.TransformComponent.WorldPosition - self.Entity.TransformComponent.Position
+					diff.z = 0
+					self._T.shieldVelopcity = diff:Normalize() * self.meleeSpeed
+		
+				else
+					self._T.shieldVelopcity = Vector3(math.cos(angle),math.sin(angle),0) * self.meleeSpeed
+				end
+				self._T.shieldAttackTime = self.weaponSpec.coolTime
+				self._T.meleeWeaponAttackCount = self._T.meleeWeaponAttackCount + 1
+				if self._T.meleeWeaponAttackCount >= self.meleeWeaponContinueAttackCount then
+					self._T.meleeWeaponAttackCount = 0
+					self._T.playerReturn = false
+					self._T.meleeWeaponReturnDelay = 0
+				end
+		
+		
+			
+				return
+			end
+		
+			self:SpawnBullet_Optimized(weaponSpec)
+			
+			local angle = math.rad(self.Entity.TransformComponent.ZRotation + 225)
+			if force == false then
+				
+				self.knockback = (Vector3(math.cos(angle),math.sin(angle),0) )* -weaponSpec.knockback
+			end
+			
+			local fireTip = self._T.fireTip
+		
+			local option = {["Color"] = Color(1, 1, 1, _OptionLogic.myEffectTransparency)}
+			_EffectService:PlayEffectAttached(weaponSpec.fireEffect,fireTip.Entity,Vector3.zero,fireTip.WorldZRotation,Vector3.one,false,option)
+		end
+		
+		
+		self:SetAttackTimer()
+		
+		
+		
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 무기의 위치, 회전, 타겟팅 및 근접 무기 복귀 로직을 매 프레임 처리
+		if _TimerLogic.pause then
+			return
+		end
+		
+		delta = delta * _TimerLogic.timeScale
+		local _T = self._T
+		
+		---@type TransformComponent
+		local transform = self._T.transform
+		local slotAngle = self.slotAngle
+		
+		self._T.gunRadius = self._T.gunRadius  + delta * 5 * (1 - self._T.gunRadius)
+		
+		if not isvalid(self.player) then
+			return
+		end
+		
+		---@type Vector2
+		local playerVelopcity = self._T.playerKinematicbody.MoveVelocity
+		local pvx = playerVelopcity.x
+		local pvy = playerVelopcity.y
+		if pvx^2 + pvy^2 > 0  then
+			self._T.playerAngle = _GameUtil:LerpAngle(self._T.playerAngle,math.deg(math.atan(pvy,pvx)),delta*3)
+		end
+		
+		
+		if self._T.childWeapon then
+			self._T.gunAngle = math.rad((math.deg(self._T.gunAngle) + delta * self.rotateSpeed * self._T.attackSpeedBuff) % 360)
+			
+		else
+			self._T.gunAngle = math.rad(self.slot * slotAngle + (self:GetPlayerAngle())  + self.angleOffset)
+		end
+		
+		local x = math.cos(self._T.gunAngle) 
+		local y = math.sin(self._T.gunAngle) 
+		
+		self._T.offset.x = x * self._T.gunRadius
+		self._T.offset.y = y * self._T.gunRadius
+		
+		
+		local myPos = transform.Position
+		
+		local playerPos = self:GetPlayerPosition()
+		if self.isMeleeWeapon then
+			if self._T.playerReturn == false and self._T.childWeapon == false then
+				local dx = myPos.x - playerPos.x
+				local dy = myPos.y - playerPos.y
+		
+				self._T.meleeWeaponReturnDelay += delta
+				if self._T.meleeWeaponReturnState or dx^2 + dy^2 < (self._T.gunRadius + self._T.meleeWeaponReturnDelay) ^2 then
+				
+					self._T.meleeWeaponReturnState = true
+					
+					self._T.meleeWeaponReturnTime = self._T.meleeWeaponReturnTime + delta 
+					if self._T.meleeWeaponReturnTime > self.coolTime then
+						self._T.playerReturn = true
+						self._T.meleeWeaponReturnTime = 0
+						self._T.meleeWeaponAttackCount = 0
+						self._T.meleeWeaponReturnState = false
+						self._T.meleeWeaponReturnDelay = 0
+					end
+				end
+			end
+		end
+		
+		---@type Vector3
+		local moveDelta = self._T.deltaTemp
+		
+		if self._T.shieldAttackTime > 0 and self._T.playerReturn then
+			self._T.shieldAttackTime = self._T.shieldAttackTime - delta
+			---@type Vector3
+			local shieldVelopcity = self._T.shieldVelopcity
+			moveDelta.x = shieldVelopcity.x * delta
+			moveDelta.y = shieldVelopcity.y * delta
+			moveDelta.z = shieldVelopcity.z * delta
+		
+			local t = delta * 3
+			shieldVelopcity.x -= shieldVelopcity.x * t
+			shieldVelopcity.y -= shieldVelopcity.y * t
+			shieldVelopcity.z -= shieldVelopcity.z * t
+			
+		
+		elseif self._T.childWeapon then
+			local t1 = (1 + self.rotateSpeed*self._T.attackSpeedBuff / 200)
+			local ox = self._T.offset.x * t1
+			local oy = self._T.offset.y * t1
+			local oz = self._T.offset.z * t1
+			local d = delta * 5
+			moveDelta.x = (playerPos.x + ox - myPos.x) * d
+			moveDelta.y = (playerPos.y + oy - myPos.y) * d
+			moveDelta.z = (playerPos.z + oz - myPos.z) * d
+			
+		else
+			local d = delta * 5
+			local offset = self._T.offset
+			moveDelta.x = (playerPos.x + offset.x - myPos.x) * d
+			moveDelta.y = (playerPos.y + offset.y - myPos.y) * d
+			moveDelta.z = (playerPos.z + offset.z - myPos.z) * d
+			
+		end
+		
+		local knockback = self.knockback
+		moveDelta.x += knockback.x * delta
+		moveDelta.y += knockback.y * delta
+		moveDelta.z += knockback.z * delta
+		
+		local d = delta * 5
+		knockback.x -= knockback.x * d
+		knockback.y -= knockback.y * d
+		knockback.z -= knockback.z * d
+		
+		
+		transform:Translate(moveDelta.x,moveDelta.y)
+		myPos = transform.Position
+		local target = self.target
+		
+		if self.isMeleeWeapon == true and self._T.shieldAttackTime > 0 and self._T.playerReturn then
+			transform.ZRotation += self.rotateSpeed * delta
+		elseif self.childWeapon then
+			transform.ZRotation = math.deg(self._T.gunAngle) - 45
+		elseif isvalid(target) then
+			local oy = 0 
+			local targetTrans = target.TransformComponent
+			local targetMonster = target.MonsterObject
+			
+			if isvalid(targetMonster) then
+			
+				oy = targetMonster.triggerOffset.y * targetTrans.Scale.y
+			end
+			
+			local fireTipWorldPos = self._T.fireTip.WorldPosition
+			local targetWorldPos = targetTrans.WorldPosition
+			local dx = targetWorldPos.x - fireTipWorldPos.x
+			local dy = targetWorldPos.y + oy - fireTipWorldPos.y
+		
+			local angle = math.deg(math.atan(dy,dx)) + 135
+			transform.ZRotation = _GameUtil:LerpAngle(transform.ZRotation,angle,delta * self._T.maxEquipmentWeaponCount)
+		else
+			transform.ZRotation = _GameUtil:LerpAngle(transform.ZRotation,-45,delta * self._T.maxEquipmentWeaponCount )
+		end
+		myPos.z = myPos.y * _GameUtil.orderYRatio
+	end
+
+	method void SearchTarget()
+		-- 무기 사거리 내 가장 가까운 몬스터를 타겟으로 설정
+		if self.isBossWeapon then
+			if self.player == _UserService.LocalPlayer then
+				local users = _UserService:GetUsersByMapComponent(self.Entity.CurrentMap.MapComponent)
+				local maxDist = 999999
+				self.target = nil
+				for k,v in pairs(users) do
+					if v ~= self.player then
+						local dist = v.TransformComponent.Position - self:GetPlayerPosition()
+						dist.z = 0
+						if Vector3.Magnitude(dist) < maxDist then
+							maxDist = Vector3.Magnitude(dist)
+							self.target = v
+						end
+						
+					end
+				end
+			else
+				self.target = _UserService.LocalPlayer
+			end
+			
+			
+			return
+		end
+		
+		local maxDist = 99999999
+		local pickedUpKey = nil
+		local pos = self._T.transform.Position
+		
+		for k,v in pairs(self.monsters) do
+			---@type DestroyableObject
+			local eachMonster = v
+			
+		
+			if eachMonster.isDead or not eachMonster.EnableInHierarchy then
+				self.monsters[k] = nil
+			else
+				local type = eachMonster.type
+				local dx = 987654321
+				local dy = 987654321
+				local monsterPos = nil
+				
+				if type == 1 then
+					---@type MonsterObject
+					local monster = eachMonster
+					monsterPos = monster:GetCachedPosition()
+				else
+		
+					monsterPos = eachMonster:GetPosition()
+				end
+				
+				dx = monsterPos.x - pos.x
+				dy = monsterPos.y - pos.y
+				
+				local dist = dx * dx + dy * dy
+			
+				if type == 3 then
+					dist = dist + 9999
+				end
+				if dist < maxDist then
+					maxDist = dist
+					pickedUpKey = k
+				end
+			end
+		end
+		
+		if pickedUpKey ~= nil then
+			self.target = self.monsters[pickedUpKey].Entity
+		else
+			self.target = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 무기 컴포넌트 초기화 및 렌더링 레이어 설정
+		self._T.chargeSkillTime = 0
+		self._T.gunRadius = 0.5
+		self._T.isChargeAttacking = false
+		self._T.charTable = {}
+		self._T.checkPlayerHpState = false
+		self._T.skillVelopcity = Vector3.zero
+		self._T.childWeapon = self.childWeapon
+		
+		self._T.chargeSkillStart = false
+		
+		
+		local spriteRenderer = self.Entity.SpriteRendererComponent
+		spriteRenderer.SortingLayer = _UserService.LocalPlayer.AvatarRendererComponent.SortingLayer
+		spriteRenderer.OrderInLayer = _UserService.LocalPlayer.AvatarRendererComponent.OrderInLayer
+		
+		self._T.deltaTemp = Vector3.zero
+	end
+
+	method void UseChargeSkill(boolean use)
+		-- 차지 스킬 사용 처리 (현재 빈 구현)
+	end
+
+	method void StartChargeSkill(Entity ghost)
+		-- 차지 스킬 시작 및 고스트 엔티티 설정
+		if self._T.isChargeAttacking then
+			return
+		end
+		self._T.ghost = ghost
+		self._T.chargeSkillStart = true
+	end
+
+	method void SetOriginalRange(number range)
+		-- 무기의 기본 사거리 설정
+		---@type TransformComponent
+		local transform = self._T.transform
+		---@type TriggerComponent
+		local trigger = self._T.trigger
+		
+		trigger.CircleRadius = range / transform.Scale.x
+		self.originalRadius = range / transform.Scale.x
+	end
+
+	method void SetRange()
+		-- 버프 효과를 적용한 무기 사거리 설정
+		---@type TriggerComponent
+		local trigger = self._T.trigger
+		trigger.CircleRadius = self.originalRadius * _BuffLogic:GetRange()
+	end
+
+	method void SetAttackTimer()
+		-- 공격 속도 버프를 적용한 무기 공격 타이머 설정
+		local coolTimeMaterRatio = _GameConfig:GetConfig().WEAPONCOOLTIME_RATIO_MASTER
+		local attackSpeedRatio = _BuffLogic:GetAttackSpeed()
+		local cardBonus = self.cardLevel - 1
+		
+		
+		if attackSpeedRatio == 0 then
+			attackSpeedRatio = 1
+		end
+		self._T.attackSpeedBuff = attackSpeedRatio
+		
+		local coolTime = self.weaponSpec.coolTime
+		
+		if self.isMeleeWeapon == false then	
+			coolTime = self.weaponSpec.coolTime / (self._T.attackSpeedBuff + cardBonus)
+			
+		else
+			coolTime = self.weaponSpec.coolTime / self._T.attackSpeedBuff
+			self.coolTime = self.coolTime / self._T.attackSpeedBuff
+		end
+		
+		local delay = coolTime * _UtilLogic:RandomDouble() 
+		
+		if isvalid(self.Entity.CurrentMap.MultiBattleMap) then
+			delay = 0
+		end
+		
+		_TimerLogic:ClearTimer(self.shotTimer)
+		self.shotTimer = _TimerLogic:SetTimerRepeat(function() 
+				if not isvalid(self) then
+					_TimerLogic:ClearTimer(self.shotTimer)
+					return
+				end
+				if self._T.chargeSkillStart then
+					return
+				end
+				self._T.attack(false,0)
+		end, coolTime, delay,"BattleGunObject.SetAttackTimer_attack")
+	end
+
+	method void SetAlpha(number a)
+		-- 무기 스프라이트의 투명도 설정
+		self.Entity.SpriteRendererComponent.Color.a = a
+		
+	end
+
+	method void SetReplica()
+		-- 무기를 복제본으로 설정 (반투명 처리)
+		self:SetAlpha(0.5)
+		
+		self._T.replica = true
+	end
+
+	method number CalculateDamage()
+		-- 무기의 최종 데미지 계산 (레벨, 버프, 액세서리 보너스 포함)
+		if self.isBossWeapon then
+			return self.bossWeaponAtk
+		end
+		local equipData = _ItemDataLogic.equipmentData[self.weaponSpec.id]
+		
+		local damageByLevel = self:GetDamageByLevel() 
+		
+		
+		local playerCharacterData = self.player.PlayerCharacterData
+		if playerCharacterData == nil then
+			return 1
+		end
+		
+		
+		local totalDamage = _BuffLogic:GetPhysicalTotalDamage() + self.accDamageRate
+		
+		if not self.physicalWeapon then
+			totalDamage = _BuffLogic:GetMagicalTotalDamage() + self.accDamageRate 
+		end
+		
+		
+		if self.isMeleeWeapon == false then
+			
+			local damage = (totalDamage) * 
+				(
+					damageByLevel 
+				)
+			return damage
+		else 
+			
+			local damage = ((self.cardLevel) + totalDamage) * 
+				(
+					damageByLevel
+				)
+		
+			return damage
+		end
+		
+		
+	end
+
+	method number CalculateCriticalDamage()
+		-- 무기의 크리티컬 데미지 계산
+		if self.isBossWeapon then
+			return self.bossWeaponAtk
+		end
+		return self.weaponSpec.criticalDamage + _BuffLogic:GetCriticalDamage()
+	end
+
+	method void SetParentWeapon(Entity target)
+		-- 부모 무기 엔티티 설정
+		
+		self._T.parentWeapon = target.TransformComponent
+	end
+
+	method void CardLevelUp(boolean skill)
+		-- 카드 레벨업 시 무기 성능 향상 및 특수 버프 활성화
+		self.cardLevel = self.cardLevel + 1
+		if self.cardLevel < 4 then
+			if self.isMeleeWeapon == false then
+				self:SetAttackTimer()
+			else
+				self._T.transform.Scale = self._T.originScale * (self.cardLevel * 0.25 + 0.75)
+			end
+		
+		else
+			if isvalid(self.Entity.WeaponSpecialBuff) then
+				self.Entity.WeaponSpecialBuff.Enable = true
+				self.Entity.WeaponSpecialBuff:BuffOn()
+				if skill == false then
+					local str = string.format(_LocalizeLogic:GetText("etcStr1"), self.name)
+					_SystemMessageLogic:ShowMessage(str, "equ")
+				
+				end
+			end
+		end
+	end
+
+	method void SpawnBullet(table weaponSpec)
+		-- 무기 스펙에 따른 탄환 생성 및 발사 (기본 버전)
+		if weaponSpec == nil or self.player.BattlePlayer.isDead then
+			return
+		end
+		
+		---@type TransformComponent
+		local transform = self._T.transform
+		local damage = self:CalculateDamage()
+		local criticalDamage = self:CalculateCriticalDamage()
+		local ciricicalRate = weaponSpec.criticalRate + self:GetCriticalBuffRate()
+		local angle = transform.ZRotation + 225
+		
+		
+		for i = 1, weaponSpec.bulletCount do
+			local testFunc = function()
+				local effect = _PoolingLogic:SpawnModel(weaponSpec.bullet,self._T.fireTip.WorldPosition,self.Entity.CurrentMap)
+				local skillEffect = effect.SkillEffectObject
+				
+				local bulletAngle = angle + weaponSpec.bulletAngle * (i - weaponSpec.bulletCount * 0.5 - 0.5) 
+		
+				skillEffect:SetAngle(bulletAngle,true)
+				skillEffect.pierceCount = weaponSpec.pierceCount
+				skillEffect:Init(self:CalculateDamage(), true,self.uniqueKey, "")		
+				skillEffect:SetTarget(self.target)
+				
+				if self.bulletMelee == false then
+					skillEffect.knockback = weaponSpec.knockback
+				else
+					skillEffect.knockback = 0
+				end
+				skillEffect.criticalRate = ciricicalRate
+				skillEffect.criticalDamage = self:CalculateCriticalDamage()
+				
+				if weaponSpec.bulletDelay == 0 then
+					if i == 1 then
+						_SoundService:PlaySound(_ItemDataLogic.equipmentData[self.weaponSpec.id].effectSound, _SoundLogic.effectRatio)
+					end
+				else
+					_SoundService:PlaySound(_ItemDataLogic.equipmentData[self.weaponSpec.id].effectSound, _SoundLogic.effectRatio)
+				end
+				
+			end
+			_TimerService:SetTimerOnce(testFunc,weaponSpec.bulletDelay*i)
+		end
+		
+		
+	end
+
+	method void SpawnBullet_Optimized(table weaponSpec)
+		-- 최적화된 탄환 생성 및 발사 처리
+		local battlePlayer = self.player.BattlePlayer
+		
+		local isDead = battlePlayer ~= nil and battlePlayer.isDead or false
+		
+		if weaponSpec == nil or isDead or not isvalid(self) then
+			return
+		end
+		
+		local bulletStats = {}
+		
+		local transform = self._T.transform
+		
+		bulletStats.damage = self:CalculateDamage()
+		bulletStats.criticalDamage = self:CalculateCriticalDamage()
+		bulletStats.criticalRate = weaponSpec.criticalRate + self:GetCriticalBuffRate()
+		bulletStats.angle = transform.ZRotation + 225
+		bulletStats.angleOffset = (weaponSpec.bulletCount - 1) * 0.5
+		
+		if not isvalid(bulletStats) then
+			
+			return
+		end
+		
+		for i = 1, weaponSpec.bulletCount do
+			local bulletFunc = function()
+				if not isvalid(self) then return end
+				
+				self:SpawnBullet_Inner(weaponSpec, bulletStats, i)
+			end
+			_TimerLogic:SetTimerOnce(bulletFunc, weaponSpec.bulletDelay * i, "BattleGunObject.SpawnBullet")
+		end
+	end
+
+	method void SpawnBullet_Inner(table weaponSpec, table bulletStats, integer bulletIndex)
+		-- 개별 탄환 생성 및 초기화 처리
+		if not isvalid(self.Entity) then
+			return
+		end
+		
+		local _T = self._T
+		local effect = _PoolingLogic:SpawnModel(weaponSpec.bullet, self._T.fireTip.WorldPosition, self._T.currentMap)
+		local skillEffect = effect.SkillEffectObject
+		
+		local bulletAngle = bulletStats.angle + weaponSpec.bulletAngle * (bulletIndex - bulletStats.angleOffset) 
+		
+		skillEffect:SetAngle(bulletAngle, true)
+		if self.player == _UserService.LocalPlayer then
+			skillEffect:Init(bulletStats.damage, true,self.uniqueKey, "")
+		else
+			skillEffect:Init(bulletStats.damage, not self.isBossWeapon,self.uniqueKey, "")
+		end
+		
+		skillEffect:SetTarget(self.target)
+		skillEffect.pierceCount = weaponSpec.pierceCount
+		if self.bulletMelee == false then
+			skillEffect.knockback = weaponSpec.knockback
+		else
+			skillEffect.knockback = 0
+		end
+		skillEffect.criticalRate = bulletStats.criticalRate
+		skillEffect.criticalDamage = bulletStats.criticalDamage
+		if self.isBossWeapon then
+			skillEffect.criticalRate = 0
+		end
+		if weaponSpec.bulletDelay ~= 0 or bulletIndex == 1 then
+			_SoundService:PlaySound(_ItemDataLogic.equipmentData[self.weaponSpec.id].effectSound, _SoundLogic.effectRatio)
+		end
+	end
+
+	method Vector3 GetPlayerPosition()
+		-- 플레이어의 현재 위치 반환
+		
+		return self._T.playerTransform.Position
+		
+	end
+
+	method boolean IsValidTarget()
+		-- 현재 타겟이 유효한지 확인
+		if isvalid(self.target) then
+			return self.target.Enable
+		end
+		
+		return false
+	end
+
+	method boolean IsReplica()
+		-- 무기가 복제본인지 확인
+		return self._T.replica 
+	end
+
+	method void ChangePlayer(Entity player)
+		-- 무기의 소유자 플레이어 변경
+		self.player = player
+		self._T.playerTransform = player.TransformComponent.Position
+	end
+
+	method number GetPlayerAngle()
+		-- 플레이어의 현재 각도 반환
+		return self._T.playerAngle
+	end
+
+	method void ClearTimer()
+		-- 무기의 공격 타이머 및 특수 버프 초기화
+		_TimerLogic:ClearTimer(self.shotTimer)
+		if isvalid(self.Entity.WeaponSpecialBuff) then
+			self.Entity.WeaponSpecialBuff:Reset()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 무기 파괴 시 장착 목록에서 제거 및 타이머 정리
+		if not isvalid(_UserService.LocalPlayer) then return end
+		
+		local battlePlayer = _UserService.LocalPlayer.BattlePlayer
+		
+		if not isvalid(battlePlayer) then return end
+		
+		local result, error = pcall(function()
+			if isvalid(battlePlayer.equipGun) and #table.keys(battlePlayer.equipGun) >= 1 then
+				for key, value in pairs(battlePlayer.equipGun) do
+					if not isvalid(battlePlayer.equipGun) or key >= #table.keys(battlePlayer.equipGun) then 
+						self:ClearTimer()
+						
+						break 
+					end
+					
+					if isvalid(battlePlayer) and isvalid(battlePlayer.equipGun) and isvalid(value.gun) and value.gun == self.Entity then
+						table.remove(battlePlayer.equipGun, key)
+						self:ClearTimer()
+						
+						break
+					end
+				end
+			end
+		end)
+		
+		if not result then
+		end
+	end
+
+	method number GetDamageByLevel()
+		-- 무기 레벨에 따른 데미지 계산
+		return _CalcLogic:GetWeaponAttackDamageByKey(self.uniqueKey, self.player)
+	end
+
+	method number GetCriticalBuffRate()
+		-- 크리티컬 확률 버프 수치 반환
+		return _BuffLogic:GetCriticalPercent()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 몬스터가 무기 사거리에 진입 시 타겟 목록에 추가
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		local destroyable = TriggerBodyEntity.DestroyableObject
+		if isvalid(destroyable) then
+			if self.isMeleeWeapon then
+		
+				if destroyable.type == _BattleEnumLogic.MONSTER_WAVE then
+					return
+				end
+			end
+			self.monsters[TriggerBodyEntity.Id] = destroyable
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerLeaveEvent(TriggerLeaveEvent event)
+		-- 몬스터가 무기 사거리에서 벗어날 시 타겟 목록에서 제거
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		
+		local destroyable = TriggerBodyEntity.DestroyableObject
+		
+		if isvalid(destroyable) then
+			self.monsters[TriggerBodyEntity.Id] = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "BuffLogic")
+	handler HandleApplyBuffEvent(ApplyBuffEvent event)
+		-- 버프 적용 시 사거리 및 공격속도 관련 버프 처리
+		
+		local buffId = event.buffId
+		
+		
+		local convertedId = tonumber(buffId)
+		
+		if convertedId >= 100019 and convertedId <= 100021 then
+			self:SetRange()
+		elseif convertedId >= 100022 and convertedId <= 100024 then
+			self:SetAttackTimer()
+		end
+	end
+
+end

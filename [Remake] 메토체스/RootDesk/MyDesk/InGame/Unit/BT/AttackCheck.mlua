@@ -1,0 +1,132 @@
+@BTNode
+script AttackCheck extends BTNode
+
+	property boolean Use = false
+
+	property number attackTime = 0
+
+	property number checkedAttackSpeed = 0
+
+	method any OnBehave(number delta)
+		-- 공격 가능 여부를 확인하고 공격을 실행하는 BT 노드
+		local pAI = self.ParentAI
+		local myUnit = self.ParentAI.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local userId = unitInfo.OwnerId 
+		
+		-- 일반 공격 중인지
+		if self.Use then
+			self.attackTime += delta
+			
+			if self.checkedAttackSpeed == 0 then
+				self.checkedAttackSpeed = 2.5
+			end
+			
+			if self.attackTime > (1 / self.checkedAttackSpeed) and unitStatus.ActionTimer == 0 then
+				self.ParentAI.running = false		-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+				self.Use = false
+				self.attackTime = 0
+			end
+			
+			return BehaviourTreeStatus.Success
+		elseif self.ParentAI.running then 		-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+			self.ParentAI.running = false		 -- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+			-- log("RUNNING! 여긴 오면 안되는 곳")
+			return BehaviourTreeStatus.Failure
+		end
+		
+		-- 공격이 가능한 상태인지
+		local target = unitStatus.Target
+		
+		if not isvalid(target) then
+			return BehaviourTreeStatus.Failure
+		end
+		
+		
+		local targetTile = target.UnitInfo.setTile
+		
+		if not isvalid(targetTile) then
+			return BehaviourTreeStatus.Failure
+		end
+		
+		-- 거리 측정
+		local setTile = unitInfo.setTile
+		local tileCompo = setTile.TileComponent_New
+		
+		local setTileVerticalNum = tileCompo.verticalNum
+		local setTileHorizontalNum = tileCompo.horizontalNum
+		local setTileHorizontalNode = setTileHorizontalNum * 2 - (setTileVerticalNum%2)
+		
+		local targetCompo = targetTile.TileComponent_New
+		local targetVerticalNum = targetCompo.verticalNum
+		local targetHorizontalNum = targetCompo.horizontalNum
+		local targetHorizontalNode = targetHorizontalNum * 2 - (targetVerticalNum%2)
+		
+		local distanceInfo = _BTLogic_New:getDistance({setTileHorizontalNode, setTileVerticalNum}, {targetHorizontalNode, targetVerticalNum})
+		
+		local unitAttackRange = unitStatus.AttackRange
+		-- 
+		
+		
+		-- 사거리 확인
+		if unitAttackRange < distanceInfo[1] then
+			return BehaviourTreeStatus.Failure
+		-- 스턴
+		elseif unitStatus.StatusEffect["SE0004"] then
+			--log(myUnit.Name, target.Name, unitStatus.StatusEffect["SE0004"])
+			return BehaviourTreeStatus.Failure
+		-- 무장 해제
+		elseif unitStatus.StatusEffect["SE0006"] then
+			--log(myUnit.Name, target.Name, unitStatus.StatusEffect["SE0006"])
+			return BehaviourTreeStatus.Failure
+		else
+			self.Use = true
+			self.ParentAI.running = true	-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+			
+			local getMp = true
+			for _, shield in pairs(unitStatus.Shields) do
+				if shield["Tag"] == "MySkill" then
+					if shield["Amount"] > 0 then
+						getMp = false
+						break
+					end 
+				end
+			end
+			
+			if unitStatus.StatusEffect["SE0018"] then
+				getMp = false
+			end
+			
+			
+			if getMp then
+				-- 아케인리버가 아닌 경우
+				if myUnit.UnitInfo.AttackComponent.GainingMPAmount == nil then
+					_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", 10 + myUnit.UnitStatus.MPBonusWhenAttack, "attack")
+				end
+			end
+			
+			
+			myUnit:SendEvent(DefaultAttack(myUnit, target))	-- 에러 아님
+			_UserService:GetUserEntityByUserId(unitInfo.OwnerId):SendEvent(DefaultAttack(myUnit, target))	-- 에러 아님
+			
+			-- 타겟이 적군인 경우 : 공격
+			if target ~= myUnit and isvalid(myUnit.UnitInfo.AttackComponent.Attack) then
+				myUnit.UnitInfo.AttackComponent:Attack(target)
+		
+			-- 타겟이 아군(자신)인 경우 : 버프
+			else
+				if isvalid(myUnit.UnitInfo.AttackComponent.Buff) then
+					myUnit.UnitInfo.AttackComponent:Buff()
+				else
+					log("넌 누구냐 : ", myUnit.UnitInfo.charID, target.UnitInfo.charID)
+				end
+				
+			end
+			
+			self.checkedAttackSpeed = unitStatus.AttackSpeed * _BTLogic_New.ASpeedValue
+			return BehaviourTreeStatus.Success
+		end
+	end
+
+end

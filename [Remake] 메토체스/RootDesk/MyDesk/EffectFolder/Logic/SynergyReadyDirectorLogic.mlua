@@ -1,0 +1,1550 @@
+@Logic
+script SynergyReadyDirectorLogic extends Logic
+
+	property table RUIDList = {}
+
+	@Description("타일 위치에 효과를 넣어야하는 경우 사용")
+	property table Tile10021 = {}
+
+	property table OnFieldSynergy = {}
+
+	property table RUIDInfo = {}
+
+	property Entity Tile10025 = nil
+
+	property table SynergyInfo = {}
+
+	property Entity Tile10025_Enemy = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 클라이언트 시작 시 시너지 연출 관련 테이블 데이터를 로드
+		self:LoadTable()
+	end
+
+	@ExecSpace("Client")
+	method void LoadTable()
+		-- 시너지 연출에 필요한 모든 리소스와 데이터를 메모리에 캐싱하여 성능 최적화
+		--리소스들이 많아서 미리 캐싱해둡니다.
+		local SynergyDirection = _DataService:GetTable("SynergyDirection")
+		for i = 1, SynergyDirection:GetRowCount() do
+			if isvalid(SynergyDirection:GetCell(i, 1)) then
+				self.RUIDList[SynergyDirection:GetCell(i, 1)] = {}
+		
+			else
+				break
+			end
+			
+			local row=SynergyDirection:GetRow(i)
+			--아트 리소스
+			for j = 1, 5 do
+				if not _UtilLogic:IsNilorEmptyString(row:GetItem("RUID"..j)) then
+					table.insert(self.RUIDList[SynergyDirection:GetCell(i, 1)], row:GetItem("RUID"..j))
+				end
+			end
+			
+			--사운드리소스
+			table.insert(self.RUIDList[SynergyDirection:GetCell(i, 1)], row:GetItem("SoundID"))	
+		end
+		
+		--아트 리소스는 상세 정보도 미리 캐싱해둡니다.
+		local SynergyDirectionInfo = _DataService:GetTable("SynergyDirectionRUIDInfo")
+		
+		local columns = SynergyDirectionInfo.Columns
+		for i = 1, SynergyDirectionInfo:GetRowCount() do
+				self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]
+				={["AttachedType"] = SynergyDirectionInfo:GetCell(i, 2),
+				["Rotation"] = tonumber(SynergyDirectionInfo:GetCell(i, 5)),
+				["PlayRate"] = tonumber(SynergyDirectionInfo:GetCell(i, 6)),
+				["RemoveTime"] = tonumber(SynergyDirectionInfo:GetCell(i, 8)),
+				["DelayTime"] = tonumber(SynergyDirectionInfo:GetCell(i, 9)),
+				["Layer"] = SynergyDirectionInfo:GetCell(i, 10)}
+				
+				--pos, scale들 벡터값으로 변경
+				local posstring = _UtilLogic:Split(SynergyDirectionInfo:GetCell(i, 3), ",")
+				self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]["PosX"] = posstring[1]
+				self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]["PosY"] = posstring[2]
+				
+				local scalestring = _UtilLogic:Split(SynergyDirectionInfo:GetCell(i, 4), ",")
+				self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]["ScaleX"] = tonumber(scalestring[1])
+				self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]["ScaleY"] = tonumber(scalestring[2])
+				
+				--Loop 
+				if SynergyDirectionInfo:GetCell(i, 7) == "FALSE" then
+					self.RUIDInfo[SynergyDirectionInfo:GetCell(i,1)]["Loop"] = false
+				else
+					self.RUIDInfo[SynergyDirectionInfo:GetCell(i,1)]["Loop"] = true
+				end
+				
+				--FlipX
+				if SynergyDirectionInfo:GetCell(i, 11)=="FALSE" then
+					self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]["FlipX"] = false
+				else
+					self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]["FlipX"] = true
+				end
+				
+				--FlipY
+				if SynergyDirectionInfo:GetCell(i, 12) == "FALSE" then
+					self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]["FlipY"] = false
+				else
+					self.RUIDInfo[SynergyDirectionInfo:GetCell(i, 1)]["FlipY"] = true
+				end
+		end
+		
+		----------------------------------------------------------------------------
+		--각 시너지별 단계를 미리 캐싱해둡니다.
+		local synergydata = _DataService:GetTable("SynergyInfo")
+		
+		local rows2 = synergydata:GetAllRow()
+		
+		for i, row in pairs(rows2) do
+			local id = row:GetItem("SynergyID")
+			
+			local obj = {}
+			self.SynergyInfo[id] = obj
+			
+			for i = 1, 5 do
+				local synergycount = row:GetItem("NeedCount_step"..tostring(i))
+				
+				if isvalid(synergycount) then
+					table.insert(self.SynergyInfo[id], tonumber(synergycount))
+				end
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void ReceiveFieldSynergyCount(string synergyID, integer count, boolean User)
+		-- 필드 시너지 개수가 변경될 때 호출되어 해당 시너지의 연출을 재생
+		-- 아군 시너지 일 때만 적용되는 연출들
+		if User then
+			--count가 줄어든 경우, 바로 리턴(전직교관 시너지 제외)
+			if not isvalid(self.OnFieldSynergy[synergyID]) then
+				self.OnFieldSynergy[synergyID] = 0
+			end
+			
+			if synergyID ~= "S10024" and self.OnFieldSynergy[synergyID] > count then
+				self.OnFieldSynergy[synergyID] = count
+				
+				--시간의 신전, 모험가, 마스코트 별도 처리 필요
+				if synergyID == "S10023" then
+					if count < self.SynergyInfo["S10023"][1] then
+						self:S10023Direction(count, User)
+					else
+						local dollruid = _UtilLogic:Split(self.RUIDList["S10023"][3], ",")
+						local doll = _EntityService:GetEntity("397fe794-b5e5-4d66-83f9-6429e37111eb")--/maps/Arena/AdventurerEntity
+						doll:GetChildByName("sprite").SpriteRendererComponent.SpriteRUID = dollruid[math.floor(count/2)]
+					end
+				elseif synergyID == "S10001" then
+					if count < self.SynergyInfo["S10001"][1] then
+						self:S10001Direction(count, User)
+					end
+				elseif count < self.SynergyInfo["S10025"][1] and synergyID == "S10025" then
+					self:S10025Direction(count, User)
+				end
+				return
+			end
+			
+			self.OnFieldSynergy[synergyID] = count
+			
+			--시너지가 몇 단계인지? 딱 맞지 않으면 0을 반환
+			local level = self:GetSynergyStep(synergyID, true, count)
+			
+			--시너지 ID를 확인하고 조건에 맞는 연출 호출. 특정 시너지 빼고는 level이 0인 애들은 바로 리턴
+			--level이 0이어도 연출 호출하는 시너지
+			if synergyID == "S10011" then
+				self:S10011Direction(count, User)
+				return
+			elseif synergyID == "S10001" then
+				self:S10001Direction(count, User)
+				return
+			elseif synergyID == "S10025" then
+				self:S10025Direction(count, User)
+				return
+			elseif synergyID == "S10023" then
+				self:S10023Direction(count, User)
+				return
+			end
+			
+			--그 외는 level이 0이면 리턴
+			if level == 0 then return end
+			
+		-- 적군 시너지일 때만 적용되는 연출들		
+		else
+			--시너지 ID를 확인하고 조건에 맞는 연출 호출. 특정 시너지 빼고는 level이 0인 애들은 바로 리턴
+			--level이 0이어도 연출 호출하는 시너지
+			if synergyID == "S10025" then
+				self:S10025Direction(count, User)
+				return
+			elseif synergyID == "S10023" then
+				self:S10023Direction(count, User)
+				return
+			end
+			
+			--그 외는 level이 0이면 리턴
+			local level = self:GetSynergyStep(synergyID, false, count)
+			if level == 0 then return end
+			
+			if synergyID == "S10011" then
+				self:S10011Direction(count, User)
+			end
+		end
+			
+		-- 아군/적군 관계없이 같은 로직 사용
+		if synergyID == "S10005" then
+			self:S10005Direction(count, User)
+		elseif synergyID == "S10016" then
+			self:S10016Direction(count, User)
+		elseif synergyID == "S10019" then
+			self:S10019Direction(count, User)
+		elseif synergyID == "S10024" then
+			self:S10024Direction(count, User)
+		elseif synergyID == "S10020" then
+			self:S10020Direction(count, User)
+		elseif synergyID == "S10021" then
+			self:S10021Direction(count, User)
+		elseif synergyID == "S10015" then
+			self:S10015Direction(count, User)
+		elseif synergyID == "S10031" then
+			self:S10031Direction(count,User)
+		else
+		--시너지 단계 관계없이 모두 동일 + 한 두개 애님만 붙이는 연출
+			self:BasicDirection(synergyID, count,User)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void BasicDirection(string synergyID, integer count, boolean User)
+		-- 기본적인 시너지 연출을 재생 (사운드와 이펙트)
+		if not isvalid(self.RUIDList[synergyID]) then return end
+		
+		--필드 위에 올라간 유닛들 중 시너지 일치하는 유닛들
+		local RUIDList = self.RUIDList[synergyID][#self.RUIDList[synergyID]]
+		RUIDList = _UtilLogic:Split(RUIDList, ",")
+		
+		for i = 1, #RUIDList do
+			_PlaySoundLogic:PlaySound(RUIDList[i])
+		end
+		
+		for i = 1, #self.RUIDList[synergyID]-1 do
+			self:PlayEffect(synergyID, self.RUIDList[synergyID][i], User)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void S10001Direction(integer count, boolean User)
+		-- 마스코트 시너지 연출을 처리하고 인기도 시스템을 관리
+		local map = _UserService.LocalPlayer.CurrentMap
+		local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+		local entity = map:GetChildByName("MascotSynergy"):GetChildByName("MascotEntity")--/maps/Arena/MascotEntity
+		
+		if count == self.SynergyInfo["S10001"][1] or count == self.SynergyInfo["S10001"][2] or count == self.SynergyInfo["S10001"][3] or count == self.SynergyInfo["S10001"][4] then
+			--필드 위에 올라간 유닛들 중 마스코트 유닛들
+			local onfieldunits = self:GetOnFieldUnit("S10001", User)
+			
+			_PlaySoundLogic:PlaySound("M0029")
+			_PlaySoundLogic:PlaySound("M0169")
+			
+			--마스코트 유닛에게 이펙트
+			for i = 1, #self.RUIDList["S10001"]-1 do
+				self:PlayEffect("S10001",self.RUIDList["S10001"][i], User)
+			end
+			
+			--인기도 엔터티 보여주기
+			entity.Parent.Enable = true
+			
+			local stack = _UserService.LocalPlayer.SynergyManager_New.SynergyStack["S10001"]
+			_SynergyReadyDirectorLogic:SetS10001StackText(stack)
+			self:Set10001MascotInfo(stack)
+		elseif count < self.SynergyInfo["S10001"][1] then
+			--인기도 엔터티 끄기
+			if entity.Parent.Enable then
+				entity.Parent.Enable = false
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void S10001GetReward(string data)
+		-- 마스코트 시너지에서 인기도 보상을 받을 때의 연출을 처리
+		--data키값 - Gold, Item, Char
+		--Stack : 인기도
+		
+		data = _HttpService:JSONDecode(data)
+		local mascot = _UserService.LocalPlayer.CurrentMap:GetChildByName("MascotSynergy"):GetChildByName("MascotEntity")
+		----------------------------------------------------------------------
+		--미리 아이템 슬롯 visible꺼두기, 레드닷도 꺼두기
+		if isvalid(data["Item"]) then
+			for i = 1, #data["Item"] do
+				local parse = _UtilLogic:Split(data["Item"][i], ",")
+				
+				if tonumber(parse[2]) <= 10 then
+					local invenslot = _EntityService:GetEntity("36df1686-bd85-4854-bde6-609ccf89e30b"):GetChildByName("Item_"..parse[2])
+					invenslot.Visible = false
+				end
+			end
+			
+			local reddot = _EntityService:GetEntity("35568b5a-2b93-493a-8e13-6d3d808d5ef5") -- /ui/Arena_ReadyPhase/InventoryPanel/Button_NextPage/Reddot
+			reddot.Visible = false
+		end
+		
+		--UI끄기
+		mascot.Parent:GetChildByName("Stack").Enable = false
+		mascot.Parent:GetChildByName("Button_GetReward").Enable = false
+		
+		--보상 연출
+		mascot.SpriteRendererComponent.SpriteRUID = "860206eed29d42cc96438087a7572ce3"
+		
+		-- 핑크빈 연출 : 애님 타이밍때문에 먼저 호출
+		if data["Char"] > 0 then
+			mascot:GetChildByName("PinkBean").Enable = true
+			_TimerService:SetTimerOnce(function() mascot:GetChildByName("PinkBean").Enable = false end, 0.7)
+		end
+		
+		local pos = _UILogic:WorldToScreenPosition(mascot.TransformComponent.WorldPosition:ToVector2())
+		_GeneralDirectorLogic:PlayCoinDirector_Sprite(data["Gold"], pos, "Mascot")
+		
+		local rewarddirector = function()
+			_PlaySoundLogic:PlaySound("M0151")
+		
+			
+			if isvalid(data["Item"]) then -- 아이템 연출
+				for i = 1, #data["Item"] do
+					_GeneralDirectorLogic:InsertItemDirectorData("Mascot", pos, data["Item"][i])
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(rewarddirector, 0.3)
+		
+		--관중엔터티 사라짐
+		local Init = function()
+			for i = 1, 5 do
+				mascot:GetChildByName("Crowd"..tostring(i)).Enable = false
+			end
+		end
+		
+		_TimerService:SetTimerOnce(Init, 0.3)
+		
+		--상자 RUID 및 UI원상복구
+		local Return = function()
+			self:Set10001MascotInfo(data["Stack"])
+			
+			--UI켜기
+			mascot.Parent:GetChildByName("Stack").Enable = true
+		end
+		
+		_TimerService:SetTimerOnce(Return, 0.95)
+	end
+
+	@ExecSpace("Client")
+	method void S10005Direction(integer count, boolean User)
+		-- 시간의 신전 시너지 연출을 단계별로 처리
+		local map = _UserService.LocalPlayer.CurrentMap
+		local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+		
+		--공통
+		_PlaySoundLogic:PlaySound("M0019")
+		self:PlayEffect("S10005",self.RUIDList["S10005"][1],User)
+		
+		--단계별추가
+		if count == self.SynergyInfo["S10005"][2] then
+			_TimerService:SetTimerOnce(function()_PlaySoundLogic:PlaySound("M0020") end,1.5)
+			self:PlayEffect("S10005", self.RUIDList["S10005"][2], User)
+		elseif count == self.SynergyInfo["S10005"][3] then
+			_TimerService:SetTimerOnce(function()_PlaySoundLogic:PlaySound("M0020") end,1.5)
+			self:PlayEffect("S10005", self.RUIDList["S10005"][3], User)
+		elseif count == self.SynergyInfo["S10005"][4] then
+			_TimerService:SetTimerOnce(function()_PlaySoundLogic:PlaySound("M0020") end,1.5)
+			self:PlayEffect("S10005", self.RUIDList["S10005"][4], User)
+		end
+			
+	end
+
+	@ExecSpace("Client")
+	method void S10011Direction(integer count, boolean User)
+		-- 도적 시너지 연출을 처리하고 첫 활성화 시 안내 메시지를 표시
+		
+		for i = 1, #self.SynergyInfo["S10011"] do
+			if count == self.SynergyInfo["S10011"][i] then
+				break
+			else
+				if i == #self.SynergyInfo["S10011"] then
+					return
+				end
+			end
+		end 
+		
+		--사운드
+			_PlaySoundLogic:PlaySound("M0025")
+			_PlaySoundLogic:PlaySound("M0154")
+		
+			--이펙트
+			for i = 1, #self.RUIDList["S10011"]-1 do
+				self:PlayEffect("S10011", self.RUIDList["S10011"][i], User)
+			end
+			
+			if User and count == self.SynergyInfo["S10011"][1] then
+				--안내메세지
+				_UIToast:ShowMessageByLocalizingKey("ToastMessage_0001")
+			end
+	end
+
+	@ExecSpace("Client")
+	method void S10015Direction(integer count, boolean User)
+		-- 시간의 신전 시너지 연출을 처리하며 도도 엔터티 중심으로 이펙트를 재생
+		if count >= self.SynergyInfo["S10015"][1] then
+			--사운드
+			local soundruid = _UtilLogic:Split(self.RUIDList["S10015"][#self.RUIDList["S10015"]],",")
+			if count == self.SynergyInfo["S10015"][1] or count == self.SynergyInfo["S10015"][2] or count == self.SynergyInfo["S10015"][3] then
+				_PlaySoundLogic:PlaySound(soundruid[1])
+				_PlaySoundLogic:PlaySound(soundruid[3])
+			elseif count == self.SynergyInfo["S10015"][4] then
+				_PlaySoundLogic:PlaySound(soundruid[2])
+				_PlaySoundLogic:PlaySound(soundruid[4])
+			end
+			
+			
+			--필드 위에 올라간 유닛들 중 시간의 신전 유닛들
+			local onfieldunits = self:GetOnFieldUnit("S10015", User)
+			
+			--도도 엔터티
+			local map = _UserService.LocalPlayer.CurrentMap
+			local dodo = map:GetChildByName("Units_".._UserService.LocalPlayer.PlayerComponent.UserId):GetChildByName("BTUnit_DoDo")
+			local dodopos = dodo.TransformComponent.WorldPosition:Clone()
+			
+			if User == false then
+				dodo = map:GetChildByName("Units_".._UserService.LocalPlayer.PlayerComponent.UserId):GetChildByName("EnemyUnit_DoDo")
+				dodopos = dodo.TransformComponent.WorldPosition:Clone()
+			end
+			
+			--10시너지 이펙트
+			if count == self.SynergyInfo["S10015"][4] then
+				self:PlayEffect("S10015", self.RUIDList["S10015"][4], User)
+		
+				local RUID = self.RUIDList["S10015"][2]
+				
+				--센터피봇사용여부 확인
+				local stringposx = self.RUIDInfo[RUID]["PosX"]
+				stringposx = self:GetPos(stringposx, dodo, User, true)
+		
+				local stringposy = self.RUIDInfo[RUID]["PosY"]
+				stringposy = self:GetPos(stringposy, dodo, User, false)
+				
+				--유닛 뒤,앞 여부 확인
+				local unitlayertype = dodo:GetChildByName("SpriteRenderer").SpriteRendererComponent.SortingLayer
+				local effectlayer = dodo:GetChildByName("SpriteRenderer").SpriteRendererComponent.OrderInLayer
+				if self.RUIDInfo[RUID]["Layer"] == "Front" then
+					unitlayertype = "Foreground"
+				else
+					effectlayer -= 1
+				end
+					
+				--플립체크
+				local flipx = false
+				local flipy = false
+				if self.RUIDInfo[RUID]["FlipX"] then
+					flipx = true
+				end
+				if self.RUIDInfo[RUID]["FlipY"] then
+					flipy = true
+				end
+					
+				if User == false then
+					flipx = not flipx
+					--flipy = not flipy
+				end
+				
+				_EffectService:PlayEffectAttached(RUID, dodo, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+												self.RUIDInfo[RUID]["Loop"], {["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"],["SortingLayer"]=unitlayertype,["OrderInLayer"]=effectlayer,["FlipX"]=flipx,["FlipY"]=flipy})
+			end
+			 --3,5,7시너지 이펙트
+			if count == self.SynergyInfo["S10015"][1] or count == self.SynergyInfo["S10015"][2] or count == self.SynergyInfo["S10015"][3] then
+		
+				self:PlayEffect("S10015", self.RUIDList["S10015"][3], User)
+				
+				local RUID = self.RUIDList["S10015"][1]
+				
+				--센터피봇사용여부 확인
+				local stringposx = self.RUIDInfo[RUID]["PosX"]
+				stringposx = self:GetPos(stringposx, dodo, User, true)
+		
+				local stringposy = self.RUIDInfo[RUID]["PosY"]
+				stringposy = self:GetPos(stringposy, dodo, User, false)
+				
+				--유닛 뒤,앞 여부 확인
+				local unitlayertype = dodo:GetChildByName("SpriteRenderer").SpriteRendererComponent.SortingLayer
+				local effectlayer = dodo:GetChildByName("SpriteRenderer").SpriteRendererComponent.OrderInLayer
+				if self.RUIDInfo[RUID]["Layer"] == "Front" then
+					unitlayertype = "Foreground"
+				else
+					effectlayer -= 1
+				end
+					
+				--플립체크
+				local flipx = false
+				local flipy = false
+				if self.RUIDInfo[RUID]["FlipX"] then
+					flipx = true
+				end
+				if self.RUIDInfo[RUID]["FlipY"] then
+					flipy = true
+				end
+					
+				if User == false then
+					flipx = not flipx
+					--flipy = not flipy
+				end
+				
+				_EffectService:PlayEffectAttached(RUID, dodo, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"],self.RUIDInfo[RUID]["ScaleY"],1),
+												 self.RUIDInfo[RUID]["Loop"], {["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"],["SortingLayer"]=unitlayertype,["OrderInLayer"]=effectlayer,["FlipX"]=flipx,["FlipY"]=flipy})
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void S10016Direction(integer count, boolean User)
+		-- 엘나스 시너지 연출로 전장을 얼음으로 덮고 눈보라 이펙트를 재생
+		local map = _UserService.LocalPlayer.CurrentMap
+		
+		_PlaySoundLogic:PlaySound("M0027")
+		--눈보라
+		local snowy = _EntityService:GetEntity("e0ccec8a-5b2b-4d93-a131-5d09f00d5827")--/ui/SynergyDirection/EllnasSnowy
+		snowy.Enable = true
+		
+		--엘나스 유닛 위에 눈
+		self:PlayEffect("S10016", self.RUIDList["S10016"][1], User)
+		
+		--얼어붙은 전장
+		for i = 1, 7 do
+			local line = map:GetChildByName("Line_"..math.floor(i)).Children
+			
+			
+			if User then
+				for j = 1, 4 do
+					line[j].Visible = true
+					
+					--엘나스 타일 제외 모두 visible 끄기
+					line[j]:GetChildByName("Knight").Visible = false
+					line[j]:GetChildByName("Orbis").Visible = false
+					line[j]:GetChildByName("OnDraggingTile").Visible = false
+					
+					--엘나스 타일 켜두기
+					line[j]:GetChildByName("Ellnas").Enable = true
+					line[j]:GetChildByName("Ellnas").SpriteRendererComponent:ChangeMaterial("material://1b2281c1-5019-4e5f-ba83-7d75cbfe5f26")
+				end
+			else
+				if math.fmod(i,2) == 1 then
+					for j = 6, 9 do
+						line[j].Visible = true
+						
+						--엘나스 타일 제외 모두 visible 끄기
+						line[j]:GetChildByName("Knight").Visible = false
+						line[j]:GetChildByName("Orbis").Visible = false
+						line[j]:GetChildByName("OnDraggingTile").Visible = false
+						
+						--엘나스 타일 켜두기
+						line[j]:GetChildByName("Ellnas").Enable = true
+						line[j]:GetChildByName("Ellnas").SpriteRendererComponent:ChangeMaterial("material://1b2281c1-5019-4e5f-ba83-7d75cbfe5f26")
+					end
+				else
+					for j = 5, 8 do
+						line[j].Visible = true
+						
+						--엘나스 타일 제외 모두 visible 끄기
+						line[j]:GetChildByName("Knight").Visible = false
+						line[j]:GetChildByName("Orbis").Visible = false
+						line[j]:GetChildByName("OnDraggingTile").Visible = false
+						
+						--엘나스 타일 켜두기
+						line[j]:GetChildByName("Ellnas").Enable = true
+						line[j]:GetChildByName("Ellnas").SpriteRendererComponent:ChangeMaterial("material://1b2281c1-5019-4e5f-ba83-7d75cbfe5f26")
+					end
+				end
+			end
+					
+		end
+		
+		--이펙트
+		self:PlayEffect("S10016", self.RUIDList["S10016"][2], User)
+		local under = function()
+			snowy.Enable = false
+		end
+		
+		_TimerService:SetTimerOnce(under, 1.2)
+		
+		--타일 머티리얼 제거
+		local destroy = function()
+			for i = 1, 7 do
+				local line = map:GetChildByName("Line_"..math.floor(i)).Children
+				
+				for j = 1, #line do
+					line[j]:GetChildByName("Ellnas").Enable = false
+					line[j]:GetChildByName("Ellnas").SpriteRendererComponent:ChangeMaterial("")
+					
+					line[j]:GetChildByName("Knight").Visible = true
+					line[j]:GetChildByName("Orbis").Visible = true
+					line[j]:GetChildByName("OnDraggingTile").Visible = true
+					
+					-- 기사단장, 오르비스 타일이 켜져있는 타일만 타일 visible 켜두기
+					_GeneralDirectorLogic:OnOffTileVisible("Ellnas")
+				end
+				
+			end
+		end
+		
+		_TimerService:SetTimerOnce(destroy, 1.4)
+	end
+
+	@ExecSpace("Client")
+	method void S10019Direction(integer count, boolean User)
+		-- 루디브리엄 시너지 연출로 공장장 카호를 소환하고 관련 이펙트를 재생
+		local map = _UserService.LocalPlayer.CurrentMap
+		local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+		
+		--필드 위에 올라간 유닛들 중 루디브리엄 유닛들
+		local onfieldunits = self:GetOnFieldUnit("S10019", User)
+		
+		--유닛 앞에 공장장 카호 소환
+		_PlaySoundLogic:PlaySound("M0030")
+		_TimerService:SetTimerOnce(function() _PlaySoundLogic:PlaySound("M0159") end, 0.55)
+			
+		--이펙트
+		
+		for i = 1, #self.RUIDList["S10019"] do
+			self:PlayEffect("S10019", self.RUIDList["S10019"][i], User)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void S10020Direction(integer count, boolean User)
+		-- 아케인리버 시너지 연출로 각 유닛에 맞는 동료를 소환하고 이펙트를 적용
+		local map = _UserService.LocalPlayer.CurrentMap
+		_PlaySoundLogic:PlaySound("M0158")
+		_TimerService:SetTimerOnce(function() _PlaySoundLogic:PlaySound("M0033") end, 1.5)
+		
+		--필드 위에 올라간 유닛들 중 아케인리버 유닛들
+		local onfieldunits = self:GetOnFieldUnit("S10020", User)
+		
+		--동료(부하) 등장
+		local colleaguelist = _UtilLogic:Split(self.RUIDList["S10020"][1],",")
+		local unitlist = {"C10004","C20013","C20012","C50005"}
+		for i = 1, #onfieldunits do
+			for j = 1, #unitlist do
+				if unitlist[j] == onfieldunits[i].UnitInfo.charID then
+					local entity = _SpawnService:SpawnByModelId(colleaguelist[j], "Colleague", Vector3(0,0.3,0), onfieldunits[i])
+					entity.ArcaneRiverColleague:SetColleagueVisible(4)
+					break
+				end
+			end
+		end
+		
+		--동료들이 사라지고 이펙트 두르기
+		self:PlayEffect("S10020", self.RUIDList["S10020"][3], User)
+	end
+
+	@ExecSpace("Client")
+	method void S10021Direction(integer count, boolean User)
+		-- 오르비스 시너지 연출로 사운드와 이펙트를 재생
+		local map = _UserService.LocalPlayer.CurrentMap
+		local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+		
+		_PlaySoundLogic:PlaySound("M0034")
+		_PlaySoundLogic:PlaySound("M0167")
+		_PlaySoundLogic:PlaySound("M0168")
+		
+		--필드 위에 올라간 유닛들 중 오르비스 유닛들
+		local onfieldunits = self:GetOnFieldUnit("S10021", User)
+		
+		--오르비스 유닛 이펙트
+		self:PlayEffect("S10021", self.RUIDList["S10021"][1], User)
+		self:PlayEffect("S10021", self.RUIDList["S10021"][2], User)
+		
+	end
+
+	@ExecSpace("Client")
+	method void Set10021TilesEffect(string ID, string Tiles)
+		-- 오르비스 소환석의 영향을 받는 타일들의 시각적 효과를 관리
+		--소환석 ID에 데이터가 있으면 우선 색상 원상복구
+		local delay = 0
+		if isvalid(self.Tile10021[ID]) then
+			if #self.Tile10021[ID] == 0 then
+				delay = 1
+			else
+				local stoneentity = _EntityService:GetEntity(ID)
+				if stoneentity.UnitInfo.TeamType == "User" then
+					for i = 1, #self.Tile10021[ID] do
+						_GeneralDirectorLogic:OnOffTileVisible("Orbis")
+						self.Tile10021[ID][i]:GetChildByName("Orbis").SpriteRendererComponent.Color.a -= 0.25
+						
+						if self.Tile10021[ID][i]:GetChildByName("Orbis").SpriteRendererComponent.Color.a <= 0.25 then
+							self.Tile10021[ID][i]:GetChildByName("Orbis").Enable = false
+							self.Tile10021[ID][i]:GetChildByName("Orbis").SpriteRendererComponent.Color.a = 0.5
+						end
+					end
+				else
+					for i=1,#self.Tile10021[ID] do
+						_GeneralDirectorLogic:OnOffTileVisible("Orbis")
+						self.Tile10021[ID][i]:GetChildByName("Orbis").SpriteRendererComponent.Color.a -= 0.25
+						
+						if self.Tile10021[ID][i]:GetChildByName("Orbis").SpriteRendererComponent.Color.a <= 0.25 then
+							self.Tile10021[ID][i]:GetChildByName("Orbis").Enable = false
+							self.Tile10021[ID][i]:GetChildByName("Orbis").SpriteRendererComponent.Color.a = 0.5
+						end
+					end
+				end
+			end
+		else
+			self.Tile10021[ID] = {}
+			delay = 1
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(Tiles) then
+			self.Tile10021[ID] = nil
+			--return
+			--table.clear(self.Tile10021[ID])
+		else
+			self.Tile10021[ID] = _UtilLogic:StringToTable(Tiles)
+		end
+		
+		local orbis = function()
+			--타일 데이터 갱신
+			if not isvalid(self.Tile10021[ID]) then
+				--self.Tile10021[ID] = nil
+				return
+				--table.clear(self.Tile10021[ID])
+			else
+				--self.Tile10021[ID] = _UtilLogic:StringToTable(Tiles)
+				local stoneentity = _EntityService:GetEntity(ID)
+				if stoneentity.UnitInfo.TeamType == "User" then
+					--중립구역, 적전장 타일이 있다면 삭제
+					for i = #self.Tile10021[ID], 1, -1 do
+						if not isvalid(self.Tile10021[ID][i]) then
+							table.remove(self.Tile10021[ID],i)
+						else
+							if tonumber(_UtilLogic:SubString(self.Tile10021[ID][i].Name, 6, 1)) >= 5 then -- 아군 소환석인 경우
+								table.remove(self.Tile10021[ID],i)
+							else
+								
+							end
+						end
+					end
+				elseif stoneentity.UnitInfo.TeamType == "Enemy" then
+					--중립구역, 아군전장 타일이 있다면 삭제
+					for i = #self.Tile10021[ID],1,-1 do
+						if not isvalid(self.Tile10021[ID][i]) then
+							table.remove(self.Tile10021[ID],i)
+						else
+							local line = math.fmod(tonumber(_UtilLogic:SubString(self.Tile10021[ID][i].Parent.Name, 6, 1)), 2)
+							local tile=tonumber(_UtilLogic:SubString(self.Tile10021[ID][i].Name,6,1))
+							if line == 1 and tile <= 5 then -- 적군 소환석인 경우
+								table.remove(self.Tile10021[ID],i)
+							elseif line == 0 and tile < 5 then
+								table.remove(self.Tile10021[ID],i)
+							end
+						end
+					end
+				end
+			end
+			
+			--오르비스석 소환석 주변 타일들 색상 처리
+			for i = 1, #self.Tile10021[ID] do
+				self.Tile10021[ID][i].Visible = true
+				self.Tile10021[ID][i]:GetChildByName("Orbis").Enable = true
+				self.Tile10021[ID][i]:GetChildByName("Orbis").SpriteRendererComponent.Color.a = 0.5
+				--중첩타일확인 후 알파값 조정
+				for TileId, table in pairs(self.Tile10021) do
+					if TileId ~= ID then
+						for j = 1, #table do
+							if self.Tile10021[ID][i] == table[j] then
+								self.Tile10021[ID][i]:GetChildByName("Orbis").SpriteRendererComponent.Color.a += 0.25
+								break
+							end
+						end
+					end
+				end
+			end
+			
+			_GeneralDirectorLogic:OnOffTileVisible("Orbis")
+		end
+		_TimerService:SetTimerOnce(orbis, delay)
+		
+	end
+
+	@ExecSpace("Client")
+	method void S10023Direction(integer count, boolean User)
+		-- 모험가 시너지 연출을 처리하고 시너지 단계에 따라 인형의 모습을 변경
+		
+		--local doll = _EntityService:GetEntity("397fe794-b5e5-4d66-83f9-6429e37111eb")--/maps/Arena/AdventurerEntity
+		local dollruid = _UtilLogic:Split(self.RUIDList["S10023"][3],",")
+		if count == self.SynergyInfo["S10023"][1] or count == self.SynergyInfo["S10023"][2] or count == self.SynergyInfo["S10023"][3] or count == self.SynergyInfo["S10023"][4] then
+			_PlaySoundLogic:PlaySound("M0036")
+			--필드 위에 올라간 유닛들 중 모험가 유닛들
+			local onfieldunits = self:GetOnFieldUnit("S10023", User)
+			
+			--유닛 근처에 이펙트
+			self:PlayEffect("S10023", self.RUIDList["S10023"][1], User)
+		elseif count<self.SynergyInfo["S10023"][1] then
+			-- doll.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void S10024Direction(integer count, boolean User)
+		-- 전직교관 시너지 연출을 처리하며 교관 종류에 따라 다른 이펙트를 재생
+		local map = _UserService.LocalPlayer.CurrentMap
+		local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+		local EnemyUnits = _UserService.LocalPlayer.TeamManager.EnemyUnits
+		
+		--사운드
+		local soundruid = _UtilLogic:Split(self.RUIDList["S10024"][#self.RUIDList["S10024"]],",")
+		
+		--필드 위에 올라간 유닛들 중 전직교관 유닛들
+		local onfieldunits = self:GetOnFieldUnit("S10024", User)
+		if #onfieldunits < 1 then
+			return
+		end
+		
+		if count == 1 then
+			_PlaySoundLogic:PlaySound(soundruid[1])
+			--어떤 교관이 활성화했는지 체크
+			local chlist = {"C20004", "C30010", "C30013", "C40002", "C50007"}
+			local SynergyOnChID = 0
+			for i = 1, #chlist do
+				if chlist[i] == onfieldunits[1].UnitInfo.charID then
+					SynergyOnChID = i
+					break
+				end
+			end
+			
+		
+			local ruidlist_1 = _UtilLogic:Split(self.RUIDList["S10024"][1],",")--전직교관에게 이펙트
+			local ruidlist_2 = _UtilLogic:Split(self.RUIDList["S10024"][2],",")--아군에게 이펙트
+			
+			self:PlayEffect("S10024", ruidlist_1[SynergyOnChID],User)
+			self:PlayEffect("S10024", ruidlist_2[SynergyOnChID],User)
+			
+		elseif count == 5 then
+			_PlaySoundLogic:PlaySound(soundruid[2])
+			local ruidlist_1 = _UtilLogic:Split(self.RUIDList["S10024"][3],",")--전직교관에게 이펙트
+			local ruidlist_2 = _UtilLogic:Split(self.RUIDList["S10024"][4],",")--아군에게 이펙트
+			
+			for i = 1, #ruidlist_1 do
+				self:PlayEffect("S10024", ruidlist_1[i],User)
+			end
+			
+			for i = 1, #ruidlist_2 do
+				self:PlayEffect("S10024", ruidlist_2[i],User)
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void S10025Direction(integer count, boolean User)
+		-- 기사단장 시너지 연출을 처리하고 성역 타일의 위치와 효과를 관리
+		--시너지 단계와 관계없이 타일 위치 수시로 체크
+		local map = _UserService.LocalPlayer.CurrentMap
+		local tilepos = _UserService.LocalPlayer.SynergyManager_New.SynergyStack["S10025_Pos"]
+		local enemytilepos = _UserService.LocalPlayer.SynergyManager_New.Enemy_SynergyStack["S10025_Pos"]
+		
+		local tileparent = map:GetChildByName("Line_"..tostring(math.floor(tilepos/1000)))
+		local enemytileparent = map:GetChildByName("Line_"..tostring(math.floor(enemytilepos/1000)))
+		local tileentity = tileparent:GetChildByName("Tile_"..tostring(math.floor(tilepos%1000)))
+		local enemytileentity = enemytileparent:GetChildByName("Tile_"..tostring(math.floor(enemytilepos%1000)))
+				
+		self.Tile10025 = tileentity
+		self.Tile10025_Enemy = enemytileentity
+		
+		if count == self.SynergyInfo["S10025"][1] or count == self.SynergyInfo["S10025"][2] or count == self.SynergyInfo["S10025"][3] or count == self.SynergyInfo["S10025"][4]  then
+			local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+			
+			if User == false then
+				OwnUnits = _UserService.LocalPlayer.TeamManager.EnemyUnits
+			end
+			
+			_PlaySoundLogic:PlaySound("M0032")
+			--필드 위에 올라간 유닛들 중 기사단장 유닛들
+			self:PlayEffect("S10025", self.RUIDList["S10025"][1], User)
+			self:PlayEffect("S10025", self.RUIDList["S10025"][2], User)
+			
+			--2시너지라면 가호 이펙트 재생
+			if count == self.SynergyInfo["S10025"][1] then
+				self.Tile10025 = tileentity
+				self.Tile10025_Enemy = enemytileentity
+		
+				self:S10025TileBless(User)
+				
+				--성역칸 위에 이미 유닛이 올라가있는지 확인
+				for i = 1, #OwnUnits do
+					if OwnUnits[i].UnitInfo.setTile == self.Tile10025 or OwnUnits[i].UnitInfo.setTile == self.Tile10025_Enemy  then
+						self:S10025TileBuff(User)
+						break
+					end
+				end 
+			end
+		elseif count < self.SynergyInfo["S10025"][1] and User then
+			if not isvalid(self.Tile10025) then return end
+			
+			self.Tile10025:GetChildByName("Knight").Enable = false
+			
+			_GeneralDirectorLogic:OnOffTileVisible("Knight")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void S10025TileBless(boolean User)
+		-- 기사단장 시너지의 성역 타일에 축복 이펙트를 적용
+		log("기사단장 연출")
+		for i = 1, 2 do
+			local RUID=self.RUIDList["S10025"][i+2]
+			
+			--센터피봇사용여부 확인
+			local stringposx = self.RUIDInfo[RUID]["PosX"]
+			stringposx = self:GetPos(stringposx, self.Tile10025, User, true)
+				
+			local stringposy = self.RUIDInfo[RUID]["PosY"]
+			stringposy = self:GetPos(stringposy, self.Tile10025, User, false)
+								
+			--유닛 뒤,앞 여부 확인
+			local unitlayertype = self.Tile10025.SpriteRendererComponent.SortingLayer
+			local effectlayer = self.Tile10025.SpriteRendererComponent.OrderInLayer
+			if self.RUIDInfo[RUID]["Layer"] == "Front" then
+				unitlayertype = "Foreground"
+			else
+				unitlayertype = "Layer1"
+				effectlayer += 1
+			end
+								
+			--플립체크
+			local flipx = false
+			local flipy = false
+			if self.RUIDInfo[RUID]["FlipX"] then
+				flipx = true
+			end
+			if self.RUIDInfo[RUID]["FlipY"] then
+				flipy = true
+			end
+								
+			if User then
+			--이펙트
+				local effect = _EffectService:PlayEffectAttached(RUID, self.Tile10025, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+							self.RUIDInfo[RUID]["Loop"], {["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"],["SortingLayer"]=unitlayertype,["OrderInLayer"]=effectlayer,["FlipX"]=flipx,["FlipY"]=flipy})
+			else
+				local effect = _EffectService:PlayEffectAttached(RUID, self.Tile10025_Enemy, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+							self.RUIDInfo[RUID]["Loop"], {["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"],["SortingLayer"]=unitlayertype,["OrderInLayer"]=effectlayer,["FlipX"]=flipx,["FlipY"]=flipy})
+			end
+			
+		end
+		
+		if User then
+			self.Tile10025:GetChildByName("Knight").Enable = true
+		else
+			self.Tile10025_Enemy:GetChildByName("Knight").Enable = true
+		end
+		
+		_GeneralDirectorLogic:OnOffTileVisible("Knight")
+	end
+
+	@ExecSpace("Client")
+	method void S10025TileBuff(boolean User)
+		-- 기사단장 시너지의 성역 타일 위에 유닛이 있을 때 버프 이펙트를 재생
+		
+		if not isvalid(self.OnFieldSynergy["S10025"]) then return end
+		if not isvalid(self.Tile10025) then return end
+		
+			local RUID = self.RUIDList["S10025"][5]
+			
+			--센터피봇사용여부 확인
+			local stringposx = self.RUIDInfo[RUID]["PosX"]
+			stringposx = self:GetPos(stringposx, self.Tile10025, User, true)
+				
+			local stringposy = self.RUIDInfo[RUID]["PosY"]
+			stringposy = self:GetPos(stringposy, self.Tile10025, User, false)
+								
+			--유닛 뒤,앞 여부 확인
+			local unitlayertype = self.Tile10025.SpriteRendererComponent.SortingLayer
+			local effectlayer = self.Tile10025.SpriteRendererComponent.OrderInLayer
+			if self.RUIDInfo[RUID]["Layer"] == "Front" then
+				unitlayertype = "Foreground"
+			else
+				unitlayertype = "Layer1"
+				effectlayer -= 1
+			end
+								
+			--플립체크
+			local flipx = false
+			local flipy = false
+			if self.RUIDInfo[RUID]["FlipX"] then
+				flipx = true
+			end
+			if self.RUIDInfo[RUID]["FlipY"] then
+				flipy = true
+			end
+								
+			if User then
+		
+			--이펙트
+				if self.OnFieldSynergy["S10025"] >= 2 then
+					 _EffectService:PlayEffectAttached(RUID, self.Tile10025, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+								self.RUIDInfo[RUID]["Loop"], {["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"],["SortingLayer"]=unitlayertype,["OrderInLayer"]=effectlayer,["FlipX"]=flipx,["FlipY"]=flipy})
+				end
+			else
+				_EffectService:PlayEffectAttached(RUID, self.Tile10025_Enemy, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+							self.RUIDInfo[RUID]["Loop"], {["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"],["SortingLayer"]=unitlayertype,["OrderInLayer"]=effectlayer,["FlipX"]=flipx,["FlipY"]=flipy})
+			end
+	end
+
+	@ExecSpace("Client")
+	method table GetOnFieldUnit(string ID, boolean User)
+		-- 필드에 배치된 유닛들 중 특정 시너지 ID를 가진 유닛들을 필터링하여 반환
+		--필드 위에 올려진 유닛들 중 ID 시너지를 갖고 있는 유닛들을 반환
+		local map = _UserService.LocalPlayer.CurrentMap
+		local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+		local EnemyUnits = _UserService.LocalPlayer.TeamManager.EnemyUnits
+		
+		local onfieldunits = {}
+		if User then
+			for i = 1, #OwnUnits do
+				if isvalid(OwnUnits[i].UnitInfo) then
+					if OwnUnits[i].UnitInfo:IsOnFieldUnit( ) then
+						if OwnUnits[i].UnitInfo:DoesHaveSynergy(ID) then
+							table.insert(onfieldunits,OwnUnits[i])
+						end
+					end
+				else
+					log("UnitInfo가 왜 없지 = ", OwnUnits[i].Name)
+				end
+				
+			end
+		else
+			for i = 1, #EnemyUnits do
+				if EnemyUnits[i].UnitInfo:DoesHaveSynergy(ID) then
+					table.insert(onfieldunits,EnemyUnits[i])
+				end
+			end
+		end
+		
+		return onfieldunits
+	end
+
+	@ExecSpace("Client")
+	method integer GetSynergyStep(string SynergyID, boolean User, integer count)
+		-- 시너지 개수에 따른 시너지 단계를 계산하여 반환 (0이면 비활성화)
+		--copied가 들어온 경우를 대비한 코드
+		local table = _UtilLogic:Split(SynergyID,"_")
+		SynergyID = table[1]
+		
+		local synergyinfo = self.SynergyInfo
+		
+		if User then
+			local onfieldunits = self.OnFieldSynergy[SynergyID]
+				
+			local data = synergyinfo[SynergyID]
+			
+			for i=1,#data do
+				if onfieldunits == data[i]then
+					return i
+				end
+			end
+			return 0
+		else
+			local data = synergyinfo[SynergyID]
+				
+			for i = 1, #data do
+				if count == data[i]then
+					return i
+				end
+			end
+			
+			return 0
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(string SynergyID, string RUID, boolean User)
+		-- 시너지 이펙트를 재생하며 부착 타입에 따라 맵, 시너지 유닛, 모든 유닛에 적용
+		local map = _UserService.LocalPlayer.CurrentMap
+		local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+		local enemyunits = _UserService.LocalPlayer.TeamManager.EnemyUnits
+		local effecttable = {}
+		
+		--필드 위에 올라간 유닛들 중 SynergyID를 갖고 있는 유닛
+		local onfieldunits = self:GetOnFieldUnit(SynergyID, User)
+		
+		if not isvalid(self.RUIDInfo[RUID]) then
+			return
+		end
+		
+		--attach 위치 확인
+		local attach = self.RUIDInfo[RUID]["AttachedType"]
+		
+		local playeffect = function()
+			if attach == "Map" then
+				local posx = 0
+				local posy = 0
+				posy = tonumber(self.RUIDInfo[RUID]["PosY"])
+				if User then
+					posx = tonumber(self.RUIDInfo[RUID]["PosX"])
+				else
+					posx = tonumber(self.RUIDInfo[RUID]["PosX"]) * -1
+				end
+				
+				--이펙트
+				local options={["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"]}
+				local effect = _EffectService:PlayEffect(RUID, map, Vector3(posx,posy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+														self.RUIDInfo[RUID]["Loop"], options)
+				
+				table.insert(effecttable,effect)
+				
+			elseif attach == "Synergy" then
+				for i = 1, #onfieldunits do
+					--센터피봇사용여부 확인
+					local stringposx = self.RUIDInfo[RUID]["PosX"]
+					stringposx = self:GetPos(stringposx, onfieldunits[i], User, true)
+		
+					local stringposy = self.RUIDInfo[RUID]["PosY"]
+					stringposy = self:GetPos(stringposy, onfieldunits[i], User, false)
+					
+					--유닛 뒤,앞 여부 확인
+					local unitlayertype = onfieldunits[i].SpriteRendererComponent.SortingLayer
+					local effectlayer = onfieldunits[i].SpriteRendererComponent.OrderInLayer
+					if self.RUIDInfo[RUID]["Layer"] == "Front" then
+						unitlayertype = "Foreground"
+					else
+						unitlayertype = "Layer1"
+						effectlayer -= 1
+					end
+		
+					--플립체크
+					local flipx = false
+					local flipy = false
+					if self.RUIDInfo[RUID]["FlipX"] then
+						flipx = true
+					end
+					if self.RUIDInfo[RUID]["FlipY"] then
+						flipy = true
+					end
+					
+					if User == false then
+						flipx = not flipx
+					end
+					
+					--이펙트
+					local options={["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"], ["SortingLayer"]=unitlayertype, ["OrderInLayer"]=effectlayer, ["FlipX"]=flipx, ["FlipY"]=flipy}
+					local effect = _EffectService:PlayEffectAttached(RUID, onfieldunits[i], Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+														self.RUIDInfo[RUID]["Loop"], options)
+					table.insert(effecttable,effect)
+				end
+			else
+				if User then
+					for i = 1, #OwnUnits do
+						if OwnUnits[i].UnitInfo:IsOnFieldUnit( ) then
+							--센터피봇사용여부 확인
+							local stringposx = self.RUIDInfo[RUID]["PosX"]
+							stringposx = self:GetPos(stringposx, OwnUnits[i], User, true)
+			
+							local stringposy = self.RUIDInfo[RUID]["PosY"]
+							stringposy = self:GetPos(stringposy, OwnUnits[i], User, false)
+							
+							--유닛 뒤,앞 여부 확인
+							local unitlayertype = OwnUnits[i].SpriteRendererComponent.SortingLayer
+							local effectlayer = OwnUnits[i].SpriteRendererComponent.OrderInLayer
+							if self.RUIDInfo[RUID]["Layer"] == "Front" then
+								unitlayertype = "Foreground"
+							else
+								effectlayer -= 1
+							end
+							
+							--플립체크
+							local flipx = false
+							local flipy = false
+							if self.RUIDInfo[RUID]["FlipX"] then
+								flipx = true
+							end
+							if self.RUIDInfo[RUID]["FlipY"] then
+								flipy = true
+							end
+							
+							
+							--이펙트
+							local options={["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"], ["SortingLayer"]=unitlayertype, ["OrderInLayer"]=effectlayer, ["FlipX"]=flipx, ["FlipY"]=flipy}
+							local effect = _EffectService:PlayEffectAttached(RUID, OwnUnits[i], Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"],self.RUIDInfo[RUID]["ScaleY"],1),
+																self.RUIDInfo[RUID]["Loop"], options)
+							
+							table.insert(effecttable, effect)
+						end
+					end
+				else
+					for i =1 , #enemyunits do
+						--센터피봇사용여부 확인
+						local stringposx = self.RUIDInfo[RUID]["PosX"]
+						stringposx = self:GetPos(stringposx, enemyunits[i], User, true)
+			
+						local stringposy = self.RUIDInfo[RUID]["PosY"]
+						stringposy = self:GetPos(stringposy, enemyunits[i], User, false)
+		
+						--유닛 뒤,앞 여부 확인
+						local unitlayertype = enemyunits[i].SpriteRendererComponent.SortingLayer
+						local effectlayer = enemyunits[i].SpriteRendererComponent.OrderInLayer
+						if self.RUIDInfo[RUID]["Layer"] == "Front" then
+							unitlayertype = "Foreground"
+						else
+							effectlayer -= 1
+						end
+						
+						--플립체크
+						local flipx = false
+						local flipy = false
+						if self.RUIDInfo[RUID]["FlipX"] == false then
+							flipx = true
+						end
+						if self.RUIDInfo[RUID]["FlipY"] then
+							flipy = true
+						end
+						
+						
+						
+						--이펙트
+						local options={["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"], ["SortingLayer"]=unitlayertype, ["OrderInLayer"]=effectlayer, ["FlipX"]=flipx, ["FlipY"]=flipy}
+						local effect = _EffectService:PlayEffectAttached(RUID, enemyunits[i], Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"],1),
+																self.RUIDInfo[RUID]["Loop"], options)
+							
+						table.insert(effecttable,effect)
+					end
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(playeffect, self.RUIDInfo[RUID]["DelayTime"])
+		
+		--루프도는 이펙트라면 제거까지 처리
+		local removeeffect = function()
+			if self.RUIDInfo[RUID]["Loop"] then
+				for i = 1, #effecttable do
+					_EffectService:RemoveEffect(effecttable[i])
+				end
+			else
+				table.clear(effecttable)
+			end
+		end
+		_TimerService:SetTimerOnce(removeeffect, self.RUIDInfo[RUID]["RemoveTime"])
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method number GetPos(string Pos, Entity Unit, boolean User, boolean xPos)
+		-- 이펙트 위치를 계산하며 pivot 기반 위치와 절대 위치를 지원
+		if _UtilLogic:Contains(Pos,"pivot") then
+			local centerpivot = Vector2(0,0)
+			
+			if isvalid(Unit.UnitInfo.CenterPivot) then
+				centerpivot = Unit.UnitInfo.CenterPivot
+			end
+			local scale = Unit.UnitInfo.spriteRenderer.TransformComponent.Scale
+			local split = _UtilLogic:Split(Pos,"+")
+			Pos = centerpivot.x*scale.x
+			
+			if isvalid(split[2]) and xPos then
+				if User then
+					Pos += tonumber(split[2])
+				else
+					Pos -= tonumber(split[2])
+				end
+			elseif isvalid(split[2]) and xPos == false then 
+				Pos += tonumber(split[2])
+			end
+		else
+			Pos = tonumber(Pos)
+		end
+		
+		return Pos
+	end
+
+	@ExecSpace("Client")
+	method void Set10001MascotInfo(integer stack)
+		-- 마스코트 시너지의 인기도에 따라 마스코트와 관중의 모습을 변경
+		--if _UserService.LocalPlayer.CurrentMap.Name ~= "Arena" then return end
+		if _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == false then return end
+		
+		local mascot = _UserService.LocalPlayer.CurrentMap:GetChildByName("MascotSynergy"):GetChildByName("MascotEntity")
+		stack = _UserService.LocalPlayer.SynergyManager_New.SynergyStack["S10001"]  
+		
+		
+		for i = 1, 5 do
+			mascot:GetChildByName("Crowd"..tostring(i)).Enable = false
+		end
+		
+		if _UserService.LocalPlayer.GameManager.PhaseType == "Ready" then
+			mascot.Parent:GetChildByName("Button_GetReward").Enable = true
+		end
+		
+		--stack에 따라 주변에 관중엔터티를 띄웁니다.
+		if stack > 0 and stack < 50  then
+			mascot:GetChildByName("Crowd1").Enable = true
+			mascot.SpriteRendererComponent.SpriteRUID = "010b74f18dcd44fc9ff9b50b9f804747"
+			_TweenLogic:ScaleTo(mascot,Vector2(0.4/1.2, 0.4/1.2), 0.3, EaseType.ExpoEaseOut)
+		
+			
+		elseif stack >= 50 and stack < 100 then
+			mascot:GetChildByName("Crowd2").Enable = true
+			mascot.SpriteRendererComponent.SpriteRUID = "010b74f18dcd44fc9ff9b50b9f804747"
+			_TweenLogic:ScaleTo(mascot,Vector2(0.4/1.2, 0.4/1.2), 0.3, EaseType.ExpoEaseOut)
+		
+			
+		elseif stack >= 100 and stack < 200 then
+			mascot:GetChildByName("Crowd3").Enable = true
+			mascot.SpriteRendererComponent.SpriteRUID = "010b74f18dcd44fc9ff9b50b9f804747"
+			_TweenLogic:ScaleTo(mascot,Vector2(0.5/1.2, 0.5/1.2),0.3,EaseType.ExpoEaseOut)
+		
+		
+			
+		elseif stack >= 200 and stack < 400 then
+			mascot:GetChildByName("Crowd4").Enable = true
+			mascot.SpriteRendererComponent.SpriteRUID = "ad9c258baa534442b94576d616ead6e5"
+			_TweenLogic:ScaleTo(mascot,Vector2(0.5/1.2, 0.5/1.2),0.3,EaseType.ExpoEaseOut)
+		
+		
+			
+		elseif stack >= 400 then
+			mascot:GetChildByName("Crowd5").Enable = true
+			mascot.SpriteRendererComponent.SpriteRUID = "ad9c258baa534442b94576d616ead6e5"
+			_TweenLogic:ScaleTo(mascot,Vector2(0.6/1.2, 0.6/1.2),0.3,EaseType.ExpoEaseOut)
+		
+			
+		elseif stack == 0 then
+			mascot.SpriteRendererComponent.SpriteRUID = "010b74f18dcd44fc9ff9b50b9f804747"
+			mascot.Parent:GetChildByName("Button_GetReward").Enable = false
+			_TweenLogic:ScaleTo(mascot,Vector2(0.4/1.2, 0.4/1.2), 0.3, EaseType.ExpoEaseOut)
+		
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void S10007ShadowSpawnEffect(Entity Unit, boolean User)
+		-- 그림자 시너지로 그림자 유닛이 소환될 때 소환 이펙트를 재생
+		local map = _UserService.LocalPlayer.CurrentMap
+		local RUID = self.RUIDList["S10007"][2]
+		
+		--센터피봇사용여부 확인
+		local stringposx = self.RUIDInfo[RUID]["PosX"]
+		stringposx = self:GetPos(stringposx, Unit, User, true)
+		
+		local stringposy = self.RUIDInfo[RUID]["PosY"]
+		stringposy = self:GetPos(stringposy, Unit, User, false)
+					
+		--유닛 뒤,앞 여부 확인
+		local unitlayertype = Unit.SpriteRendererComponent.SortingLayer
+		local effectlayer = Unit.SpriteRendererComponent.OrderInLayer
+		if self.RUIDInfo[RUID]["Layer"] == "Front" then
+			unitlayertype = "Foreground"
+		else
+			effectlayer -= 1
+		end
+		
+		local options={["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"], ["SortingLayer"]=unitlayertype, ["OrderInLayer"]=effectlayer}
+		_EffectService:PlayEffectAttached(RUID, Unit, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+														self.RUIDInfo[RUID]["Loop"],options)
+	end
+
+	@ExecSpace("Client")
+	method void S10021SpawnStone(Entity Stone, boolean User)
+		-- 오르비스 소환석이 소환될 때 소환 이펙트를 재생
+		for i = 1, 2 do
+			local RUID = self.RUIDList["S10021"][i+2]
+			-- 센터피봇사용여부 확인
+			local stringposx = self.RUIDInfo[RUID]["PosX"]
+			stringposx = self:GetPos(stringposx, Stone, User, true)
+				
+			local stringposy = self.RUIDInfo[RUID]["PosY"]
+			stringposy = self:GetPos(stringposy, Stone, User, false)
+								
+			-- 유닛 뒤,앞 여부 확인
+			local unitlayertype = Stone.SpriteRendererComponent.SortingLayer
+			local effectlayer = Stone.SpriteRendererComponent.OrderInLayer
+			if self.RUIDInfo[RUID]["Layer"] == "Front" then
+				unitlayertype = "Foreground"
+			else
+				effectlayer -= 1
+			end
+								
+			-- 플립체크
+			local flipx = false
+			local flipy = false
+			if self.RUIDInfo[RUID]["FlipX"] then
+				flipx = true
+			end
+			if self.RUIDInfo[RUID]["FlipY"] then
+				flipy = true
+			end
+								
+								
+			-- 이펙트
+			local options={["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"], ["SortingLayer"]=unitlayertype, ["OrderInLayer"]=effectlayer, ["FlipX"]=flipx, ["FlipY"]=flipy}
+			local effect = _EffectService:PlayEffectAttached(RUID, Stone, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+							self.RUIDInfo[RUID]["Loop"], options)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void InitOrbistile()
+		-- 오르비스 타일 효과를 초기화하고 모든 타일의 오르비스 효과를 비활성화
+		--[[local orbistile = self.Tile10021 -- 오르비스 타일
+		for k, v in pairs (orbistile) do
+			self:Set10021TilesEffect(k, nil)
+		end]]--
+		table.clear(self.Tile10021)
+		
+		for i = 1, 7 do --전장
+			local tilegroup = _UserService.LocalPlayer.CurrentMap:GetChildByName("Line_"..tostring(i))
+			for j = 1, 9 do
+				if isvalid(tilegroup:GetChildByName("Tile_"..tostring(j))) then
+					local tileentity = tilegroup:GetChildByName("Tile_"..tostring(j))
+					tileentity:GetChildByName("Orbis").SpriteRendererComponent.Color.a = 0.5
+					tileentity:GetChildByName("Orbis").Enable = false
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void S10031Direction(integer count, boolean User)
+		-- 동화 시너지 연출을 처리하며 캐릭터별로 다른 동화책 이펙트를 재생
+		--사운드
+		_PlaySoundLogic:PlaySound("M0213")
+		_TimerService:SetTimerOnce(function() _PlaySoundLogic:PlaySound("M0214") end , 0.5)
+		
+		--이펙트
+		self:PlayEffect("S10031", self.RUIDList["S10031"][1], User)
+		self:PlayEffect("S10031", self.RUIDList["S10031"][2], User)
+		self:PlayEffect("S10031", self.RUIDList["S10031"][3], User)
+		
+		-- 어떤 캐릭터냐에 따라 마지막 동화책 리소스는 달라짐
+		local onfieldunits = self:GetOnFieldUnit("S10031", User)
+		local ruidlist = _UtilLogic:Split(self.RUIDList["S10031"][4],",")
+		
+		for i = 1, #onfieldunits do
+			if onfieldunits[i].UnitInfo.charID == "C10014" then -- 월묘
+				
+				self:PlayEffect_Solo("S10031", ruidlist[1], onfieldunits[i], User)
+				goto skip
+			end
+			
+			if onfieldunits[i].UnitInfo.charID == "C10015" or onfieldunits[1].UnitInfo.charID == "C30014" then -- 호돌이, 호걸
+		
+				self:PlayEffect_Solo("S10031", ruidlist[3], onfieldunits[i], User)
+				goto skip
+			end
+			
+			if onfieldunits[i].UnitInfo.charID == "C20014" then -- 깨비
+		
+				self:PlayEffect_Solo("S10031", ruidlist[2], onfieldunits[i], User)
+				goto skip
+			end
+			
+			if onfieldunits[i].UnitInfo.charID == "C40014" or onfieldunits[1].UnitInfo.charID == "C50009" then -- 구미호, 도깨비
+		
+				self:PlayEffect_Solo("S10031", ruidlist[4], onfieldunits[i], User)
+				goto skip
+			end
+			
+			if onfieldunits[i].UnitInfo.charID == "C20015" then -- 삼미호
+		
+				self:PlayEffect_Solo("S10031", ruidlist[5], onfieldunits[i], User)
+				goto skip
+			end
+			
+			-- 상징
+			self:PlayEffect_Solo("S10031", ruidlist[6], onfieldunits[i], User)
+			
+			::skip::
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect_Solo(string SynergyID, string RUID, Entity Unit, boolean User)
+		-- 특정 유닛에게만 개별적으로 이펙트를 재생 (동화 시너지 전용)
+		--지정한 엔터티한테만 연출재생
+		local map = _UserService.LocalPlayer.CurrentMap
+		local OwnUnits = _UserService.LocalPlayer.TeamManager.OwnUnits
+		local enemyunits = _UserService.LocalPlayer.TeamManager.EnemyUnits
+		local effecttable = {}
+		
+		if not isvalid(self.RUIDInfo[RUID]) then
+			return
+		end
+		
+		local playeffect = function()
+			--센터피봇사용여부 확인
+			local stringposx = self.RUIDInfo[RUID]["PosX"]
+			stringposx = self:GetPos(stringposx, Unit, User, true)
+		
+			local stringposy = self.RUIDInfo[RUID]["PosY"]
+			stringposy = self:GetPos(stringposy, Unit, User, false)
+					
+			--유닛 뒤,앞 여부 확인
+			local unitlayertype = Unit.SpriteRendererComponent.SortingLayer
+			local effectlayer = Unit.SpriteRendererComponent.OrderInLayer
+			if self.RUIDInfo[RUID]["Layer"] == "Front" then
+				unitlayertype = "Foreground"
+			else
+				unitlayertype = "Layer1"
+				effectlayer -= 1
+			end
+		
+			--플립체크
+			local flipx = false
+			local flipy = false
+			if self.RUIDInfo[RUID]["FlipX"] then
+				flipx = true
+			end
+			if self.RUIDInfo[RUID]["FlipY"] then
+				flipy = true
+			end
+					
+			if User == false then
+				flipx = not flipx
+			end
+					
+			--이펙트
+			local options={["PlayRate"]=self.RUIDInfo[RUID]["PlayRate"], ["SortingLayer"]=unitlayertype, ["OrderInLayer"]=effectlayer, ["FlipX"]=flipx, ["FlipY"]=flipy}
+			local effect = _EffectService:PlayEffectAttached(RUID, Unit, Vector3(stringposx,stringposy,0), self.RUIDInfo[RUID]["Rotation"], Vector3(self.RUIDInfo[RUID]["ScaleX"], self.RUIDInfo[RUID]["ScaleY"], 1),
+												self.RUIDInfo[RUID]["Loop"], options)
+			table.insert(effecttable,effect)
+		end
+		
+		
+		_TimerService:SetTimerOnce(playeffect, self.RUIDInfo[RUID]["DelayTime"])
+		
+		--루프도는 이펙트라면 제거까지 처리
+		local removeeffect = function()
+			if self.RUIDInfo[RUID]["Loop"] then
+				for i = 1, #effecttable do
+					_EffectService:RemoveEffect(effecttable[i])
+				end
+			else
+				table.clear(effecttable)
+			end
+		end
+		_TimerService:SetTimerOnce(removeeffect, self.RUIDInfo[RUID]["RemoveTime"])
+	end
+
+	@ExecSpace("Client")
+	method void SetS10001StackText(integer Stack)
+		-- 마스코트 시너지의 인기도 수치를 UI 텍스트에 업데이트
+		--if _UserService.LocalPlayer.CurrentMap.Name ~= "Arena" then return end
+		if _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == false then return end
+		
+		local mascot = _UserService.LocalPlayer.CurrentMap:GetChildByName("MascotSynergy"):GetChildByName("MascotEntity")--/maps/Arena/MascotEntity
+		
+		mascot.Parent:GetChildByName("Stack").TextComponent.Text = tostring(math.floor(Stack))
+		
+	end
+
+end

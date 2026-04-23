@@ -1,0 +1,319 @@
+@Component
+script PlayerPetStorageComponent extends Component
+
+	@HideFromInspector
+	property string userId = ""
+
+	@HideFromInspector
+	property PlayerDBComponent playerDB = nil
+
+	@HideFromInspector
+	property table petInventory = {}
+
+	@HideFromInspector
+	property integer maxStorageSlotNum = 100
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID와 DB 컴포넌트 설정
+		self.userId = self.Entity.PlayerComponent.UserId
+		self.playerDB = self.Entity.PlayerDBComponent
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestAddPet(string uniqueKey, integer count, string itemId, integer level, string userId, string source, string sourceId)
+		-- 펫 추가 요청 처리 및 슬롯 공간 검증
+		if itemId == nil or itemId == "" then
+			_LocalizeLogic:ShowToast("toast246", self.Entity.PlayerComponent.UserId)
+			
+			return
+		end
+		
+		if not _CheckLogic:IsEnoughPetSlot(userId, count) then
+			_LocalizeLogic:ShowToast("toast223", self.userId)
+			
+			return
+		end
+		
+		local result = self:AddPet(uniqueKey, count, itemId, level, source, sourceId)
+		
+		if result then
+			if isvalid(_EntityService:GetEntity(uniqueKey)) then
+				_EntityService:GetEntity(uniqueKey):Destroy()
+		
+			end
+		else
+			return
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddPet(string uniqueKey, integer count, string petId, integer level, string source, string sourceId)
+		-- 펫을 인벤토리에 추가하고 DB 저장 및 클라이언트 동기화
+		self.petInventory[uniqueKey] = self:SetPetData(count, 1, petId, 0, true, uniqueKey)
+		self:SetPetInventoryData()
+		self:SyncPetInventoryInClient(uniqueKey, self.petInventory[uniqueKey], self.userId)
+		_WorldLog:LogPetFlow(self.userId, source, sourceId, _WorldLog.FlowType_Get, uniqueKey, 0, 0)
+		
+		return true
+	end
+
+	method integer GetAllPetCount()
+		-- 보유한 모든 펫의 개수를 반환
+		local count = 0 
+		
+		for key, value in pairs(self.petInventory) do
+				count = count + 1
+		end
+		
+		return count
+	end
+
+	@ExecSpace("Client")
+	method void SyncPetInventoryInClient(string uniqueKey, table itemData)
+		-- 클라이언트에서 펫 인벤토리 동기화 및 UI 갱신
+		if not isvalid(itemData) then 
+			if self.petInventory[uniqueKey] ~= nil then
+				self.petInventory[uniqueKey] = nil
+			end
+			
+			return
+		end
+		
+		local needRefreshSpec = false
+		
+		if isvalid(self.petInventory[uniqueKey]) then
+			if self.petInventory[uniqueKey].equippedSlotNum ~= itemData.equippedSlotNum then
+				needRefreshSpec = true
+			end
+		else
+			if itemData.equippedSlotNum > 0 then
+				needRefreshSpec = true
+			end
+		end
+		
+		self.petInventory[uniqueKey] = itemData
+		
+		if self.petInventory[uniqueKey].count < 0 then
+			self.petInventory[uniqueKey]  = nil
+		end
+		
+		for key, value in pairs(self.petInventory) do
+			if value.count < 1 then
+				self.petInventory[key] = nil
+			end
+		end
+		
+		_PetUILogic:RefreshPetUI()
+		_PetUILogic:RefreshPetList()
+		
+		if needRefreshSpec then
+			_MySpecLogic:RefreshSpec()
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestRemovePet(string entityId, string petId, string uniqueKey, string source)
+		-- 펫 제거 요청 처리 및 권한 검증
+		if _CheckLogic:IsCanRemovePetByUniqueKey(senderUserId, uniqueKey) then
+			local result = self:RemovePet(uniqueKey, source)
+			
+			if result then
+				if isvalid(_EntityService:GetEntity(entityId)) then
+					_EntityService:GetEntity(entityId):Destroy()
+				end
+			else
+				return
+		
+			end
+		else
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Try Remove Pet.", 0, 0, 0, 0)
+			
+			return
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean RemovePet(string uniqueKey, string source)
+		-- 펫을 인벤토리에서 제거하고 로그 기록
+		local result, error = pcall(function() _WorldLog:LogPetFlow(self.userId, source, "", _WorldLog.FlowType_Consume, uniqueKey, 0, 0) end)
+		
+		self.petInventory[uniqueKey] = nil
+		self:SetPetInventoryData()
+		self:SyncPetInventoryInClient(uniqueKey, nil, self.userId)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPetInventoryData()
+		-- 펫 인벤토리 데이터를 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local petInventoryData = {}
+		for key, value in pairs(self.petInventory) do
+			table.insert(petInventoryData, _HttpService:JSONEncode(value))
+		end
+		petInventoryData = _HttpService:JSONEncode(petInventoryData)
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["petInventoryData"] = petInventoryData
+	end
+
+	method table SetPetData(integer count, integer level, string originalId, integer equippedSlotNum, boolean isNewItem, string uniqueKey)
+		-- 펫 데이터 구조체를 생성하여 반환
+		local petData = {}
+		
+		petData.count = count
+		petData.level = level
+		petData.originalId = originalId
+		petData.equippedSlotNum = equippedSlotNum
+		petData.uniqueKey = uniqueKey
+		petData.exp = 0
+		
+		return petData
+	end
+
+	@ExecSpace("Server")
+	method void EquipPet(string uniqueKey, integer slotNum)
+		-- 펫을 지정된 슬롯에 장착하고 기존 장착 펫 해제
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if slotNum >= 2 then
+			if slotNum == 2 then
+				if  player.PlayerCharacteristicData.charStorage["PetType"].level < 1 then
+					
+					self:NoticeCantEquipPetCauseNotEnoughSlot(self.userId)
+					return
+				end 
+			elseif slotNum == 3 then
+				if  player.PlayerCharacteristicData.charStorage["PetType"].level < 2 then
+					
+					self:NoticeCantEquipPetCauseNotEnoughSlot(self.userId)
+					return
+				end 
+			end
+		end
+		local pet = self.petInventory[uniqueKey]
+		
+		for key, value in pairs(self.petInventory) do
+			if value.equippedSlotNum == slotNum then
+				self:UnEquipPet(key)
+			end
+		end
+		
+		self.petInventory[uniqueKey].equippedSlotNum = slotNum
+		self:SetPetInventoryData()
+		self:SyncPetInventoryInClient(uniqueKey, pet, self.userId)
+		self.Entity.PlayerCharacterData:CalculateStatus()
+		
+	end
+
+	@ExecSpace("Server")
+	method void UnEquipPet(string uniqueKey)
+		-- 장착된 펫을 해제하고 스탯 재계산
+		self.petInventory[uniqueKey].equippedSlotNum = 0
+		
+		self:SetPetInventoryData()
+		self:SyncPetInventoryInClient(uniqueKey, self.petInventory[uniqueKey], self.userId)
+		self.Entity.PlayerCharacterData:CalculateStatus()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddPetExp(string uniqueKey, number amount, string userId)
+		-- 펫에게 경험치를 추가하고 레벨업 처리
+		local needExp = math.maxinteger
+		local petId = self.petInventory[uniqueKey].originalId
+		local grade = _PetLogic.petData[petId].grade
+		local remain = self.petInventory[uniqueKey].exp + amount
+		local isLevelUp = false
+		local beforeExp = self.petInventory[uniqueKey].exp
+		local source = "ExpUp"
+		
+		
+		while true do
+			if self.petInventory[uniqueKey].level == 1 then
+				needExp = _PetLogic.petLevelUpData[grade].needExp_2
+			elseif self.petInventory[uniqueKey].level == 2 then
+				needExp = _PetLogic.petLevelUpData[grade].needExp_3
+			end
+			
+			if remain >= needExp then
+				self.petInventory[uniqueKey].level = self.petInventory[uniqueKey].level + 1
+				_SoundService:PlaySound("7fc2043084b44db1b0d06f4f6505ebe8", 1, userId)
+				isLevelUp = true
+				
+				if remain - needExp <= 0 then
+					if remain - needExp == 0 then
+						self.petInventory[uniqueKey].exp = 0
+					else
+						self.petInventory[uniqueKey].exp = remain
+					end
+					
+					remain = 0
+					self:NoticePetLevelUp(self.petInventory[uniqueKey].level, userId)
+		
+				else
+					self.petInventory[uniqueKey].exp = remain - needExp
+					remain -= needExp
+				end
+				
+				self.Entity:SendEvent(NewbieMissionUpdateEvent("petLevelUp", "0", 1))
+				
+				
+				if self.petInventory[uniqueKey].level >= 3 then 
+					break 
+				end
+			else
+				if isLevelUp then
+					self.petInventory[uniqueKey].exp = remain
+					source = "LevelUp"
+				else
+					self.petInventory[uniqueKey].exp = self.petInventory[uniqueKey].exp + amount
+				end
+				
+				break
+			end
+		end
+		
+		self:SetPetInventoryData()
+		self:SyncPetInventoryInClient(uniqueKey, self.petInventory[uniqueKey], self.userId)
+		self:SendPetLevelUpEvent(self.petInventory[uniqueKey].equippedSlotNum > 0, userId)
+		_WorldLog:LogPetFlow(self.userId, source, "", _WorldLog.FlowType_Change, uniqueKey, self.petInventory[uniqueKey].exp, beforeExp)
+	end
+
+	@ExecSpace("Client")
+	method void SendPetLevelUpEvent(boolean needRefreshSpec)
+		-- 펫 레벨업 이벤트 전송 및 스탯 갱신
+		self.Entity:SendEvent(PetLevelUpEvent())
+		if needRefreshSpec then
+			_MySpecLogic:RefreshSpec()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantEquipPetCauseNotEnoughSlot()
+		-- 펫 슬롯 부족으로 장착 불가 알림
+		_UIToast:ShowMessage(_LocalizeLogic:GetText("toast247"))
+	end
+
+	method table GetAllEquipedPets()
+		-- 현재 장착된 모든 펫의 목록을 반환
+		local pets = {}
+		for k,v in pairs(self.petInventory) do
+			if v.equippedSlotNum > 0 then
+				table.insert(pets,k)
+			end
+		end
+		return pets
+	end
+
+	@ExecSpace("Client")
+	method void NoticePetLevelUp(integer level)
+		-- 펫 레벨업 알림 메시지 표시
+		_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast244"), level))
+	end
+
+end

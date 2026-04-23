@@ -1,0 +1,116 @@
+@Logic
+script DynamicMapSystemLogic extends Logic
+
+	property string SourceMapName = "Arena"
+
+	property string LobbyMapName = "Lobby"
+
+	property table UserSet = {}
+
+	property table PendingList = {}
+
+	@ExecSpace("ServerOnly")
+	method boolean CreateDynamicMap(string userId)
+		-- 지정된 유저를 위한 다이나믹 맵을 생성하는 함수
+		local targetMapName = self.SourceMapName .. userId
+		local dynamicMapResult = _DynamicMapService:CreateDynamicMap("Arena", targetMapName)
+		
+		if dynamicMapResult ~= DynamicMapResultCode.Success then
+			log_error("Dynamic Map create error!!! resultCode : " .. tostring(dynamicMapResult))
+			return false
+		end
+		
+		self.UserSet[userId] = true
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DestoryDynamicMap(string userId)
+		-- 지정된 유저의 다이나믹 맵을 삭제하는 함수
+		if not self.UserSet[userId] then
+			return
+		end
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		local targetMapName = self.SourceMapName .. userId
+		
+		if userEntity == nil or userEntity.CurrentMap.MapComponent.IsDynamicMap == false then
+			local dynamicMapResult = _DynamicMapService:DestroyDynamicMap(targetMapName)
+			-- 맵이 이미 삭제된 경우가 아니면 정상적인 로직에서는 발생하면 안됨
+			if dynamicMapResult ~= DynamicMapResultCode.Success and dynamicMapResult ~= DynamicMapResultCode.DynamicMapNotFound then
+				log_error("Dynamic Map destory error!!! resultCode : " .. tostring(dynamicMapResult))
+				self:PendingUserId(userId)
+				return
+			end
+			self.UserSet[userId] = nil
+			return
+		end
+		
+		-- 주로 OnEndPlay나 UserLeaveEvent에서 호출 시 여기 로직이 호출 된다.
+		log_error("Invalid Operation!! But try destory dynamic map.")
+		
+		-- UserEntity를 강제로 Lobby로 이동시킨 뒤 파괴시킨다.
+		-- 이 함수가 호출 되는 경우는 스크립트 상 버그 또는 실제 Entity를 이동시키기 전에 파괴 요청 시
+		_TeleportService:TeleportToMapPosition(userEntity, Vector3(-1, 3.5, 1), self.LobbyMapName)
+		local dynamicMapResult = _DynamicMapService:DestroyDynamicMap(targetMapName)
+		if dynamicMapResult ~= DynamicMapResultCode.Success then
+			log_error("Dynamic Map destory error!!! resultCode : " .. tostring(dynamicMapResult))
+			self:PendingUserId(userId)
+			return
+		end
+		self.UserSet[userId] = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 로직 시작 시 타이머를 설정하고 디버그 로그를 초기화하는 함수
+		self._T.checkTimer = _TimerService:SetTimerRepeat(self.TryDestroyPendingMap, 5, 5)
+		
+		
+		if Environment:IsPublishedPlay() then
+			return
+		end
+		
+		
+		local logFunc = function()
+			local list = _DynamicMapService:GetDynamicMapNameList()
+			log("DynamicMap Count : " .. tostring(#list))
+		end
+		self._T.logTimer = _TimerService:SetTimerRepeat(logFunc, 5, 5)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 로직 종료 시 설정된 타이머들을 정리하는 함수
+		_TimerService:ClearTimer(self._T.checkTimer)
+		
+		if Environment:IsPublishedPlay() then
+			return
+		end
+		
+		_TimerService:ClearTimer(self._T.logTimer)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PendingUserId(string userId)
+		-- 다이나믹 맵 삭제에 실패한 유저 ID를 대기 목록에 추가하는 함수
+		table.insert(self.PendingList, userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TryDestroyPendingMap()
+		-- 대기 목록에 있는 다이나믹 맵들을 삭제 시도하는 함수
+		local count = #self.PendingList
+		for i=1, count do
+			local userId = self.PendingList[i]
+			local targetMapName = self.SourceMapName .. userId
+			local dynamicMapResult = _DynamicMapService:DestroyDynamicMap(targetMapName)
+			if dynamicMapResult == DynamicMapResultCode.Success then
+				table.remove(self.PendingList, i)
+				i-=1
+				count-=1
+			end
+		end
+	end
+
+end

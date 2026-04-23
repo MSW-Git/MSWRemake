@@ -1,0 +1,122 @@
+@Component
+script C10007_StarPixie_Skill extends Component
+
+	property number skillAnimLength = 1.42
+
+	@Sync
+	property Entity projectile = nil
+
+	property string attackProjectileRUID = "3123b59475a148a49f940749531c5fad"
+
+	property string hitEffectRUID = "e862ecd74f63407d98442fbf4aac10f9"
+
+	property number skillCount = 4
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength  * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		self.skillCount += 1
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		-- projectile Spwan
+		local setCount = 0
+		local spawnTimer = 0
+		local function ProjectileSpawn()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self.projectile = _UnitSetLogic_New:GetProjectileEntity(unitInfo.OwnerId, "Skill")
+				self.projectile:AddComponent(C10007_StarPixie_SkillprojectileInfo)
+				
+				self.projectile.SpriteRendererComponent.SpriteRUID = self.attackProjectileRUID
+				self.projectile.TransformComponent.Scale = unitInfo.spriteRenderer.TransformComponent.Scale
+				self.projectile.SpriteRendererComponent.FlipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+				_GeneralDirectorLogic:SetEffectAlpha(self.projectile,unitInfo.OwnerId)
+				
+				local enemies = {}
+				if unitInfo.TeamType == "Enemy" then
+					enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+				elseif unitInfo.TeamType == "User" then
+					enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+				end
+				
+				local setUnit = _BTLogic_New:getTarget(unitInfo.setTile, enemies, "Random")
+				
+				if isvalid(setUnit) then
+					self.projectile.C10007_StarPixie_SkillprojectileInfo:SetProjectile(self.Entity, setUnit, 1.5, 3, 0.5)
+					setCount += 1
+				else
+					_TimerService:ClearTimer(spawnTimer)
+				end
+				
+				if setCount >= self.skillCount then
+					_TimerService:ClearTimer(spawnTimer)
+				end
+			else
+				_TimerService:ClearTimer(spawnTimer)
+			end
+		end
+		
+		spawnTimer = _TimerService:SetTimerRepeat(ProjectileSpawn, 0.05 / skillRate, 0.5 / skillRate)
+		
+		-- 스타픽시 도전과제 
+			_AchievementService:UpdateProgress_Char(unitInfo,self.skillCount,user) 
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0054",self.Entity.UnitInfo.OwnerId)
+	end
+
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C10007_Active_SDamage_Magic[unitInfo.level]
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		self.skillCount = 4
+	end
+
+end

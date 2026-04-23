@@ -1,0 +1,304 @@
+@Logic
+script RecipeDataSetLogic extends Logic
+
+	property table TrendData = {}
+
+	property integer TrialBuffExpireMonth = 3
+
+	property integer TrendExpireMonth = 3
+
+	property string PositiveMaterial = "material://c46d9765-bef6-4412-8703-f4187a3028fb"
+
+	property string NegativeMaterial = "material://d0c68e6a-aa84-43cd-81f8-244ec233aa81"
+
+	property integer NegativeTrendWeight = 30
+
+	property integer MaxRecipeSetSlot = 5
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 레시피 데이터셋을 초기화하는 함수
+		self:LoadDataSet()
+		
+	end
+
+	method void LoadDataSet()
+		-- 트렌드 데이터를 로드하는 함수
+		table.clear(self.TrendData)
+		local tDataSet = _DataService:GetTable("TrendData")
+		for i = 1, tDataSet:GetRowCount() do
+			local tData = TrendData()
+			tData:Load(tDataSet, i)
+			
+			if self.TrendData[tData.Id] ~= nil then
+				break
+			end
+		
+			self.TrendData[tData.Id] = tData
+		end
+	end
+
+	method string IsRecipeTrend(Entity player, integer recipeId)
+		-- 레시피가 현재 트렌드인지 확인하는 함수
+		
+		local nowTrend = player.PlayerRecipe.NowTrend
+		---@type RecipeData
+		local recipeData = player.PlayerRecipe.Recipes[recipeId]
+		local recipeTag = recipeData.Tag
+		
+		for k, v in pairs(nowTrend) do
+			---@type TrendData
+			local trendData = self.TrendData[k]
+			local targetTag = trendData.TargetTag
+			
+			if targetTag == recipeTag then
+				return trendData.Type
+			end
+		end
+		return nil
+	end
+
+	method boolean IsRecipeIncludeIngredient(table ingreList, integer ingreId)
+		-- 레시피에 특정 재료가 포함되어 있는지 확인하는 함수
+		local isContained = false
+		for i = 1, #ingreList do
+			---@type RecipeIngreDrawData	
+			local data = ingreList[i]
+			
+			if data.DrawType == _RecipeIngreDrawEnum.Ingredient and ingreId == data.Id then
+				isContained = true
+				break
+			end
+		end
+		
+		return isContained
+	end
+
+	method TrendData GetTrendData(integer trendId)
+		-- 트렌드 ID로 트렌드 데이터를 반환하는 함수
+		return self.TrendData[trendId]
+	end
+
+	method integer ReturnRerollCost(integer rerollCount)
+		-- 리롤 횟수에 따른 비용을 반환하는 함수
+		if rerollCount == 0 then
+			return 0
+		end
+		
+		local defaultValue = _GetConfigDataLogic:GetConfigNumDataByKey("RecipeIngreCardRerollCostStartValue")
+		local increment = _GetConfigDataLogic:GetConfigNumDataByKey("RecipeIngreCardRerollCostIncrement")
+		
+		local multiply = increment^(rerollCount-1)
+		local cost = defaultValue * multiply
+		
+		return math.floor(cost)
+	end
+
+	method integer ReturnBestTasteScore(Entity player, string recipeTag)
+		-- 특정 태그의 레시피 중 최고 맛 점수를 반환하는 함수
+		local bestTasteScore = 0
+		for i, data in pairs(player.PlayerRecipe.Recipes) do
+			---@type RecipeData
+			local recipeData = data
+			
+			if recipeData.Tag ~= recipeTag then
+				continue
+			end
+			
+			bestTasteScore = math.max(bestTasteScore, recipeData.TasteScore)
+		end
+		
+		return bestTasteScore
+	end
+
+	method integer GetRecipeCost(RecipeData recipeData, Entity player, boolean isEffectApplied, boolean isComboBonusApplied)
+		-- 레시피의 비용을 계산하여 반환하는 함수
+		
+		local cost = recipeData.Cost
+		
+		if isEffectApplied then
+			local grillLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player,_UpgradeTypeEnum.GrillLevel)
+			local effectValue = _KitchenAppService:GetData(_KitchenAppEnumType.Grill..grillLv).EffectValue
+			local appBonus = effectValue / 100
+			
+			local bunSkinBonus = _IngredientDataSetLogic:GetBunSkinBonusRate(player)
+			local stageConfig = 0
+			local stageConfigData = _BalanceDataSetLogic:GetStageConfigData(player.PlayerStage.NowStage)
+			if isvalid(stageConfigData) == true then
+				stageConfig = stageConfigData.BurgerPriceRate
+			end
+			
+			cost = math.floor(cost * (1 + appBonus + stageConfig) * (1 + bunSkinBonus))
+		end
+		
+		if isComboBonusApplied then
+			local isRecipeCombo = _RecipeTagDataSetLogic:IsRecipeComboActiveForTag(player, recipeData.Tag)
+			if isRecipeCombo then
+				---@type RecipeComboData
+				local comboData = _RecipeTagDataSetLogic.RecipeComboData[player.PlayerRecipe.ActiveRecipeCombo]
+				local comboBonus = comboData.EffectAmount
+				
+				local positiveTrendId
+				for id, str in pairs(player.PlayerRecipe.NowTrend) do
+					local trendData = _RecipeDataSetLogic:GetTrendData(id)
+				
+					if trendData.Type == "Positive" then
+						positiveTrendId = id
+						break
+					end
+				end
+				
+				local strategyBonus = 0
+				if positiveTrendId ~= nil then
+					local trendData = _RecipeDataSetLogic:GetTrendData(positiveTrendId)
+					if comboData.EffectTarget == trendData.TargetTag then
+						strategyBonus = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.TrendMenuComboBonus, player.PlayerStage.NowStage)
+					end
+					
+				end
+				
+				cost = math.floor(cost * (1 + comboBonus + strategyBonus))
+			end
+		end
+		
+		return cost
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ReturnRandomRecipeNameCheckProhibited(Entity player, table ingreLists)
+		-- 금지어를 확인하여 랜덤 레시피 이름을 반환하는 함수
+		local randCount = 2
+		local mainTag = _RecipeTagDataSetLogic:ReturnMainTypeOfIngres(ingreLists, player)
+		
+		local burgerText = _GetLocalizationTextLogic:GetLocalizedTextServer(player.PlayerDBManager.CurrentLocaleId, "Burger")
+		
+		local indexTable = table.keys(ingreLists)
+		table.remove(indexTable, #indexTable)
+		table.remove(indexTable, 1)
+		
+		local exclusiveKeys = {}
+		for i, idx in pairs(indexTable) do
+			---@type RecipeIngreDrawData
+			local drawData = ingreLists[idx]
+			
+			local isContained = false
+			for j = 1, #exclusiveKeys do
+				if exclusiveKeys[j] == drawData.Id then
+					isContained = true
+					break
+				end
+			end
+			
+			if isContained == false then
+				table.insert(exclusiveKeys, drawData.Id)
+			end
+		end
+		
+		local getScore = function(key)
+			local ingreData = _IngredientDataSetLogic:GetIngredientData(key)
+			
+			local score = 1 
+			
+			local count = 0
+			for _, idx in pairs(indexTable) do
+				---@type RecipeIngreDrawData
+				local drawData = ingreLists[idx]
+				if drawData.Id == key then
+					count += 1
+					if count >= 2 then 
+						score += 3
+					end			
+				end
+			end
+			
+			if ingreData.Type == mainTag then 
+				score += 3
+			end
+			
+			return score
+		end
+		
+		local tryCountMax = 3
+		local tryCount = 0
+		local nameText = ""
+		
+		while (tryCount < tryCountMax) do
+			tryCount += 1
+			
+			local clonedExclusiveKeys = {}
+			table.initialize(clonedExclusiveKeys, exclusiveKeys)
+			
+			for i = 1, randCount do
+				local weightTable = {}
+				
+				for j, k in pairs(clonedExclusiveKeys) do
+					local score = getScore(k)
+					for m = 1, score do
+						table.insert(weightTable, k)
+					end
+				end
+				
+				local key = table.remove(weightTable, _UtilLogic:RandomIntegerRange(1, #weightTable))
+				if _UtilLogic:IsNilorEmptyString(key) then
+					break
+				end
+				
+				local dataKeyword = player.PlayerIngredient.IngreNameKeywords[key]
+				local nameKeyword, count = string.gsub(dataKeyword, " ", "")
+				nameText = nameText..nameKeyword
+				
+				local idx = 0
+				for j, k in pairs(clonedExclusiveKeys) do
+					if k == key then
+						idx = j
+						break			
+					end
+				end
+				table.remove(clonedExclusiveKeys, idx)
+			end
+			
+			nameText = nameText..burgerText
+			
+			
+			if _CheckProhibitedWordLogic:IsProhibitedWordUsingAPI(nameText, false) == false then
+				break 
+			else
+				nameText = ""
+			end
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(nameText) then
+			local weightTable = {}
+			for j, k in pairs(exclusiveKeys) do
+				local score = getScore(k)
+				for m = 1, score do
+					table.insert(weightTable, k)
+				end
+			end
+			
+			local key = table.remove(weightTable, _UtilLogic:RandomIntegerRange(1, #weightTable))
+			if _UtilLogic:IsNilorEmptyString(key) then
+				nameText = burgerText
+				return nameText
+			end
+			
+			local nameKeyword = player.PlayerIngredient.IngreNameKeywords[key]
+			nameText = nameKeyword..burgerText
+		end
+		
+		return nameText
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetRandomRecipeName(Entity player, table ingreLists)
+		-- 랜덤 레시피 이름 설정을 요청하는 함수
+		local recipeName = self:ReturnRandomRecipeNameCheckProhibited(player, ingreLists)
+		self:RequestSetBurgerNameInputText(recipeName, player.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void RequestSetBurgerNameInputText(string nameText)
+		-- 버거 이름 입력 텍스트를 설정하는 함수
+		_UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking.ResultEntities.UIRecipeResult.BurgerNameInput.TextComponent.Text = nameText
+	end
+
+end

@@ -1,0 +1,198 @@
+@Component
+script UIStageSettingIngredient extends Component
+
+	property Entity SpecialIngreList = "b60285ac-3a1b-43a1-803a-f1b796e1a12a"
+
+	property SyncTable<integer, Entity> SpecialIngreSlots
+
+	property Entity PromotedIngreList = "e4b38e44-e00f-4b9a-82dc-e20a3b407565"
+
+	property SyncTable<integer, Entity> PromotedIngreSlots
+
+	property SyncTable<integer, integer> PromotedIngres
+
+	property integer NowStage = 0
+
+	property Entity PromotedIngreRerollBtn = "7c39c619-c672-4911-928b-5857c7550b12"
+
+	property TextComponent BuffInfoText = "bff2e4c5-0245-4ce4-aa16-cb2ace6ff4b9"
+
+	method void Init()
+		-- UI 컴포넌트들을 초기화하는 함수
+		for i, child in pairs(self.SpecialIngreList.Children) do
+		    local childIndex = tonumber(_UtilLogic:Replace(child.Name, "Slot", ""))
+			self.SpecialIngreSlots[childIndex] = child
+		end
+		
+		for i, child in pairs(self.PromotedIngreList.Children) do
+		    local childIndex = tonumber(_UtilLogic:Replace(child.Name, "Slot", ""))
+			self.PromotedIngreSlots[childIndex] = child
+		end
+		
+		local tasteScoreBonus = _GetConfigDataLogic:GetConfigNumDataByKey("IngredientTastePointVariationUnit") * 2
+		local goldBonus = _GetConfigDataLogic:GetConfigNumDataByKey("IngredientCostVariationUnit") * 2
+		self.BuffInfoText.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("StageInfoIngredientInfoText", tasteScoreBonus, goldBonus)
+	end
+
+	method void Refresh(integer stageId)
+		-- 스테이지 설정 재료 정보를 새로고침하는 함수
+		self.NowStage = stageId
+		
+		if #table.keys(self.SpecialIngreSlots) <= 0 then
+			self:Init()
+		end
+		
+		local specialIngreList = _StageDataSetLogic:GetStageOnlyIngredient(stageId)
+		
+		for i = 1, #table.keys(self.SpecialIngreSlots) do
+			local slotIngre = specialIngreList[i]
+			local ingreData = _IngredientDataSetLogic:GetIngredientData(slotIngre)
+			
+			local slot = self.SpecialIngreSlots[i]
+			if isvalid(ingreData) == false then
+				slot.Enable = false
+				continue
+			end
+			
+			slot.Enable = true
+			slot.UIItemRewardSlot:SetItem(string.format("%d:FALSE", slotIngre), nil)
+			if isvalid(slot.UIItemRewardSlot.New) then
+				slot.UIItemRewardSlot.New.Enable = false
+			end
+			
+			local check = slot:GetChildByName("Check")
+			local lock = slot:GetChildByName("Lock")
+			local isCollected = _UserService.LocalPlayer.PlayerCollection.IngredientCollection[slotIngre]
+			if isCollected == nil then
+				isCollected = false
+			end
+			check.Enable = isCollected
+			lock.Enable = not isCollected
+		end
+		
+		if #table.keys(self.PromotedIngres) <= 0 then
+			self:SetPromotedIngres()
+		else
+			self:RefreshPromotedIngres()
+		end
+	end
+
+	method void RefreshPromotedIngres()
+		-- 추천 재료 목록을 새로고침하는 함수
+		local values = table.values(self.PromotedIngres)
+		table.sort(values, function(a, b)
+			local aGrade = _IngredientDataSetLogic:GetIngredientData(a).Grade
+			local bGrade = _IngredientDataSetLogic:GetIngredientData(b).Grade
+			return aGrade < bGrade
+		end)
+		
+		for i = 1, #table.keys(self.PromotedIngres) do
+			local ingreId = values[i]
+			local slot = self.PromotedIngreSlots[i]
+			
+			slot.UIItemRewardSlot:SetItem(string.format("%d:False", ingreId),nil)
+			if isvalid(slot.UIItemRewardSlot.New) then
+				slot.UIItemRewardSlot.New.Enable = false
+			end
+			
+			local check = slot:GetChildByName("Check")
+			local lock = slot:GetChildByName("Lock")
+			check.Enable = false
+			lock.Enable = false
+		end
+	end
+
+	method void SetPromotedIngres()
+		-- 추천 재료를 설정하는 함수
+		self._T.isProcessing = true
+		
+		local player = _UserService.LocalPlayer
+		local ingreList = _StageDataSetLogic:GetStageTotalIngredient(self.NowStage, player)
+		local specialIngreList = _StageDataSetLogic:GetStageOnlyIngredient(self.NowStage)
+		
+		table.clear(self.PromotedIngres)
+		
+		local ingrePool = {}
+		for _, ingreId in pairs(ingreList) do
+			local isSpecial = false
+			for _, sIngreId in pairs(specialIngreList) do
+				if ingreId == sIngreId then
+					isSpecial = true
+					break
+				end
+			end
+			
+			if isSpecial then
+				continue
+			end
+			
+			table.insert(ingrePool, ingreId)
+		end
+		
+		local PROMOTED_INGRE_COUNT = 4 
+		
+		local gradePool = {}
+		while (true) do
+			if #gradePool >= PROMOTED_INGRE_COUNT then
+				break
+			end
+			
+			if #ingrePool <= 0 then
+				break
+			end
+			
+			local randIngre = table.remove(ingrePool, _UtilLogic:RandomIntegerRange(1, #ingrePool))
+			local ingreData = _IngredientDataSetLogic:GetIngredientData(randIngre)
+			
+			if isvalid(ingreData) == false then
+				continue
+			end
+			
+			local isZeroContained = false
+			local isGradeContained = false
+			for _, grade in pairs(gradePool) do
+				if grade == 0 then
+					isZeroContained = true
+				end
+			
+				if grade == ingreData.Grade then
+					isGradeContained = true
+				end
+			end
+			
+			if isZeroContained == false then
+				self.PromotedIngres[0] = randIngre
+				table.insert(gradePool, 0)
+				continue
+			end
+			
+			if isGradeContained == false then
+				table.insert(gradePool, ingreData.Grade)
+				self.PromotedIngres[ingreData.Grade] = randIngre
+				continue
+			end
+		end
+		
+		self._T.isProcessing = false
+		self:RefreshPromotedIngres()
+	end
+
+	@EventSender("Entity", "7c39c619-c672-4911-928b-5857c7550b12")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Btn_Reroll"], 1)
+		self:SetPromotedIngres()
+		
+	end
+
+end

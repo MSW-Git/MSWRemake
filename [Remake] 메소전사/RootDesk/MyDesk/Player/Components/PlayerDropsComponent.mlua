@@ -1,0 +1,526 @@
+@Component
+script PlayerDropsComponent extends Component
+
+	@HideFromInspector
+	property table dropTable = {}
+
+	property integer monsterIndex = 1
+
+	property boolean isDropGoodItem = false
+
+	@HideFromInspector
+	property integer currentStage = 0
+
+	@HideFromInspector
+	property integer eliteIndex = 1
+
+	@HideFromInspector
+	property integer bossIndex = 1
+
+	property table fixedDropTable = {}
+
+	@HideFromInspector
+	property number enteredTime = 0
+
+	@HideFromInspector
+	property number minPossibleClearTime = 0
+
+	property integer seed = 0
+
+	property number lastRequestedTime = 0
+
+	@ExecSpace("ServerOnly")
+	method void Init()
+		-- 드롭 테이블 인덱스 초기화 및 클라이언트 동기화
+		self.monsterIndex = 1
+		self.eliteIndex = 1
+		self.bossIndex = 1
+		
+		self.isDropGoodItem = false
+		
+		self:SyncTableInClient(self.dropTable, self.isDropGoodItem, self.seed,false ,self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncTableInClient(table dropTable, boolean isDropGoodItem, integer seed, boolean applySeed)
+		-- 클라이언트에서 드롭 테이블과 시드 동기화
+		self.seed = seed
+		if applySeed then
+			_RandomLogic:SetSeed(self.seed)
+		end
+		self.dropTable = dropTable
+		self.isDropGoodItem = isDropGoodItem
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestDropTable(string userId)
+		-- 맵 타입에 따른 드롭 테이블 생성 요청 처리
+		if self.Entity.PlayerComponent.UserId ~= userId then 
+			_WorldLog:LogAbnormalFlow(userId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		self.seed =  _UtilLogic:RandomIntegerRange(1,999999)
+		_RandomLogic:SetSeed(self.seed)
+		
+		self:Init()
+		
+		table.clear(self.dropTable)
+		table.clear(self.fixedDropTable)
+		
+		local currentMap = self.Entity.CurrentMap
+		
+		if isvalid(currentMap.LimitMapComponent) then
+			self.dropTable = self:GetLimitLandDropTable()
+			self:RecordEnteredTime(_GameConfig:GetConfig().GAMEMODE_LIMITLAND)
+		elseif isvalid(currentMap.RandomBossMapComponent) then
+			self.bossIndex = 3
+			self.dropTable = self:GetRandomBossDropTable()
+			self:RecordEnteredTime(_GameConfig:GetConfig().GAMEMODE_RANDOMBOSS)
+			
+			for key, value in pairs(self.dropTable) do
+			end
+		else
+			self.dropTable = self:GetDefaultDropTable()
+			if self.Entity.PlayerInfoComponent:CheckAndReduceBuff("1") then 
+				self.Entity.PlayerAccount.appliedExpBuff = true
+			end
+			self:RecordEnteredTime(_GameConfig:GetConfig().GAMEMODE_BASIC)
+		end
+		
+		self:SetFixedDropTable()
+		self:SyncTableInClient(self.dropTable, self.isDropGoodItem, self.seed, true,userId)
+	end
+
+	method string GetDropString(string itemId, integer itemCount, string effectType)
+		-- 드롭 아이템 정보를 문자열 형태로 포맷팅
+		return string.format("%s/%d/%s", itemId, itemCount, effectType)
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetRandomBossDropTable()
+		-- 랜덤 보스 드롭 테이블 생성 및 확률에 따른 아이템 결정
+		local randBest = _UtilLogic:RandomDouble() * 100
+		local randGood = _UtilLogic:RandomDouble() * 100
+		local isDropped = false
+		local dropTable = {}
+		local typeIndex = _GameConfig:GetConfig().MONSTERTYPE_BOSS
+		dropTable[typeIndex] = {}
+		
+		self.isDropGoodItem = false
+		
+		if randGood <= _GameConfig:GetConfig().RANDOMBOSS_DROP_GOODPERCENT then
+			dropTable[typeIndex][self.bossIndex] = self:GetDropString(_GameConfig:GetConfig().RANDOMBOSS_DROP_GOODID, 1, "good") 
+			self.bossIndex += 1
+		
+			isDropped = true
+			self.isDropGoodItem = true
+		end
+		
+		if randBest <= _GameConfig:GetConfig().RANDOMBOSS_DROP_BESTPERCENT then
+			local rand = _UtilLogic:RandomIntegerRange(1, #_ItemDataLogic.soulPieceTable)
+			local itemId = _ItemDataLogic.soulPieceTable[rand]
+			
+			dropTable[typeIndex][self.bossIndex] = self:GetDropString(itemId, 10, "best") 
+			self.bossIndex += 1
+			
+			isDropped = true
+			self.isDropGoodItem = true
+		end
+		
+		if not isDropped then
+			dropTable[typeIndex][self.bossIndex] = self:GetDropString(_GameConfig:GetConfig().RANDOMBOSS_DROP_DEFAULTID, 1, "") 
+			self.bossIndex += 1
+		end
+		
+		return dropTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetLimitLandDropTable()
+		-- 리미트 랜드 드롭 테이블 생성 (현재 빈 테이블 반환)
+		local dropTable = {}
+		
+		return dropTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetDefaultDropTable()
+		-- 기본 맵의 드롭 테이블 생성 및 몬스터 수에 따른 드롭 계산
+		local playerEntity = self.Entity
+		local userId = playerEntity.PlayerComponent.UserId
+		local currentMap = playerEntity.CurrentMap
+		local battleMap = currentMap.BattleMap
+		
+		local monsterCount = 0
+		local eliteCount = 0
+		local bossCount = 0
+		
+		local dropTable = {}
+		
+		for i = 1, 3 do
+			dropTable[i] = {}
+		end
+		
+		for key, value in pairs(_WaveLogic.chapterData) do 
+			if key == self.currentStage then
+				for i = 1, value.lastWave do
+					local waveData = _WaveLogic:GetChapterWave(key, i)
+					local spawnWave = {}
+					local spawnWaveCall = 0
+					for k, waveRow in pairs(waveData) do
+						if waveRow.monster ~= "WAVE" then
+							for j = 1, waveRow.spawnCount do
+								local spawnFnc = function()
+									local spawnCnt = _RandomLogic:RandomIntegerRange(waveRow.spawnMin , waveRow.spawnMax)
+									local averageNum = (spawnCnt) * waveRow.life 
+		
+									if _MonsterLogic.monsterData[waveRow.monster].type == "monster" then
+										monsterCount += averageNum
+									else
+										if _UtilLogic:Contains(waveRow.monster, "EliteBoss") then
+											eliteCount += averageNum
+										else
+											bossCount += averageNum
+										end
+									end
+								end
+								table.insert(spawnWave,{func = spawnFnc,delay = (waveRow.delay + (j - 1) * waveRow.interval + spawnWaveCall  *0.001)})
+								spawnWaveCall = spawnWaveCall + 1
+							end
+						end
+					end
+					
+					table.sort(spawnWave,function(a,b) return a.delay < b.delay end)
+					for k,v in pairs(spawnWave) do
+						v.func()
+					end
+					
+				end
+				
+				break
+			end
+		end
+		
+		
+		
+		local stageData = _StageLogic.stageData[tostring(self.currentStage)]
+		local stageStep = stageData.step
+		local characteristicBonus = 0
+		local relic = self.Entity.PlayerCharacteristicData.charStorage["RelicType"] 
+		if isvalid(relic) and relic.level >= 3 then
+			characteristicBonus = 0.05
+		end
+		local petBonus = _PetLogic:GetTotalItemDropBonus(userId)
+		
+		if petBonus ~= 0 then
+			petBonus = petBonus / 100
+		end
+		
+		local accessoryBonus = _AccessoryLogic:GetStatusTable(userId)["27"] 
+		
+		if accessoryBonus ~= 0 then
+			accessoryBonus = accessoryBonus / 100
+		end
+		
+		
+		for key, value in pairs(_StageLogic.stageDropData) do
+			if value.stageStep == stageStep then
+				local monsterType = value.monsterType
+		
+				local reward = value.reward
+				local rewardCount = value.rewardCount
+				local rewardPercent = value.rewardPercent
+				local monsterNum = 0
+				local typeIndex = _GameConfig:GetConfig().MONSTERTYPE_MONSTER
+				
+				if monsterType == "monster" then
+					monsterNum = monsterCount
+				elseif monsterType == "elite" then
+					monsterNum = eliteCount
+					typeIndex = _GameConfig:GetConfig().MONSTERTYPE_ELITE
+				elseif monsterType == "boss" then
+					monsterNum = bossCount
+					typeIndex = _GameConfig:GetConfig().MONSTERTYPE_BOSS
+				end
+				
+				for i = 1, monsterNum do
+					local dropItems = _UtilLogic:Split(reward, "/")
+					local dropItemCount = _UtilLogic:Split(rewardCount, "/")
+					local dropItemPercent = _UtilLogic:Split(rewardPercent, "/")
+					local index = 1
+					
+					if typeIndex == _GameConfig:GetConfig().MONSTERTYPE_MONSTER then
+						index = self.monsterIndex
+					elseif typeIndex == _GameConfig:GetConfig().MONSTERTYPE_ELITE then
+						index = self.eliteIndex
+					elseif typeIndex == _GameConfig:GetConfig().MONSTERTYPE_BOSS then
+						index = self.bossIndex
+					end
+					
+					for j = 1, #dropItems do
+						local rand = _UtilLogic:RandomIntegerRange(1, 100000)
+						local percent = tonumber(dropItemPercent[j])
+						local percentSum = percent
+						percentSum = percentSum * (1 + petBonus + characteristicBonus + accessoryBonus) 
+						
+						if percentSum >= 100000 then
+							percentSum = 100000
+						end
+					
+						if rand <= percentSum then
+							if not isvalid(dropTable[typeIndex][index]) then
+								dropTable[typeIndex][index] = self:GetDropString(dropItems[j], tonumber(dropItemCount[j]), "")
+							else
+								dropTable[typeIndex][index] = string.format("%s,%s", dropTable[typeIndex][index], self:GetDropString(dropItems[j], tonumber(dropItemCount[j]), ""))
+							end
+						end
+					end
+					
+					if typeIndex == _GameConfig:GetConfig().MONSTERTYPE_MONSTER then
+						self.monsterIndex += 1
+					elseif typeIndex == _GameConfig:GetConfig().MONSTERTYPE_ELITE then
+						self.eliteIndex += 1
+					elseif typeIndex == _GameConfig:GetConfig().MONSTERTYPE_BOSS then
+						self.bossIndex += 1
+					end
+					
+					if i % 100 == 0 then 
+						wait(0.02)
+					end
+				end
+			end
+		end
+		
+		
+		local shuffleIndex = function(dropInfo, monsterNum)
+			if not isvalid(dropInfo) or #dropInfo <= 1 or monsterNum <= 1 then 
+				
+				return dropInfo
+			end
+			
+			local tempIndex = {}
+			local tempTable = {}
+			
+			while true do
+				local rand = _UtilLogic:RandomIntegerRange(1, monsterNum)
+				local found = false
+				
+				for j = 1, #tempIndex do 
+					if tempIndex[j] == rand then
+						found = true
+					end
+				end
+				
+				if not found then
+					table.insert(tempIndex, rand)
+				end
+				
+				if #tempIndex == #dropInfo then 
+					break
+				end
+			end
+			
+			for i = 1, #tempIndex do
+				tempTable[tempIndex[i]] = dropInfo[i]
+			end
+			
+			return tempTable
+		end
+		
+		dropTable[_GameConfig:GetConfig().MONSTERTYPE_MONSTER] = shuffleIndex(dropTable[_GameConfig:GetConfig().MONSTERTYPE_MONSTER], monsterCount)
+		dropTable[_GameConfig:GetConfig().MONSTERTYPE_ELITE] = shuffleIndex(dropTable[_GameConfig:GetConfig().MONSTERTYPE_ELITE], eliteCount)
+		dropTable[_GameConfig:GetConfig().MONSTERTYPE_BOSS] = shuffleIndex(dropTable[_GameConfig:GetConfig().MONSTERTYPE_BOSS], bossCount)
+		
+		return dropTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestSetCurrentStage(integer stageId, string userId)
+		-- 현재 스테이지 설정 요청 처리 및 진입 권한 검증
+		local playerEntity = _UserService:GetUserEntityByUserId(userId)
+		local stageData = _StageLogic.stageData[tostring(stageId)]
+		local stage = stageData.step
+		
+		if not _CheckLogic:IsCanEnterStage(userId, stage) then
+			_WorldLog:LogAbnormalFlow(userId, "Invalid Try Change Stage", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		self:SetCurrnetStage(stageId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestRemoveDropData(integer monsterType, integer index)
+		-- 드롭 데이터 제거 요청 처리 및 클라이언트 동기화
+		if self.Entity.PlayerComponent.UserId ~= senderUserId then 
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		if not isvalid(self.dropTable[monsterType]) or not isvalid(self.dropTable[monsterType][index]) then
+			
+			return
+		end
+		
+		local dropData = self.dropTable[monsterType][index]
+		
+		if dropData ~= nil and dropData ~= {} then
+			self.dropTable[monsterType][index] = nil
+			self:SyncTableInClient(self.dropTable, false, self.seed,false, senderUserId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestClearDropTable()
+		-- 드롭 테이블 초기화 요청 처리
+		if self.Entity.PlayerComponent.UserId ~= senderUserId then 
+			
+			return
+		end
+		
+		self:Init()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetFixedDropTable()
+		-- 고정 드롭 테이블을 생성하여 아이템별 총 드롭 수량 계산
+		local fixedTable = {}
+		
+		for monsterType, value in pairs(self.dropTable) do
+			for monsterIndex, dropInfo in pairs(value) do
+				local str = _UtilLogic:Split(dropInfo, ",")
+				
+				for key, value in pairs(str) do
+					local splits = _UtilLogic:Split(value, "/")
+					local itemId = splits[1]
+					local count = tonumber(splits[2])
+					
+					if not isvalid(fixedTable[itemId]) or fixedTable[itemId] < 1 then
+						fixedTable[itemId] = count
+					else
+						fixedTable[itemId] += count
+					end
+				end
+			end
+		end
+		
+		self.fixedDropTable = fixedTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsValidItem(string itemId)
+		-- 아이템이 드롭 가능한지 확인하고 수량 차감
+		if not isvalid(self.fixedDropTable[itemId]) or self.fixedDropTable[itemId] < 1 then
+			
+			return false
+		else
+			self.fixedDropTable[itemId] -= 1
+			
+			return true
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecordEnteredTime(integer gameMode)
+		-- 맵 진입 시간을 기록하고 최소 클리어 시간 계산
+		self.enteredTime = _UtilLogic.ServerElapsedSeconds
+		self:RecordPossibleClearTime(gameMode)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecordPossibleClearTime(integer gameMode)
+		-- 게임 모드별 최소 클리어 시간을 계산하여 치트 방지
+		local waveTable = {}
+		
+		self.minPossibleClearTime = 0
+		
+		if gameMode == _GameConfig:GetConfig().GAMEMODE_BASIC then
+			for key, value in pairs(_WaveLogic.chapterData) do 
+				if key == self.currentStage then
+					for i = 1, value.lastWave do
+						local waveData = _WaveLogic:GetChapterWave(key, i)
+						
+						for k, waveRow in pairs(waveData) do
+							if not isvalid(waveTable[i]) then
+								waveTable[i] = {["delay"] = waveRow.delay, ["spawnTime"] = waveRow.interval * waveRow.spawnCount}
+							else
+								if waveTable[i].delay > waveRow.delay then
+									waveTable[i].delay = waveRow.delay
+								end
+								
+								local spawnTime = waveRow.interval * waveRow.spawnCount
+								
+								if waveTable[i].spawnTime > spawnTime then
+									waveTable[i].spawnTime = spawnTime
+								end
+							end
+							
+						end
+					end
+					
+					break
+				end
+			end
+			
+			for key, value in pairs(waveTable) do
+				self.minPossibleClearTime = self.minPossibleClearTime + value.delay + value.spawnTime
+			end
+		elseif gameMode == _GameConfig:GetConfig().GAMEMODE_LIMITLAND then
+			for key, value in pairs(_LimitLandWaveLogic.chapterData) do 
+				for i = 1, value.lastWave do
+					local waveData = _LimitLandWaveLogic:GetChapterWave(key, i)
+					
+					for k, waveRow in pairs(waveData) do
+						if not isvalid(waveTable[i]) then
+							waveTable[i] = {["delay"] = waveRow.delay, ["spawnTime"] = waveRow.interval * waveRow.spawnCount}
+						else
+							if waveTable[i].delay < waveRow.delay then
+								waveTable[i].delay = waveRow.delay
+							end
+							
+							local spawnTime = waveRow.interval * waveRow.spawnCount
+							
+							if waveTable[i].spawnTime < spawnTime then
+								waveTable[i].spawnTime = spawnTime
+							end
+						end
+						
+					end
+				end
+			end
+			
+			for key, value in pairs(waveTable) do
+				self.minPossibleClearTime = self.minPossibleClearTime + value.delay + value.spawnTime
+			end
+		elseif gameMode == _GameConfig:GetConfig().GAMEMODE_RANDOMBOSS then
+			self.minPossibleClearTime = 20
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsValidClearTime()
+		-- 클리어 시간이 유효한지 검증하여 치트 방지
+		local clearTime = _UtilLogic.ServerElapsedSeconds - self.enteredTime
+		
+		if clearTime >= self.minPossibleClearTime then
+			return true
+		else
+			
+			
+			
+			_WorldLog:LogAbnormalFlow(self.Entity.PlayerComponent.UserId, "Invalid ClearTime (Normal Mode)", self.enteredTime, _UtilLogic.ServerElapsedSeconds, clearTime, self.currentStage)
+			return false
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCurrnetStage(integer stage)
+		-- 현재 스테이지 설정
+		self.currentStage = stage
+	end
+
+end

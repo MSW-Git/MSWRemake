@@ -1,0 +1,206 @@
+@Logic
+script SelectSoulPiecePopUp extends Logic
+
+	property ButtonComponent btnOk = "2a6b477f-c35c-4538-b6f4-ddb4e1e8c32e"
+
+	property Entity popupGroup = "fb7a3b06-7026-4590-8efe-bb33416dd8f9"
+
+	property Entity popup = "48477e3b-c4ad-4c04-b445-3a253adefb94"
+
+	property number duration = 0.15
+
+	property number from = 0.5
+
+	property number to = 1
+
+	property boolean isOpen = false
+
+	property boolean isTweenPlaying = false
+
+	property number tweenEventId = 0
+
+	property any okHandler = nil
+
+	property any cancelHandler = nil
+
+	property Entity popUpBack = "bf63cab5-bd84-4831-b76e-187b712b935d"
+
+	property table currentSelectedSouls = {}
+
+	property GridViewComponent gridView = "1fe87df7-7d27-406a-836b-d4fbce4945d6"
+
+	property number requestedTime = 0
+
+	method void Open()
+		-- 영혼 조각 선택 팝업을 열고 그리드뷰 새로고침
+		_UIPopup:ForceClose()
+		_UIOnlyConfirmPopUp:ForceClose()
+		_SelectSoulPiecePopUp:ForceClose()
+		table.insert(_UIGroupManager.selectedPopup, self)
+		
+		if self.isOpen == true then
+			return
+		end
+		
+		self.isOpen = true
+		self.popUpBack.Enable = true
+		self.popupGroup.Enable = true
+		
+		self:StartTween(true)
+		
+		self.gridView.TotalCount = #table.keys(_CharacterLogic.indexAndId)
+		self.gridView:Refresh(true, true)
+		self:RefreshMyItemCount()
+	end
+
+	method void OnClickOk()
+		-- 확인 버튼 클릭 시 선택된 영혼 조각 사용 요청
+		if self.requestedTime + 0.5 > _UtilLogic.ServerElapsedSeconds then _UIToast:ShowMessage(_LocalizeLogic:GetText("toast23")) return end
+		
+		self.requestedTime = _UtilLogic.ServerElapsedSeconds
+		
+		if self.isTweenPlaying == true then
+			return
+		end
+		
+		if #table.keys(self.currentSelectedSouls) > 0 then
+			if _ConsumeLogic:IsCanUseItemInClient("6_000051", #table.keys(self.currentSelectedSouls)) then
+				_ConsumeLogic:RequestUseSelectiveSoulPieceTicket(self.currentSelectedSouls)
+				self:Close()
+			else
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast344"))
+				self:Close()
+			end
+		else
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast343"))
+			
+			return
+		end
+		
+		_UIGroupManager.uiPlayerStatusPopup.itemInfoPopUp:Hide()
+	end
+
+	method void Close()
+		-- 영혼 조각 선택 팝업 닫기
+		table.clear(self.currentSelectedSouls)
+		self:StartTween(false)
+	end
+
+	method void StartTween(boolean open)
+		-- 팝업 열기/닫기 애니메이션 시작
+		
+		local transform = self.popup.UITransformComponent
+		local canvasGroup = self.popupGroup.CanvasGroupComponent 
+		if open == true then
+			canvasGroup.GroupAlpha = 0
+			transform.UIScale = Vector3(self.from,self.from,1)
+		else
+		
+			transform.UIScale = Vector3(self.to,self.to,1)
+		end
+		self.isTweenPlaying = true
+		local time = 0
+		
+		
+		local preTime = _UtilLogic.ElapsedSeconds
+		
+		local tween = function()
+			local delta = _UtilLogic.ElapsedSeconds - preTime
+			time = time + delta
+			local timeValue = time	
+			preTime = _UtilLogic.ElapsedSeconds
+		
+			if time >= self.duration then
+				timeValue = self.duration
+				if open == false then
+					self.popupGroup.Enable = false
+					self.isOpen = false
+					self.popUpBack.Enable = false
+					
+					for k,v in ipairs(_UIGroupManager.selectedPopup) do
+						if v == self then
+							table.remove(_UIGroupManager.selectedPopup,k)
+						end
+					end
+				end
+				self.isTweenPlaying = false
+				_TimerService:ClearTimer(self.tweenEventId)
+			end
+			if open == false then
+				timeValue = self.duration - timeValue
+			end
+			local tweenValue = _TweenLogic:Ease(self.from, self.to, 
+				self.duration, EaseType.SineEaseIn, timeValue)
+			transform.UIScale = Vector3(tweenValue,tweenValue,1)
+			canvasGroup.GroupAlpha = timeValue / self.duration
+		end
+		self.tweenEventId = _TimerService:SetTimerRepeat(tween,1/60)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ForceClose()
+		-- 영혼 조각 선택 팝업을 강제로 닫기
+		local transform = self.popup.UITransformComponent
+		local canvasGroup = self.popupGroup.CanvasGroupComponent
+		
+		self.popupGroup.Enable = false
+		self.isOpen = false
+		self.popUpBack.Enable = false
+		self.isTweenPlaying = false
+		_TimerService:ClearTimer(self.tweenEventId)
+		transform.UIScale = Vector3(self.to,self.to,1)
+		
+		for k,v in ipairs(_UIGroupManager.selectedPopup) do
+			if v == self then
+				table.remove(_UIGroupManager.selectedPopup,k)
+			end
+		end
+		
+		table.clear(self.currentSelectedSouls)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 영혼 조각 선택 팝업 초기화 및 그리드뷰 설정
+		self.gridView.ItemEntity =  self.gridView.Entity:GetChildByName("Slot")
+		
+		self.gridView.OnRefresh = function(index, entity)
+			---@type SelectSoulPieceSlotComponent
+			local slot = entity.SelectSoulPieceSlotComponent
+			slot:SetSlot(index + 1)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshMyItemCount()
+		-- 선택된 영혼 조각 개수와 보유 아이템 개수 표시 새로고침
+		local wealthPanel = self.popUpBack:GetChildByName("WealthPanel")
+		local sum = 0 
+		
+		for key, value in pairs(self.currentSelectedSouls) do
+			sum += value
+		end
+		
+		wealthPanel:GetChildByName("ItemCount").TextComponent.Text = string.format("%d/%d", sum, _UserService.LocalPlayer.PlayerStorageComponent:GetItemCount("6_000051"))
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "2a6b477f-c35c-4538-b6f4-ddb4e1e8c32e")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 확인 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:OnClickOk()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "9d59718f-62d6-4d99-8f11-a0289446e374")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 취소 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:Close()
+	end
+
+end

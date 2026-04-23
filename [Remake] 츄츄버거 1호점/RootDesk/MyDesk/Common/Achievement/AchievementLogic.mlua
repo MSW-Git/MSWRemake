@@ -1,0 +1,136 @@
+@Logic
+script AchievementLogic extends Logic
+
+	@ExecSpace("ServerOnly")
+	method void CheckAchievementAchieved(Entity player, integer type)
+		-- 플레이어의 업적 달성 상태를 확인하고 업데이트
+		local value = player.PlayerAchievement:ReturnAchievementProgress(type)
+		
+		local tempTable = {}
+		for k, v in pairs(_AchievementDataSetLogic.AchiIdData) do
+			---@type AchievementIdData
+			local idData = v
+			
+			if idData.Type == type then
+				table.insert(tempTable, k)
+			end
+		end
+		
+		table.sort(tempTable)
+		for i = 1, #tempTable do
+			local id = tempTable[i]
+			---@type AchievementIdData
+			local idData = _AchievementDataSetLogic.AchiIdData[id]
+			
+			if value >= _AchievementLogic:GetFixedTypeValue(player, idData.Type, idData.TypeValue) then
+				if not player.PlayerAchievement:IsAchievementAchieved(id) then
+					player.PlayerAchievement:SetAchieved(id, true)
+				end
+		    else
+		        if player.PlayerAchievement:IsAchievementAchieved(id) and not player.PlayerAchievement:IsAchievementComplete(id) then
+		            player.PlayerAchievement:SetAchieved(id, false)
+		        end
+			end
+		end
+	end
+
+	method integer ReturnInitialTypeValue(integer type)
+		-- 업적 타입의 초기값을 반환
+		---@type AchievementTypeData
+		local achiTypeData = _AchievementDataSetLogic.AchiTypeData[type]
+		if isvalid(achiTypeData.InitialValue) then
+			return achiTypeData.InitialValue
+		else
+			return 0
+		end
+	end
+
+	@ExecSpace("Client")
+	method string ReturnAchievementNameText(integer typeId, integer typeValue)
+		-- 업적 이름 텍스트를 현지화하여 반환
+		local localizationKey = "AchiName"..typeId
+		local typeValueText = self:ReturnConvertedTypeValue(typeId, typeValue)
+		
+		local text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat(localizationKey, typeValueText)
+		return text
+	end
+
+	@ExecSpace("Client")
+	method string ReturnAchievementDescText(integer typeId)
+		-- 업적 설명 텍스트를 현지화하여 반환
+		local localizationKey = "AchiDesc"..typeId
+		local text = _GetLocalizationTextLogic:GetText(localizationKey)
+		return text
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ReturnConvertedTypeValue(integer typeId, integer typeValue)
+		-- 업적 타입에 따라 값을 적절한 형식으로 변환하여 반환
+		---@type AchievementTypeData
+		local typeData = _AchievementDataSetLogic.AchiTypeData[typeId]
+		local valueType = typeData.ValueType
+		
+		local text = ""
+		if valueType == "TasteGrade" then
+			if typeValue > #table.keys(_TasteGradeDataSetLogic.TasteGradeData) then
+				typeValue = table.keys(_TasteGradeDataSetLogic.TasteGradeData)[#table.keys(_TasteGradeDataSetLogic.TasteGradeData)]
+			end
+			
+			---@type TasteGradeData
+			local gradeData = _TasteGradeDataSetLogic.TasteGradeData[typeValue]
+			text = gradeData.Grade
+		
+		elseif valueType == "Ranking" then
+			local realRanking = _StoreRankingDataSetLogic.MaxIdx - typeValue
+			text = _StringUtilLogic:ReturnThousandsSeparatedString(realRanking)
+				
+		elseif valueType == "ManagementLevel" then
+			---@type ManagementLevelData
+			local levelData = _ManagementDataSetLogic.ManagementLevelData[typeValue]
+			if isvalid(levelData) then
+				text = _GetLocalizationTextLogic:GetText(levelData.NameKey)
+			end
+			
+		else 
+			text = _StringUtilLogic:ReturnThousandsSeparatedString(typeValue)
+			
+		end
+		
+		return text
+	end
+
+	method integer GetFixedTypeValue(Entity player, integer achiType, integer typeValue)
+		-- 스테이지별 보정값을 적용한 업적 목표값 계산
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(player.PlayerStage.NowStage)
+		
+		if achiType == _AchievementTypeEnum.MenuSellPrice then
+			return math.floor(typeValue * (1 + stageConfig.BurgerPriceRate))
+		
+				
+			
+		elseif achiType == _AchievementTypeEnum.TipHeart then
+			return math.floor(typeValue * (1 + stageConfig.TipDropValueRate))
+			
+		elseif achiType == _AchievementTypeEnum.MonthlyEarnings then
+			local stageELData = stageData:GetStageEarningLevelData(typeValue)
+			return stageELData.BestRecipeEarnings
+			
+		elseif achiType == _AchievementTypeEnum.AccumEarnings then
+			local stageELData = stageData:GetStageEarningLevelData(typeValue)
+			
+			return stageELData.AccumEarnings
+			
+		elseif achiType == _AchievementTypeEnum.MonthlyWage then
+			return math.floor(typeValue * (1 + stageConfig.SalaryCostRate))
+			
+		elseif achiType == _AchievementTypeEnum.TrainingIncome or achiType == _AchievementTypeEnum.TrainingAccumIncome 
+			or achiType == _AchievementTypeEnum.AutoTrainingIncome or achiType == _AchievementTypeEnum.AutoTrainingAccumIncome then
+			return math.floor(typeValue * (1 + stageConfig.TrainingMoneyRate))
+			
+		end
+		
+		return typeValue
+	end
+
+end

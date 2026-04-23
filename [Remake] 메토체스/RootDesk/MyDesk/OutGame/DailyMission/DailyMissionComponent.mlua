@@ -1,0 +1,307 @@
+@Component
+script DailyMissionComponent extends Component
+
+	@TargetUserSync
+	@Description("현재 진행 중인 미션의 아이디. 1~3은 기본 미션, 4~6은 추가 미션입니다.")
+	property SyncTable<string> MissionID
+
+	@TargetUserSync
+	@Description("진행도를 나타냅니다.")
+	property SyncTable<integer> MissionProgress
+
+	@TargetUserSync
+	@Description("각 미션의 현재 상태를 나타냅니다. 0=진행 중, 1=보상수령가능, (2=보상수령함)")
+	property SyncTable<integer> MissionState
+
+	@TargetUserSync
+	property integer BonusPoint = -1
+
+	@TargetUserSync
+	@Description("보너스 보상 수령 여부에 대한 상태를 나타내는 값입니다. 0=수령한 내용 없음 / 1 이상 = 해당 단계 보상까지 수령함 (ex. 3 = 3단계 보상까지 수령)")
+	property integer BonusRewardReceiveState = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadData(string data)
+		-- DB에서 일일 미션 관련 데이터를 불러왔을 때 실행합니다.
+		-------------------------------------------------------------
+		if isvalid(data) then
+			local dataInfo = _UtilLogic:Split(data, "/")
+			for i=1, 3 do
+				-- "미션ID,미션진행도,미션상태"
+				local missionData = _UtilLogic:Split(dataInfo[i], ",")
+				
+				self.MissionID[i] = missionData[1]
+				self.MissionProgress[i] = tonumber(missionData[2])
+				self.MissionState[i] = tonumber(missionData[3])
+			end
+			
+			local bonusData = _UtilLogic:Split(dataInfo[4], ",")
+			self.BonusPoint = tonumber(bonusData[1])
+			self.BonusRewardReceiveState = tonumber(bonusData[2])
+		else
+			for i=1, 3 do
+				self.MissionID[i] = ""
+				self.MissionProgress[i] = 0
+				self.MissionState[i] = 0
+			end
+			
+			self.BonusPoint = 0
+			self.BonusRewardReceiveState = 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitDailyMission()
+		-- 매일 UTC 0시 기준으로 실행되는 함수입니다.
+		----------------------------------------------------------------
+		log("init daily Mission")
+		-- 미션 6종 리셋
+		for i=1, 3 do
+			self:RefreshMission(i)
+		end
+		
+		self.BonusPoint = 0 -- 보너스 포인트 리셋
+		self.BonusRewardReceiveState = 0 -- 보너스 보상 수령 여부 리셋
+		
+		_PlayerDataLogic:SetPlayerDailyMissionData(self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void RefreshMission_Check(integer missionIndex)
+		-- 클라이언트에서 새로고침을 요청할 때 호출합니다.
+		-------------------------------------------------
+		-- 검증1. 보상 수령 여부 (이미 보상 받은 미션은 새로고침 불가)
+		if self.MissionState[missionIndex] >= 2 then
+			log("이미 보상을 받은 상태입니다")
+			return
+		end
+		
+		-- 검증2. 시럽 보유 여부
+		if self.Entity.PlayerDataComponent.Syrup < 1 then
+			log("syrups are not enough")
+			return
+		end
+		-------------------------------------------------
+		self.Entity.PlayerDataComponent:AddSyrup("Syrup", -1, "DailyMission")	-- 시럽 소모
+		self:RefreshMission(missionIndex)
+		
+		_PlayerDataLogic:SetPlayerDailyMissionData(self.Entity.OwnerId) -- 데이터 저장
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshMission(integer missionIndex)
+		-- missionIndex 슬롯의 미션을 변경합니다. 변경할 때, 진행도도 초기화됩니다.
+		----------------------------------------------------------------
+		log(missionIndex.."번 새로 고침 요청")
+		----------------------------------------------------------------
+		-- 등장 가능한 미션 목록을 결정합니다. (규칙: 현재 플레이가 불가능한 미션은 등장하지 않도록 함)
+		local missionList = table.keys(_DailyMissionLogic.MissionCondition)
+		
+		local clearedSingleLevel = self.Entity.PlayerDataComponent.ClearLevelByMode["Single_1.0"]
+		local playableSingleLevel = 0
+		if isvalid(clearedSingleLevel) == false then
+			playableSingleLevel = 1
+		else
+			playableSingleLevel = clearedSingleLevel + 1
+		end
+		
+		local playableChallengeLevel = 0
+		if self.Entity.PlayerDataComponent.Level >= 50 then
+			playableChallengeLevel = 1
+			for i=1, 10 do
+				local clearedChallengeLevel = self.Entity.PlayerDataComponent.ClearLevelByMode[string.format("Challenge_%d", i)]
+				if isvalid(clearedChallengeLevel) == true then
+					playableChallengeLevel = math.max(playableChallengeLevel, clearedChallengeLevel+1)
+				end
+			end
+		end
+		
+		
+		for i=#missionList, 1, -1 do
+			local targetLevel = _DailyMissionLogic.MissionConditionLevel[missionList[i]]
+			-- 조건이 챌린지 모드인 경우
+			if _UtilLogic:Split(missionList[i], "_")[1] == "DM10015" then
+				if targetLevel > playableChallengeLevel then
+					table.remove(missionList, i)
+				end
+				
+			-- 싱글 모드
+			else
+				if targetLevel > playableSingleLevel then
+					table.remove(missionList, i)
+				end
+			end
+		end
+		----------------------------------------------------------------
+		self.MissionID[missionIndex] = missionList[_UtilLogic:RandomIntegerRange(1, #missionList)]
+		self.MissionProgress[missionIndex] = 0
+		self.MissionState[missionIndex] = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddDailyMissionProgress(string missionTypeID, integer playedLevel, integer addedValue)
+		-- 특정 상황마다 호출하여, 일일 미션의 진행도를 변경합니다.
+		------------------------------------------------------------------------
+		-- 기본 미션을 모두 완료한 상태인지 검증
+		local isPlayingDefaultMission = false
+		for i=1, 3 do
+			if self.MissionState[i] < 2 then
+				isPlayingDefaultMission = true
+			end
+		end
+		------------------------------------------------------------------------
+		local missionIndex_start = 1
+		local missionIndex_last = 3
+		
+		if isPlayingDefaultMission == false then
+			missionIndex_start = 4
+			missionIndex_last = 6
+		end
+		
+		-- 현재 진행 중인 미션 타입에 따라, 진행도 변경을 적용할 인덱스 값을 바꿉니다.
+		-- 기본 미션 : 1 ~ 3 / 추가 미션 : 4 ~ 6
+		for i=missionIndex_start, missionIndex_last do
+			local mID = _UtilLogic:Split(self.MissionID[i], "_")	-- "DM10001_1" --> "DM10001", "1"
+		
+			if mID[1] == missionTypeID then
+				-- 레벨 조건에 대한 검증
+				local levelCondition = _DailyMissionLogic.MissionConditionLevel[self.MissionID[i]]
+				if playedLevel < levelCondition then
+					continue
+				else
+					-- 미션 상태에 대한 검증 ('진행 중'인 경우)
+					if self.MissionState[i] < 1 then
+						self.MissionProgress[i] += addedValue
+						
+						local condition = _DailyMissionLogic.MissionCondition[self.MissionID[i]]
+						-- 목표 수치를 달성했고, 보상을 받은 상태가 아니라면, 보상 수령 가능 상태로 변경
+						if self.MissionProgress[i] >= condition then
+							self.MissionState[i] = 1
+							self.MissionProgress[i] = condition
+							_UI_AchievementPopup:InsertPopUpQueue(self.MissionID[i], 0, 2, self.Entity.OwnerId)
+						end
+					end
+				end
+			end
+		end
+		
+		_PlayerDataLogic:SetPlayerDailyMissionData(self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void ReceiveReward(integer missionIndex)
+		-- 검증
+		if self.MissionState[missionIndex] ~= 1 then
+			return
+		end
+		-------------------------------------------
+		local missionID = self.MissionID[missionIndex]
+		local playerData = self.Entity.PlayerDataComponent
+		
+		-- 정해진 보상 지급
+		self.BonusPoint += _DailyMissionLogic.MissionRewardPoint[missionID]
+			
+		-- 상태 변경 (미션을 새로 받습니다)
+		self:RefreshMission(missionIndex)
+		
+		_PlayerDataLogic:SetPlayerDailyMissionData(self.Entity.OwnerId)
+		
+		--로그 기록
+		local cDate = DateTime.UtcNow
+		local currentDate = string.format("%04d_%02d_%02d", cDate.Year, cDate.Month,cDate.Day)
+		local dailyUserListDB = _DataStorageService:GetSortableDataStorage("UserDailyMissionDB_"..currentDate)
+		dailyUserListDB:SetAndWait(self.Entity.OwnerId,self.BonusPoint)
+	end
+
+	@ExecSpace("Server")
+	method void ReceiveBonusReward()
+		-- 보너스 포인트에 따라 단계별 보상을 지급하는 함수
+		if self.BonusPoint < 20 or self.BonusRewardReceiveState >= 7 then
+			return
+		end
+		
+		local levelDelta = 0
+		-- 1단계 보상
+		if self.BonusPoint >= 20 and self.BonusRewardReceiveState < 1 then
+			self.Entity.PlayerDataComponent:AddSyrup("Repechage_Free", 1, "DailyMission")
+			self.BonusRewardReceiveState = 1
+		end
+		
+		-- 2단계 보상
+		if self.BonusPoint >= 40 and self.BonusRewardReceiveState < 2 then
+			levelDelta = self.Entity.PlayerDataComponent:AddEXP(1135,"DailyMission")
+			self.BonusRewardReceiveState = 2
+		end
+		
+		-- 3단계 보상
+		if self.BonusPoint >= 60 and self.BonusRewardReceiveState < 3 then
+			levelDelta = self.Entity.PlayerDataComponent:AddEXP(2042,"DailyMission")
+			self.BonusRewardReceiveState = 3
+		end
+		
+		-- 4단계 보상
+		if self.BonusPoint >= 80 and self.BonusRewardReceiveState < 4 then
+			levelDelta = self.Entity.PlayerDataComponent:AddEXP(3176,"DailyMission")
+			self.BonusRewardReceiveState = 4
+		end
+		
+		-- 5단계 보상
+		if self.BonusPoint >= 100 and self.BonusRewardReceiveState < 5 then
+			levelDelta = self.Entity.PlayerDataComponent:AddEXP(4821,"DailyMission")
+			self.BonusRewardReceiveState = 5
+		end
+		
+		-- 6단계 보상
+		if self.BonusPoint >= 120 and self.BonusRewardReceiveState < 6 then
+			levelDelta = self.Entity.PlayerDataComponent:AddEXP(6805,"DailyMission")
+			self.BonusRewardReceiveState = 6
+		end
+		
+		_PlayerDataLogic:SetPlayerDailyMissionData(self.Entity.OwnerId)
+		
+		if levelDelta > 0 then
+			_PlayerLevelLogic:EnableUI_LevelUpPopup(self.Entity.OwnerId)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 서버에서 동기화된 데이터에 따라 UI를 업데이트하는 함수
+		if name == "MissionID" or name == "MissionProgress" or name == "MissionState" then
+			_DailyMissionLogic:UI_RefreshMissionList()
+			self:SetRedDot()
+		end
+		
+		if name == "BonusPoint" or name == "BonusRewardReceiveState" then
+			_DailyMissionLogic:UI_RefreshPointArea()
+			self:SetRedDot()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetRedDot()
+		-- 레드닷 조건을 검사하여, 활성화합니다.
+		--------------------------------------------------------
+		local setReddot = false
+		
+		-- 조건1. 완료한 미션(=보상 수령 가능)이 있는 경우
+		for i=1, 3 do
+			if self.MissionState[i] == 1 then
+				setReddot = true
+				break
+			end
+		end
+		
+		-- 조건2. 보상 받을 수 있는 보너스 포인트를 달성한 경우
+		local pointCondition = {20, 40, 60, 80, 100, 120}
+		for i=1, 6 do
+			if self.BonusRewardReceiveState < i and self.BonusPoint >= pointCondition[i] then
+				setReddot = true
+			end
+		end
+		--------------------------------------------------------
+		local ui_redDot = _EntityService:GetEntityByPath("/ui/Lobby_HUD/List_LeftMenu/Button_DailyMission/RedDot")
+		ui_redDot.Enable = setReddot
+	end
+
+end

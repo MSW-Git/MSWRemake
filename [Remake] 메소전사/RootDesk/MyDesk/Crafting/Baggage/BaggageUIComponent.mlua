@@ -1,0 +1,580 @@
+@Component
+script BaggageUIComponent extends UICommonPopup
+
+	property Entity gridView = "cd03c43f-ae88-4915-bf87-9522de3a6b74"
+
+	property Entity originalSlot = "0e2c2231-f25d-4d67-8443-eee8d31fe300"
+
+	property table baggageTable = {}
+
+	property table baggageSlotTable = {}
+
+	property Entity itemInfo = "178bab07-c1a2-4bf5-b8b0-a5f2b5178755"
+
+	property Entity itemInfo_NormalItemPanel = "e3e07104-01f4-4938-aa68-3ccad3a037c8"
+
+	property Entity selectedButton = nil
+
+	property Entity button_openBaggage = "bb9590fc-f2ab-4642-9991-e8c4ab0379ba"
+
+	property Entity button_openBaggage_battlemap = "433e7a8a-67f9-4d33-8f56-b4a6589a0088"
+
+	property Entity itemInfo_CloseButton = "16595aee-4d07-4a65-bfae-c2b62281527d"
+
+	property Entity itemInfo_CountDownButton = "876fd7a8-a38a-4936-95da-a737ed010f33"
+
+	property Entity itemInfo_CountUpButton = "debb24e8-8b78-486a-bc9d-dbd9379ff60a"
+
+	property Entity itemInfo_RegisterQuickButton = "50e188f2-395f-4195-9e08-bccac07999fe"
+
+	property Entity itemInfo_ThrowAwayButton = "95a94168-c31c-48f9-963b-f1b8ec5ddd35"
+
+	property Entity itemInfo_UseButton = "09423b67-a09b-4072-9801-d1bd4c085d78"
+
+	property Entity itemInfo_Counting = "90706af9-fe18-4dba-bf34-9fcff916ed6d"
+
+	property Entity itemInfo_UsableItemPanel = "b2e4246b-7379-4afa-a6b8-dcb15ef4fe42"
+
+	property Entity itemInfo_NormalItemPanel_ThrowAwayButton = "7b3179ae-e815-481e-8567-7492c9eeee1b"
+
+	property integer counting = 0
+
+	property string selectedUniqueKey = ""
+
+	property Entity itemInfo_CountMin = "aee8e830-32ad-417f-8424-b7826892c3aa"
+
+	property Entity itemInfo_CountMax = "53d3d43b-c133-41e8-9f59-eefa2fa869d7"
+
+	property Entity itemInfo_SlotCount = "46837dda-42ac-43d1-a6df-bb3912a4e87f"
+
+	property Entity button_category_1 = "4a5a168d-2a28-452d-8f1f-2ae39747e605"
+
+	property Entity button_category_2 = "4a7cec8f-082c-4bde-b4f9-2f2d35a6b4b9"
+
+	property Entity button_category_3 = "857bd159-e66d-4431-b318-ae58a5ac8fc3"
+
+	property Entity button_category_4 = "c180251c-2e66-4bde-bd7e-58118426ebe7"
+
+	property table buttonCategoryEntityTable = {}
+
+	property integer selectedCategory = 0
+
+	property table redDotInfo = {}
+
+	property boolean isEnableRegisterQuickSlot = false
+
+	property Entity itemInfo_itemName = "58431761-11ad-415e-8074-6ba9f29c5c34"
+
+	method void Refresh(integer categoryNum, boolean resetPos)
+		-- 카테고리별 가방 아이템 목록 새로고침 및 그리드뷰 업데이트
+		self.baggageTable = _ItemDataLogic:GetFieldItemUniqueKeyList(categoryNum, _UserService.LocalPlayer.PlayerComponent.UserId)
+		
+		local filledSlotCount = #_ItemDataLogic:GetFieldItemUniqueKeyList(1, _UserService.LocalPlayer.PlayerComponent.UserId) 
+		local maxSlotCount = _AbilityLogic:GetAbilityBaggageStatus(_UserService.LocalPlayer.PlayerComponent.UserId) 
+		
+		self.itemInfo_SlotCount.TextComponent.Text = string.format("%d/%d", filledSlotCount, maxSlotCount)
+		
+		self:SortTable()
+		
+		self.gridView.GridViewComponent.TotalCount = #self.baggageTable
+		self.gridView.GridViewComponent:Refresh(resetPos, true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 가방 UI 컴포넌트 초기화 및 이벤트 연결
+		__base:OnBeginPlay()
+		
+		
+		local baggage = self.Entity:GetChildByName("Baggage")
+		
+		self.button_openBaggage.ButtonComponent.KeyCode = KeyboardKey.None
+		self.button_openBaggage:ConnectEvent(ButtonClickEvent, 
+			function() 
+				self:SetHeight(false)
+			end)
+		
+		
+		self.button_openBaggage_battlemap:ConnectEvent(ButtonClickEvent, 
+			function() 
+				self:SetHeight(false)
+			end)
+		
+		
+		self.itemInfo_CloseButton:ConnectEvent(ButtonClickEvent, 
+			function() 
+				self:SetInformationPanel(false, "")
+			end)
+		
+		self.itemInfo_CountUpButton:ConnectEvent(ButtonClickEvent,
+			function() 
+				self:ChangeCounting(false, 1)
+			end)
+		
+		self.itemInfo_CountDownButton:ConnectEvent(ButtonClickEvent,
+			function() 
+				self:ChangeCounting(false, -1)
+			end)
+		
+		self.itemInfo_CountMax:ConnectEvent(ButtonClickEvent,
+			function() 
+				local haveCount = _UserService.LocalPlayer.PlayerStorageComponent.storage[self.selectedUniqueKey].count
+				self:ChangeCounting(false, haveCount)
+			end)
+		
+		self.itemInfo_CountMin:ConnectEvent(ButtonClickEvent,
+			function()
+				self.counting = 0
+				self:ChangeCounting(false, 1)
+			end)
+		
+		self.itemInfo_RegisterQuickButton:ConnectEvent(ButtonClickEvent,
+			function() 	
+				local itemId = _UserService.LocalPlayer.PlayerStorageComponent.storage[self.selectedUniqueKey].originalId
+				local itemData = _ItemDataLogic:GetItemData(itemId)
+				local slot = 0
+				
+				if self.isEnableRegisterQuickSlot == true then
+					local isRegisteredQuickSlot = true
+		
+					if _CheckLogic:IsRegisteredQuickSlot(self.selectedUniqueKey, _UserService.LocalPlayer.PlayerComponent.UserId) then
+						isRegisteredQuickSlot = false
+					end
+					
+					if itemData.option.type == "HP" then
+						if isRegisteredQuickSlot then
+							_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast93"), _LocalizeLogic:GetItemName(itemId)))
+						else
+							_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast94"), _LocalizeLogic:GetItemName(itemId)))
+						end
+						_UserService.LocalPlayer.PlayerInfoComponent:SetQuickSlot(1, itemId)
+					elseif itemData.option.type == "MP" then 
+						if isRegisteredQuickSlot then
+							_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast93"), _LocalizeLogic:GetItemName(itemId)))
+						else
+							_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast94"), _LocalizeLogic:GetItemName(itemId)))
+						end
+						_UserService.LocalPlayer.PlayerInfoComponent:SetQuickSlot(2, itemId)
+					else
+						return
+					end
+				end
+			
+			end)
+		
+		self.itemInfo_ThrowAwayButton:ConnectEvent(ButtonClickEvent,
+			function()
+				if _UtilLogic:IsNilorEmptyString(self.selectedUniqueKey) then
+					return
+				end
+				local data = _UserService.LocalPlayer.PlayerStorageComponent:GetItemData(self.selectedUniqueKey)
+				local itemData = _ItemDataLogic:GetItemData(data.originalId)
+				_UIPopup:Open(_LocalizeLogic:GetText("popup10"), string.format(_LocalizeLogic:GetText("popup11"), _LocalizeLogic:GetItemName(data.originalId)), function() 		
+			
+					_UserService.LocalPlayer.PlayerStorageComponent:RequestRemoveItemByUniqueKey(self.selectedUniqueKey, self.counting, "ThrowAway")
+				self:ChangeCounting(true, 0)
+				end, function() end)
+		
+			end)
+		
+		self.itemInfo_NormalItemPanel_ThrowAwayButton:ConnectEvent(ButtonClickEvent, function()
+				if _UtilLogic:IsNilorEmptyString(self.selectedUniqueKey) then
+					return
+				end
+				local data = _UserService.LocalPlayer.PlayerStorageComponent:GetItemData(self.selectedUniqueKey)
+				local itemData = _ItemDataLogic:GetItemData(data.originalId)
+				_UIPopup:Open(_LocalizeLogic:GetText("popup10"), string.format(_LocalizeLogic:GetText("popup11"), _LocalizeLogic:GetItemName(data.originalId)), function() 		
+					_UserService.LocalPlayer.PlayerStorageComponent:RequestRemoveItemByUniqueKey(self.selectedUniqueKey, self.counting, "ThrowAway")
+				self:ChangeCounting(true, 0)
+				end, function() end)
+			end)
+		
+		self.itemInfo_UseButton:ConnectEvent(ButtonClickEvent,
+			function() 
+				if isvalid(_UserService.LocalPlayer.CurrentMap.MultiBattleMap) then 
+					if _UserService.LocalPlayer.CurrentMap.MultiBattleMap.isMultiMode then
+						
+						
+						local cnt = _UserService.LocalPlayer.MultiBattlePlayer:GetEnableUseItemCount(self.selectedUniqueKey,self.counting,false)
+						if cnt > 0 then
+							_UserService.LocalPlayer.PlayerStorageComponent:RequestUseItem(self.selectedUniqueKey, cnt)
+						end
+					end
+				end
+			end)
+		
+		
+		self.button_category_1:ConnectEvent(ButtonClickEvent,
+			function() 
+				self:ChangeCategory(1, false)
+			end)
+		
+		self.button_category_2:ConnectEvent(ButtonClickEvent,
+			function() 
+				self:ChangeCategory(2, false)
+			end)
+		
+		self.button_category_3:ConnectEvent(ButtonClickEvent,
+			function() 
+				self:ChangeCategory(3, false)
+			end)
+		
+		self.button_category_4:ConnectEvent(ButtonClickEvent,
+			function() 
+				self:ChangeCategory(4, false)
+			end)
+		
+		table.insert(self.buttonCategoryEntityTable, self.button_category_1)
+		table.insert(self.buttonCategoryEntityTable, self.button_category_2)
+		table.insert(self.buttonCategoryEntityTable, self.button_category_3)
+		table.insert(self.buttonCategoryEntityTable, self.button_category_4)
+		
+		
+		self.gridView.GridViewComponent.ItemEntity = self.originalSlot
+		
+		self.gridView.GridViewComponent.OnRefresh = function(index, entity)
+			table.clear(self.baggageSlotTable)
+			
+			entity.BaggageSlotComponent:Init(self.baggageTable[index + 1])
+			table.insert(self.baggageSlotTable, entity)
+		end
+	end
+
+	method void Show()
+		-- 가방 UI 표시 및 기본 카테고리 설정
+		if self:IsClient() then
+			if self.Entity.ContentLockComponent:CheckUIAvailable() then
+				self._T.changeItemUniqueKey = nil
+				self:ChangeCategory(1, true)
+				__base:Show()
+			end
+		end
+	end
+
+	method void Hide()
+		-- 가방 UI 숨김 및 상태 초기화
+		self:SetInformationPanel(false, "")
+		self.selectedCategory = 0
+		self._T.changeItemUniqueKey = nil
+		__base:Hide()
+	end
+
+	method void SetInformationPanel(boolean swtichOn, string uniqueKey)
+		-- 아이템 상세 정보 패널 표시/숨김 및 설정
+		self.itemInfo.Enable = swtichOn
+		self.isEnableRegisterQuickSlot = false
+		
+		if swtichOn == true then
+			local originalId = _UserService.LocalPlayer.PlayerStorageComponent.storage[uniqueKey].originalId
+			local isUsableItem =  _CheckLogic:IsFieldUsableItem(originalId) 
+			self.itemInfo_itemName.TextComponent.Text = _LocalizeLogic:GetItemName(originalId) 
+			self.itemInfo_NormalItemPanel.Enable = not isUsableItem
+			self.itemInfo_UsableItemPanel.Enable = isUsableItem
+		
+			if isvalid(_UserService.LocalPlayer.CurrentMap.MultiBattleMap) and isUsableItem then 
+				if _UserService.LocalPlayer.CurrentMap.MultiBattleMap.isMultiMode then
+					self.itemInfo_UseButton.SpriteGUIRendererComponent.ImageRUID = "680e8f1997ed470a8f599c1f671a36a8"
+					self.itemInfo_UseButton.TextComponent.FontColor = Color.white
+					self.itemInfo_UseButton.TextComponent.OutlineColor = Color.FromHexCode("#589334")
+					self.itemInfo_RegisterQuickButton.TextComponent.Text = _LocalizationService:GetText("common_Regist_QuickSlot") 
+				
+		
+					if _CheckLogic:IsFieldHpOrMpPotion(_UserService.LocalPlayer.PlayerComponent.UserId, originalId) == true then
+						self.itemInfo_RegisterQuickButton.SpriteGUIRendererComponent.ImageRUID = "680e8f1997ed470a8f599c1f671a36a8"
+						self.itemInfo_RegisterQuickButton.TextComponent.FontColor = Color.white
+						self.itemInfo_RegisterQuickButton.TextComponent.OutlineColor = Color.FromHexCode("#589334")
+						self.isEnableRegisterQuickSlot = true
+		
+					else 
+						self.itemInfo_RegisterQuickButton.SpriteGUIRendererComponent.ImageRUID = "1b817e998fc340709279e8d9b92b4b8e"
+						self.itemInfo_RegisterQuickButton.TextComponent.FontColor = Color.FromHexCode("#d1d1d1")
+						self.itemInfo_RegisterQuickButton.TextComponent.OutlineColor =Color.FromHexCode("#616161")
+					end
+		
+		
+				
+					if _CheckLogic:IsRegisteredQuickSlot(uniqueKey, _UserService.LocalPlayer.PlayerComponent.UserId) then
+						self.itemInfo_RegisterQuickButton.TextComponent.Text = _LocalizationService:GetText("common_Erase_QuickSlot")
+						self.itemInfo_RegisterQuickButton.TextComponent.OutlineColor = Color.FromHexCode("#53596B")
+						self.itemInfo_RegisterQuickButton.TextComponent.OutlineColor.a = 0.5
+						self.itemInfo_RegisterQuickButton.SpriteGUIRendererComponent.ImageRUID = "c7b38a460c434e0aa6901e187062ff10"
+					end
+				
+				end
+				
+			else
+				self.itemInfo_UseButton.SpriteGUIRendererComponent.ImageRUID = "1b817e998fc340709279e8d9b92b4b8e"
+				self.itemInfo_UseButton.TextComponent.FontColor =Color.FromHexCode("#d1d1d1")
+				self.itemInfo_UseButton.TextComponent.OutlineColor = Color.FromHexCode("#616161")
+				
+				self.itemInfo_RegisterQuickButton.SpriteGUIRendererComponent.ImageRUID = "1b817e998fc340709279e8d9b92b4b8e"
+				self.itemInfo_RegisterQuickButton.TextComponent.FontColor = Color.FromHexCode("#d1d1d1")
+				self.itemInfo_RegisterQuickButton.TextComponent.OutlineColor =Color.FromHexCode("#616161")
+		
+			end			
+			
+			if isUsableItem == true then
+				self.itemInfo:GetChildByName("ItemDescription_usable", true).TextComponent.Text = 
+				_LocalizeLogic:GetItemDesc(originalId)
+			else
+				self.itemInfo:GetChildByName("ItemDescription_normal", true).TextComponent.Text = 
+				_LocalizeLogic:GetItemDesc(originalId)
+			end
+			
+			self.itemInfo:GetChildByName("equipped", true).Enable = _CheckLogic:IsRegisteredQuickSlot(self.selectedUniqueKey, _UserService.LocalPlayer.PlayerComponent.UserId)
+					 
+			self.itemInfo:GetChildByName("img_equipped_tag", true).Enable = _CheckLogic:IsRegisteredQuickSlot(self.selectedUniqueKey, _UserService.LocalPlayer.PlayerComponent.UserId)
+		
+			self.itemInfo_UseButton:SetEnable(isUsableItem)
+			local itemSlot = self.itemInfo:GetChildByName("ItemSlot", true)
+			_CraftingLogic:SetCraftingSlot(itemSlot, originalId)
+			self:ChangeInformationCount(uniqueKey)
+			
+		
+		else
+			self.selectedUniqueKey = ""
+		end
+		
+		self:RefreshSelectedBtn()
+		
+		self:ChangeCounting(true, 0)
+	end
+
+	method void ChangeCounting(boolean reset, integer value)
+		-- 아이템 사용/버리기 수량 조절
+		if reset then
+			self.counting = 1
+			self.itemInfo_Counting.TextComponent.Text = string.format("%d", self.counting)
+		else
+			if self.selectedUniqueKey == nil then
+				return
+			end
+			local haveCount = _UserService.LocalPlayer.PlayerStorageComponent.storage[self.selectedUniqueKey].count
+		
+			if self.counting + value <= 1 then
+				self.counting = 1
+			else
+				if self.counting + value <= haveCount then
+					self.counting = self.counting + value
+				else
+					self.counting = haveCount
+				end
+			end  
+		
+			self.itemInfo_Counting.TextComponent.Text = string.format("%d", self.counting)
+		end
+		
+	end
+
+	method void ChangeCategory(integer categoryNum, boolean refreshPosReset)
+		-- 가방 카테고리 변경 및 UI 업데이트
+		
+		if categoryNum == self.selectedCategory then
+			return
+		end
+		
+		
+		self:SetInformationPanel(false, "")
+		self.selectedCategory = categoryNum
+		
+		for i = 1, #self.buttonCategoryEntityTable do
+		
+			if categoryNum == i then
+				self.buttonCategoryEntityTable[i].SpriteGUIRendererComponent.ImageRUID = "994e2ad676fe4b4c9782186b06f02a4a"
+				self.buttonCategoryEntityTable[i].TextComponent.FontColor = Color.FromHexCode("#FFFFFF")
+			else
+				self.buttonCategoryEntityTable[i].SpriteGUIRendererComponent.ImageRUID = "6cb1470eea884424886399b0fc9f3c95"
+				self.buttonCategoryEntityTable[i].TextComponent.FontColor = Color.FromHexCode("#a0acca")
+			end
+		
+		end
+		
+		self:Refresh(categoryNum, refreshPosReset)
+	end
+
+	method void ChangeInformationCount(string uniqueKey)
+		-- 아이템 상세 정보에서 수량 표시 업데이트
+		local itemSlot = self.itemInfo:GetChildByName("ItemSlot", true)
+		
+		if isvalid(itemSlot:GetChildByName("Usable_Count")) then
+			itemSlot:GetChildByName("Usable_Count").TextComponent.Text = _UserService.LocalPlayer.PlayerStorageComponent.storage[uniqueKey].count
+		end
+	end
+
+	method void RefreshSelectedBtn()
+		-- 선택된 아이템 슬롯 선택 상태 UI 업데이트
+		
+		if self.selectedUniqueKey == "" then
+			for i = 1 , #self.gridView.Children do
+				self.gridView.Children[i].BaggageSlotComponent:Selected(false)
+			end
+		else
+			for i=1 , #self.gridView.Children do
+				if self.gridView.Children[i].BaggageSlotComponent.uniqueKey == self.selectedUniqueKey then
+					self.gridView.Children[i].BaggageSlotComponent:Selected(true)
+				else
+					self.gridView.Children[i].BaggageSlotComponent:Selected(false)
+				end
+			end
+		end
+		
+	end
+
+	method void SetHeight(boolean OpenFieldShop)
+		-- 가방 UI 높이 설정 및 확장 메뉴 토글
+		if OpenFieldShop == false and _UIGroupManager:IsEnableOpenPopup() == true then 
+			if isvalid(_UserService.LocalPlayer.MultiBattlePlayer) then 
+				if _MultiHUDManager.panelExpandMenu.Enable then
+					_MultiHUDManager.panelExpandMenu.UICommonPopup:Hide()	
+				else
+					_MultiHUDManager.panelExpandMenu.UICommonPopup:Show()	
+				end
+			else
+				if _HUDManager.panelExpandMenu.Enable then
+					_HUDManager.panelExpandMenu.UICommonPopup:Hide()	
+				else
+					_HUDManager.panelExpandMenu.UICommonPopup:Show()	
+				end
+			end
+		end
+		
+		self:Show()
+	end
+
+	method void Toggle()
+		-- 가방 UI 표시/숨김 토글
+		if self.isOpen then
+			self:Hide()
+		else
+			self:Show()
+		end
+	end
+
+	method void RefreshRegisterButtonState()
+		-- 빠른 슬롯 등록 버튼 상태 새로고침
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SortTable()
+		-- 가방 아이템 목록을 등급, ID, 수량 순으로 정렬
+		local player = _UserService.LocalPlayer
+		local storage = player.PlayerStorageComponent.storage
+		
+		table.sort(self.baggageTable, function(itemKey1, itemKey2)
+			if not isvalid(storage[itemKey1]) then
+				return itemKey2
+			end
+			
+			if not isvalid(storage[itemKey2]) then
+				return itemKey1
+			end
+			
+			local id1 = storage[itemKey1].originalId
+			local id2 = storage[itemKey2].originalId
+			
+			local itemData1 = _ItemDataLogic.itemData[id1]
+			local itemData2 = _ItemDataLogic.itemData[id2]
+			
+			local gradeNum1 = _ItemDataLogic:GetGradeNum(itemData1.grade)
+			local gradeNum2 = _ItemDataLogic:GetGradeNum(itemData2.grade)
+			
+			if gradeNum1 ~= gradeNum2 then
+				return gradeNum1 > gradeNum2
+			else
+				if id1 ~= id2 then
+					return id1 < id2
+				else
+					return storage[itemKey1].count > storage[itemKey2].count
+				end
+			end
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "107a6bfb-c6ba-44b8-a333-1a90156057d1")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 가방 닫기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:Hide()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleBaggageSlotTouchEvent(BaggageSlotTouchEvent event)
+		-- 가방 슬롯 터치 이벤트 처리 및 상세 정보 표시
+		local touchedSlot = event.touchedSlot
+		
+		if isvalid(touchedSlot) then
+			if self.selectedUniqueKey == "" then 
+				self.selectedUniqueKey = touchedSlot.BaggageSlotComponent.uniqueKey
+				self:SetInformationPanel(true, touchedSlot.BaggageSlotComponent.uniqueKey)	
+			else
+				if self.selectedUniqueKey == touchedSlot.BaggageSlotComponent.uniqueKey then
+					self:SetInformationPanel(false, "")
+					return	
+				else
+					self.selectedUniqueKey = touchedSlot.BaggageSlotComponent.uniqueKey
+					self:SetInformationPanel(true, touchedSlot.BaggageSlotComponent.uniqueKey)	
+				end
+			end
+			if self.redDotInfo[self.selectedUniqueKey] == true then
+				self.redDotInfo[self.selectedUniqueKey] = false
+				touchedSlot.BaggageSlotComponent:SetReddotVisible(self.redDotInfo[self.selectedUniqueKey])
+			end
+		end
+		
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "90706af9-fe18-4dba-bf34-9fcff916ed6d")
+	handler HandleTextInputValueChangeEvent(TextInputValueChangeEvent event)
+		-- 아이템 수량 입력 필드 값 변경 이벤트 처리
+		
+		local text = event.text
+		
+		if _UtilLogic:IsNilorEmptyString(self.selectedUniqueKey) then
+			return
+		end
+		
+		local number = tonumber(text)
+		
+		if number <= 0 then
+			number = 1
+		elseif number >= 1000 then
+			number = 1000
+		end
+		
+		self.counting = 0
+		self:ChangeCounting(false, number)
+	end
+
+	@EventSender("Self")
+	handler HandleOnChangeNewMergeItem(OnChangeNewMergeItem event)
+		-- 새로운 머지 아이템 변경 이벤트 처리 및 레드닷 표시
+		local uniqueKey = event.uniqueKey
+		local itemData = event.itemData
+		
+		if self.isOpen == false then
+			return
+		end
+		
+		
+		self.redDotInfo[uniqueKey] = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleSetPlayerInfoInClient(SetPlayerInfoInClient event)
+		-- 플레이어 정보 설정 이벤트 처리 및 가방 UI 새로고침
+		if self.isOpen and _UtilLogic:IsNilorEmptyString(self.selectedUniqueKey) == false then
+			self:SetInformationPanel(true, self.selectedUniqueKey)
+			self:Refresh(self.selectedCategory, false)
+		end
+		
+	end
+
+end

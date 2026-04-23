@@ -1,0 +1,290 @@
+@Component
+script UITrialLayout extends Component
+
+	property SyncTable<integer, Entity> Layouts
+
+	property table LastIngredientData = {}
+
+	property table BurgerData = {}
+
+	property table isSpawnDelay = {}
+
+	property table IngreListData = {}
+
+	property Entity Customers = "0d83c5d4-0f9c-4de1-ae4e-b4ad1a640743"
+
+	@ExecSpace("ClientOnly")
+	method void SetLayouts()
+		-- Trial 레이아웃들을 초기화하고 트윈 데이터를 준비하는 클라이언트 전용 함수
+		for i = 1, _TrialSimpleRenderLogic.LayoutCount do
+			local layout = self.Entity:GetChildByName("BGPlatform_"..i):GetChildByName("Slot")
+			self.Layouts[i] = layout
+		end
+		
+		self._T.ingreTween = {}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearChildEntities()
+		-- Trial 종료 시 모든 자식 엔티티들을 정리하고 데이터를 초기화하는 클라이언트 전용 함수
+		for i, entity in pairs(self.Layouts) do
+			local layout = entity.UITrialLayoutSlot
+			local boxStackArea = layout.BoxStackArea
+			for j = #boxStackArea.Children, 1, -1 do
+				_EntityService:Destroy(boxStackArea.Children[j])
+			end
+			
+			local burgerParent = layout.BurgerParent
+			for j = #burgerParent.Children, 1, -1 do
+				_EntityService:Destroy(burgerParent.Children[j])
+			end
+			
+			local customerParent = layout.CustomerParent
+			for j = #customerParent.Children, 1, -1 do
+				_EntityService:Destroy(customerParent.Children[j])
+			end
+			
+			local voteArea = layout.VoteArea
+			for j = #voteArea.Children, 1, -1 do
+				_EntityService:Destroy(voteArea.Children[j])
+			end
+			
+			local customerLayout = self.Customers.UITrialCustomers.Layouts[i]
+			for j = #customerLayout.Children, 1, -1 do
+		        _EntityService:Destroy(customerLayout.Children[j])
+			end
+			
+			local logArea = layout.LogArea
+			for j = #logArea.Children, 1, -1 do
+				_EntityService:Destroy(logArea.Children[j])
+			end
+					
+			table.clear(layout.StackEntities)
+			table.clear(layout.VoteEntities)
+			table.clear(layout.StatLogEntities)
+			table.clear(layout.CustomerEntities)
+			table.clear(self.Customers.UITrialCustomers.StatIconEntities)
+			
+			_TimerService:ClearTimer(layout.notifyTimer)
+			layout.notifyTimer = 0
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnBurger(number layoutIndex, table ingreList, integer count)
+		-- 지정된 레이아웃에 버거들을 생성하는 클라이언트 전용 함수
+		local layout = self.Layouts[layoutIndex].UITrialLayoutSlot
+		
+		local parent = layout.BurgerParent
+		self.BurgerData[layoutIndex] = {}
+		self.LastIngredientData[layoutIndex] = {0, "", 0, 0, 0, 0, 0, 0}
+		
+		local burgerIndex = 1
+		for i = 1, count do
+			local countTable = {}
+			self.IngreListData[layoutIndex] = ingreList
+			
+			local ingreEntities = {}
+			local ingrePosY = {}
+			
+			for k, v in pairs(ingreList) do
+				self:SpawnIngredient(layoutIndex, k, false, burgerIndex)
+				---@type Entity
+				local data = self.LastIngredientData[layoutIndex][8]
+				table.insert(ingreEntities, data)
+				
+				table.insert(ingrePosY, data.UITransformComponent.anchoredPosition.y)
+				burgerIndex = burgerIndex + 1
+			end
+			
+			self.BurgerData[layoutIndex][i] = {ingreEntities, ingrePosY}
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnIngredient(integer layoutIndex, integer ingreIndex, boolean isTween, integer entityIndex)
+		-- 개별 재료를 생성하고 애니메이션 여부를 결정하는 클라이언트 전용 함수
+		if _TrialSimpleRenderLogic.PhaseIndex == 9 then
+			return
+		end
+		
+		local lastIngredientData
+		if isvalid(self.LastIngredientData[layoutIndex]) then
+			lastIngredientData = self.LastIngredientData[layoutIndex]
+		else
+			lastIngredientData = {0, "", 0, 0, 0, 0, 0, 0}
+		end
+		
+		local layout = self.Layouts[layoutIndex].UITrialLayoutSlot
+		
+		local burgerParent = layout.BurgerParent
+		local ingreListData = self.IngreListData[layoutIndex][ingreIndex]
+		local xSize = burgerParent.UITransformComponent.RectSize.x
+		local ingreData = _DrawBurgerUIService:ReturnIngreData(ingreListData, xSize, lastIngredientData)
+		if isTween then
+			self.LastIngredientData[layoutIndex] = _DrawBurgerUIService:TweenIngredientUI(ingreData, entityIndex, ingreIndex, burgerParent)
+		else
+			self.LastIngredientData[layoutIndex] = _DrawBurgerUIService:DrawIngredientUI(ingreData, entityIndex, ingreIndex, burgerParent)
+		end
+		
+		self.isSpawnDelay[layoutIndex] = true
+		_TimerService:SetTimerOnce(function() self.isSpawnDelay[layoutIndex] = false end, 0.1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RemoveBurger(integer layoutIndex, integer burgerIndex)
+		-- 버거를 제거하고 나머지 버거들을 아래로 이동시키는 클라이언트 전용 함수
+		if _TrialSimpleRenderLogic.PhaseIndex == 9 then
+			return
+		end
+		
+		local burgerData = self.BurgerData[layoutIndex]
+		local timerCount = 0
+		local duration = 0.5
+		
+		local playerTrial = _UserService.LocalPlayer.PlayerTrial
+		
+		local trialId = playerTrial.SelectedTrialId
+		
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, _UserService.LocalPlayer, playerTrial.NowOfficialType)
+		local missionValue = trialData:GetGradeData(challengingData.Grade).MissionCount
+		
+		for k, v in pairs(burgerData) do
+			
+			local nowCount = k
+			local lastCount = nowCount - burgerIndex
+			
+			---@type table<Entity>
+			local ingreEntityTable = v[1]
+					
+			if nowCount == burgerIndex then
+				for i = 1, #ingreEntityTable do
+					if isvalid(self._T.ingreTween[ingreEntityTable[i]]) then
+						---@type Tweener
+						local tweener = self._T.ingreTween[ingreEntityTable[i]]
+						tweener:Complete()
+						self._T.ingreTween[ingreEntityTable[i]] = nil
+					end
+					local currentPos = ingreEntityTable[i].UITransformComponent.anchoredPosition
+					
+					_UIEntityService:TweenAndFade(ingreEntityTable[i], false, Vector2(currentPos.x + 250, currentPos.y), duration)
+				end
+				
+			elseif nowCount > burgerIndex then
+				timerCount = timerCount + 1
+				_TimerService:SetTimerOnce(function()
+					for i = 1, #ingreEntityTable do
+						
+						local lastPosY = burgerData[lastCount][2][i]
+						
+						local target = _TweenLogic:PlayTween(ingreEntityTable[i].UITransformComponent.anchoredPosition, Vector2(ingreEntityTable[i].UITransformComponent.anchoredPosition.x, lastPosY),
+							duration, EaseType.CubicEaseOut, function(t)
+								if not isvalid(ingreEntityTable[i]) then return end
+								ingreEntityTable[i].UITransformComponent.anchoredPosition = t
+						end)
+						
+						self._T.ingreTween[ingreEntityTable[i]] = target
+					end
+				end, duration)		
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SuccessFunction(integer layoutIndex, integer functionIndex, TrialData trialData)
+		-- Trial 성공 이벤트를 처리하고 해당 애니메이션을 실행하는 클라이언트 전용 함수
+		local target = trialData.Target
+		local position = trialData.Type
+		local layout = self.Layouts[layoutIndex].UITrialLayoutSlot
+		
+		if position == 1 then
+			if target == "Employee" then
+				_SoundService:PlaySound(_ResourceManager.SFXTable["TrialAction"], 0.6)
+				self:RemoveBurger(layoutIndex, functionIndex)
+				
+				local nowCustomer = layout.CustomerEntities[functionIndex]
+				nowCustomer.UITrialCustomer:RequestBuyState()
+				local nextCustomer = layout.CustomerEntities[functionIndex+1]
+				if isvalid(nextCustomer) then
+					nextCustomer.UITrialCustomer:SpawnAndGetIn(nil, nil)
+				end
+				
+			end
+			
+		elseif position == 2 then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["TrialAction"], 0.6)
+			self:SpawnIngredient(layoutIndex, functionIndex, true, functionIndex)
+			
+		end
+		
+		if target == "Recipe" then
+			
+			
+		elseif target == "Employee" then
+			_TweenLogic:PlayTween(1, 0, _TrialSimpleRenderLogic.CommentDelayDefault/2, EaseType.CubicEaseOut, function(t)
+				if isvalid(layout.StackEntities[functionIndex]) == false then
+					return
+				end
+				
+				layout.StackEntities[functionIndex].SpriteGUIRendererComponent.Color.a = t
+			end)
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetStackEntities(integer layoutIndex, integer count, string targetStat)
+		-- 직원 스탯에 따라 스택 아이템들을 생성하고 배치하는 클라이언트 전용 함수
+		local layout = self.Layouts[layoutIndex].UITrialLayoutSlot
+		
+		local stackMaxLevel = math.ceil(count/5)
+		local xStackIndex = 1
+		
+		for i = count, 1, -1 do
+			
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("UISprite", i, layout.BoxStackArea)
+			entity.Enable = true
+		    entity.SpriteGUIRendererComponent.Color.a = 1
+			
+			local ruid
+			if targetStat == _EmployeeTypeEnum.Cook then
+				---@type RecipeIngreDrawData
+				local drawData = self.IngreListData[layoutIndex][i]
+				
+				if drawData.DrawType == _RecipeIngreDrawEnum.Ingredient then
+					local ingreData = _IngredientDataSetLogic:GetIngredientData(drawData.Id)
+					ruid = ingreData.IconRUID
+					
+				else
+					local detailData = _IngredientDataSetLogic:GetBunDetailData(drawData.Id, drawData.DrawDetailType)
+					ruid = detailData.IconRUID
+					
+				end
+				
+				
+			elseif targetStat == _EmployeeTypeEnum.Serving then
+				---@type RecipeTagData
+				local noneTag = _RecipeTagDataSetLogic.RecipeTagData[_RecipeTagEnum.None]
+				ruid = noneTag.PackRUID
+				
+			end
+			
+			entity.SpriteGUIRendererComponent.ImageRUID = ruid
+			entity.UITransformComponent.RectSize = Vector2(50, 50)
+			local curLevel = math.ceil(xStackIndex/5) 
+			local index = xStackIndex%5 
+				
+		    entity.UITransformComponent.AnchorsMax = Vector2(0.5, 0)
+		    entity.UITransformComponent.AnchorsMin = Vector2(0.5, 0)
+		
+			entity.UITransformComponent.anchoredPosition = _TrialLogic:ReturnStackPositionByGrid(Vector2(index, curLevel))
+			
+			xStackIndex = xStackIndex + 1
+				
+			layout.StackEntities[i] = entity
+		end
+		
+	end
+
+end

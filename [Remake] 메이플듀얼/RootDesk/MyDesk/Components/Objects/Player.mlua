@@ -1,0 +1,1310 @@
+@Component
+script Player extends Unit
+
+	property PlayerActor actor = nil
+
+	property PlayerBody body = nil
+
+	property ChatBalloonComponent chatBalloon = nil
+
+	property integer chatTimer = nil
+
+	property Vector3 originalPosition = Vector3(0,0,0)
+
+	property boolean isReady = false
+
+	property boolean isServing = true
+
+	property Entity backgroundEntity = nil
+
+	property Entity mpEntity = nil
+
+	property Integer mpInteger = nil
+
+	property any mpTweener = nil
+
+	property FriendRequestButton friendRequestButton = nil
+
+	property any friendRequestButtonTweener = nil
+
+	property Player opponent = nil
+
+	property Deck deck = nil
+
+	property Hand hand = nil
+
+	property Field field = nil
+
+	property Entity characterParentEntity = nil
+
+	property Character character = nil
+
+	property boolean isOurs = false
+
+	property string cardBack = ""
+
+	property string class = ""
+
+	property Entity endRoundSignEntity = nil
+
+	property Vector2 playPosition = Vector2(0,0)
+
+	property Vector2 battlePosition = Vector2(0,0)
+
+	property string animationState = "Idle"
+
+	property integer animationTimer = 0
+
+	property boolean isPlaying = false
+
+	property boolean isEndRoundDeclared = nil
+
+	property integer maxMp = nil
+
+	property integer mp = nil
+
+	property integer skillDamage = nil
+
+	property table taggedSkillDamageTable = nil
+
+	property boolean isImmuneToDirectAttack = nil
+
+	method table GetProperties()
+		-- 네트워크 동기화를 위한 플레이어의 핵심 속성들을 테이블로 반환
+		local propertyTable = {
+			isServing = not self.duel.isDueling or self.isServing,
+			character = self.character,
+			cardBack = self.cardBack,
+			class = self.class,
+		}
+		
+		_Table:Assign(__base:GetProperties(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		-- 속성 동기화 완료 후 클라이언트에서 플레이어 UI 및 게임 상태 업데이트
+		__base:OnSyncProperties()
+		
+		if isvalid(self.character) then
+			self.isReady = self.character:IsOwner()
+			self.character.player = self
+			self.character.Entity.AvatarRendererComponent.OrderInLayer = 0
+		end
+		
+		if self.duel.isDueling then
+			self:SetFloating(false)
+			self:ShowClassTag()
+			self:ShowDetails()
+			self:SetRoundPlayerSign(self == self.duel.roundPlayer)
+		end
+	end
+
+	method void SetVariables(table variableTable)
+		-- 변수 테이블로부터 플레이어 변수들을 설정
+		__base:SetVariables(variableTable)
+		
+		local isEndRoundDeclared = variableTable.isEndRoundDeclared
+		if isEndRoundDeclared then
+			self:SetEndRoundDeclared(isEndRoundDeclared)
+		end
+		
+		local maxMp = variableTable.maxMp 
+		if maxMp then
+			self:SetMaxMp(maxMp)
+		end
+		
+		local mp = variableTable.mp
+		if mp then
+			self:SetMp(mp)
+		end
+		
+		local skillDamage = variableTable.skillDamage
+		if skillDamage then
+			self:SetSkillDamage(skillDamage)
+		end
+		
+		local taggedSkillDamageTable = variableTable.taggedSkillDamageTable
+		if taggedSkillDamageTable then
+			self:SetTaggedSkillDamages(taggedSkillDamageTable)
+		end
+		
+		local isImmuneToDirectAttack = variableTable.isImmuneToDirectAttack
+		if isImmuneToDirectAttack ~= nil then
+			self:SetImmuneToDirectAttack(isImmuneToDirectAttack)
+		end
+	end
+
+	method table GetIndependentVariables()
+		-- 독립적인 변수들을 테이블로 반환
+		local independentVariableTable = {
+			isEndRoundDeclared = self.isEndRoundDeclared,
+			mp = self.mp,
+		}
+		
+		_Table:Assign(__base:GetIndependentVariables(), independentVariableTable)
+		
+		return independentVariableTable
+	end
+
+	method void ClearVariables()
+		-- 플레이어의 모든 변수들을 초기화
+		__base:ClearVariables()
+		
+		self.isEndRoundDeclared = nil
+		self.maxMp = nil
+		self.mp = nil
+		self.skillDamage = nil
+		self.taggedSkillDamageTable = nil
+		self.isImmuneToDirectAttack = nil
+	end
+
+	method void Clear()
+		-- 플레이어의 모든 데이터를 초기화
+		__base:Clear()
+		
+		self.isOurs = false
+	end
+
+	method void Initialize()
+		-- 플레이어를 초기화하고 기본 상태 설정
+		__base:Initialize()
+		
+		self:SetEndRoundDeclared(false)
+		self:SetMp(0)
+	end
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 플레이어 초기 설정 및 이벤트 연결
+		__base:OnBeginPlay()
+		
+		if self:IsClient() then
+			self.body.Entity:ConnectEvent(TriggerEnterEvent, function(event)
+					local character = event.TriggerBodyEntity.Character
+					if self.isServing and isvalid(character) and character == _UserService.LocalPlayer.Character and
+						_UserService.LocalPlayer.PlayerControllerComponent.Enable and character:IsAbleToReady() then
+					
+						_Server:Request(self, "Ready", {character})
+					end
+				end)
+			
+			self:SpawnAndSetFriendRequestButton()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method number GetLookAtDirection()
+		-- 플레이어가 바라보는 방향을 반환
+		return self.characterParentEntity.TransformComponent.Scale.x < 0 and 1 or -1
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetLookAtPosition(Vector2 offset, boolean isWorldSpace)
+		-- 플레이어가 바라보는 방향에 따른 오프셋 위치 계산
+		local direction = self:GetLookAtDirection()
+		local position = Vector2(offset.x * direction, offset.y)
+		if isWorldSpace  then
+			position += self:GetActorPosition()
+		end
+		
+		return position
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookLeft()
+		-- 플레이어를 왼쪽으로 향하게 설정
+		self.characterParentEntity.TransformComponent.Scale.x = 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookRight()
+		-- 플레이어를 오른쪽으로 향하게 설정
+		self.characterParentEntity.TransformComponent.Scale.x = -1
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookNothing()
+		-- 플레이어를 기본 방향으로 설정 (우리쪽/적에 따라)
+		self.characterParentEntity.TransformComponent.Scale.x = self.isOurs and -1 or 1
+	end
+
+	method table Damage(any attacker, number damage)
+		-- 플레이어가 데미지를 받을 때의 처리 및 이팩트 표시
+		local result = {}
+		
+		if attacker:IsCard() then
+			local skillDamage = attacker.player.skillDamage
+			for _, tag in ipairs(attacker.tagArray) do
+				skillDamage += attacker.player.taggedSkillDamageTable[tag] or 0
+			end
+			damage += skillDamage
+		end
+		
+		if damage > 0 and attacker:IsMinion() and attacker.isStun then
+			if self:IsClient() then
+				local damageSkin = self.resourceManager:GetResource("Damage").damageSkin
+				_DamageSkinService:PlayTextDamage(self.anchorEntity, damageSkin, DamageSkinTextType.Miss, DamageSkinTweenType.Default, Vector2(-0.075, -0.5))
+			end
+			
+			result.loseStun = true
+			result.damage = 0
+		elseif damage > 0 and attacker:IsMinion() and attacker.isScare and self.commandManager:ShareRandomBoolean() == true then
+			if self:IsClient() then
+				local damageSkin = self.resourceManager:GetResource("Damage").damageSkin
+				_DamageSkinService:PlayTextDamage(self.anchorEntity, damageSkin, DamageSkinTextType.Miss, DamageSkinTweenType.Default, Vector2(-0.075, -0.5))
+			end
+			
+			result.damage = 0
+		else
+			if self:IsClient() then
+				local damageSkin = self.resourceManager:GetResource("Damage").damageSkin
+				if damage > 0 then
+					self:Animate("Hit")
+					_DamageSkinService:Play(self.anchorEntity, damageSkin, 0, {damage}, DamageSkinTweenType.Default, {damage >= 6}, Vector2(-0.075, -0.5))
+				else
+					_DamageSkinService:PlayTextDamage(self.anchorEntity, damageSkin, DamageSkinTextType.Miss, DamageSkinTweenType.Default, Vector2(-0.075, -0.5))
+				end
+				
+			end
+			
+			self:SetHp(self.hp - damage)
+			
+			if self.hp <= 0 then
+				self:SetDead(true)
+			end
+			
+			result.damage = damage
+		end
+		
+		if self:IsClient() then
+			_SoundService:PlaySound(self.resourceManager:GetResource(self.name).damageSound, 1)
+			
+			wait(0.75)
+			
+			self:Animate("Idle")
+		end
+		
+		return result
+	end
+
+	method void SetName(string name)
+		-- 플레이어의 이름과 엔트리를 설정
+		if not _UtilLogic:IsNilorEmptyString(self.name) then
+			return
+		end
+		
+		self.name = name
+		self.entry = _Table:DeepCopy(self.entryManager:GetEntry(self.name))
+		self.resourceManager:LoadResource(self.name, nil)
+		
+		local tutorial = self.duel.tutorial
+		if isvalid(tutorial) and tutorial.duelId == 1 and isvalid(self.character) and not self.character:IsUser() then
+			self.entry.maxHp = 8
+		end
+	end
+
+	method void ReadyServerAttribute()
+		-- 서버 속성 준비 (오버라이드용)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Ready(Character character)
+		-- 서버에서 플레이어가 듀얼에 참여 준비를 완료했을 때의 처리
+		if not isvalid(character) or not self.isServing or self.isReady or not character:IsAbleToReady() then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender or self.Entity.CurrentMap.Map.mode == "RankedMatch" then
+				return
+			end
+			
+			local tutorial = self.duel.tutorial
+			if isvalid(tutorial) and tutorial.sequence == 24 then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		self.isReady = true
+		self.character = character
+		character.player = self
+		self:ReadyInClient(character)
+		if character:IsUser() then
+			self:ReadyInOwner(character, character.Entity.Name)
+		end
+		self:FixCharacter(character)
+		self.duel:SetBeginDuelTimer()
+	end
+
+	@ExecSpace("Client")
+	method void ReadyInOwner(Character character)
+		-- 클라이언트에서 소유자 플레이어의 듀얼 준비 완료 처리
+		self.isReady = true
+		
+		if isvalid(self.uiManager.DuelModule) then
+			self.uiManager.DuelModule:Close()
+		end
+		if isvalid(self.duel.mainModule) then
+			self.duel.mainModule.deckMenu:HideArrowButtons()
+		end
+		if isvalid(self.uiManager.NoticeModule) then
+			self.uiManager.NoticeModule:Hide()
+		end
+		if isvalid(self.uiManager.RewardModule) then
+			self.uiManager.RewardModule:Hide()
+		end
+		if isvalid(self.uiManager.EventModule) then
+			self.uiManager.EventModule:Hide()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ReadyInClient(Character character)
+		-- 클라이언트에서 플래이어 캐릭터 연결 설정
+		self.character = character
+		character.player = self
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FixCharacter(Character character)
+		-- 서버에서 캐릭터를 플레이어에 고정하고 설정
+		character.Entity:AttachTo(self.characterParentEntity)
+		
+		self:FixCharacterInClient(character)
+		if character:IsUser() then
+			self:FixCharacterInOwner(character, character.Entity.Name)
+		end
+		self:FixCharacterSync(character)
+	end
+
+	@ExecSpace("Client")
+	method void FixCharacterInOwner(Character character)
+		-- 소유자 클라이언트에서 캐릭터 고정 처리
+		self:FixCharacterSync(character)
+	end
+
+	@ExecSpace("Client")
+	method void FixCharacterInClient(Character character)
+		-- 일반 클라이언트에서 캐릭터 고정 처리
+		self:FixCharacterNone(character)
+	end
+
+	method void FixCharacterNone(Character character)
+		-- 기본 캐릭터 고정 설정
+		character.Entity.AvatarRendererComponent.OrderInLayer = 0
+	end
+
+	method void FixCharacterSync(Character character)
+		-- 캐릭터를 듀얼 모드에 맞게 설정 (이동 비활성화 등)
+		character.Entity.MovementComponent.Enable = false
+		character.Entity.RigidbodyComponent.Enable = false
+		character.Entity.PlayerControllerComponent.LookDirectionX = -self.actor.Entity.TransformComponent.WorldPosition.x
+		character.Entity.PlayerControllerComponent.Enable = false
+		character.Entity.AvatarRendererComponent.SortingLayer = "Unit"
+		character.Entity.AvatarRendererComponent.ShowDefaultWeaponEffects = false
+		character.Entity.PlayerComponent:SetPosition(Vector3(0, -0.28, 0))
+		character.Entity.TransformComponent.Position.z = 0
+		character.Entity.StateComponent:ChangeState("IDLE")
+		character.Entity.ChatBalloonComponent.Enable = false
+	end
+
+	method void TardyServerAttribute()
+		-- 서버 속성 지연 처리 (오버라이드용)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Tardy()
+		-- 서버에서 플레이어가 듀얼에서 나갔을 때의 처리
+		if not isvalid(self.character) or not self.isServing or not self.isReady then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if self.character ~= _Server.sender or self.Entity.CurrentMap.Map.mode == "RankedMatch" then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		self.duel:ClearBeginDuelTimer()
+		self:TardyInClient(self.character)
+		if self.character:IsUser() then
+			self:TardyInOwner(self.character, self.character.Entity.Name)
+		end
+		self:UnfixCharacter(self.character)
+		self.character.player = nil
+		self.character = nil
+		self.isReady = false
+	end
+
+	@ExecSpace("Client")
+	method void TardyInOwner(Character character)
+		-- 소유자 클라이언트에서 듀얼 나간 후 UI 복원
+		if isvalid(self.uiManager.PlayerModule) then
+			self.uiManager.PlayerModule:Close()
+		end
+		if isvalid(self.uiManager.DuelModule) then
+			self.uiManager.DuelModule:Open()
+		end
+		if isvalid(self.duel.mainModule) then
+			self.duel.mainModule.deckMenu:ShowArrowButtons()
+		end
+		if isvalid(self.uiManager.NoticeModule) then
+			self.uiManager.NoticeModule:Show()
+		end
+		if isvalid(self.uiManager.RewardModule) then
+			self.uiManager.RewardModule:Show()
+		end
+		if isvalid(self.uiManager.EventModule) then
+			self.uiManager.EventModule:Show()
+		end
+		
+		self.isReady = false
+	end
+
+	@ExecSpace("Client")
+	method void TardyInClient(Character character)
+		-- 일반 클라이언트에서 듀얼 나간 후 정리
+		self:HideClassTag()
+		
+		self.character.player = nil
+		self.character = nil
+		
+		self.uiManager:UpdateMobileUI()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UnfixCharacter(Character character)
+		-- 서버에서 캐릭터를 플레이어에서 분리하고 원래 상태로 복원
+		character.Entity:Detach()
+		
+		self:UnfixCharacterInClient(character)
+		if character:IsUser() then
+			self:UnfixCharacterInOwner(character, character.Entity.Name)
+		end
+		self:UnfixCharacterSync(character)
+	end
+
+	@ExecSpace("Client")
+	method void UnfixCharacterInOwner(Character character)
+		-- 소유자 클라이언트에서 캐릭터 분리 처리
+		self:UnfixCharacterSync(character)
+		
+		character.Entity.AvatarRendererComponent.OrderInLayer = 4
+	end
+
+	@ExecSpace("Client")
+	method void UnfixCharacterInClient(Character character)
+		-- 일반 클라이언트에서 캐릭터 분리 처리
+		self:UnfixCharacterNone(character)
+		
+		_TimerService:ClearTimer(self.chatTimer)
+		self.chatBalloon.AutoShowEnabled = false
+	end
+
+	method void UnfixCharacterNone(Character character)
+		-- 기본 캐릭터 분리 설정
+		character.Entity.AvatarRendererComponent.OrderInLayer = 3
+		character.Entity.TransformComponent.Scale.x = 1
+	end
+
+	method void UnfixCharacterSync(Character character)
+		-- 캐릭터를 일반 모드로 복원 (이동 활성화 등)
+		character.Entity.MovementComponent.Enable = true
+		character.Entity.RigidbodyComponent.Enable = true
+		character.Entity.PlayerControllerComponent.Enable = true
+		character.Entity.AvatarRendererComponent.SortingLayer = "Default"
+		character.Entity.AvatarRendererComponent.ShowDefaultWeaponEffects = true
+		character.Entity.PlayerComponent:SetWorldPosition(self.originalPosition)
+		character.Entity.TransformComponent.Position.z = 0
+		character.Entity.ChatBalloonComponent.Enable = true
+	end
+
+	method void SetServing(boolean isServing)
+		-- 플레이어의 서비스 상태를 설정 (듀얼 참여 가능 여부)
+		if isServing then
+			if self:IsServer() then
+				_TimerService:SetTimerOnce(function()
+					self.isServing = true
+					if isvalid(self.character) and self.character:IsUser() then
+						self:Tardy()
+					end
+				end, self.taskManager.delay)
+			else
+				-- trick to prevent immediate ready request
+				_TimerService:SetTimerOnce(function()
+					self.isServing = true
+				end, 0.1)
+				
+				self:Animate("Idle")
+				self:SetFloating(true)
+				self.actor.Entity.TransformComponent.WorldPosition = self.originalPosition:Clone()
+				self.characterParentEntity.TransformComponent.Scale.x = 1
+			end
+		else
+			self.isServing = false
+			self:SetFloating(false)
+		end
+	end
+
+	method boolean IsOwner()
+		-- 이 플레이어가 로컬 플레이어인지 확인
+		return isvalid(self.character) and self.character:IsOwner()
+	end
+
+	method boolean IsAlly()
+		-- 이 플레이어가 아군인지 확인
+		return isvalid(self.character) and self.character:IsAlly()
+	end
+
+	method boolean IsAllyWith(Character character)
+		-- 지정된 캐릭터와 아군 관계인지 확인
+		return isvalid(self.character) and self.character:IsAllyWith(character)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSide(boolean isOurs)
+		-- 클라이언트에서 플레이어의 사이드를 설정 (우리쪽/적)
+		self.isOurs = isOurs
+		
+		if isvalid(self.character) then
+			self.character.Entity.PlayerControllerComponent.LookDirectionX = -1
+			self.characterParentEntity.TransformComponent.Scale.x = isOurs and -1 or 1
+		end
+		
+		local playerTransform = self.duel.layout:GetTransform(self.isOurs and "OurPlayer" or "EnemyPlayer")
+		local playerWorldPosition = playerTransform.WorldPosition:Clone()
+		self.playPosition = playerWorldPosition:ToVector2()
+		self.battlePosition = self.isOurs and Vector2(0, -2.15) or Vector2(0, 2.35)
+		if self.isEndRoundDeclared then
+			self:SetAnchorTransform(self.battlePosition)
+		else
+			self:SetAnchorTransform(self.playPosition)
+		end
+		self.anchorEntity.TransformComponent.Position.z = playerWorldPosition.z
+		self.endRoundSignEntity = self.isOurs and self.duel.ourEndRoundSignEntity or self.duel.enemyEndRoundSignEntity
+		self.friendRequestButton.Entity.TransformComponent.WorldPosition = self.isOurs and Vector3(0, -3.28, 1000) or Vector3(0, 3.28, 1000)
+		self.deck:SetSide(isOurs)
+		self.hand:SetSide(isOurs)
+		self.field:SetSide(isOurs)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetFloating(boolean isFloating)
+		-- 플래이어의 떠다니는 애니메이션 설정
+		self.body.Entity.TweenFloatingComponent.Enable = isFloating
+		self.body.Entity.TransformComponent.Position = Vector3.zero
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayEmotion(any emotionalType, number duration)
+		-- 플래이어 캐릭터에 감정 애니메이션 재생
+		if not isvalid(self.character) then
+			return
+		end
+		
+		self.character.Entity.AvatarRendererComponent:PlayEmotion(emotionalType, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Animate(string toAnimationState)
+		-- 플래이어 캐릭터에 지정된 애니메이션 재생
+		if not isvalid(self.character) then
+			return
+		end
+		
+		local fromAnimationState = self.animationState
+		self.animationState = toAnimationState
+		
+		_TimerService:ClearTimer(self.animationTimer)
+		
+		local bodyEntity = self.character.Entity.AvatarRendererComponent:GetBodyEntity()
+		local transform = self.character.Entity.AvatarRendererComponent:GetAvatarRootEntity().TransformComponent
+		if toAnimationState == "Alert" then
+			self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+		elseif toAnimationState == "EnergyOrb" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 0, 0))
+					wait(0.63)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 1, 1))
+					transform.Position.x = 0.01
+					transform.Position.y = -0.06
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 1, 1))
+					transform.Position.x = 0.01
+					transform.Position.y = -0.03
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 2, 2))
+					transform.Position.x = 0.11
+					transform.Position.y = -0.04
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 3, 3))
+					transform.Position.x = 0.028
+					transform.Position.y = 0
+					wait(0.18)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabT2", "stabT2", 1, 1, 0, 0))
+					transform.Position.x = -0.07
+					transform.Position.y = 0
+					wait(0.09)
+					transform.Position.x = 0
+					transform.Position.y = 0
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "BlankShot" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("shoot2", "shoot2", 1, 1, 0, 0))
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabO1", "stabO1", 1, 1, 0, 0))
+					transform.Position.x = 0.02
+					transform.Position.y = 0
+					wait(0.72)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "WrathOfTheOctopi" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingPF", "swingPF", 1, 1, 3, 3))
+					transform.Position.x = 0.37
+					transform.Position.y = 0
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabT2", "stabT2", 1, 1, 1, 1))
+					transform.Position.x = 0.36
+					transform.Position.y = 0.83
+					transform.ZRotation = 90
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT2", "swingT2", 1, 1, 0, 0))
+					transform.Position.x = -0.08
+					transform.Position.y = 1.08
+					transform.ZRotation = 180
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingP2", "swingP2", 1, 1, 0, 0))
+					transform.Position.x = -0.11
+					transform.Position.y = 1.14
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingP2", "swingP2", 1, 1, 1, 1))
+					transform.Position.x = -0.24
+					transform.Position.y = 1.11
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT2", "swingT2", 1, 1, 0, 0))
+					transform.Position.x = -0.09
+					transform.Position.y = 0.14
+					transform.ZRotation = 0
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 3, 3))
+					transform.Position.x = 0.32
+					transform.Position.y = 0
+					wait(0.27)
+					transform.Position.x = 0
+					transform.Position.y = 0
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "Shot" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("shoot2", "shoot2", 1, 1, 0, 0))
+					wait(0.09)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabO1", "stabO1", 1, 1, 0, 0))
+					transform.Position.x = 0.02
+					transform.Position.y = 0
+					wait(0.36)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "Flamethrower" or toAnimationState == "IceSplitter" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("shoot2", "shoot2", 1, 1, 0, 0))
+					wait(0.24)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabO1", "stabO1", 1, 1, 0, 0))
+					transform.Position.x = 0.02
+					transform.Position.y = 0
+					wait(0.36)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "AirStrike" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("alert", "alert", 1, 1, 2, 2))
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT2", "swingT2", 1, 1, 1, 1))
+					transform.Position.x = 0.09
+					transform.Position.y = 0.12
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT1", "swingT1", 1, 1, 0, 0))
+					transform.Position.x = 0
+					transform.Position.y = 0.15
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT1", "swingT1", 1, 1, 0, 0))
+					transform.Position.x = 0
+					transform.Position.y = 0.16
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT1", "swingT1", 1, 1, 0, 0))
+					transform.Position.x = 0
+					transform.Position.y = 0.15
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT1", "swingT1", 1, 1, 0, 0))
+					transform.Position.x = 0
+					transform.Position.y = 0.13
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT2", "swingT2", 1, 1, 2, 2))
+					transform.Position.x = 0.15
+					transform.Position.y = -0.01
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT2", "swingT2", 1, 1, 2, 2))
+					transform.Position.x = 0.15
+					transform.Position.y = -0.02
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT2", "swingT2", 1, 1, 2, 2))
+					transform.Position.x = 0.15
+					transform.Position.y = -0.03
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT3", "swingT3", 1, 1, 1, 1))
+					transform.Position.x = 0.02
+					transform.Position.y = 0
+					wait(0.12)
+					transform.Position.x = 0
+					transform.Position.y = 0
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "HolyShield" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabO1", "stabO1", 1, 1, 0, 0))
+					wait(0.3)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabO1", "stabO1", 1, 1, 1, 1))
+					wait(0.84)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "Brandish" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 0, 0))
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 1, 1))
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 2, 2))
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 3, 3))
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabOF", "stabOF", 1, 1, 0, 0))
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabOF", "stabOF", 1, 1, 1, 1))
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabOF", "stabOF", 1, 1, 2, 2))
+					wait(0.12)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "Rush" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabO1", "stabO1", 1, 1, 1, 1))
+					wait(0.1)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabO1", "stabO1", 1, 1, 2, 2))
+					wait(0.5)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "Magic1" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("shootF", "shootF", 1, 1, 1, 1))
+					wait(0.9)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingO3", "swingO3", 1, 1, 1, 1))
+					wait(0.2)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingO3", "swingO3", 1, 1, 2, 2))
+					wait(0.2)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "SomersaultKick" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingPF", "swingPF", 1, 1, 3, 3))
+					transform.Position.x = 0.35
+					transform.Position.y = 0
+					transform.ZRotation = 0
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingT2", "swingT2", 1, 1, 0, 0))
+					transform.Position.x = -0.1
+					transform.Position.y = 0.08
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingP2", "swingP2", 1, 1, 1, 1))
+					transform.Position.x = -0.3
+					transform.Position.y = 1.12
+					transform.ZRotation = 180
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingP2", "swingP2", 1, 1, 0, 0))
+					transform.Position.x = -0.13
+					transform.Position.y = 1.15
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingP2", "swingP2", 1, 1, 0, 0))
+					transform.Position.x = -0.07
+					transform.Position.y = 1.11
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabT2", "stabT2", 1, 1, 1, 1))
+					transform.Position.x = 0.35
+					transform.Position.y = 0.84
+					transform.ZRotation = 90
+					wait(0.12)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingPF", "swingPF", 1, 1, 3, 3))
+					transform.Position.x = 0.35
+					transform.Position.y = 0
+					transform.ZRotation = 0
+					wait(0.12)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+					transform.Position.x = 0
+					transform.Position.y = 0
+					transform.ZRotation = 0
+				end, 0)
+		elseif toAnimationState == "CorkscrewBlow" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("stabO2", "stabO2", 1, 1, 1, 1))
+					wait(0.6)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingP2", "swingP2", 1, 1, 1, 1))
+					wait(0.24)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "Assaulter" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingO1", "swingO1", 1, 1, 0, 0))
+					wait(0.6)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingOF", "swingOF", 1, 1, 3, 3))
+					wait(0.5)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "Avenger" then
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingO3", "swingO3", 1, 1, 0, 0))
+					wait(0.72)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingO3", "swingO3", 1, 1, 1, 1))
+					wait(0.06)
+					bodyEntity:SendEvent(ActionStateChangedEvent("swingO3", "swingO3", 1, 1, 2, 2))
+					wait(0.06)
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0)
+		elseif toAnimationState == "SwingP1" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("swingP1", "swingP1"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.8)
+		elseif toAnimationState == "SwingT1" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("swingT1", "swingT1"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.8)
+		elseif toAnimationState == "SwingT2" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("swingT2", "swingT2"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.8)	
+		elseif toAnimationState == "SwingTF" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("swingTF", "swingTF"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.7)
+		elseif toAnimationState == "SwingO1" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("swingO1", "swingO1"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.8)
+		elseif toAnimationState == "SwingO2" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("swingO2", "swingO2"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.8)
+		elseif toAnimationState == "SwingO3" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("swingO3", "swingO3"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.8)
+		elseif toAnimationState == "Shoot1" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("shoot1", "shoot1"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.8)
+		elseif toAnimationState == "Shoot2" then
+			bodyEntity:SendEvent(ActionStateChangedEvent("shoot2", "shoot2"))
+			self.animationTimer = _TimerService:SetTimerOnce(function()
+					self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+				end, 0.8)
+		elseif toAnimationState == "Idle" then
+			if self.isPlaying then
+				self:Animate("Play")
+			else
+				self.character.Entity:SendEvent(StateChangeEvent("IDLE", "IDLE"))
+			end
+		elseif toAnimationState == "Play" then
+			self.character.Entity:SendEvent(BodyActionStateChangeEvent(false, MapleAvatarBodyActionState.Alert))
+		else
+			toAnimationState = string.upper(toAnimationState)
+			self.character.Entity:SendEvent(StateChangeEvent(toAnimationState, toAnimationState))
+		end
+	end
+
+	method boolean IsOurTurn()
+		-- 현재 이 플레이어의 턴인지 확인
+		return self == self.duel.turnPlayer
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowClassTag()
+		-- 플레이어의 클래스 태그를 표시
+		if isvalid(self.character) then
+			local classTag = self.character.classTag
+			classTag.Entity.Enable = true
+			classTag.NameTagRUID = self.resourceManager:GetResource("NameTag")[self.class]
+			classTag.Name = _LocalizationService:GetText(self.class) 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideClassTag()
+		-- 플레이어의 클래스 태그를 숨김
+		if isvalid(self.character) then
+			local classTag = self.character.classTag
+			classTag.Entity.Enable = false
+			classTag.NameTagRUID = ""
+			classTag.Name = ""
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowDetails()
+		-- 플래이어의 HP, MP 세부 정보를 표시
+		self.mpEntity.Enable = true
+		self.hpEntity.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideDetails()
+		-- 플래이어의 HP, MP 세부 정보를 숨김
+		self.mpEntity.Enable = false
+		self.hpEntity.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformAnchorToPlay()
+		-- 플래이어 앵커를 플레이 위치로 이동
+		if not isvalid(self.anchorEntity) then
+			return
+		end
+		
+		self:DestroyAnchorTweener()
+		self.anchorTweener = _Tween:MoveTo(self.anchorEntity, self.playPosition, 0.75, EaseType.CubicEaseOut, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformAnchorToEndRound()
+		-- 플래이어 앵커를 전투 위치로 이동
+		if not isvalid(self.anchorEntity) then
+			return
+		end
+		
+		self:DestroyAnchorTweener()
+		self.anchorTweener = _Tween:MoveTo(self.anchorEntity, self.battlePosition, 0.75, EaseType.CubicEaseOut, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPlaying(boolean isPlaying)
+		-- 플래이어의 플레이 상태를 설정하고 애니메이션 조정
+		self.isPlaying = isPlaying
+		
+		if isPlaying then
+			if self.animationState == "Idle" then
+				self:Animate("Play")
+			end
+		else
+			if self.animationState == "Play" then
+				self:Animate("Idle")
+			end	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetRoundPlayerSign(boolean isRoundPlayer)
+		-- 라운드 플레이어 표시를 설정 (배경 색상 변경)
+		self.backgroundEntity.SpriteRendererComponent:ChangeMaterial(isRoundPlayer and _EntryService:GetMaterialIdByName("LimLightOrange") or "")
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean JobsDone()
+		-- 플레이어가 더 이상 플레이할 카드가 없는지 확인
+		local jobsDone = true
+		for _, card in ipairs(self.hand.cardArray) do
+			if card.isPlayable then
+				jobsDone = false
+				break
+			end
+		end
+		
+		return jobsDone
+	end
+
+	method table GetUnits()
+		-- 플래이어와 그의 미니언들을 모두 포함한 유닛 배열 반환
+		return _Table:Concat(self.field:GetMinions(nil), {self})
+	end
+
+	method table ShareRandomUnits(integer count)
+		-- 랜덤으로 선택된 이 플레이어의 유닛들을 공유하여 반환
+		return self.commandManager:ShareRandomPermutationInArray(_Table:Select(self:GetUnits(), self.taskManager.liveSelector), count)
+	end
+
+	method table GetCards(any selector)
+		-- 선택자에 따른 플래이어의 모든 카드들을 반환 (덱 + 핸드)
+		return _Table:Concat(self.deck:GetCards(selector), self.hand:GetCards(selector))
+	end
+
+	method void DeclareEndRound(boolean isTimeout)
+		-- 플래이어가 라운드 종료를 선언
+		self:SetEndRoundDeclared(true)
+		
+		if self:IsClient() then
+			-- _SoundService:PlaySound(self.resourceManager:GetResource("DeclareEndRound").sound, 1)
+			
+			self.endRoundSignEntity.Visible = true
+			self:TransformAnchorToEndRound()
+			self.hand:TransformToEndRound()
+		end
+	end
+
+	method void SetEndRoundDeclared(boolean isEndRoundDeclared)
+		-- 라운드 종료 선언 상태를 설정
+		if self.isEndRoundDeclared == isEndRoundDeclared then
+			return
+		end
+		
+		self.isEndRoundDeclared = isEndRoundDeclared
+	end
+
+	method void SetMaxMp(integer maxMp)
+		-- 플래이어의 최대 MP를 설정
+		maxMp = math.max(0, maxMp)
+		if self.maxMp == maxMp then
+			return
+		end
+		
+		self.maxMp = maxMp
+		
+		if self.mp then
+			self:SetMp(math.min(self.mp, self.maxMp))
+		end
+	end
+
+	method void SetMp(integer mp)
+		-- 플래이어의 현재 MP를 설정하고 UI 업데이트
+		mp = math.max(0, math.min(mp, self.maxMp))
+		if self.mp == mp then
+			return
+		end
+		
+		if self:IsClient() then
+			self.mpInteger:SetInteger(mp)
+			if mp == self.maxMp then
+				self.mpInteger:SetColor(Color.green)
+			else
+				self.mpInteger:SetColor(Color.white)
+			end
+			
+			if self.mpTweener then
+				self.mpTweener:Destroy()
+			end
+			if self.mp ~= nil then
+				self.mpTweener = _Tween:Damp(self.mpEntity, Vector2.one, 1, 0.5)
+			end
+		end
+		
+		self.mp = mp
+	end
+
+	method void GainMp(integer delta)
+		-- MP를 획득하고 이팩트 표시
+		self:SetMp(self.mp + math.max(0, delta))
+		
+		if self:IsClient() then
+			local position = self:GetActorPosition():ToVector3()
+			position.y += 0.3
+			local entity = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("GainMp"), "GainMp", 
+				position, self.Entity.CurrentMap)
+			local integer = entity:GetChildByName("Integer").Integer
+			integer:SetPositiveInteger(delta)
+			---@type table
+			local rendererArray = entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+			local tweener = _TweenLogic:PlayTween(0, 1, 1, EaseType.Linear, function(t)
+					entity.TransformComponent.WorldPosition.y = position.y + 0.3 * t
+					for _, renderer in ipairs(rendererArray) do
+						renderer.Color.a = _TweenLogic:Ease(1, 0, 1, EaseType.CubicEaseIn, t)
+					end
+				end)
+			_TimerService:SetTimerOnce(function()
+					tweener:Destroy()
+					entity:Destroy()
+				end, 1)
+		end
+	end
+
+	method void LoseMp(integer delta)
+		-- MP를 잃음
+		self:SetMp(self.mp - math.max(0, delta))
+	end
+
+	method void SetSkillDamage(integer skillDamage)
+		-- 플래이어의 스킬 데미지를 설정
+		if self.skillDamage == skillDamage then
+			return
+		end
+		
+		self.skillDamage = skillDamage
+	end
+
+	method void AddSkillDamageEnchantment(integer delta)
+		-- 인챈트먼트로 스킬 데미지를 추가
+		local skillDamage = self.dependentVariableTable.skillDamage or self.entry.skillDamage or 0
+		self.dependentVariableTable.skillDamage = skillDamage + delta
+	end
+
+	method void InsertAddSkillDamageEnchantment(integer delta, any remover)
+		-- 스킬 데미지 추가 인챈트먼트를 삽입
+		self:InsertEnchantment({methodName = "AddSkillDamageEnchantment", args = {delta}, remover = remover})
+	end
+
+	method void SetTaggedSkillDamages(table taggedSkillDamageTable)
+		-- 태그별 스킬 데미지 테이블을 설정
+		if self.taggedSkillDamageTable == taggedSkillDamageTable then
+			return
+		end
+		
+		self.taggedSkillDamageTable = taggedSkillDamageTable
+	end
+
+	method void AddSkillDamageByTagEnchantment(string tag, integer delta)
+		-- 인챈트먼트로 특정 태그의 스킬 데미지를 추가
+		local taggedSkillDamageTable = self.dependentVariableTable.taggedSkillDamageTable or {}
+		if taggedSkillDamageTable == self.entry.taggedSkillDamageTable then
+			taggedSkillDamageTable = _Table:ShallowCopy(self.entry.taggedSkillDamageTable)
+		end
+		taggedSkillDamageTable[tag] = (taggedSkillDamageTable[tag] or 0) + delta
+		self.dependentVariableTable.taggedSkillDamageTable = taggedSkillDamageTable
+	end
+
+	method void InsertAddSkillDamageByTagEnchantment(string tag, integer delta, any remover)
+		-- 태그별 스킬 데미지 추가 인챈트먼트를 삽입
+		self:InsertEnchantment({methodName = "AddSkillDamageByTagEnchantment", args = {tag, delta}, remover = remover})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Chat(string message)
+		-- 플래이어 위에 채팅 메시지를 표시
+		self.chatBalloon.Message = message
+		self.chatBalloon.AutoShowEnabled = true
+		if self.chatTimer then
+			_TimerService:ClearTimer(self.chatTimer)
+		end
+		self.chatTimer = _TimerService:SetTimerOnce(function()
+			self.chatTimer = nil
+			self.chatBalloon.AutoShowEnabled = false
+		end, 5)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearChat()
+		-- 채팅 메시지를 제거
+		if self.chatTimer then
+			_TimerService:ClearTimer(self.chatTimer)
+		end
+		self.chatTimer = nil
+		self.chatBalloon.AutoShowEnabled = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetFriendRequestButton()
+		-- 친구 요청 버튼을 생성하고 설정
+		self.friendRequestButton = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("FriendRequestButton"), "FriendRequestButton", Vector3(100, 100, 0), self.Entity).FriendRequestButton
+		local transform = self.friendRequestButton.Entity.TransformComponent
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+		self.friendRequestButton.button.Entity:ConnectEvent(ButtonClickEvent, function()
+			_Server:Request(_UserService.LocalPlayer.Character, "SendFriendRequest", {self.character}) 
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowFriendRequestButton()
+		-- 친구 요청 버튼을 표시 (조건 충족 시)
+		local character = _UserService.LocalPlayer.Character 
+		if isvalid(self.character) and not character:IsFriendWith(self.character) and not isvalid(character.player) and self.character:IsUser() then
+			if self.friendRequestButtonTweener then
+				self.friendRequestButtonTweener:Destroy()
+			end
+			self.friendRequestButtonTweener = _Tween:ScaleTo(self.friendRequestButton.Entity, Vector2.one, 0.125, EaseType.Linear)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideFriendRequestButton()
+		-- 친구 요청 버튼을 숨김
+		local transform = self.friendRequestButton.Entity.TransformComponent
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+	end
+
+	method void SetImmuneToDirectAttack(boolean isImmuneToDirectAttack)
+		-- 직접 공격 면역 상태를 설정
+		if self.isImmuneToDirectAttack == isImmuneToDirectAttack then
+			return
+		end
+		
+		self.isImmuneToDirectAttack = isImmuneToDirectAttack
+	end
+
+	method void SetImmuneToDirectAttackEnchantment(boolean isImmuneToDirectAttack)
+		-- 인챈트먼트로 직접 공격 면역 상태를 설정
+		self.dependentVariableTable.isImmuneToDirectAttack = isImmuneToDirectAttack
+	end
+
+	method void InsertSetImmuneToDirectAttackEnchantment(boolean isImmuneToDirectAttack, table remover)
+		-- 직접 공격 면역 인챈트먼트를 삽입
+		self:InsertEnchantment({methodName = "SetImmuneToDirectAttackEnchantment", args = {isImmuneToDirectAttack}, remover = _Table:DeepCopy(remover)})
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 키보드 입력 이벤트 처리 (Alt/Space로 듀얼 나가기)
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		
+		if self.isServing and self.isReady and (key == KeyboardKey.LeftAlt or key == KeyboardKey.Space) then
+			_Server:Request(self, "Tardy", {})
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "81bb477a-f6c1-4e39-b280-94e2a8980a31")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 버튼 클릭 이벤트 처리 (듀얼 나가기)
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		
+		if self.isServing and self.isReady then
+			_Server:Request(self, "Tardy", {})
+		end
+	end
+
+	@EventSender("Entity", "e5b214f8-01d7-43b2-b93f-59d66a9488d7")
+	handler HandleChatEvent(ChatEvent event)
+		-- 채팅 이벤트 처리 (플래이어 채팅 메시지 표시)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ChatComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local Message = event.Message
+		local SenderName = event.SenderName
+		local UserId = event.UserId
+		---------------------------------------------------------
+		
+		if isvalid(self.character) and self.character.Entity.Name == UserId and self.uiManager.chat.UseChatBalloon then
+			self:Chat(Message)
+		end
+	end
+
+end

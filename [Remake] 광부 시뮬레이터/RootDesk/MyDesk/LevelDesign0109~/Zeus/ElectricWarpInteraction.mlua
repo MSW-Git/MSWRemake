@@ -1,0 +1,243 @@
+@Component
+script ElectricWarpInteraction extends InteractionComponent
+
+	property Entity r_Warp = nil
+
+	property Entity l_Warp = nil
+
+	property Entity v_Warp = nil
+
+	property Entity r_ElectricLine = nil
+
+	property Entity l_ElectricLine = nil
+
+	property Entity v_ElectricLine = nil
+
+	property boolean inPlayer = false
+
+	property Entity targetLine = nil
+
+	property Entity targetWarp = nil
+
+	property number count = 0
+
+	@ExecSpace("Client")
+	method void teleport(string moveDir, string verticalDir, Entity targetLine)
+		-- 지정된 방향으로 전기 워프를 실행하여 플레이어를 이동시킴
+		_SoundService:PlaySound("0126c6a18b59498b91ef6b37cd8a2426", 1)
+		self:reset()
+		
+		_UserService.LocalPlayer.Visible = false
+		
+		local startPos = 0
+		local dt = 1
+		
+		if moveDir == "right" and isvalid(self.r_Warp) then -- -20 -> 0
+			startPos = -20
+			dt = 0.1
+			self.targetLine = self.r_ElectricLine
+			self.targetWarp = self.r_Warp
+		elseif moveDir == "left" and isvalid(self.l_Warp) then  -- 0 -> -20
+			startPos = 0
+			dt = -0.1
+			self.targetLine = self.l_ElectricLine
+			self.targetWarp = self.l_Warp
+		elseif moveDir == "vertical" and isvalid(self.v_Warp) then 
+			if verticalDir == "up" then -- -20 -> 0
+				startPos = -20
+				dt = 0.1
+			elseif verticalDir == "down" then -- 0 -> -20
+				startPos = 0
+				dt = -0.1
+			end
+			self.targetLine = self.v_ElectricLine
+			self.targetWarp = self.v_Warp
+		end
+		
+		local bolt = self.targetLine:GetChildByName("bolt")
+		bolt.Enable = true
+		bolt.TransformComponent.Position.x = startPos
+		
+		_CameraService.TransitionBlendType = CameraBlendType.Cut
+		_CameraService:SwitchCameraTo(bolt.CameraComponent)
+		_TeleportService:TeleportToEntity(_UserService.LocalPlayer, self.targetWarp)
+		
+		local moveEffect = function()
+			bolt.TransformComponent.Position.x = bolt.TransformComponent.Position.x + dt
+			self.count = self.count + 1
+			if self.count == 200 then
+				-- _TeleportService:TeleportToEntity(_UserService.LocalPlayer, self.targetWarp) 원래 있던 위치
+				self.count = 0
+				_UserService.LocalPlayer.Visible = true
+				_CameraService.TransitionBlendType = CameraBlendType.Cut
+				_CameraService:SwitchCameraTo(_UserService.LocalPlayer.CameraComponent)
+				
+				self.targetLine:GetChildByName("bolt").Enable = false
+				self.targetLine = nil
+				self.targetWarp = nil
+				self.Entity.SoundComponent:Stop()
+				targetLine.SpriteRendererComponent.Color.a = 0.5
+				targetLine:GetChildByName("subLine").SpriteRendererComponent.Color.a = 0.5
+				
+				local usingOff = function()
+					_UserService.LocalPlayer.PlayerIngameData.UsingElectricWarp = false
+					_UserService.LocalPlayer.RigidbodyComponent.Enable = true
+				end
+				_TimerService:SetTimerOnce(usingOff, 0.5)
+			end
+		end
+			
+		self.Entity.SoundComponent:Play()
+		
+		for i = 1 , 200 do
+			_TimerService:SetTimerOnce(moveEffect, 1 + (i*3) / 200)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void reset()
+		-- 워프 사용 후 모든 방향 화살표와 가이드 UI를 초기화함
+		for i = 1 , #self.Entity.Children do
+			self.Entity.Children[i].Enable = false -- 워프 방향 화살표 
+		end
+		self:destroyGuideKey() -- 이용하기 ui 제거
+	end
+
+	@ExecSpace("Client")
+	method void destroyGuideKey()
+		-- 워프 사용 가이드 키 UI를 제거함
+		if isvalid(self.Entity:GetChildByName("Guide_Key")) then
+			self.Entity:GetChildByName("Guide_Key"):Destroy()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 포털 사용 가능 상태를 false로 설정
+		self._T.usablePortal = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 방향키 입력을 받아 해당 방향으로 전기 워프를 실행함
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if not self.inPlayer or not _UserService.LocalPlayer.CurrentMapName == "Temple_Zeus_1" then
+			return
+		end
+		
+		local nt = tonumber(string.sub(self.Entity.Name, -1, -1))
+		if (key == KeyboardKey.LeftArrow or key == KeyboardKey.A) and isvalid(self.l_ElectricLine) then
+			if self.l_ElectricLine.Enable then
+				self.inPlayer = false
+				self:teleport("left", "",self.l_ElectricLine)
+				self.l_ElectricLine.SpriteRendererComponent.Color.a = 0.85
+				self.l_ElectricLine:GetChildByName("subLine").SpriteRendererComponent.Color.a = 0.85
+			end
+		elseif (key == KeyboardKey.RightArrow or key == KeyboardKey.D) and isvalid(self.r_ElectricLine) then
+			if self.r_ElectricLine.Enable then
+				self.inPlayer = false
+				self:teleport("right", "", self.r_ElectricLine)
+				self.r_ElectricLine.SpriteRendererComponent.Color.a = 0.85
+				self.r_ElectricLine:GetChildByName("subLine").SpriteRendererComponent.Color.a = 0.85
+			end
+		elseif (key == KeyboardKey.UpArrow or key == KeyboardKey.W) and isvalid(self.v_ElectricLine) then
+			if self.v_ElectricLine.Enable and (nt == 4 or nt == 5 or nt == 6) then
+				self.inPlayer = false
+				self:teleport("vertical", "up", self.v_ElectricLine)
+				self.v_ElectricLine.SpriteRendererComponent.Color.a = 0.85
+				self.v_ElectricLine:GetChildByName("subLine").SpriteRendererComponent.Color.a = 0.85
+			end
+		elseif (key == KeyboardKey.DownArrow or key ==KeyboardKey.S) and isvalid(self.v_ElectricLine) then
+			if self.v_ElectricLine.Enable and (nt == 1 or nt == 2 or nt == 3) then 
+				self.inPlayer = false
+				self:teleport("vertical", "down", self.v_ElectricLine)
+				self.v_ElectricLine.SpriteRendererComponent.Color.a = 0.85
+				self.v_ElectricLine:GetChildByName("subLine").SpriteRendererComponent.Color.a = 0.85
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 플레이어가 워프 패드와 상호작용할 때 사용 가능한 방향을 표시하고 워프 모드를 활성화함
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		local miningGamne = _EntityService:GetEntity("cf7e8298-08f2-4352-b1bc-6a21d7d3992f")
+		--------------------------------------------------------
+		if _UserService.LocalPlayer.PlayerIngameData.UsingElectricWarp or miningGamne.MiningGame.onMining then
+			return
+		end
+		
+		local right = self.Entity:GetChildByName("arrow_right")
+		local left = self.Entity:GetChildByName("arrow_left")
+		local down = self.Entity:GetChildByName("arrow_down")
+		local up = self.Entity:GetChildByName("arrow_up")
+		
+		local nt = tonumber(string.sub(self.Entity.Name, -1, -1))
+		
+		if isvalid(self.l_ElectricLine) and self.l_ElectricLine.Enable then
+			self._T.usablePortal = true
+			left.Enable = true
+		end
+		
+		if isvalid(self.r_ElectricLine) and self.r_ElectricLine.Enable then
+			self._T.usablePortal = true
+			right.Enable = true
+		end
+		
+		if isvalid(self.v_ElectricLine) and self.v_ElectricLine.Enable then
+			if (nt == 4 or nt == 5 or nt == 6) then 
+				up.Enable = true
+				self._T.usablePortal = true
+			end
+		end
+		
+		if isvalid(self.v_ElectricLine) and self.v_ElectricLine.Enable then
+			if (nt == 1 or nt == 2 or nt == 3) then 
+				down.Enable = true
+				self._T.usablePortal = true
+			end
+		end
+		
+		if self._T.usablePortal then
+			self.inPlayer = true -- Interaction To Teleporting
+			self._T.usablePortal = false
+			_UserService.LocalPlayer.PlayerIngameData.UsingElectricWarp = true
+			_UserService.LocalPlayer.RigidbodyComponent.Enable = false
+			if isvalid(self.Entity:GetChildByName("Guide_Key")) then
+				self.Entity:GetChildByName("Guide_Key"):Destroy()
+			end
+		else
+			_UIToast:ShowMessage(_LocalizationService:GetText("Message_FailedWarpUsed"))
+			return -- 아무것도 걸리지 않으면 리턴처리
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 플레이어가 워프 패드 근처에 들어올 때 사용 가이드 UI를 표시함
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		if not self.inPlayer and not isvalid(self.Entity:GetChildByName("Guide_Key")) then
+			local key = _SpawnService:SpawnByModelId("model://85ad2718-739a-4bf9-aee4-f439cda53303", "Guide_Key", Vector3(0, 1.5, 0), self.Entity)
+			key:GetChildByName("UIText").TextComponent.Text = _LocalizationService:GetText("Use") 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 플레이어가 워프 패드에서 벗어날 때 가이드 UI를 제거함
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		self:destroyGuideKey()
+	end
+
+end

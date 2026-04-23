@@ -1,0 +1,354 @@
+@Component
+script C00002_Dodo_Skill extends Component
+
+	property number skillAnimLength = 2
+
+	property string attackEffectRUID = "8dfc8091243344dd84715f7f99d2c7fa"
+
+	property string hitEffectRUID = "2c71a1cbd61142ba9662d6bb12a6cc5a"
+
+	property string hitEffectRUID2 = "cf2fe8e1a8954e7099bd2243cfb908d7"
+
+	property table aggressiveeffect = {}
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength  * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		-- 보호막 체력 계수도 필요함
+		local getShield = unitStatus.MaxHP * 0.05 * (unitInfo.level+1) 
+		
+		_StatusChangeLogic:SetShield(myUnit, myUnit, getShield, -1, "MySkill")
+		
+		
+		local function hitSkill()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetAttackEffect(unitInfo.OwnerId)
+				
+				local enemies = {}
+				if unitInfo.TeamType == "Enemy" then
+					enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+				elseif unitInfo.TeamType == "User" then
+					enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+				end
+				
+				local attackEnemies = _BTLogic_New:getTargets(unitInfo.setTile, enemies, "Around_1_" .. math.floor(unitInfo.level))
+					
+				if isvalid(attackEnemies) then
+					for _, enemy in pairs(attackEnemies) do
+						if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+							self:SetSkillDamage(enemy)
+						end
+					end
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(hitSkill, 1.6 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0051",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.attackEffectRUID, myUnit, Vector3(0, 0, 0), 0, Vector3.one * unitInfo.level, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			-- 도도의 스킬 계수도 따로 필요함
+			local skillSetDamage = unitStatus.MagicalAttack * unitInfo.level * 2
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+			
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0009", 6)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local hitRUID = ""
+		
+		if unitInfo.unitPhaseNumber == 2 then
+			hitRUID = self.hitEffectRUID2
+		else
+			hitRUID = self.hitEffectRUID
+		end
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(hitRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void StartBattle()
+		-----------------------------------------------------
+		-- 도도가 배틀에 참여할 때 호출하는 함수입니다.
+		-----------------------------------------------------
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local nowTile = unitInfo.setTile
+		local teamType = unitInfo.TeamType
+		-----------------------------------------------------
+		-- 애니메이션 재생
+		-- 가장 상대가 많은 곳으로 이동 및 기절, 도발
+		-----------------------------------------------------
+		self:BattleAnimationSet(unitInfo.OwnerId)
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local synergyManager = user.SynergyManager_New
+		
+		local enemies = {}
+		if teamType == "User" then
+			enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "Alive")
+			user.GameManager.MyUnitCount += 1
+		elseif teamType == "Enemy" then
+			enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "Alive")
+			user.GameManager.EnemyCount += 1
+		end
+		-----------------------------------------------------
+		-- 등장할 타일 찾기
+		
+		---@type Entity
+		local moveTile = nil
+		
+		local function SetPos()
+			
+			local moveTileInfo = _BTLogic_New:getTile(myUnit, enemies, "EmptyTileWithMostEnemies_All_" .. math.floor(unitInfo.level))
+			moveTile = moveTileInfo[1]
+			
+			self:SetAttackEffect(unitInfo.OwnerId)
+			unitInfo:SetPropertyToServer("setTile", moveTile, "All", true)
+		end
+		-----------------------------------------------------
+		-- 활성화 시너지 체크 (3레벨인 경우에만)
+		local activateSynergyCount = 0
+		if unitInfo.level >= 3 then
+			if teamType == "User" then
+				activateSynergyCount = teamManager.OnFieldSynergy["S10015"]
+			elseif teamType == "Enemy" then
+				activateSynergyCount = teamManager.EnemyOwnedFieldSynergy["S10015"]
+			end
+		end
+		-----------------------------------------------------
+		-- 기절 및 도발 넣기
+		---@type table<Entity>
+		local ccEnemies
+		
+		local ccTime = 1.5
+		
+		local function SetCC()
+			enemies = _BTLogic_New:getEntities(enemies, "Alive")
+			unitInfo:SetPropertyToServer("setTile", moveTile, "OnlySetTile", true)
+			
+			if (synergyManager.SynergyRuneOn["S10015"] >= 1 and teamType == "User") or (synergyManager.Enemy_SynergyRuneOn["S10015"] >= 1 and teamType == "Enemy") then
+				ccEnemies = enemies
+				ccTime = 3
+			else
+				ccEnemies = _BTLogic_New:getTargets(moveTile, enemies, "Around_1_" .. math.floor(unitInfo.level))
+			end
+			
+			for _, enemy in pairs(ccEnemies) do
+				-- 10 시너지인 경우에 스탯 강탈
+				if activateSynergyCount >= 10 then
+					local enemyStatus = enemy.UnitStatus
+					local stealRate = 0.3
+					-- 획득
+					_StatusChangeLogic:GetBuff(myUnit, "Add_MaxHP", enemyStatus.MaxHP * stealRate, -1)
+					_StatusChangeLogic:GetBuff(myUnit, "Add_Defence", enemyStatus.Defence * stealRate, -1)
+					_StatusChangeLogic:GetBuff(myUnit, "Add_MagicalResistance", enemyStatus.MagicalResistance * stealRate, -1)
+					_StatusChangeLogic:GetBuff(myUnit, "Add_AttackSpeed", enemyStatus.AttackSpeed * stealRate, -1)
+					_StatusChangeLogic:GetBuff(myUnit, "Add_CriticalPercent", enemyStatus.CriticalPercent * stealRate, -1)
+					-- 감소
+					_StatusChangeLogic:GetBuff(enemy, "Add_MaxHP", -enemyStatus.MaxHP * stealRate, -1)
+					_StatusChangeLogic:GetBuff(enemy, "Add_Defence", -enemyStatus.Defence * stealRate, -1)
+					_StatusChangeLogic:GetBuff(enemy, "Add_MagicalResistance", -enemyStatus.MagicalResistance * stealRate, -1)
+					_StatusChangeLogic:GetBuff(enemy, "Add_AttackSpeed", -enemyStatus.AttackSpeed * stealRate, -1)
+					_StatusChangeLogic:GetBuff(enemy, "Add_CriticalPercent", -enemyStatus.CriticalPercent * stealRate, -1)
+				end
+				_StatusChangeLogic:SetStatus(myUnit, enemy, "SE0004", ccTime)
+				self:SetStunMotion(enemy, ccTime)
+				
+				--연출
+				self:SpawnAggressiveIcon(enemy,unitInfo.OwnerId)
+			end
+		end
+		-----------------------------------------------------
+		
+		
+		
+		
+		-----------------------------------------------------
+		-- 도도 AI 전투 참여시키기
+		local function AIOnFnc()
+			if unitInfo.use then
+				unitInfo.saveTile = nowTile
+				myUnit.UnitStatus.Target = nil
+				myUnit.UnitAIWanderComponent.Enable = true
+				myUnit.UnitAIWanderComponent.setBattle = true
+				myUnit.UnitAIWanderComponent.stopUnit = false
+				
+				for _, enemy in pairs(ccEnemies) do
+					enemy.UnitStatus.Target = myUnit
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(SetPos, 0.88)
+		_TimerService:SetTimerOnce(SetCC, 0.9)
+		_TimerService:SetTimerOnce(AIOnFnc, 1.6)
+		
+		-- myUnit.UnitBattleStatistics:RoundPropertyInitialize(myUnit.UnitInfo.charID)
+	end
+
+	@ExecSpace("Client")
+	method void BattleAnimationSet()
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local spriteRenderer = unitInfo.spriteRenderer
+		local spriteRUID = "022db1d5701a49abb57ed83c2684e4dd"
+		
+		if unitInfo.unitPhaseNumber == 2 then
+			spriteRUID = "e55fc412e6c64e90abad190e190c1d0f"
+		end
+		
+		
+		if isvalid(unitInfo.spriteRenderer) then
+			spriteRenderer.SpriteRendererComponent.PlayRate = 1
+			spriteRenderer.SpriteRendererComponent.SpriteRUID = spriteRUID
+			
+			self:SetShadow()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetStunMotion(Entity targetUnit, number ccTime)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		local targetTile = targetInfo.setTile
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		
+		local pushSetTime = ccTime / 5
+		
+		local setPos = targetStatus.SetPos
+		local setPos2 = targetStatus.SetPos
+		if isvalid(targetTile) then
+			setPos2 = targetTile.TransformComponent.WorldPosition:ToVector2()
+		end
+		
+		local setVec = setPos2 - setPos
+		
+		local callbackCount = 0
+		local function ActionFnc()
+			callbackCount += 0.01
+			
+			setPos = targetStatus.SetPos
+			-- 이동	
+			if pushSetTime >= callbackCount then
+				local setPosX = setPos.x + setVec.x * 0.01 * (1 / pushSetTime)
+				local setPosY = setPos.y + setVec.y * 0.01 * (1 / pushSetTime)
+									+ ( ((pushSetTime / 2) - callbackCount) * 0.5 )
+				targetInfo:SetPosition(setPosX, setPosY, unitInfo.OwnerId)
+				targetStatus.SetPos = Vector2(setPosX, setPosY)
+			else
+				if targetStatus.ActionType == "Dodo_SkillAttacked" then
+					targetStatus:SetActionType("Idle")
+					_TimerService:ClearTimer(targetStatus.ActionTimer)
+					targetStatus.ActionTimer = 0
+				end
+			end
+		end
+		
+		_TimerService:ClearTimer(targetStatus.ActionTimer)
+		targetStatus:SetActionType("Dodo_SkillAttacked")
+		targetStatus.ActionTimer = _TimerService:SetTimerRepeat(ActionFnc, 0.01, 0)
+	end
+
+	@ExecSpace("Client")
+	method void SpawnAggressiveIcon(Entity unit)
+		--도발 마크
+		local effect = _EffectService:PlayEffectAttached("27431e8a1c65431aaa0a90a42f1bb5ed", unit, Vector3.zero, 0, Vector3.one*1.5, true, {["SortingLayer"] = "UI",["OrderInLayer"] = 10,["Color"] = Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)})
+		
+		_TimerService:SetTimerOnce(function() _EffectService:RemoveEffect(effect) end , 2)
+	end
+
+	@ExecSpace("Client")
+	method void SetShadow()
+		--그림자가 점점 작아집니다
+		local scale = Vector3.one
+		local setscale = function()
+			self.Entity:GetChildByName("Shadow").TransformComponent.Scale = scale 
+			scale.x -= 1/30
+			scale.y -= 1/30
+		end
+		
+		for i = 1, 30 do
+			_TimerService:SetTimerOnce(setscale, (i/120) + 0.1)
+		end
+		
+		--그림자 원상복구
+		local scale2 = Vector3.zero
+		local init = function()
+			self.Entity:GetChildByName("Shadow").TransformComponent.Scale = scale2
+			scale2.x += 1/30
+			scale2.y += 1/30
+		end
+		
+		for i = 1, 30 do
+			_TimerService:SetTimerOnce(init, (i/120) + 0.75)
+		end
+	end
+
+end

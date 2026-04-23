@@ -1,0 +1,545 @@
+@Component
+script PlayerEvent extends Component
+
+	@TargetUserSync
+	property SyncTable<string, boolean> Events
+
+	@TargetUserSync
+	property SyncTable<string> EventQueue
+
+	@TargetUserSync
+	property SyncTable<string> DayEventQueue
+
+	@TargetUserSync
+	property SyncTable<string, string> EventReferKey
+
+	property string InitialEventId = "T0002"
+
+	property string EndingEventId = "Y0004"
+
+	@TargetUserSync
+	property SyncTable<integer, boolean> ToDoSecretaryChecked
+
+	property boolean isEventPlaying = false
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 이벤트 데이터를 데이터베이스에 저장하는 함수
+		local eventTotal = {}
+		
+		eventTotal["Events"] = _UtilLogic:TableToString(self.Events)
+		
+		eventTotal["EventQueue"] = _UtilLogic:TableToString(self.EventQueue)
+		eventTotal["DayEventQueue"] = _UtilLogic:TableToString(self.DayEventQueue)
+		eventTotal["EventReferKey"] = _UtilLogic:TableToString(self.EventReferKey)
+		eventTotal["ToDoSecretaryChecked"] = _UtilLogic:TableToString(self.ToDoSecretaryChecked)
+		
+		saveData["EventData"] = eventTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 이벤트 데이터를 로드하는 함수
+		local eventTable = loadedData["EventData"]
+		if eventTable == nil then
+			eventTable = {}
+		end
+		
+		if #table.keys(eventTable) > 0 then
+			if eventTable["Events"] then
+				table.initialize(self.Events, _UtilLogic:StringToTable(eventTable["Events"]))
+			end	
+			
+			if eventTable["EventQueue"] then
+				table.initialize(self.EventQueue, _UtilLogic:StringToTable(eventTable["EventQueue"]))
+			end
+			
+			if eventTable["DayEventQueue"] then
+				table.initialize(self.DayEventQueue, _UtilLogic:StringToTable(eventTable["DayEventQueue"]))
+			end
+			
+			if eventTable["EventReferKey"] then
+				table.initialize(self.EventReferKey, _UtilLogic:StringToTable(eventTable["EventReferKey"]))
+			end
+			
+			if eventTable["ToDoSecretaryChecked"] then
+				table.initialize(self.ToDoSecretaryChecked, _UtilLogic:StringToTable(eventTable["ToDoSecretaryChecked"]))
+			end
+			
+			self:CheckEventCallbackOccured()
+				
+			if #self.EventQueue > 0 then
+				self:RemoveAndCallEventFromEventQueue(self.EventQueue[1])
+			end
+		else
+				
+		end
+		
+		
+		_UIButtonUnlockLogic:SetButtonsUnlock(self.Entity.PlayerComponent.UserId)
+		self:RefreshAllToDoSecretaryInfo()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 이벤트 컴포넌트를 초기화하는 함수
+		table.clear(self.Events)
+		table.clear(self.EventQueue)
+		table.clear(self.DayEventQueue)
+		table.clear(self.EventReferKey)
+		table.clear(self.ToDoSecretaryChecked)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성 변경 시 UI 업데이트를 처리하는 함수
+		if name == "Events" then
+			_UIButtonUnlockLogic:SetButtonsUnlock()
+			_ToDoManager:RefreshToDoList()
+			
+		elseif name == "ToDoSecretaryChecked" then
+			_ToDoManager:RefreshToDoList()
+			
+		end
+	end
+
+	method boolean IsEventOccured(string eventGroupId)
+		-- 특정 이벤트가 발생했는지 확인하는 함수
+		if string.sub(eventGroupId, 1, 1) == "T" then
+			return self.Entity.PlayerTutorialEvent:IsEventOccured(eventGroupId)
+		end
+		
+		if self.Events[eventGroupId] == nil then
+			return false
+		end
+		
+		return self.Events[eventGroupId]
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SetEventOccured(string eventGroupId)
+		-- 이벤트를 발생 상태로 설정하는 함수
+		---@type EventGroupData
+		local eventGroupData = _EventDataSetLogic.EventGroupData[eventGroupId]
+		local isRepeatable = eventGroupData.IsRepeatable
+		
+		if string.sub(eventGroupId, 1, 1) == "T" then
+			return self.Entity.PlayerTutorialEvent:SetEventOccured(eventGroupId)
+		end
+		
+		if self:IsEventOccured(eventGroupId) and isRepeatable == false then
+			return false
+		end
+		
+		self.Events[eventGroupId] = true
+		self.Entity.PlayerEventFunction:CommandFunc(eventGroupId) 
+		
+		if eventGroupId == self.EndingEventId and self.Entity.PlayerManagement:GetIsEndingEventSeen() == false then
+			_IntroDialogLogic:SetOutroYear(self.Entity.TimeManager.Utc.Year)
+		end
+		
+		_EventManager:SetCallbackFunction(eventGroupId, self.Entity.PlayerComponent.UserId)
+		
+		self:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.RecommendedUpgrade)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddToEventQueue(string eventGroupId)
+		-- 이벤트를 이벤트 큐에 추가하는 함수
+		local eventQueueStr = _UtilLogic:TableToString(self.EventQueue)
+		if _UtilLogic:IsNilorEmptyString(eventQueueStr) == false then
+			if _UtilLogic:Contains(eventQueueStr, eventGroupId) then
+				return
+			end
+		end
+		
+		if self:IsEventOccured(eventGroupId) == true then
+			return
+		end
+		
+		table.insert(self.EventQueue, eventGroupId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestAddToEventQueue(string eventGroupId)
+		-- 이벤트 큐 추가를 요청하는 함수
+		self:AddToEventQueue(eventGroupId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean RemoveFromEventQueue(string eventGroupId)
+		-- 이벤트 큐에서 이벤트를 제거하는 함수
+		local eventQueueStr = _UtilLogic:TableToString(self.EventQueue)
+		if _UtilLogic:Contains(eventQueueStr, eventGroupId) == false then
+			return false
+		end
+		
+		local index = 0
+		for i = 1, #self.EventQueue do
+			local eventId = self.EventQueue[i]
+			if eventId == eventGroupId then
+				index = i
+				break
+			end
+		end
+		
+		if index ~= 0 then
+			table.remove(self.EventQueue, index)
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void RequestRemoveFromEventQueue(string eventGroupId)
+		-- 이벤트 큐 제거를 요청하는 함수
+		self:RemoveFromEventQueue(eventGroupId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddToDayEventQueue(string eventGroupId)
+		-- 일일 이벤트 큐에 이벤트를 추가하는 함수
+		local eventQueueStr = _UtilLogic:TableToString(self.DayEventQueue)
+		if _UtilLogic:Contains(eventQueueStr, eventGroupId) then
+			return	
+		end
+		
+		if self:IsEventOccured(eventGroupId) == true then
+			return
+		end
+		
+		table.insert(self.DayEventQueue, eventGroupId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestAddToDayEventQueue(string eventGroupId)
+		-- 일일 이벤트 큐 추가를 요청하는 함수
+		self:AddToDayEventQueue(eventGroupId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveAndCallEventFromEventQueue(string eventGroupId)
+		-- 이벤트 큐에서 제거하고 이벤트를 호출하는 함수
+		local bool = self:RemoveFromEventQueue(eventGroupId)
+		
+		if bool then
+			if self.EventReferKey[eventGroupId] ~= nil then
+				_EventManager:SetEventReferKeyData(eventGroupId, self.EventReferKey[eventGroupId], self.Entity.PlayerComponent.UserId)
+			end
+			
+			
+			local result = self:RequestCallEvent(eventGroupId)
+			if result == false then
+				self:AddToEventQueue(eventGroupId)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestRemoveAndCallEventFromEventQueue(string eventGroupId)
+		-- 이벤트 큐에서 제거 및 호출을 요청하는 함수
+		self:RemoveAndCallEventFromEventQueue(eventGroupId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetEventReferKey(string eventGroupId, string referKey)
+		-- 이벤트 참조 키 설정을 요청하는 함수
+		self:SetEventReferKey(eventGroupId, referKey)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetEventReferKey(string eventGroupId, string referKey)
+		-- 이벤트 참조 키를 설정하는 함수
+		self.EventReferKey[eventGroupId] = referKey
+	end
+
+	@ExecSpace("Server")
+	method void RequestClearEventData(string eventGroupId)
+		-- 이벤트 데이터를 지우는 요청을 처리하는 함수
+		self.isEventPlaying = false
+		self:SetEventReferKey(eventGroupId, nil)
+		_UIItemRewardService:RequestSetQueueToUI("Event", self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void ForceSetEventOccured(string eventGroupId)
+		-- 이벤트를 강제로 발생 상태로 설정하는 함수
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return
+		end
+		
+		local eventGroupData = _EventDataSetLogic.EventGroupData[eventGroupId]
+		
+		if self:IsEventOccured(eventGroupId) then
+			return
+		end
+		
+		self.Events[eventGroupId] = true
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckEventCallbackOccured()
+		-- 이벤트 콜백 발생 여부를 확인하는 함수
+		for eventGroupId, isOccured in pairs(self.Events) do
+			local eventGroupData = _EventDataSetLogic:GetEventGroupData(eventGroupId)
+			if eventGroupData == nil then
+				continue
+			end
+			
+			for i = 1, #eventGroupData.funcRewardPairs do
+				local rewardData = eventGroupData.funcRewardPairs[i]
+				local rewardId = rewardData[1]
+				if rewardId == "CallbackEventTime" then
+					local params = rewardData[2]
+					local newEventId = params[1]
+					local timing = tonumber(params[2])
+					
+					if self:IsEventOccured(newEventId) == false then
+						self:AddToEventQueue(newEventId)
+					end
+				end
+			end
+		end
+		
+		for eventGroupId, isOccured in pairs(self.Entity.PlayerTutorialEvent.TutorialEvents) do
+			local eventGroupData = _EventDataSetLogic:GetEventGroupData(eventGroupId)
+			if eventGroupData == nil then
+				continue
+			end
+			
+			for i = 1, #eventGroupData.funcRewardPairs do
+				local rewardData = eventGroupData.funcRewardPairs[i]
+				local rewardId = rewardData[1]
+				if rewardId == "CallbackEventTime" then
+					local params = rewardData[2]
+					local newEventId = params[1]
+					local timing = tonumber(params[2])
+					
+					if self:IsEventOccured(newEventId) == false then
+						self:AddToEventQueue(newEventId)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetToDoSecretaryChecked(integer id, boolean isChecked)
+		-- 할 일 비서 확인 상태를 설정하는 함수
+		local secData = _ToDoManager:GetToDoSecretaryData(id)
+		if secData == nil then
+			return
+		end
+		
+		self.ToDoSecretaryChecked[id] = isChecked
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetToDoSecretaryChecked(integer id, boolean isChecked)
+		-- 할 일 비서 확인 상태 설정을 요청하는 함수
+		self:SetToDoSecretaryChecked(id, isChecked)
+	end
+
+	@ExecSpace("Server")
+	method void RefreshToDoSecretaryInfo(integer id)
+		-- 할 일 비서 정보를 새로고침하는 함수
+		if self.Entity.PlayerStage.NowStage <= 1 then
+			return
+		end
+		
+		local secData = _ToDoManager:GetToDoSecretaryData(id)
+		if isvalid(secData) == false then
+			return
+		end
+		
+		local isExToDo = self.ToDoSecretaryChecked[id]
+		local isNowToDo = _ToDoManager:IsToDoSecretaryOccured(self.Entity, id)
+		
+		if isNowToDo == false then
+			self:SetToDoSecretaryChecked(id, nil) 
+			return
+		end
+		
+		if isNowToDo == true and isExToDo == nil then
+			self:SetToDoSecretaryChecked(id, false) 
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetAllToDoSecretaryChecked()
+		-- 모든 할 일 비서를 확인 상태로 설정하는 함수
+		for id, isChecked in pairs(self.ToDoSecretaryChecked) do
+			if isChecked == false then
+				self:RequestSetToDoSecretaryChecked(id, true)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RefreshAllToDoSecretaryInfo()
+		-- 모든 할 일 비서 정보를 새로고침하는 함수
+		if self.Entity.PlayerStage.NowStage <= 1 then
+			return
+		end
+		
+		for id, data in pairs(_ToDoManager.ToDoSecretaryData) do
+			self:RefreshToDoSecretaryInfo(id)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TutorialStartLog(string eventGroupId, SyncTable<string, integer> reward)
+		-- 튜토리얼 시작 로그를 기록하는 함수
+		local success,value = pcall(function()
+			local userId = self.Entity.PlayerComponent.UserId
+			local nickname = self.Entity.PlayerComponent.Nickname
+			local profileCode = self.Entity.PlayerComponent.ProfileCode
+			local date = self.Entity.TimeManager:GetTimeText()
+		
+			_LogStorageLogic:LogValue( 
+				userId,
+			   _LogEnumType.TutorialStart,
+				self.Entity.PlayerLog:GetRewardStr(reward),
+				{
+					nickname = nickname,
+					eventGroupId = eventGroupId,
+					tutorialType = "0",
+					date = date,
+					playerStageId = tostring(self.Entity.PlayerStage.NowStage),
+					utc = _DateTimeLogic:GetUtcNowText(),
+					profileCode = profileCode
+				}
+			)
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TutorialEndLog(string eventGroupId, integer achievementId)
+		-- 튜토리얼 종료 로그를 기록하는 함수
+		
+		local success,value = pcall(function()
+			local userId = self.Entity.PlayerComponent.UserId
+			local nickname = self.Entity.PlayerComponent.Nickname
+			local date = self.Entity.TimeManager:GetTimeText()
+		
+			_LogStorageLogic:LogValue( 
+				userId,
+			   _LogEnumType.TutorialEnd,
+				tostring(achievementId),
+				{
+					nickname = nickname,
+					eventGroupId = eventGroupId,
+					tutorialType = "0",
+					date = date,
+					playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+				}
+			)
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckTutorialEndLog(integer achievementId)
+		-- 튜토리얼 종료 로그를 확인하는 함수
+		
+		if self.Entity.PlayerStage.NowStage > 1 then
+			return
+		end
+		
+		local achiIdData = _AchievementDataSetLogic:GetAchievementIdData(achievementId)
+		
+		for id, data in pairs(_ToDoManager.ToDoData) do
+			---@type ToDoData
+			local todoData = data
+			if self:IsEventOccured(todoData.OpenEvent) == false then
+				continue
+			end
+			
+			if todoData.CompleteAchiId == achievementId then
+				
+				self:TutorialEndLog(todoData.OpenEvent, todoData.CompleteAchiId)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method boolean RemoveFromDayEventQueue(string eventGroupId)
+		-- 일일 이벤트 큐에서 이벤트를 제거하는 함수
+		local eventQueueStr = _UtilLogic:TableToString(self.DayEventQueue)
+		if _UtilLogic:Contains(eventQueueStr, eventGroupId) == false then
+			return false
+		end
+		
+		local index = 0
+		for i = 1, #self.DayEventQueue do
+			local eventId = self.DayEventQueue[i]
+			if eventId == eventGroupId then
+				index = i
+				break
+			end
+		end
+		
+		if index ~= 0 then
+			table.remove(self.DayEventQueue, index)
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method boolean RequestCallEvent(string eventGroupId)
+		-- 이벤트 호출을 요청하는 함수
+		
+		local eventGroupData = _EventDataSetLogic:GetEventGroupData(eventGroupId)
+		if eventGroupData == nil then
+			return false
+		end
+		
+		if self:IsEventOccured(eventGroupId) == true and eventGroupData.IsRepeatable == false then
+			return false
+		end
+		
+		if string.sub(eventGroupId, 1, 1) == "T" then 
+			local result = self.Entity.PlayerTutorialEvent:SetEventOccured(eventGroupId)
+			if result == false then
+				return false
+			end
+			
+		else
+			local result = self:SetEventOccured(eventGroupId)
+			if result == false then
+				return false
+			end
+		end
+		
+		if self.isEventPlaying == true then
+			self:AddToEventQueue(eventGroupId) 
+			return
+		end
+		
+		
+		_EventManager:CallEvent(eventGroupId, self.Entity.PlayerComponent.UserId)
+		self.isEventPlaying = true
+		return true
+	end
+
+	@EventSender("Self")
+	handler HandlePlayerTrainingTokenChangedEvent(PlayerTrainingTokenChangedEvent event)
+		-- 플레이어 훈련 토큰 변경 이벤트를 처리하는 핸들러
+		self:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.Training)
+		self:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.AutoTraining)
+	end
+
+	@EventSender("Self")
+	handler HandlePlayerMoneyChangedEvent(PlayerMoneyChangedEvent event)
+		-- 플레이어 돈 변경 이벤트를 처리하는 핸들러
+		self:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.RecommendedUpgrade)
+	end
+
+end

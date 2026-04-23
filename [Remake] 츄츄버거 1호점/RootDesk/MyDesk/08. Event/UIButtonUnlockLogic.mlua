@@ -1,0 +1,162 @@
+@Logic
+script UIButtonUnlockLogic extends Logic
+
+	property boolean IsUnlockEveryButton = false
+
+	property table ButtonUnlockData = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 버튼 잠금 해제 데이터를 로드하는 함수
+		self:LoadDataSet()
+		
+		if self:IsClient() == true then
+			if Environment:IsMakerPlay() == false then
+				self.IsUnlockEveryButton = false
+			end
+		end
+	end
+
+	method void LoadDataSet()
+		-- CSV에서 버튼 잠금 해제 데이터를 로드하는 함수
+		table.clear(self.ButtonUnlockData)
+		local dataSet = _DataService:GetTable("ButtonUnlockData")
+		
+		for i = 1, dataSet:GetRowCount() do
+			local data = ButtonUnlockData()
+			data:Load(dataSet, i)
+			
+			if self.ButtonUnlockData[data.Id] ~= nil then
+				break
+			end
+			
+			self.ButtonUnlockData[data.Id] = data
+		end
+	end
+
+	method ButtonUnlockData GetButtonUnlockData(string id)
+		-- ID로 버튼 잠금 해제 데이터를 가져오는 함수
+		return self.ButtonUnlockData[id]
+	end
+
+	method boolean IsButtonUnlocked(string id, Entity player)
+		-- 지정된 버튼이 잠금 해제되었는지 확인하는 함수
+		if self.IsUnlockEveryButton then
+			return true
+		end
+		
+		if player.PlayerStage.NowStage > 1 then
+			if id == _ButtonUnlockEnum.MainMenuVIPOrder then
+				return player.PlayerManagement.ManagementLevel >= 1 
+				
+			elseif id == _ButtonUnlockEnum.MainMenuAutoTraining then
+				return _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, _UpgradeTypeEnum.AutoTrainingOpen) >= 1 
+		
+			elseif id == _ButtonUnlockEnum.MainMenuExchange then
+				return  player.PlayerEvent:IsEventOccured("T6003") 
+				
+			elseif id == _ButtonUnlockEnum.MainMenuIngreSynth then
+				return player.PlayerEvent:IsEventOccured("T7001")
+			
+			end
+			
+			return true
+		end
+		
+		local unlockData = self:GetButtonUnlockData(id)
+		if unlockData.ConditionType == "Event" then
+			if _UtilLogic:IsNilorEmptyString(unlockData.EventCondition) then
+				return true
+			end
+			
+			return player.PlayerEvent:IsEventOccured(unlockData.EventCondition)
+		
+		elseif unlockData.ConditionType == "Achievement" then
+			if unlockData.AchievementCondition == nil then
+				return true
+			end
+			
+			return player.PlayerAchievement:IsAchievementAchieved(unlockData.AchievementCondition)
+		elseif unlockData.ConditionType == "Upgrade" then
+			if _UtilLogic:IsNilorEmptyString(unlockData.UpgradeCondition) then
+				return true
+			end
+			
+			local upgradeData = _UtilLogic:Split(unlockData.UpgradeCondition, ",")
+			local upgradeType = tonumber(upgradeData[1])
+			local upgradeLevel = tonumber(upgradeData[2])
+			return _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, upgradeType) >= upgradeLevel
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void SetButtonsUnlock()
+		-- 모든 버튼들의 잠금 해제 상태를 업데이트하는 함수
+		local player = _UserService.LocalPlayer
+		for id, _ in pairs(self.ButtonUnlockData) do
+			local unlockData = self:GetButtonUnlockData(id)
+			local isUnlock = self:IsButtonUnlocked(id, player)
+			if self.IsUnlockEveryButton then
+				isUnlock = true
+			end
+			
+			local entity = _EntityService:GetEntityByPath(unlockData.EntityPath)
+			
+			if unlockData.IsFull then
+				entity.Enable = isUnlock
+			else
+				if isvalid(entity.ButtonComponent) then
+					entity.ButtonComponent.Enable = isUnlock
+				end
+				
+				local icon = entity:GetChildByName("Icon")
+				local lock = entity:GetChildByName("Lock")
+				local dim = entity:GetChildByName("Dim")
+				
+				if isvalid(lock) then
+					lock.Enable = not isUnlock
+				end
+				
+				if isvalid(dim) then
+					dim.Enable = not isUnlock
+				else
+					if isUnlock then
+						entity.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+					else
+						if id ~= _ButtonUnlockEnum.HUDManagement then
+							entity.SpriteGUIRendererComponent:ChangeMaterial(_StringUtilLogic.GrayScaleMaterial)
+						end				
+					end
+				end
+				
+				if isvalid(icon) then
+					if isUnlock then
+						icon.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+					else
+						icon.SpriteGUIRendererComponent:ChangeMaterial(_StringUtilLogic.GrayScaleMaterial)
+					end
+				end
+				
+			end
+			
+		end
+		
+		_LobbyHUDService:RefreshSubscriptionBoxButton()
+		_LobbyHUDService:UpdateMoveNextStageBtn()
+	end
+
+	@ExecSpace("Client")
+	method void SetEnableEveryButtons()
+		-- 모든 버튼을 강제로 잠금 해제하는 함수
+		self.IsUnlockEveryButton = true
+		self:SetButtonsUnlock()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerManagementChangedEvent(PlayerManagementChangedEvent event)
+		-- 플레이어 경영 데이터 변경 시 버튼 상태를 업데이트하는 핸들러
+		_UIButtonUnlockLogic:SetButtonsUnlock()
+	end
+
+end

@@ -1,0 +1,126 @@
+@Component
+script BaggageSlotComponent extends Component
+
+	property string uniqueKey = ""
+
+	property string category = ""
+
+	property BaggageUIComponent baggage = "d73efe4a-a3c4-403b-ba30-63519e5981d6"
+
+	property number lastClickTime = 0
+
+	property number lastUsedTime = 0
+
+	property boolean enableQuickUsing = false
+
+	method void Init(string uniqueKey)
+		-- 가방 슬롯 아이템 초기화 및 UI 설정
+		self.lastClickTime = 0
+		self.lastUsedTime = 0
+		self.Entity:GetChildByName("equipped").Enable = false
+		
+		self.Entity:GetChildByName("PetContentPanel").Enable = false
+		self.Entity:GetChildByName("ArmorOptions").Enable = false
+		self:SetReddotVisible(self.baggage.redDotInfo[uniqueKey])
+		
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage
+		
+		if not isvalid(storage[uniqueKey]) then
+			return
+		end
+		
+		self.uniqueKey = uniqueKey
+		
+		local id = storage[self.uniqueKey].originalId
+		local count = storage[self.uniqueKey].count
+		local data = _ItemDataLogic.itemData[id]
+		
+		self.enableQuickUsing = data.category == "consume"
+		
+		self.Entity:GetChildByName("Sprite").SpriteGUIRendererComponent.ImageRUID = "thumbnail://"..data.ruid 
+		self.Entity:GetChildByName("Usable_Count").TextComponent.Text = count 
+		
+		local slotBgRenderer = self.Entity.SpriteGUIRendererComponent
+		
+		self.Entity:GetChildByName("Category").SpriteGUIRendererComponent.ImageRUID =  _ItemDataLogic:GetCategoryColorRUIDByGrade(data.grade)
+		self.Entity:GetChildByName("Category"):GetChildByName("CategoryIcon").SpriteGUIRendererComponent.ImageRUID = _CraftingLogic:GetCraftingCategoryIconByItemId(id)
+		
+		if data.grade == "normal" then
+			slotBgRenderer.ImageRUID = "2502dac4d15a46f4ab26445abd1cc7f9"
+		elseif data.grade == "rare" then
+			slotBgRenderer.ImageRUID = "ee76a77c3f60420786df557ca6cb29ba"
+		elseif data.grade == "epic" then
+			slotBgRenderer.ImageRUID = "8cd3e973b6f04b67a5d425eaed80e916"
+		elseif data.grade == "unique" then
+			slotBgRenderer.ImageRUID = "401b646213b241c59f4ebc3712e7aad6"
+		elseif data.grade == "legendary" then
+			slotBgRenderer.ImageRUID = "87f20108334748dc94da9983a1e7e96c"
+		end
+		
+		
+		if _CheckLogic:IsFieldHpOrMpPotion(_UserService.LocalPlayer.PlayerComponent.UserId, id) then
+			self.Entity:GetChildByName("equipped").Enable = _CheckLogic:IsRegisteredQuickSlot(uniqueKey, _UserService.LocalPlayer.PlayerComponent.UserId)
+		else
+			self.Entity:GetChildByName("equipped").Enable = false
+		end
+		
+		
+		self:Selected(false)
+	end
+
+	method void Selected(boolean selected)
+		-- 슬롯 선택 상태 UI 업데이트
+		self.Entity:GetChildByName("SelectedLine").Enable = selected
+	end
+
+	method void SetReddotVisible(boolean visible)
+		-- 새 아이템 알림 레드닷 표시/숨김
+		if isvalid(self._T.reddot) == false then
+			self._T.reddot = self.Entity:GetChildByName("reddot")	
+		end
+		if isvalid(self._T.reddot) then
+			self._T.reddot.Enable = visible
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 슬롯 클릭 시 빠른 사용 및 선택 이벤트 처리
+		
+		local Entity = event.Entity
+		
+		if self.enableQuickUsing then
+			if Environment:IsPCPlatform() then
+				local deltaTime = _UtilLogic.ElapsedSeconds - self.lastClickTime
+				
+				local delay = 0.25
+				if deltaTime < delay and self._T.clickCheckEvent ~=nil then
+					_TimerService:ClearTimer(self._T.clickCheckEvent)
+					self._T.clickCheckEvent = nil
+					local usedDeltaTime =  _UtilLogic.ElapsedSeconds - self.lastUsedTime
+					if usedDeltaTime > 1 then
+						
+						local cnt = _UserService.LocalPlayer.MultiBattlePlayer:GetEnableUseItemCount(self.uniqueKey,1,false)
+						if cnt > 0 then
+							_UserService.LocalPlayer.PlayerStorageComponent:RequestUseItem(self.uniqueKey, 1)
+						end
+						
+						self.lastUsedTime = _UtilLogic.ElapsedSeconds
+					end
+				else
+					
+					self._T.clickCheckEvent = _TimerService:SetTimerOnce(function() 
+						self._T.clickCheckEvent = nil
+					end,delay)
+					
+				end
+				self.lastClickTime = _UtilLogic.ElapsedSeconds
+				
+			end
+		end
+		local baggaeUI = _EntityService:GetEntityByPath("/ui/BaggageGroup")
+		baggaeUI:SendEvent(BaggageSlotTouchEvent(self.Entity))
+	end
+
+end

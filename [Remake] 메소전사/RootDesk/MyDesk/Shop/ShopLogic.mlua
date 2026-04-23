@@ -1,0 +1,222 @@
+@Logic
+script ShopLogic extends Logic
+
+	property table shopIds = {}
+
+	property ShopUIComponent shopUI = "7d41083d-bb41-420c-8d93-0bc6ab46ce41"
+
+	property table shopData = {}
+
+	property FieldShopUIComponent fieldShopUI = "296e3e62-981c-4030-b37f-61947c802a31"
+
+	method void OnBeginPlay()
+		-- 상점 데이터 초기화 및 로드
+		local data = _DataService:GetTable("ShopIdData")
+		
+		for _, row in pairs(data:GetAllRow()) do
+			self.shopIds[row:GetItem("id")] = row:GetItem("shopName")
+		end
+		
+		for key, value in pairs(self.shopIds) do
+			local dataName = string.format("%sData", value)
+			data = _DataService:GetTable(dataName)
+			
+			self.shopData[key] = {}
+			
+			for k, v in pairs(data:GetAllRow()) do
+				local product = {}
+				
+				product.id = v:GetItem("id")
+				product.name = v:GetItem("name")
+				product.description = v:GetItem("description")
+				product.ruid = v:GetItem("ruid")
+				product.offsetX = tonumber(v:GetItem("offsetX"))
+				product.offsetY = tonumber(v:GetItem("offsetY"))
+				product.wealthType = v:GetItem("wealthType")
+				product.price = tonumber(v:GetItem("price"))
+				product.rewardType = v:GetItem("rewardType")
+				product.rewardId = v:GetItem("rewardId")
+				product.limitPurchaseCount = tonumber(v:GetItem("limitPurchaseCount"))
+				local mapFilter = v:GetItem("mapFilter")
+				if _UtilLogic:IsNilorEmptyString(mapFilter) == false then
+					product.mapFilter = _GameUtil:GetNumberSplitByComma(mapFilter)
+				else
+					product.mapFilter = {}
+				end
+				
+				self.shopData[key][product.id] = product
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestBuyProduct(string wealthType, string shopId, string productId, integer count)
+		-- 상품 구매 요청 처리
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(user) then return end
+		
+		user.PlayerStorageComponent:CheckExpiredItems()
+		local shopData = _ShopLogic.shopData[shopId]
+		local productData = shopData[productId]
+		local historyDB = {}
+		
+		if shopId == "1" then
+			historyDB = user.PlayerNewYearEventComponent.eventInfo
+		elseif shopId == "2" then
+		end
+		
+		
+		if self:IsCanBuyProduct(senderUserId, wealthType, shopId, productData, count) then
+			self:BuyProduct(senderUserId, wealthType, shopId, productData, count, historyDB)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuyProduct(string userId, string wealthType, string shopId, table productData, integer count, table historyDB)
+		-- 상품 구매 실행 및 보상 지급
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then return end
+		
+		local source = string.format("BUY PRODUCT FROM %s", _DataService:GetTable("ShopIdData"):GetRow(tonumber(shopId)):GetItem("source"))
+		
+		if _CheckLogic:IsWealthType(wealthType) then
+			_WealthLogic:ReduceWealth(userId, wealthType, productData.price * count, source)
+		else
+			user.PlayerStorageComponent:RemoveItemById(wealthType, productData.price * count, source)
+		end
+		
+		user.PlayerStorageComponent:RequestAddItemFromServer(_GameUtil:CreateGUID(), count, productData.rewardId, 1, userId, source, "")
+		if isvalid(historyDB) and #table.keys(historyDB) > 0 then
+			self:AddPurchaseHistory(userId, shopId, productData.id, count, historyDB)
+		end
+		self:NoticeBuySuccess(productData.rewardType, productData.rewardId, count, userId)
+	end
+
+	method boolean IsCanBuyProduct(string userId, string wealthType, string shopId, table productData, integer count)
+		-- 상품 구매 가능 여부 확인
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then return false end
+		
+		if _CheckLogic:IsWealthType(wealthType) then
+			if not _CheckLogic:IsEnoughWealth(userId, wealthType, productData.price * count) then
+				_LocalizeLogic:ShowToast("toast329", userId)
+				
+				return false
+			end
+		else
+			if user.PlayerStorageComponent:GetItemCount(wealthType) < productData.price * count then
+				_LocalizeLogic:ShowToast("toast329", userId)
+				
+				return false
+			end
+		end
+		
+		if productData.rewardType == "item" then 
+			if _CheckLogic:IsFieldItem(productData.rewardId) then
+				if not _CheckLogic:IsCanAddFieldItem(userId, count, productData.rewardId) then
+					
+					return false
+				end
+			else
+				if not _CheckLogic:IsCanAddItem(userId, count, productData.rewardId) then
+					_LocalizeLogic:ShowToast("toast327", userId)
+					
+					return false
+				end
+			end
+		end
+		
+		if self:IsLimitOverProduct(userId, shopId, productData, count) then
+			_LocalizeLogic:ShowToast("toast325", userId)
+			
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddPurchaseHistory(string userId, string shopId, string productId, integer count, table historyDB)
+		-- 구매 이력 추가 및 저장
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then
+			
+			return
+		end
+		
+		local historyKey = string.format("%s_%s", shopId, productId) 
+		
+		if not isvalid(historyDB[historyKey]) then
+			historyDB[historyKey] = count
+		else 
+			historyDB[historyKey] += count
+		end
+		
+		user.PlayerNewYearEventComponent:SetPlayerNewYearEventData()
+	end
+
+	@ExecSpace("Client")
+	method void NoticeBuySuccess(string rewardType, string rewardId, integer count)
+		-- 구매 성공 알림 및 UI 새로고침
+		self.shopUI:Refresh()
+		self.fieldShopUI:Refresh()
+		if rewardType == "item" then
+			local str = _LocalizationService:GetTextFormat("toast328", _LocalizeLogic:GetItemName(rewardId), tostring(count))
+			_UIToast:ShowMessage(str)
+		end
+	end
+
+	method boolean IsLimitOverProduct(string userId, string shopId, table productData, integer count)
+		-- 상품 구매 제한 초과 여부 확인
+		if _UtilLogic:IsNilorEmptyString(productData.limitPurchaseCount) then
+			return false
+		end
+		
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		local historyDB = {}
+		
+		if shopId == "1" then
+			historyDB = user.PlayerNewYearEventComponent.eventInfo
+		end
+		
+		local historyKey = string.format("%s_%s", shopId, productData.id, count) 
+		
+		if not isvalid(isvalid(historyDB[historyKey])) and count > productData.limitPurchaseCount then
+			return true
+		end
+		if isvalid(historyDB[historyKey]) and historyDB[historyKey] + count > productData.limitPurchaseCount then
+			return true
+		end
+		
+		return false
+	end
+
+	method table GetShopdataByMapfilter(string shopId, integer mapId)
+		-- 맵 필터에 따른 상점 데이터 가져오기
+		local data = {}
+		for k,v in pairs(self.shopData[shopId]) do
+			
+			local included = true
+			for k2,v2 in pairs(v.mapFilter) do
+				included = false
+				if v2 == mapId then
+					included = true
+					break		
+				end	
+			end
+			if included then
+				table.insert(data,v)
+			end
+		end
+		table.sort(data,function(a,b) 
+			return tonumber(a.id) < tonumber(b.id)
+		end)
+		return data
+	end
+
+end

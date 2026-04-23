@@ -1,0 +1,734 @@
+@Component
+script PlayerVIPOrder extends Component
+
+	property boolean IsSaveDB = false
+
+	property table VIPOrderSlotData = {}
+
+	@TargetUserSync
+	property integer SeasonCompleteCount = 0
+
+	property integer VIPOrderUniqueId = 0
+
+	@TargetUserSync
+	property boolean IsCloseToEndSeason = false
+
+	@TargetUserSync
+	property integer NowSeasonStartUtcElapsed = 0
+
+	@TargetUserSync
+	property SyncTable<integer, boolean> SeasonRewardBox
+
+	@TargetUserSync
+	property boolean IsFirstEnterUI = false
+
+	@TargetUserSync
+	property boolean IsCloseEnterUI = false
+
+	@TargetUserSync
+	property integer RerollCount = 0
+
+	@TargetUserSync
+	property string NowSeasonMainTag = ""
+
+	@TargetUserSync
+	property integer SeasonCompleteScore = 0
+
+	property string ExcessData = ""
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- VIP 주문 관련 데이터를 데이터베이스에 저장
+		local dataTotal = {}
+		dataTotal["VIPOrderSlotData"] = _HttpService:JSONEncode(self.VIPOrderSlotData)
+		
+		dataTotal["NowSeasonMainTag"] = self.NowSeasonMainTag
+		dataTotal["SeasonCompleteScore"] = self.SeasonCompleteScore
+		dataTotal["SeasonCompleteCount"] = self.SeasonCompleteCount
+		dataTotal["VIPOrderUniqueId"] = self.VIPOrderUniqueId
+		dataTotal["IsCloseToEndSeason"] = self.IsCloseToEndSeason
+		dataTotal["NowSeasonStartUtcElapsed"] = self.NowSeasonStartUtcElapsed
+		dataTotal["SeasonRewardBox"] = _UtilLogic:TableToString(self.SeasonRewardBox)
+		dataTotal["IsFirstEnterUI"] = self.IsFirstEnterUI
+		dataTotal["IsCloseEnterUI"] = self.IsCloseEnterUI
+		dataTotal["RerollCount"] = self.RerollCount
+		dataTotal["ExcessData"] = self.ExcessData
+		
+		saveData["VIPOrderData"] = dataTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 VIP 주문 데이터를 로드하여 초기화
+		local dataTable = loadedData["VIPOrderData"]
+		if dataTable == nil then
+			dataTable = {}
+		end
+		
+		if #table.keys(dataTable) > 0 then
+			
+			self.NowSeasonMainTag = dataTable["NowSeasonMainTag"]
+			self.SeasonCompleteCount = tonumber(dataTable["SeasonCompleteCount"])
+			self.VIPOrderUniqueId = tonumber(dataTable["VIPOrderUniqueId"])
+			self.IsCloseToEndSeason = dataTable["IsCloseToEndSeason"]
+			self.NowSeasonStartUtcElapsed = tonumber(dataTable["NowSeasonStartUtcElapsed"])
+			self.SeasonCompleteScore = tonumber(dataTable["SeasonCompleteScore"])
+			
+			
+			self.IsFirstEnterUI = dataTable["IsFirstEnterUI"]
+			self.IsCloseEnterUI = dataTable["IsCloseEnterUI"]
+			
+			self.RerollCount = tonumber(dataTable["RerollCount"])
+			
+			if dataTable["SeasonRewardBox"] then
+				table.initialize(self.SeasonRewardBox, _UtilLogic:StringToTable(dataTable["SeasonRewardBox"]))
+			end
+			
+			if _UtilLogic:IsNilorEmptyString(dataTable["VIPOrderSlotData"]) == false then
+				table.initialize(self.VIPOrderSlotData, _HttpService:JSONDecode(dataTable["VIPOrderSlotData"]))
+			end
+			
+			self.ExcessData = dataTable["ExcessData"]
+			
+		else
+				
+		end
+		
+		for i = 1, _VIPOrderDataSetLogic.ORDER_SLOT_COUNT do
+			self:RequestSyncVIPOrderSlotData(i, self.VIPOrderSlotData[i], self.Entity.PlayerComponent.UserId)
+		end
+		
+		self.Entity.PlayerEvent:RefreshAllToDoSecretaryInfo()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- VIP 주문 컴포넌트의 모든 데이터를 초기화
+		table.clear(self.VIPOrderSlotData)
+		self.SeasonCompleteCount = 0
+		self.VIPOrderUniqueId = 0
+		self.IsCloseToEndSeason = false
+		self.NowSeasonStartUtcElapsed = 0
+		table.clear(self.SeasonRewardBox)
+		self.IsFirstEnterUI = false
+		self.IsCloseEnterUI = false
+		self.RerollCount = 0
+		self.NowSeasonMainTag = ""
+		self.SeasonCompleteScore = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성에 따라 VIP 주문 관련 UI 업데이트 및 상태 변경
+		if name == "SeasonCompleteCount" then
+			_VIPOrderDataSetLogic.UIVIPOrderPanel:RefreshCountBar()
+			_LobbyHUDService:UpdateVIPOrderBtn(self.Entity)
+			
+		elseif name == "IsCloseToEndSeason" then
+			_LobbyHUDService:UpdateVIPOrderBtn(self.Entity)
+			
+		elseif name == "IsCloseEnterUI" then
+			_LobbyHUDService:UpdateVIPOrderBtn(self.Entity)
+			
+		elseif name == "SeasonCompleteScore" then
+		    _VIPOrderDataSetLogic.UIVIPOrderPanel.SeasonInfo:RefreshRewardSlider()
+			
+		elseif name == "SeasonRewardBox" then
+		    _VIPOrderDataSetLogic.UIVIPOrderPanel.SeasonInfo:RefreshRewardSlider()
+		
+		elseif name == "NowSeasonMainTag" then
+			if _UtilLogic:IsNilorEmptyString(self.NowSeasonMainTag) == false then
+				_VIPOrderDataSetLogic.UIVIPOrderPanel.SeasonInfo:Refresh()
+			end	
+			_LobbyHUDService:UpdateVIPOrderBtn(self.Entity)
+			_UIButtonUnlockLogic:SetButtonsUnlock()
+			
+		elseif name == "NowSeasonStartUtcElapsed" then
+			_VIPOrderDataSetLogic:RefreshSeasonInfoLeftDayText(self.NowSeasonStartUtcElapsed)
+			
+		elseif name == "RerollCount" then
+			for i, slot in pairs(_VIPOrderDataSetLogic.UIVIPOrderPanel.VIPOrderSlot) do
+				slot.UIVIPOrderSlot:RefreshRerollBtn()
+			end
+		    if _UIGroupManager.VIPOrderGroup.Enable then
+		        _VIPOrderDataSetLogic.UIVIPOrderPanel:Refresh(false)
+		    end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartNewSeason(boolean isCheat)
+		-- 새로운 VIP 주문 시즌을 시작하여 메인 태그 설정 및 주문 슬롯 생성
+		if self.Entity.PlayerManagement.ManagementLevel < 1 then
+			return
+		end
+		
+		local isVIPOrderOpened = _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.MainMenuVIPOrder, self.Entity)
+		if isVIPOrderOpened == false then
+			return
+		end
+		
+		self.NowSeasonStartUtcElapsed = self.Entity.TimeManager.Utc.Elapsed
+		
+		self.SeasonCompleteScore = 0 
+		self.SeasonCompleteCount = 0 
+		self.IsCloseToEndSeason = false 
+		self.IsFirstEnterUI = false 
+		self.IsCloseEnterUI = false 
+		self.RerollCount = 0 
+		
+		local exSeasonTag = self.NowSeasonMainTag
+		
+		local tagPool = {_RecipeTagEnum.Meat, _RecipeTagEnum.Chicken, _RecipeTagEnum.Seafood, _RecipeTagEnum.Veggie, _RecipeTagEnum.Spicy}
+		
+		local newSeasonPool = {}
+		if self.Entity.PlayerStage.NowStage == 1 and self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.VIPOrderCount) < 1 then
+			table.insert(newSeasonPool, _RecipeTagEnum.Meat)
+			table.insert(newSeasonPool, _RecipeTagEnum.Chicken)
+				
+		else
+			for _, tag in pairs(tagPool) do
+				if tag == exSeasonTag then
+					continue
+				end
+				table.insert(newSeasonPool, tag)
+			end
+		end
+		
+		self.NowSeasonMainTag = newSeasonPool[_UtilLogic:RandomIntegerRange(1, #newSeasonPool)]
+		
+		table.clear(self.SeasonRewardBox)
+		for score, _ in pairs(_VIPOrderDataSetLogic.VIPOrderSeasonRewardData) do
+			self.SeasonRewardBox[score] = false
+		end
+		
+		for i = 1, _VIPOrderDataSetLogic.ORDER_SLOT_COUNT do
+			self.VIPOrderSlotData[i] = nil
+			self:CreateVIPOrderSlotData(i, false, isCheat == true and "5" or "1")
+		end
+		
+		_ReportMessageMaker:RequestAddToReportQueue(8001, "", "", "", self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.VIPOrderCount)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.VIPOrderSeasonReward)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CreateVIPOrderSlotData(integer slotIndex, boolean diffFromExData, string flowType)
+		-- 지정된 슬롯에 VIP 주문 데이터를 생성하여 레시피 또는 재료 주문으로 설정
+		
+		local maxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.VIPOrderCount)
+		if self.SeasonCompleteCount >= maxCount then
+			local orderData = {}
+			orderData["OrderType"] = _VIPOrderTypeEnum.Complete
+			self.VIPOrderSlotData[slotIndex] = orderData
+			return
+		end
+		
+		self:AddVIPOrderUniqueId()
+		
+		local exData = nil
+		if diffFromExData then
+			exData = self.VIPOrderSlotData[slotIndex]
+		end
+		
+		self.VIPOrderSlotData[slotIndex] = {}
+		
+		local getOrderType = function()
+			local recipeWeight = 1
+			local ingreWeight = 2
+			
+			local typePool = {}
+			for i = 1, recipeWeight do
+				table.insert(typePool, _VIPOrderTypeEnum.Recipe)
+			end
+			
+			for i = 1, ingreWeight do
+				table.insert(typePool, _VIPOrderTypeEnum.Ingre)
+			end
+			
+			return typePool[_UtilLogic:RandomIntegerRange(1, #typePool)]
+		end
+		
+		local orderType = getOrderType()
+		local newData = {}
+		if orderType == _VIPOrderTypeEnum.Recipe then
+			newData = _VIPOrderDataSetLogic:ReturnRecipeOrderData(self.Entity, exData)
+		elseif orderType == _VIPOrderTypeEnum.Ingre then
+			newData = _VIPOrderDataSetLogic:ReturnIngreOrderData(self.Entity, exData)
+		end
+		
+		if newData == {} or newData == nil then
+			return
+		end
+		
+		self.VIPOrderSlotData[slotIndex] = newData
+		
+		self:RequestSyncVIPOrderSlotData(slotIndex, self.VIPOrderSlotData[slotIndex], self.Entity.PlayerComponent.UserId)
+		
+		if orderType == _VIPOrderTypeEnum.Recipe then
+			local uniqueId = newData["UniqueId"]
+			local reqCount = newData["RequirementsCount"]
+			local reqTag = newData["Tag"]
+			local reqTasteGrade = newData["TasteGrade"]
+			local reqIngre1 = newData["Ingre1"]
+			local reqIngre2 = newData["Ingre2"]
+			local reqManageLevel = newData["ManagementLevel"]
+			
+			self:VIPOrderRecipeLog(uniqueId, "empty", "empty", reqCount, reqTag, reqTasteGrade, reqIngre1, reqIngre2, reqManageLevel, self.SeasonCompleteScore, self.SeasonCompleteCount, flowType, "0")
+			
+		elseif orderType == _VIPOrderTypeEnum.Ingre then
+			local uniqueId = newData["UniqueId"]
+			local reqIngreId = newData["IngreId"]
+			local reqIngreCount = newData["Count"]
+			local reqIngreGrade = newData["Grade"]
+			local reqManageLevel = newData["ManagementLevel"]
+			
+			self:VIPOrderIngreLog(uniqueId, "empty", reqIngreId, reqIngreCount, reqIngreGrade, reqManageLevel, self.SeasonCompleteScore, self.SeasonCompleteCount, flowType, "0")
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddVIPOrderUniqueId()
+		-- VIP 주문의 고유 ID를 1 증가
+		self.VIPOrderUniqueId += 1
+	end
+
+	@ExecSpace("Client")
+	method void RequestSyncVIPOrderSlotData(integer slotIndex, table slotData)
+		-- 서버에서 VIP 주문 슬롯 데이터를 클라이언트에 동기화하고 UI 업데이트
+		self.VIPOrderSlotData[slotIndex] = slotData
+		
+		
+		if _UIGroupManager.VIPOrderGroup.Enable then
+			_VIPOrderDataSetLogic.UIVIPOrderPanel.VIPOrderSlot[slotIndex].UIVIPOrderSlot:SetSlotData(self.VIPOrderSlotData[slotIndex])
+		end
+		
+		_LobbyHUDService:UpdateVIPOrderBtn(self.Entity)
+	end
+
+	@ExecSpace("Server")
+	method integer RequestRerollOrderSlot(integer slotIndex)
+		-- 클라이언트에서 VIP 주문 리롤 요청을 받아 비용 차감 후 새로운 주문 생성
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return 9999
+		end
+		
+		local orderCountMax = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.VIPOrderCount)
+		if self.SeasonCompleteCount >= orderCountMax then
+			return 1 
+		end
+		
+		local rerollCost = _VIPOrderDataSetLogic:ReturnVIPOrderRerollCost(self.Entity)
+		local result = self.Entity.PlayerInventory:ModifyMoney(-rerollCost, "VIPOrderReroll", "VIPOrder reroll popup")
+		if result == false then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("NoMoneyToastMsg", {}, false, self.Entity.PlayerComponent.UserId)
+			return 2 
+		end	
+		
+		self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.M_Etc, rerollCost)
+		
+		self.RerollCount += 1
+		
+		
+		self.VIPOrderSlotData[slotIndex]["OrderType"] = "Temp"
+		self:CreateVIPOrderSlotData(slotIndex, true, "2")
+		
+		return 0
+	end
+
+	@ExecSpace("Server")
+	method integer RequestSubmitVIPOrder(integer slotIndex, integer recipeId)
+		-- 클라이언트에서 VIP 주문 제출 요청을 받아 조건 검사 후 주문 완료 처리
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return 9999
+		end
+		
+		local orderData = self.VIPOrderSlotData[slotIndex]
+		if orderData == nil or orderData == {} then
+			return 9
+		end
+		
+		local orderType = orderData["OrderType"]
+		---@type RecipeData
+		local recipeData = self.Entity.PlayerRecipe.Recipes[recipeId]
+		
+		if orderType == _VIPOrderTypeEnum.Recipe then
+			if isvalid(recipeData) == false then
+				return 10
+			end
+			local isCorrect = _VIPOrderDataSetLogic:IsRecipeCorrectForOrder(self.Entity, slotIndex, recipeData)
+			if isCorrect == false then
+				return 11
+			end
+			
+			local recipeTasteGrade = _TasteGradeDataSetLogic:ReturnGradeDataByScore(recipeData.TasteScore).Index
+			local orderTasteGrade = orderData["TasteGrade"]
+			if orderTasteGrade < recipeTasteGrade then
+				local gap = math.floor(recipeTasteGrade - orderTasteGrade)
+				if gap > 3 then
+					gap = 3
+				end
+				self.SeasonCompleteScore += _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderScoreExtraReward"..gap)
+				_VIPOrderResultRenderLogic:RequestStartExtraRewardAfterWaiting(gap, self.Entity.PlayerComponent.UserId)
+				
+			end
+			
+			orderData["RecipeData"] = recipeData:ConvertToTable()
+			self.Entity.PlayerRecipe:DeleteRecipe(recipeId)
+			
+		elseif orderType == _VIPOrderTypeEnum.Ingre then
+			local ingreId = orderData["IngreId"]
+			local ingreCount = orderData["Count"]
+			
+			local canUseIngre = self.Entity.PlayerIngredient:RemoveIngredientCard(ingreId, ingreCount, "VIPOrderIngre")
+			if canUseIngre ~= 0 then
+				return 20+canUseIngre
+			end
+		end
+		
+		self:CompleteVIPOrder(slotIndex)
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CompleteVIPOrder(integer slotIndex)
+		-- VIP 주문을 완료하여 보상 지급 및 시즌 점수 추가하고 로그 기록
+		local rewardTable = _VIPOrderDataSetLogic:ReturnVIPOrderReward(self.VIPOrderSlotData[slotIndex], self.Entity)
+		
+		self.Entity.PlayerInventory:AddItems(rewardTable, "VIPOrder Complete", "VIPOrder Panel")
+		_UIItemRewardService:SetItemRewardUI(rewardTable, "VIPOrder", self.Entity.PlayerComponent.UserId)
+		
+		local scoreAmount = 0
+		for itemId, itemCount in pairs(rewardTable) do	
+			if self.Entity.PlayerCheatComponent:HasAuthority() and itemId == "G0006" then
+				self.Entity.PlayerDebugMonitor:UpdateDebugMonitorReputationChangeByContents(itemCount,self.Entity.PlayerComponent.UserId)
+			end
+			
+			if itemId == "G0007" then
+				scoreAmount += itemCount
+			end
+		end
+		
+		local slotData = self.VIPOrderSlotData[slotIndex]
+		local orderType = slotData["OrderType"]
+		
+		self.SeasonCompleteCount += 1
+		
+		if orderType == _VIPOrderTypeEnum.Recipe then
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.VIPRecipeOrderSuccessCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.VIPRecipeOrderSuccessCount, achiProgress+1)
+				
+			local uniqueId = slotData["UniqueId"]
+			local reqCount = slotData["RequirementsCount"]
+			local reqTag = slotData["Tag"]
+			local reqTasteGrade = slotData["TasteGrade"]
+			local reqIngre1 = slotData["Ingre1"]
+			local reqIngre2 = slotData["Ingre2"]
+			local reqManageLevel = slotData["ManagementLevel"]
+			local recipeData = slotData["RecipeData"]
+			local recipeDataStr = _HttpService:JSONEncode(recipeData)
+			local recipeDataStruct = RecipeData()
+			recipeDataStruct:SetFromTable(recipeData)
+			local answerTasteGrade = _TasteGradeDataSetLogic:ReturnGradeDataByScore(recipeDataStruct.TasteScore).Index
+			local resultType = answerTasteGrade > reqTasteGrade and "2" or "1"
+			
+			self:VIPOrderRecipeLog(uniqueId, self.Entity.PlayerLog:GetRewardStr(rewardTable), recipeDataStr, reqCount, reqTag, reqTasteGrade, reqIngre1, reqIngre2, 
+				reqManageLevel, self.SeasonCompleteScore+scoreAmount, self.SeasonCompleteCount, "4", resultType)
+			
+		elseif orderType == _VIPOrderTypeEnum.Ingre then
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.VIPIngreOrderSuccessCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.VIPIngreOrderSuccessCount, achiProgress+1)
+			
+			local uniqueId = slotData["UniqueId"]
+			local reqIngreId = slotData["IngreId"]
+			local reqIngreCount = slotData["Count"]
+			local reqIngreGrade = slotData["Grade"]
+			local reqManageLevel = slotData["ManagementLevel"]
+			
+			self:VIPOrderIngreLog(uniqueId, self.Entity.PlayerLog:GetRewardStr(rewardTable), reqIngreId, reqIngreCount, reqIngreGrade, 
+				reqManageLevel, self.SeasonCompleteScore+scoreAmount, self.SeasonCompleteCount, "4", "1")
+		end
+		
+		local countProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.VIPOrderCount) 
+		self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.VIPOrderCount, countProgress+1)
+		
+		self.VIPOrderSlotData[slotIndex] = nil
+		
+		local userMaxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.VIPOrderCount)
+		
+		local orderData = {}
+		if self.SeasonCompleteCount >= userMaxCount then
+			for i = 1, _VIPOrderDataSetLogic.ORDER_SLOT_COUNT do
+				self.VIPOrderSlotData[i] = nil
+				
+				local slotOrderData = {}
+				slotOrderData["OrderType"] = _VIPOrderTypeEnum.Complete
+				self.VIPOrderSlotData[i] = slotOrderData
+				
+				self:RequestSyncVIPOrderSlotData(i, self.VIPOrderSlotData[i], self.Entity.PlayerComponent.UserId)
+			end
+			
+		else
+			orderData["OrderType"] = _VIPOrderTypeEnum.Waiting
+			orderData["LeftDay"] = _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderResetDelayDay")
+			self.VIPOrderSlotData[slotIndex] = orderData
+			self:RequestSyncVIPOrderSlotData(slotIndex, self.VIPOrderSlotData[slotIndex], self.Entity.PlayerComponent.UserId)
+		end
+		
+		local badgeProgress = self.Entity.PlayerBadge.BadgeProgress[_BadgeEnum.VIPOrderCompleteCount]
+		if badgeProgress == nil then
+			badgeProgress = 0
+		end
+		self.Entity.PlayerBadge:ChangeProgress(_BadgeEnum.VIPOrderCompleteCount, badgeProgress+1)
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.VIPOrderCount)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.VIPOrderSeasonReward)
+		
+		_VIPOrderResultRenderLogic:RequestStartPopAfterWaiting(slotIndex, scoreAmount, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckVIPOrderResetCool()
+		-- VIP 주문 대기 시간을 하루씩 감소시키고 0이 되면 새로운 주문으로 리셋
+		local utcElapsed = self.Entity.TimeManager.Utc.Elapsed
+		
+		for i, data in pairs(self.VIPOrderSlotData) do
+			if data == nil or data == {} then
+				continue
+			end
+			
+			if data["OrderType"] ~= "Waiting" then
+				continue
+			end
+			
+			local leftDay = data["LeftDay"]
+			if isvalid(leftDay) == false then
+				continue
+			end
+			
+			self.VIPOrderSlotData[i]["LeftDay"] -= 1
+			self:RequestSyncVIPOrderSlotData(i, self.VIPOrderSlotData[i], self.Entity.PlayerComponent.UserId)
+			
+			if self.VIPOrderSlotData[i]["LeftDay"] <= 0 then
+				self:ResetVIPOrderSlot(i)
+				_MainMenuRedDotManager:EnableVIPOrderRedDot(true, self.Entity.PlayerComponent.UserId)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSyncVIPOrderSlotDataToServer(integer slotIndex)
+		-- 클라이언트에서 VIP 주문 슬롯 데이터 서버 동기화 요청
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return
+		end
+		
+		self:RequestSyncVIPOrderSlotData(slotIndex, self.VIPOrderSlotData[slotIndex], self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshCompleteStatus()
+		-- VIP 주문 완료 상태를 새로고침하여 업그레이드로 인해 추가된 주문 수만큼 새로운 주문 생성
+		local maxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.VIPOrderCount)
+		
+		for i, data in pairs(self.VIPOrderSlotData) do
+			if data["OrderType"] == _VIPOrderTypeEnum.Complete and self.SeasonCompleteCount < maxCount then
+				self:CreateVIPOrderSlotData(i, false, "1")
+				_ReportMessageMaker:RequestAddToReportQueue(8021, "", "", "", self.Entity.PlayerComponent.UserId)
+			end
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckStartNewSeason(integer nowMonth)
+		-- 현재 월에 따라 VIP 주문 시즌 종료 예고 또는 새 시즌 시작 여부를 확인
+		
+		local isVIPOrderOpened = _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.MainMenuVIPOrder, self.Entity)
+		if isVIPOrderOpened == false or _UtilLogic:IsNilorEmptyString(self.NowSeasonMainTag) then
+			return
+		end
+		
+		for _, month in pairs(_VIPOrderDataSetLogic.SeasonStartMonths) do
+			if nowMonth == month-1 then
+				self.IsCloseToEndSeason = true
+				break
+			end
+		
+			if month == nowMonth then
+				self:StartNewSeason(false)
+				break
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetSeasonReward(integer score)
+		-- 클라이언트에서 VIP 주문 시즌 보상 수령 요청을 받아 점수 조건 확인 후 보상 지급
+		
+		if self.SeasonCompleteScore < score then
+			return
+		end
+		
+		if self.SeasonRewardBox[score] == true then
+			return
+		end
+		
+		self.SeasonRewardBox[score] = true
+		
+		local managementLevel = self.Entity.PlayerManagement.ManagementLevel
+		
+		local rewards = _VIPOrderDataSetLogic.VIPOrderSeasonRewardData[score]
+		local giveRewards = {}
+		
+		for id, count in pairs(rewards) do
+			local originCount = count
+			local cnt = originCount * (1 + 
+				_StrategyEnum:GetPlayerStrategyEffect(self.Entity, _StrategyEnum.CloverRewardBonus, self.Entity.PlayerStage.NowStage) 
+				+ self.Entity.ChuchuCollectionDB.ChuchuCollectionCloverBonus)
+			
+			giveRewards[id] = math.floor(cnt)
+			
+		end
+		
+		self.Entity.PlayerInventory:AddItems(giveRewards, "VIPOrder Season Reward", "VIPOrder Season Reward Popup")
+		_UIItemRewardService:SetItemRewardUI(giveRewards, "VIPOrderSeasonReward", self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.VIPOrderSeasonReward)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetFirstEnterUI()
+		-- 클라이언트에서 VIP 주문 UI 최초 진입 상태를 설정
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return
+		end
+		
+		self.IsFirstEnterUI = true
+	end
+
+	@ExecSpace("Server")
+	method integer RequestResetVIPOrderSlot(integer slotIndex)
+		-- 클라이언트에서 VIP 주문 슬롯 리셋 요청을 받아 비용 차감 후 새로운 주문 생성
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return 9999
+		end
+		
+		local orderCountMax = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.VIPOrderCount)
+		if self.SeasonCompleteCount >= orderCountMax then
+			return 1 
+		end
+		
+		local slotData = self.VIPOrderSlotData[slotIndex]
+		local leftDay = slotData["LeftDay"]
+		
+		if isvalid(leftDay) == false then
+			return 3
+		end
+		
+		local cost = _VIPOrderDataSetLogic:ReturnResetOrderCost(leftDay)
+		
+		local result = self.Entity.PlayerInventory:ModifyArcaneSymbol(-cost, "VIPOrderReset", "VIPOrder reset popup")
+		if result == false then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("NoArcaneSymbolToastMsg", {}, false, self.Entity.PlayerComponent.UserId)
+			return 2 
+		end
+		
+		self:ResetVIPOrderSlot(slotIndex)
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetVIPOrderSlot(integer slotIndex)
+		-- 지정된 VIP 주문 슬롯을 리셋하여 새로운 주문 데이터로 대체
+		self.VIPOrderSlotData[slotIndex]["OrderType"] = "Temp"
+		
+		self:CreateVIPOrderSlotData(slotIndex, false, "3")
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetCloseEnterUI()
+		-- 클라이언트에서 VIP 주문 UI 종료 예고 진입 상태를 설정
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return
+		end
+		
+		self.IsCloseEnterUI = true
+	end
+
+	@ExecSpace("Server")
+	method void AddVIPOrderSeasonRewardScore(integer score)
+		-- VIP 주문 시즌 보상 점수를 지정된 수치만큼 추가
+		if score < 0 then
+			return
+		end
+		
+		self.SeasonCompleteScore += score
+	end
+
+	@ExecSpace("ServerOnly")
+	method void VIPOrderRecipeLog(integer uniqueId, string reward, string recipeDataStr, integer reqCount, string reqTag, integer reqTasteGrade, integer reqIngre1, integer reqIngre2, integer reqManageLevel, integer seasonRewardScore, integer seasonCompleteCount, string flowType, string resultType)
+		-- VIP 주문 레시피 관련 로그를 기록하여 게임 데이터 분석용 정보 수집
+		local manageLevel = tostring(self.Entity.PlayerManagement.ManagementLevel)
+		local manageIdx = self.Entity.PlayerManagement:GetGoalCount()
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		local success,value = pcall(function()
+			_LogStorageLogic:LogValue( userId,_LogEnumType.VIPOrderRecipe,_HttpService:JSONEncode({
+				reward = reward,
+				recipeData = recipeDataStr == nil and "empty" or recipeDataStr,
+				requirementsCount = tostring(reqCount),
+				reqTag = reqTag,
+				reqTasteGrade = tostring(reqTasteGrade),
+				reqIngre1 = reqIngre1 == 0 and "empty" or tostring(reqIngre1),
+				reqIngre2 = reqIngre2 == 0 and "empty" or tostring(reqIngre2),
+				seasonRewardScore = tostring(seasonRewardScore)
+			}),
+			{		
+				uniqueId = tostring(uniqueId),
+				seasonCompleteCount = tostring(seasonCompleteCount),
+				flowType = flowType,
+				resultType = resultType,
+				reqManageLevel = tostring(reqManageLevel),
+				manageLevel = manageLevel,
+				manageIndex = manageIdx,
+				playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+			})
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void VIPOrderIngreLog(integer uniqueId, string reward, integer reqIngreId, integer reqIngreCount, integer reqIngreGrade, integer reqManageLevel, integer seasonRewardScore, integer seasonCompleteCount, string flowType, string resultType)
+		-- VIP 주문 재료 관련 로그를 기록하여 게임 데이터 분석용 정보 수집
+		local manageLevel = tostring(self.Entity.PlayerManagement.ManagementLevel)
+		local manageIdx = self.Entity.PlayerManagement:GetGoalCount()
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		local success,value = pcall(function()
+			_LogStorageLogic:LogValue( userId,_LogEnumType.VIPOrderIngre,_HttpService:JSONEncode({
+				reward = reward,
+				reqIngreId = tostring(reqIngreId),
+				reqIngreCount = tostring(reqIngreCount),
+				seasonRewardScore = tostring(seasonRewardScore)
+			}),
+			{		
+				uniqueId = tostring(uniqueId),
+				seasonCompleteCount = tostring(seasonCompleteCount),
+				flowType = flowType,
+				resultType = resultType,
+				reqIngreGrade = tostring(reqIngreGrade),
+				reqManageLevel = tostring(reqManageLevel),
+				manageLevel = manageLevel,
+				manageIndex = manageIdx,
+				playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+			})
+		end)
+		
+		if not success then  end
+	end
+
+end

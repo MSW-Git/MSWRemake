@@ -1,0 +1,400 @@
+@Component
+script UIEventDecoUpgrade extends Component
+
+	property Entity Toast = "84c48ed2-e847-4344-9ae0-0897ebcf2474"
+
+	property Entity WhiteLayer = "4ae41e81-3386-433d-b54e-bd8f07c20929"
+
+	property SyncTable<integer, Vector3> CameraLBBounds
+
+	property SyncTable<integer, Vector3> CameraRTBounds
+
+	property string decoItemMaterial = "material://596fb2ea-3440-48f8-8cee-a41121e62c6e"
+
+	method void StartRender()
+		-- 인테리어 업그레이드 애니메이션 렌더링을 시작하는 함수
+		self.Toast.Enable = false
+		
+		_UIGroupManager:EnableMoneyBarGroup(false)
+		_UIGroupManager:EnableLobbyHUDGroup(false)
+		
+		_EventUIManager.Dim.Enable = false
+		
+		self._T.parkingArea = _LobbyRenovationService:GetParkingAreaEntity()
+		self._T.parkingAreaChild = self._T.parkingArea:GetChildByName("ParkingArea")
+		
+		self._T.cameraKey = ""
+		
+		self:ChangePhase(0)
+		
+	end
+
+	method void EndRender()
+		-- 렌더링을 종료하고 다음 단계로 이동을 허용하는 함수
+		_EventManager:SetCanMoveNext(true)
+	end
+
+	method void ChangePhase(integer phase)
+		-- 지정된 단계로 변경하는 함수
+		self:PhaseFunction(phase)
+	end
+
+	method void PhaseFunction(integer phase)
+		-- 단계별 인테리어 업그레이드 애니메이션을 실행하는 함수
+		local player = _UserService.LocalPlayer
+		local expansionLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.ExpansionStep)
+		local decoLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, _UpgradeTypeEnum.StoreDeco)
+		
+		local cameraData = _CameraDataSetLogic:GetLobbyCameraData(expansionLv)
+		local ieCameraData = _CameraDataSetLogic:GetInteriorEntityCameraData(decoLevel)
+		
+		local isSideTrue = cameraData:GetCameraTypeDataByKey("DecoTop_L") ~= nil
+		local defaultCameraKey = isSideTrue and "DecoTop_L" or "DecoTop"
+		local defaultCameraSetting = cameraData:GetCameraTypeDataByKey(defaultCameraKey)
+		
+		local duration = 1
+		local delay = 0
+		local whiteLayerDuration = 1
+		local cameraDuration = 2
+		
+		if phase == 0 then 
+			
+			if #table.keys(ieCameraData.EntityTargetCamera) == 0 then 
+				self:ChangePhase(3)
+				return
+			end
+			
+			local cameraKeyEntities = {}
+			for entityName, targetCamera in pairs(ieCameraData.EntityTargetCamera) do
+				local cameraKey = targetCamera
+				if targetCamera == "ParkingArea" then
+					
+				else
+					cameraKey = "Deco"..cameraKey
+					if isSideTrue == true then
+						local cameraSide = ieCameraData.EntityTargetCameraSide[entityName]
+						if _UtilLogic:IsNilorEmptyString(cameraSide) == false then
+							cameraKey = cameraKey.."_"..cameraSide
+						end
+					end		
+				end
+				
+				if cameraKeyEntities[cameraKey] == nil then
+					cameraKeyEntities[cameraKey] = {}
+				end
+				
+				table.insert(cameraKeyEntities[cameraKey], entityName)
+			end
+			
+			local cameraKeys = table.keys(cameraKeyEntities)
+			table.sort(cameraKeys, function(a, b)
+				local scoreFunction = function(t)
+					local score = 0
+					if _UtilLogic:Contains(t, "Top") then
+						score += 60
+					elseif _UtilLogic:Contains(t, "Middle") then
+						score += 30
+					elseif _UtilLogic:Contains(t, "Bottom") then
+					end
+					
+					if _UtilLogic:Contains(t, "L") then
+						score += 10
+					elseif _UtilLogic:Contains(t, "C") then
+						score += 5
+					elseif _UtilLogic:Contains(t, "R") then
+					end
+					
+					return score
+				end
+				
+				return scoreFunction(a) > scoreFunction(b)
+			end)
+			
+			local idx = 0
+			local nowCameraKey = ""
+			
+			local firstCamera = cameraKeys[1]
+			self:ChangeCameraTo(firstCamera)
+					
+			_TimerService:SetTimerOnce(function()
+				for i = 1, #cameraKeys do
+					local cameraKey = cameraKeys[i]
+					local entityTable = cameraKeyEntities[cameraKey]
+					
+					table.sort(entityTable, function(a,b)
+						local aEntity = self:GetTargetEntity(a)
+						local bEntity = self:GetTargetEntity(b)
+						
+						if isvalid(aEntity.TransformComponent) == false or isvalid(bEntity.TransformComponent) == false then
+							return a < b
+						end
+						local aPos = aEntity.TransformComponent.Position
+						local bPos = bEntity.TransformComponent.Position
+						
+						if aPos.x == bPos.x then
+							return aPos.y > bPos.y
+						end
+						
+						return aPos.x < bPos.x
+					end)
+					
+					for j = 1, #entityTable do
+						local entityName = entityTable[j]
+						
+						local entity = self:GetTargetEntity(entityName)
+						if isvalid(entity) == false then
+							
+							if i == #cameraKeys and j == #entityTable then
+								self:ChangePhase(1)
+								_TimerService:ClearTimer(self._T.decoTimer)
+								return
+							end
+							continue
+						end
+										
+						self._T.decoTimer = _TimerService:SetTimerOnce(function()						
+							if nowCameraKey ~= cameraKey then
+								self:ChangeCameraTo(cameraKey)
+								nowCameraKey = cameraKey						
+							end
+							
+							entity.Enable = true										
+		                    					
+							if entity == self._T.parkingArea then
+								entity = self._T.parkingAreaChild
+							end
+							
+							_EffectService:PlayEffectAttached("11f325a9cef94f8d95e30c4c8c2a6152", entity, Vector3.zero, 0, Vector3.one, false) 
+							_EffectService:PlayEffect("a1829fe6abdf42fb95588a6a438c8a3e", entity, entity.TransformComponent.Position, 0, Vector3.one, false) 
+							_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_CamMovingDeco"], 1)
+							
+							if isvalid(entity.TransformComponent) then
+								local originScaleX = entity.TransformComponent.Scale.x
+								local originScaleY = entity.TransformComponent.Scale.y
+								local bounce = function(d, e)
+									local isBounceUp = true
+									local bounceCount = 4
+									local bounceTimer = _TimerService:SetTimerRepeat(function()
+										local scaleUpSize = 1.1
+										
+										local scaleUpX = originScaleX * scaleUpSize
+										local scaleUpY = originScaleY * scaleUpSize
+										
+										local startScale = isBounceUp == true and Vector3(originScaleX, originScaleY, 1) or Vector3(scaleUpX, scaleUpY, 1)
+										local endScale = isBounceUp == true and Vector3(scaleUpX, scaleUpY, 1) or Vector3(originScaleX, originScaleY, 1)
+										_TweenLogic:PlayTween(startScale, endScale, d/bounceCount, EaseType.Linear, function(t)
+											e.TransformComponent.Scale = t
+										end)
+										isBounceUp = not isBounceUp
+									end, d/bounceCount)
+									
+									_TimerService:SetTimerOnce(function()
+										_TimerService:ClearTimer(bounceTimer)
+										e.TransformComponent.Scale = Vector3(originScaleX, originScaleY, 1)
+									end, d)
+								end
+								
+								bounce(duration, entity)
+							end
+							
+							if isvalid(entity.SpriteRendererComponent) then	
+								entity.SpriteRendererComponent.Color.a = 1
+								
+								_LobbyRenovationService:SetInteriorEntityLayer(entity)
+								entity.SpriteRendererComponent.Color.a = 1
+													
+												
+								_TimerService:SetTimerOnce(function()
+									entity.SpriteRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+									if i == #cameraKeys and j == #entityTable then
+										self:ChangePhase(1)
+										_TimerService:ClearTimer(self._T.decoTimer)
+									end
+								end, duration)
+							end
+							
+						end, duration * idx)
+						
+						idx += 1
+						
+					end
+				end
+			end, delay)
+			
+		elseif phase == 1 then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_CamMovingZoomOut"], 1)
+			_LobbyRenovationService:UpdateInteriorObject(_UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, _UpgradeTypeEnum.StoreDeco), player) 
+			
+			if self._T.cameraKey == "ParkingArea" then 
+				self:ChangePhase(2)
+				return
+			end
+				
+			_TweenLogic:PlayTween(1, 0, whiteLayerDuration, EaseType.Linear, function(t)
+				self.WhiteLayer.CanvasGroupComponent.GroupAlpha = t
+			end)
+			self:StartCameraTween(expansionLv, "FullView", cameraDuration, Vector2.zero)
+			
+			for entityName, _ in pairs(ieCameraData.EntityTargetCamera) do
+				local entity = self:GetTargetEntity(entityName)
+				
+				if entity == self._T.parkingArea then
+					entity = self._T.parkingAreaChild
+				end
+				
+				if isvalid(entity) == false then
+					continue
+				end
+				
+				if isvalid(entity.SpriteRendererComponent) then
+					entity.SpriteRendererComponent:ChangeMaterial(_IconRuidEnum.UI_AdvantageMaterial)
+				end
+			end
+			
+			_TimerService:SetTimerOnce(function()
+				self.WhiteLayer.Enable = false
+				self:ChangePhase(2)		
+			end, cameraDuration)
+			
+		elseif phase == 2 then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Audience"], 1)
+			
+			
+			self:SetParticlesPos()
+			if self._T.cameraKey ~= "ParkingArea" then 
+				_SoundService:PlayLoopSound(_ResourceManager.SFXTable["Firework"], 1)
+				_LobbyEntityLogic.ExpansionParticles.Enable = true
+			end		
+		    _EventUIManager.ConfettiSpawner.UIEventConfettiSpawner:StartSpawnConfetties()
+			
+			self:StartToastTween(duration)
+			_ReportMessageMaker:RequestAddToReportQueue(8019, "", "", "")
+			
+			_TimerService:SetTimerOnce(function()
+				self:ChangePhase(3)
+			end, cameraDuration)
+			
+		elseif phase == 3 then
+			for entityName, _ in pairs(ieCameraData.EntityTargetCamera) do
+				local entity = self:GetTargetEntity(entityName)
+				if entity == self._T.parkingArea then
+					entity = self._T.parkingAreaChild
+				end
+				
+				if isvalid(entity) == false then
+					continue
+				end
+				
+				if isvalid(entity) then
+					entity.SpriteRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+				end
+			end
+			
+			self:EndRender()
+			
+		end
+	end
+
+	method Entity GetTargetEntity(string entityName)
+		-- 엔티티 이름으로 해당 엔티티를 찾아 반환하는 함수
+		if entityName == "ParkingArea" then
+			return self._T.parkingArea
+		else
+			return _LobbyRenovationService.InteriorEntities[entityName]
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartCameraTween(integer level, string key, number duration, Vector2 direction)
+		-- 카메라 전환 애니메이션을 시작하는 함수
+		local cameraData = _CameraDataSetLogic:GetLobbyCameraData(level)
+		local nowCameraData = cameraData:GetCameraTypeDataByKey(self._T.cameraKey)
+		local moveToCameraData = cameraData:GetCameraTypeDataByKey(key)
+		
+		local movingCamera = _LobbyCameraService.lobbyCameras["MovingCamera"]
+		local startPos = Vector2(nowCameraData.PosX, nowCameraData.PosY):ToVector3()
+		local endPos = Vector2(moveToCameraData.PosX, moveToCameraData.PosY):ToVector3()
+		
+		_TweenLogic:PlayTween(0, 1, duration, EaseType.Linear, function(t)
+			movingCamera.Entity.TransformComponent.Position = Vector3.Lerp(startPos, endPos, t)
+			movingCamera.ZoomRatio = self:Lerp(_LobbyCameraService:GetZoomRatio(nowCameraData.ZoomRatio), _LobbyCameraService:GetZoomRatio(moveToCameraData.ZoomRatio), t)
+		end)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartToastTween(number duration)
+		-- 완료 토스트 메시지 애니메이션을 시작하는 함수
+		self.Toast.CanvasGroupComponent.GroupAlpha = 0
+		self.Toast.Enable = true
+		
+		local endPos = Vector2(0, -200)
+		local yTweenValue = 100
+		local startPos = Vector2(endPos.x, endPos.y - yTweenValue)
+		
+		_TweenLogic:PlayTween(startPos, endPos, duration, EaseType.SineEaseIn, function(t)
+			self.Toast.UITransformComponent.anchoredPosition = t
+		end)
+		
+		_TweenLogic:PlayTween(0, 1, duration, EaseType.SineEaseIn, function(t)
+			self.Toast.CanvasGroupComponent.GroupAlpha = t
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetParticlesPos()
+		-- 카메라 레벨별 파티클 이팩트 위치를 설정하는 함수
+		self.CameraLBBounds[1] = Vector3(-8.5, 0, 1)
+		self.CameraRTBounds[1] = Vector3(10.5, 8, 1)
+		
+		self.CameraLBBounds[2] = Vector3(-8, 0, 1)
+		self.CameraRTBounds[2] = Vector3(12, 9, 1)
+		
+		self.CameraLBBounds[3] = Vector3(-11, 0, 1)
+		self.CameraRTBounds[3] = Vector3(16, 13, 1)
+		
+		self.CameraLBBounds[4] = Vector3(-9.5, 0, 1)
+		self.CameraRTBounds[4] = Vector3(18, 13.5, 1)
+		
+		self.CameraLBBounds[5] = Vector3(-5.5, 0, 1)
+		self.CameraRTBounds[5] = Vector3(22, 13.5, 1)
+		
+		self.CameraLBBounds[6] = Vector3(-5, 0, 1)
+		self.CameraRTBounds[6] = Vector3(22, 14, 1)
+		
+		local parent = _LobbyEntityLogic.ExpansionParticles
+		
+		local firework1 = parent:GetChildByName("Firework1")
+		local firework2 = parent:GetChildByName("Firework2")
+		local fireworkCluster = parent:GetChildByName("FireworkCluster")
+		
+		local firework1Pos = Vector2(0.75, 0.1)
+		local firework2Pos = Vector2(0.2, 0.4)
+		local fireworkClusterPos = Vector2(0.85, 0.75)
+		
+		local player = _UserService.LocalPlayer
+		local level = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.ExpansionStep)
+		local nowLB = self.CameraLBBounds[level]
+		local nowRT = self.CameraRTBounds[level]
+		
+		local xSub = nowRT.x - nowLB.x
+		local ySub = nowRT.y - nowLB.y
+		
+		firework1.TransformComponent.Position = Vector3(nowLB.x + xSub*firework1Pos.x, nowLB.y + ySub*firework1Pos.y, 1)
+		firework2.TransformComponent.Position = Vector3(nowLB.x + xSub*firework2Pos.x, nowLB.y + ySub*firework2Pos.y, 1)
+		fireworkCluster.TransformComponent.Position = Vector3(nowLB.x + xSub*fireworkClusterPos.x, nowLB.y + ySub*fireworkClusterPos.y, 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeCameraTo(string cameraKey)
+		-- 지정된 카메라로 전환하는 함수
+		_LobbyCameraService:SetMovingCameraByKey(cameraKey)
+		self._T.cameraKey = cameraKey
+	end
+
+	method number Lerp(number a, number b, number t)
+		-- 두 값 사이를 선형 보간하는 함수
+		return a + (b-a) * t
+	end
+
+end

@@ -1,0 +1,1637 @@
+@Logic
+script UI_Tooltip extends Logic
+
+	property Entity UI_GameModeInfo = "5bb3b839-a2ba-46da-888d-364b90455131"
+
+	property Entity UI_ShopCharInfo = "34bb663b-c09f-442b-bf8d-0608022beac2"
+
+	property Entity UI_SkillInfoFromUnitInfo = "c28c0719-0eb1-46a8-8c96-a2c81b965249"
+
+	property Entity UI_RecommendItemInfo = "a6ebaf1d-bc89-4777-b913-8547d6f38c66"
+
+	property Entity UI_SynergyInfo = "be53e3e5-1521-4426-8763-165f7c4660ce"
+
+	property Entity UI_StatInfo = "ae564418-6bd1-4b4e-8fd6-a53cd9676e96"
+
+	property Entity UI_ItemInfo = "3aad74a0-391f-41cd-ac1b-e45364fefc68"
+
+	property Entity UI_LockInfo = "e7b11d9e-7424-4b0a-9e06-f3acda5047ed"
+
+	property Entity UI_SkillInfoFromShop = "2413ea90-18e9-4d23-87b3-3883e0b65200"
+
+	property Entity UI_RerollInfo = "a9d1dbd7-a185-4712-a2fa-a84baddfcb89"
+
+	property Entity UI_ExpInfo = "86e1be94-684a-4f50-bb2d-754a17766a48"
+
+	property Entity UI_RuneInfo = "e7af687f-fc9d-40cf-9434-b08e52085ec8"
+
+	property Entity UI_BattleStatValue = "b1117575-eb2c-499c-b1f1-7476a4a6cad3"
+
+	property any StatusEffectTable = nil
+
+	property any SynergyInfoTable = nil
+
+	property any CharacterSynergyTable = nil
+
+	property any CharacterTable = nil
+
+	property any ItemTable = nil
+
+	property any StatusTable = nil
+
+	@Description("현재 마우스가 올라와있는 UI입니다. ")
+	property Entity HoveredTargetUI = nil
+
+	property Entity RealtimeUpdateTargetUI = nil
+
+	property string RealtimeUpdateShowType = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 툴팁 시스템을 초기화하고 UI 목록을 설정
+		-- HoverUI를 통합해 관리하기 위한 테이블입니다.
+		-- 특정 HoverUI가 활성화될 때 나머지 UI들은 모두 Disable 상태로 만듭니다.
+		self._T.TooltipUIList = {
+			self.UI_ShopCharInfo,
+			self.UI_SkillInfoFromUnitInfo,
+			self.UI_SynergyInfo,
+			self.UI_StatInfo,
+			self.UI_ItemInfo,
+			self.UI_LockInfo,
+			self.UI_SkillInfoFromShop,
+			self.UI_RerollInfo,
+			self.UI_ExpInfo,
+			self.UI_RuneInfo,
+		}
+		----------------------------------------------------
+		-- UI 터치가 꺼지면 실행
+		local touchExitEventHandler = function()
+			self:ClearAllTooltipUI()
+		end
+		--[[_EntityService:GetEntityByPath("/ui/Arena_Default/Progress/Text_Golds"):ConnectEvent(UITouchExitEvent, touchExitEventHandler)
+		_EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/Button_Exp"):ConnectEvent(UITouchExitEvent, touchExitEventHandler)
+		_EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/Button_Reroll"):ConnectEvent(UITouchExitEvent, touchExitEventHandler)
+		_EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/Button_Lock"):ConnectEvent(UITouchExitEvent, touchExitEventHandler)]]
+	end
+
+	@ExecSpace("Client")
+	method void ClearAllTooltipUI()
+		-- 모든 툴팁 UI를 비활성화하여 화면을 정리
+		for _, entity in pairs(self._T.TooltipUIList) do
+			entity.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetMouseHoveredUI(Entity entity)
+		-- 현재 마우스가 호버 중인 UI 엔티티를 설정
+		self.HoveredTargetUI = entity
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임마다 활성화된 툴팁 UI의 크기와 위치를 실시간 갱신
+		-- 실시간으로 UI의 RectSize와 Position을 갱신합니다.
+		-- 이는 내용이 변경됨에 따라 유동적으로 적용하기 위한 코드입니다... 흑흑
+		----------------------------------------------------------------------------------------
+		if isvalid(self.RealtimeUpdateTargetUI) == false then
+			return
+		else
+			if self.RealtimeUpdateTargetUI == self.UI_ItemInfo then
+				self:Update_ItemInfo()
+			elseif self.RealtimeUpdateTargetUI == self.UI_RuneInfo then
+				self:Update_RuneInfo()
+			elseif self.RealtimeUpdateTargetUI == self.UI_StatInfo then
+				self:Update_StatInfo()
+			elseif self.RealtimeUpdateTargetUI == self.UI_SkillInfoFromUnitInfo then
+				self:Update_SkillInfo()
+			elseif self.RealtimeUpdateTargetUI == self.UI_RecommendItemInfo then
+				self:Update_RecommendItemInfo()
+			elseif self.RealtimeUpdateTargetUI == self.UI_ShopCharInfo then
+				self:Update_CharShopInfo()
+			elseif self.RealtimeUpdateTargetUI == self.UI_GameModeInfo then
+				self:Update_GameModeInfo()
+			elseif self.RealtimeUpdateTargetUI == self.UI_SynergyInfo then
+				self:Update_SynergyInfo()
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetSkillInfo(boolean enable, string type, string charID)
+		-- 캐릭터의 스킬 정보를 표시하는 툴팁을 활성화/비활성화
+		-- type = { "unitInfo", "shop" } : 스킬을 표시하는 타입입니다. 타입에 따라 UI 위치를 조절합니다.
+		-------------------------------------------
+		if charID == nil or charID == "" then
+			charID = _UI_UnitInfoPopup.ConnectedEntity.UnitInfo.charID
+			
+			if charID == nil or charID == "" then
+				return
+			end
+		end
+		--------------------------------------------------
+		local skillHoverUI = self.UI_SkillInfoFromUnitInfo
+		--------------------------------------------------
+		if enable == false then
+			skillHoverUI.Enable = false
+			self.RealtimeUpdateTargetUI = nil
+			self.RealtimeUpdateShowType = ""
+		else
+			self.RealtimeUpdateTargetUI = self.UI_SkillInfoFromUnitInfo
+			self.RealtimeUpdateShowType = type
+			
+			local passiveTypeUI = skillHoverUI:GetChildByName("Text_PassiveType")
+			local passiveDescUI = skillHoverUI:GetChildByName("Text_PassiveDesc")
+			local activeTypeUI = skillHoverUI:GetChildByName("Text_ActiveType")
+			local activeDescUI = skillHoverUI:GetChildByName("Text_ActiveDesc")
+			local detailDescUI = skillHoverUI:GetChildByName("Text_SkillDetail")
+			---@type table<Entity>
+			local statueEffectUIList = {
+				skillHoverUI:GetChildByName("StatusEffectInfo_1"),
+				skillHoverUI:GetChildByName("StatusEffectInfo_2"),
+				skillHoverUI:GetChildByName("StatusEffectInfo_3"),
+			}
+			
+			local targetEntity = _UI_UnitInfoPopup.ConnectedEntity
+			---@type string
+			local shopCharID = ""
+			if type == "charShop" then
+				shopCharID = charID
+			end
+			
+			-- 텍스트를 변경합니다.
+			local passiveDesc = _UnitSkillDescLogic:GetDefaultDesc(targetEntity, shopCharID, "passive")
+			local activeDesc = _UnitSkillDescLogic:GetDefaultDesc(targetEntity, shopCharID, "active")
+			local detailDesc = _UnitSkillDescLogic:GetDetailDesc(targetEntity, shopCharID)
+			local statusEffectList = _UnitSkillDescLogic:GetStatusEffectList(targetEntity, shopCharID)
+			local decoLine1 = skillHoverUI:GetChildByName("deco_line_1")
+			local decoLine2 = skillHoverUI:GetChildByName("deco_line_2")
+			
+			passiveDescUI.TextComponent.Text = passiveDesc
+			activeDescUI.TextComponent.Text = activeDesc
+			detailDescUI.TextComponent.Text = detailDesc
+			
+			
+			-- 각 UI 사이즈 및 위치를 조절합니다.
+			local resize = function()
+				local passiveSizeY = passiveDescUI.TextComponent:GetPreferredHeight(passiveDesc, passiveDescUI.UITransformComponent.RectSize.x)
+				local activeSizeY = activeDescUI.TextComponent:GetPreferredHeight(activeDesc, activeDescUI.UITransformComponent.RectSize.x)
+				local detailSizeY = detailDescUI.TextComponent:GetPreferredHeight(detailDesc, detailDescUI.UITransformComponent.RectSize.x)
+				
+				local adjustedPos1 = 40 * math.ceil(passiveSizeY/40)
+				local adjustedPos2 = 40 * math.ceil(activeSizeY/40)
+				local adjustedPos3 = 40 * math.ceil(detailSizeY/40)
+				
+				decoLine1.UITransformComponent.anchoredPosition.y = 	-10 -adjustedPos1 - 10
+				activeTypeUI.UITransformComponent.anchoredPosition.y = 	-10 -adjustedPos1 - 20
+				activeDescUI.UITransformComponent.anchoredPosition.y = 	-10 -adjustedPos1 - 20
+				decoLine2.UITransformComponent.anchoredPosition.y = 	-10 -adjustedPos1 - 20 - adjustedPos2 -10 
+				detailDescUI.UITransformComponent.anchoredPosition.y = 	-10 -adjustedPos1 - 20 - adjustedPos2 -20 
+				
+				skillHoverUI.UITransformComponent.RectSize.y = math.abs(-10 -adjustedPos1 - 20 - adjustedPos2 -20 - adjustedPos3 -10)
+			end
+			--_TimerService:SetTimerOnce(resize, 0.05)
+			
+			
+			-- 상태이상 종류에 따라 설명창을 활성화한다.
+			if self.StatusEffectTable == nil then
+				self.StatusEffectTable = _DataService:GetTable("StatusEffect")
+			end
+			---@type MODUserDataSet
+			local statusTable = self.StatusEffectTable
+			
+			for i=1, 3 do
+				statueEffectUIList[i].Enable = false
+			end
+			
+			for i=1, 3 do
+				if statusEffectList[i] == nil then
+					break
+				else
+					local row = statusTable:FindRow("ID", statusEffectList[i])
+					local name_key = row:GetItem("Name_Key") 
+					local desc_key = row:GetItem("Desc_Key")
+					statueEffectUIList[i]:GetChildByName("Title").TextComponent.Text = _LocalizationService:GetText(name_key)
+					statueEffectUIList[i]:GetChildByName("Desc").TextComponent.Text = _LocalizationService:GetText(desc_key)
+					statueEffectUIList[i].Enable = true
+				end
+			end
+			
+			skillHoverUI.Enable = true
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Update_SkillInfo()
+		-- 스킬 정보 툴팁의 내용 길이에 따라 크기와 위치를 동적으로 조정
+		-- 스킬 설명 툴팁의 크기와 위치를 변경합니다.
+		--------------------------------------------------------------------------
+		-- 1) 내용에 따라 툴팁의 크기(+내용들의 위치 및 사이즈)를 변경합니다.
+		local ui_passiveDesc = self.UI_SkillInfoFromUnitInfo:GetChildByName("Text_PassiveDesc")
+		local ui_activeType = self.UI_SkillInfoFromUnitInfo:GetChildByName("Text_ActiveType")
+		local ui_activeDesc = self.UI_SkillInfoFromUnitInfo:GetChildByName("Text_ActiveDesc")
+		local ui_decoLine = self.UI_SkillInfoFromUnitInfo:GetChildByName("deco_line_1")
+		local ui_skillDetail = self.UI_SkillInfoFromUnitInfo:GetChildByName("Text_SkillDetail")
+		
+		ui_activeType.UITransformComponent.anchoredPosition.y = 
+			ui_passiveDesc.UITransformComponent.anchoredPosition.y 
+			- ui_passiveDesc.UITransformComponent.RectSize.y
+			- 20
+		
+		ui_activeDesc.UITransformComponent.anchoredPosition.y = 
+			ui_activeType.UITransformComponent.anchoredPosition.y 
+			- ui_activeType.UITransformComponent.RectSize.y
+		
+		ui_decoLine.UITransformComponent.anchoredPosition.y = 
+			ui_activeDesc.UITransformComponent.anchoredPosition.y 
+			- ui_activeDesc.UITransformComponent.RectSize.y
+			- 20
+		
+		ui_skillDetail.UITransformComponent.anchoredPosition.y = 
+			ui_decoLine.UITransformComponent.anchoredPosition.y 
+			- 20
+		
+		-- 전체 사이즈
+		self.UI_SkillInfoFromUnitInfo.UITransformComponent.RectSize.y = math.abs( 
+				ui_skillDetail.UITransformComponent.anchoredPosition.y 
+				- ui_skillDetail.UITransformComponent.RectSize.y
+				- 20
+		)
+		--------------------------------------------------------------------------
+		-- 2) showType에 따라 위치를 변경합니다.
+		local ui_unitInfo = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+		local targetX = ui_unitInfo.UITransformComponent.anchoredPosition.x - ui_unitInfo.UITransformComponent.RectSize.x - 4
+		local ui_seTooltip1 = self.UI_SkillInfoFromUnitInfo:GetChildByName("StatusEffectInfo_1")
+		local correctionY = 0
+		if ui_seTooltip1.Enable == true then
+			correctionY = 106
+		end
+		
+		if self.RealtimeUpdateShowType == "unitInfo" then	-- 우하단 기준 (unitinfo-4, 225) or (unitinfo-4, 331)
+			self.UI_SkillInfoFromUnitInfo.UITransformComponent.anchoredPosition = Vector2(
+				960 + targetX - 0.5 * self.UI_SkillInfoFromUnitInfo.UITransformComponent.RectSize.x,
+				-540 + 225 + 0.5 * self.UI_SkillInfoFromUnitInfo.UITransformComponent.RectSize.y + correctionY
+			)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Update_RecommendItemInfo()
+		-- 유닛 정보창 위치에 따라 추천 아이템 툴팁의 위치를 동적으로 조정
+		-- "추천 아이템" 툴팁의 위치를 조절합니다.
+		--------------------------------------------------------------------------
+		local ui_unitInfo = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+		local targetX = ui_unitInfo.UITransformComponent.anchoredPosition.x - ui_unitInfo.UITransformComponent.RectSize.x - 4
+		
+		self.UI_RecommendItemInfo.UITransformComponent.anchoredPosition = Vector2(
+			960 + targetX - 0.5 * self.UI_RecommendItemInfo.UITransformComponent.RectSize.x,
+			-540 + 225 + 0.5 * self.UI_RecommendItemInfo.UITransformComponent.RectSize.y
+		)
+	end
+
+	@ExecSpace("Client")
+	method void SetSynergyInfo(boolean enable, string synergyID, string targetTeam, string type)
+		-- 시너지 정보 툴팁을 설정하고 활성화 상태에 따라 내용을 갱신
+		-- type = { "unitInfo", "hud" }
+		-- 팝업을 표시하는 타입입니다. 
+		--------------------------------------------------
+		local hoverUI = self.UI_SynergyInfo
+		self.RealtimeUpdateTargetUI = self.UI_SynergyInfo
+		self.RealtimeUpdateShowType = type
+		--------------------------------------------------
+		-- 타입에 따라 UI 위치를 조절합니다.
+		if type == "unitInfo" then	-- 우상단 기준 (유닛정보창-4, -220)
+			local ui_unitInfo = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+			local targetX = ui_unitInfo.UITransformComponent.anchoredPosition.x - ui_unitInfo.UITransformComponent.RectSize.x
+			hoverUI.UITransformComponent.anchoredPosition = Vector2(
+				960 + targetX - 4 - 0.5 * hoverUI.UITransformComponent.RectSize.x,
+				2.5 --540 - 220 - 0.5 * hoverUI.UITransformComponent.RectSize.y
+				)
+			
+		elseif type == "hud" then
+			if targetTeam == "User" then	-- 좌상단 기준 (250, -200)
+				hoverUI.UITransformComponent.anchoredPosition = Vector2(
+					-960 + 250 + 0.5 * hoverUI.UITransformComponent.RectSize.x,
+					110
+				)
+			elseif targetTeam == "Enemy" then 	-- 우상단 기준 (-250, 200)
+				hoverUI.UITransformComponent.anchoredPosition = Vector2(
+					960 - 250 - 0.5 * hoverUI.UITransformComponent.RectSize.x,
+					110
+				)
+			elseif targetTeam == "StatUser" then	-- 좌상단 기준 (620, -350)
+				hoverUI.UITransformComponent.anchoredPosition = Vector2(
+					-960 + 620 + 0.5 * hoverUI.UITransformComponent.RectSize.x,
+					-30 + _EntityService:GetEntityByPath("/ui/BattleStatGroup/StatPopupMain").UITransformComponent.anchoredPosition.y --540 - 350 - 0.5 * hoverUI.UITransformComponent.RectSize.y
+				)
+				
+			elseif targetTeam == "StatEnemy" then	-- (우상단 기준 -370, -350) 
+				hoverUI.UITransformComponent.anchoredPosition = Vector2(
+					960 - 370 - 0.5 * hoverUI.UITransformComponent.RectSize.x,
+					-30 + _EntityService:GetEntityByPath("/ui/BattleStatGroup/StatPopupMain").UITransformComponent.anchoredPosition.y --540 - 350 - 0.5 * hoverUI.UITransformComponent.RectSize.y
+				)
+			end
+		end
+		--------------------------------------------------
+		if enable == false then
+			hoverUI.Enable = false
+		--------------------------------------------------------------------------------
+		else
+			-- 데이터셋을 가져옵니다.
+			if self.SynergyInfoTable == nil then
+				self.SynergyInfoTable = _DataService:GetTable("SynergyInfo")
+			end
+			
+			if self.CharacterSynergyTable == nil then
+				self.CharacterSynergyTable = _DataService:GetTable("CharacterSynergy")
+			end
+			
+			if self.CharacterTable == nil then
+				self.CharacterTable = _DataService:GetTable("CharacterInfo")
+			end
+			
+			---@type MODUserDataSet
+			local synergyTable = self.SynergyInfoTable
+			---@type MODUserDataSet
+			local characterSynergyTable = self.CharacterSynergyTable
+			---@type MODUserDataSet
+			local characterTable = self.CharacterTable
+			
+			local row = synergyTable:FindRow("SynergyID", synergyID)
+			-----------------------------------------------
+			-- 갱신이 필요한 UI엔티티 목록입니다.
+			local iconUI = hoverUI:GetChildByName("Icon_Synergy")
+			local nameUI = hoverUI:GetChildByName("Text_Name")
+			local decoLine1 = hoverUI:GetChildByName("deco_line_1")
+			local descUI = hoverUI:GetChildByName("Text_Desc")
+			local decoLine2 = hoverUI:GetChildByName("deco_line_2")
+			local characterImageList = hoverUI:GetChildByName("Panel_CharacterList"):GetChildByName("List")
+			-----------------------------------------------
+			-- 데이터셋에서 갱신에 필요한 정보를 가져옵니다.
+														--------------
+			local name = synergyID.."_Name"				-- 이름
+														--------------
+			local iconRUID = row:GetItem("IconRUID")	-- 아이콘
+														--------------
+			---@type table<number>
+			local activateConditions = {}				-- 활성화 조건 (인원 수).. 예시:{3, 5, 7, 10}
+			for i=1, 5 do
+				local count = row:GetItem(string.format("NeedCount_step%d", i))
+				if count ~= "-" then
+					table.insert(activateConditions, tonumber(count))
+				end
+			end
+			
+														--------------
+			local desccoef = _UtilLogic:Split(row:GetItem("DescCoef"),",") -- 시너지 효과 (설명)
+			local desc = _LocalizationService:GetTextFormat(row:GetItem("Desc"),desccoef[1],desccoef[2],desccoef[3],desccoef[4],desccoef[5],desccoef[6])
+														--------------
+			---@type table<string>		
+			local detailDescs = {}						-- 시너지 효과 (인원수 별 설명)
+			for i=1, 4 do
+				local detailDescCoef = _UtilLogic:Split(row:GetItem(string.format("Detail_step%dCoef", i)),",")
+				local detailDesc = _LocalizationService:GetTextFormat(row:GetItem(string.format("Detail_step%d", i)),detailDescCoef[1],detailDescCoef[2],detailDescCoef[3],detailDescCoef[4],detailDescCoef[5],detailDescCoef[6])
+				if detailDesc ~= "-" then
+					table.insert(detailDescs, detailDesc)
+				end
+			end
+														--------------
+														-- 해당 시너지를 가진 캐릭터 목록 및 정보
+			---@type table<table>
+			local characterList = {}
+			for i=1, characterSynergyTable:GetRowCount() do
+				local csRow = characterSynergyTable:GetRow(i)
+				local isBattleOnly = csRow:GetItem("BattleOnly")
+				if isBattleOnly == nil or isBattleOnly == "" or isBattleOnly ~= "TRUE" then
+					---@type table<string>
+					local synergies = {csRow:GetItem("Synergy_1"), csRow:GetItem("Synergy_2"), csRow:GetItem("Synergy_3")}
+					
+					for j=1, #synergies do
+						if synergies[j] == synergyID then
+							local charID = csRow:GetItem("CharID")
+							local charInfoRow = characterTable:FindRow("CharID", charID)
+							local info = {
+								["ID"] = charID,
+								["Name"] = charInfoRow:GetItem("Name"),
+								["RUID"] = charInfoRow:GetItem("IdleRUID"),
+								["Cost"] = tonumber(charInfoRow:GetItem("Cost")),
+								["Own"] = false
+							}
+							
+							table.remove(synergies, j)
+							info["Synergies"] = synergies
+							
+							-- 현재 플레이 중인 시즌에 포함되는지
+							---@type CharDictionaryData
+							local charData = _DictionaryDataManager.CharDataList[charID]
+							if charData.ContainedSeason[string.format("%.1f", _UserService.LocalPlayer.GameManager.ModeSetVersion)] == true then
+								table.insert(characterList, info)
+								break
+							end
+						end
+					end
+				end		
+			end
+			-----------------------------------------------
+			-- 현재 연결된 유저의 정보에 따라 활성화된 유닛 정보를 바꿉니다.
+			-- 시너지 효과 부분 수정 (활성화된 인원 수에 따라)
+			local userEntity = _UserService.LocalPlayer
+			local tm = userEntity.TeamManager
+			local activatedSynergyCount = tm.OnFieldSynergy[synergyID]
+			local onFieldUnitList = tm.OnFieldUnitIDs
+			if targetTeam == "Enemy" then 
+				activatedSynergyCount = tm.EnemyOwnedFieldSynergy[synergyID]
+				---@type table<string, number>
+				onFieldUnitList = {}
+				for i=1, #tm.EnemyUnits do
+					onFieldUnitList[tm.EnemyUnits[i].UnitInfo.charID] = 1
+				end
+			end
+			---- 전투통계에서 호출한 경우의 활성화 유닛 정보
+			------플레이어
+			if targetTeam == "StatUser" then
+				activatedSynergyCount = _UI_BattleStatistics.PlayerSynergy[synergyID]
+				onFieldUnitList = {}
+				for i = 1, #_UI_BattleStatistics.UnitCombatStats do
+					onFieldUnitList[_UI_BattleStatistics.UnitCombatStats[i]["CharID"]] = 1
+				end
+			end
+			------적
+			if targetTeam == "StatEnemy" then
+				activatedSynergyCount = _UI_BattleStatistics.EnemySynergy[synergyID]
+				onFieldUnitList = {}
+				for i = 1, #_UI_BattleStatistics.EnemyCombatStats do
+					onFieldUnitList[_UI_BattleStatistics.EnemyCombatStats[i]["CharID"]] = 1
+				end
+			end
+			
+			
+			-- 활성화된 인원 수에 맞춰 설명 텍스트의 색상을 수정합니다.
+			if activatedSynergyCount == nil then
+				activatedSynergyCount = 0
+			end
+			
+			local activatedStep = 0
+			for i=1, #activateConditions do
+				if activatedSynergyCount >= activateConditions[i] then
+					activatedStep += 1
+				end
+			end
+		
+			for i=1, #activateConditions do
+				if i == activatedStep then
+					desc = desc.."\n".."<color=#e2ff00>"..string.format("(%d) ", activateConditions[i])..detailDescs[i].."</color>"
+				else
+					desc = desc.."\n".."<color=#888888>"..string.format("(%d) ", activateConditions[i])..detailDescs[i].."</color>"
+				end
+			end
+			
+			-- 룬카드 보유 여부에 따라 설명 텍스트 색상을 추가합니다.
+			local relatedRunecardID = row:GetItem("RelatedRuneID")
+			if relatedRunecardID ~= "-" then
+				local runeDesc = row:GetItem("RuneDesc")
+				local runeCoef = {}
+				for idx = 1, 2 do
+					local coef = row:GetItem(string.format("RuneDescCoef_%d", idx))
+					if coef ~= "-" then
+						table.insert(runeCoef, tonumber(coef))
+					end
+				end
+				
+				-- 룬 카드 보유 수량에 따라 coef 수치 변경
+				local ownRunecardCount = 0
+				local runeParentEntity = userEntity:GetChildByName("RuneCardParent")
+				local targetRuneEntityName = "PlayerRune"
+				if targetTeam == "Enemy" then
+					targetRuneEntityName = "EnemyRune"
+				end
+				for k=1, 5 do
+					local runeEntity = runeParentEntity:GetChildByName(targetRuneEntityName..string.format("%d", k))
+					if runeEntity:GetComponent(relatedRunecardID) ~= nil then
+						ownRunecardCount += 1
+					end
+				end
+				if ownRunecardCount > 0 then
+					for k=1, #runeCoef do
+						runeCoef[k] *= ownRunecardCount
+					end
+				end
+				local formattedText = ""
+				if #runeCoef == 0 then
+					formattedText = _LocalizationService:GetText(runeDesc)
+				elseif #runeCoef == 1 then
+					formattedText = _LocalizationService:GetTextFormat(runeDesc, tostring(runeCoef[1]))
+				elseif #runeCoef == 2 then
+					formattedText = _LocalizationService:GetTextFormat(runeDesc, tostring(runeCoef[1]), tostring(runeCoef[2]))
+				end
+		
+				if ownRunecardCount == 0 then
+					desc = desc.."\n".."<color=#888888>(".._LocalizationService:GetText("RuneCard")..")".." "..formattedText.."</color>"
+				else
+					desc = desc.."\n".."<color=#e2ff00>(".._LocalizationService:GetText("RuneCard")..")".." "..formattedText.."</color>"
+				end
+			end
+			-----------------------------------------------
+			-- 캐릭터 전장 배치 여부 검사
+			for i=1, #characterList do
+				if isvalid(onFieldUnitList[characterList[i]["ID"]]) then
+					characterList[i]["Own"] = true
+				end
+			end
+			-----------------------------------------------
+			-- 현재 보려는 시너지 기본 정보를 갱신합니다.
+			iconUI.SpriteGUIRendererComponent.ImageRUID = iconRUID 
+			nameUI.TextComponent.Text = name
+			descUI.TextComponent.Text = desc
+			-----------------------------------------------
+			-- 캐릭터 초상화 목록을 갱신합니다.
+			for i=1, #characterList do
+				local ui_charSlot = characterImageList:GetChildByName(string.format("Character_%d", i))
+				local grade = characterList[i]["Cost"]
+				-- UI Entities
+				local ui_CharImageBackground = ui_charSlot:GetChildByName("DefaultBackground")
+				local ui_gradeBackground = ui_charSlot:GetChildByName("GradeBackground")
+				local ui_CharImage = ui_CharImageBackground:GetChildByName("SpriteType")
+				local ui_name = ui_charSlot:GetChildByName("Name")
+				local ui_orherSynergies = ui_charSlot:GetChildByName("OtherSynergies")
+				local ui_otherSynergy1 = ui_orherSynergies:GetChildByName("OtherSynergy_1")
+				local ui_otherSynergy2 = ui_orherSynergies:GetChildByName("OtherSynergy_2")
+				
+				-- Apply data to ui entity
+				local charImageRUID = characterList[i]["RUID"]
+				ui_CharImage.SpriteGUIRendererComponent.ImageRUID = charImageRUID
+				
+				local resourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(charImageRUID)
+				ui_CharImage.SpriteGUIRendererComponent.LocalScale = resourceInfo["scale"]
+				ui_CharImage.SpriteGUIRendererComponent.LocalPosition = resourceInfo["pos"]
+				
+				ui_name.TextComponent.Text = _LocalizationService:GetText(characterList[i]["ID"].."_Name")
+				 
+				if _UtilLogic:IsNilorEmptyString(characterList[i]["Synergies"][1]) == false then
+					ui_otherSynergy1.TextComponent.Text = "- ".._LocalizationService:GetText(characterList[i]["Synergies"][1].."_Name")
+					ui_otherSynergy1.Enable = true
+				else
+					ui_otherSynergy1.Enable = false
+				end
+				
+				if _UtilLogic:IsNilorEmptyString(characterList[i]["Synergies"][2]) == false then
+					ui_otherSynergy2.TextComponent.Text = "- ".._LocalizationService:GetText(characterList[i]["Synergies"][2].."_Name")
+					ui_otherSynergy2.Enable = true
+				else
+					ui_otherSynergy2.Enable = false
+				end
+				
+				-- 해당 캐릭터 미보유 시 흑백 머터리얼 적용
+				local colorMaterialID = ""
+				local currentGradeColor = _UI_Color.CharCost[grade]
+				local currentGradeDarkerColor = _UI_Color.CharCost_Darker[grade]
+				local slotColor = currentGradeDarkerColor 
+				if characterList[i]["Own"] == false then	-- 미보유(미배치)
+					colorMaterialID = "material://bfc15809-bc1f-4929-8575-0553f1f0dc4c"
+					slotColor = Color(0, 0, 0, 0)
+					
+					local notHeldFontColor = Color.FromHexCode("#869199")
+					ui_name.TextComponent.FontColor = notHeldFontColor
+					ui_otherSynergy1.TextComponent.FontColor = notHeldFontColor
+					ui_otherSynergy2.TextComponent.FontColor = notHeldFontColor
+					
+					ui_CharImage.SpriteGUIRendererComponent.PlayRate = 0
+				else
+					ui_name.TextComponent.FontColor = Color.white
+					ui_otherSynergy1.TextComponent.FontColor = Color.white
+					ui_otherSynergy2.TextComponent.FontColor = Color.white
+					
+					ui_CharImage.SpriteGUIRendererComponent.PlayRate = 1
+				end
+				
+				ui_CharImageBackground.SpriteGUIRendererComponent.Color = currentGradeDarkerColor
+				ui_CharImageBackground.SpriteGUIRendererComponent:ChangeMaterial(colorMaterialID)
+				ui_CharImage.SpriteGUIRendererComponent:ChangeMaterial(colorMaterialID)
+				ui_charSlot.SpriteGUIRendererComponent.Color = slotColor
+				
+				-- 코스트 등급에 따라 다른 색상으로 표시
+				ui_gradeBackground.SpriteGUIRendererComponent.Color = currentGradeColor
+				
+				ui_charSlot.Enable = true
+			end
+			
+			for i=#characterList+1, 9 do
+				local charImage = characterImageList:GetChildByName(string.format("Character_%d", i))
+				charImage.Enable = false
+			end
+			-----------------------------------------------
+			hoverUI.Enable = true
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Update_SynergyInfo()
+		-- 시너지 정보 툴팁이 화면 밖으로 벗어나지 않도록 위치를 조정
+		if self.RealtimeUpdateShowType == "hud" then
+			local uitransform = self.UI_SynergyInfo.UITransformComponent
+			
+			local screenResolution = Vector2(_UILogic.ScreenWidth, _UILogic.ScreenHeight)
+			local uiResolution = _Util:ScreenPostoUIPos(screenResolution)
+			
+			local overSize = _UILogic.ScreenHeight - (110 + 0.5*uitransform.RectSize.y)
+			if overSize < 0 then
+				uitransform.anchoredPosition.y = 110 + overSize
+			else
+				uitransform.anchoredPosition.y = 110 
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetStatInfo(boolean enable, string name, string desc, Entity hoveredUI)
+		-- 유닛의 스탯 정보 툴팁을 설정하고 상세 정보를 표시
+		local window = self.UI_StatInfo
+		
+		if enable == true then
+			self.RealtimeUpdateTargetUI = self.UI_StatInfo
+			self:SetMouseHoveredUI(hoveredUI)
+			
+			local nameUI = window:GetChildByName("Text_Name")
+			local descUI = window:GetChildByName("Text_Desc")
+			local decoLine = window:GetChildByName("deco_line")
+			local detailUI = window:GetChildByName("Text_Detail")
+			
+			nameUI.TextComponent.Text = name
+			descUI.TextComponent.Text = desc
+			
+			local targetStatus = self.HoveredTargetUI.UI_UnitInfo_HoverStat.TargetStatus
+			if targetStatus == "BloodAbsorptionPercent" or targetStatus == "DealingDamageIncrease" or targetStatus == "TakingDamageDecrease" then
+				decoLine.Enable = false
+				detailUI.Enable = false
+			else
+				decoLine.Enable = true
+				detailUI.Enable = true
+				
+				local detailText = ""
+				local defaultStat = hoveredUI.UI_UnitInfo_HoverStat.DefaultStat
+				local currentStat = hoveredUI.UI_UnitInfo_HoverStat.CurrentStat
+				if defaultStat == nil then
+					defaultStat = 0
+				end
+				
+				local currentStatTextColor = _UI_Color.Status[targetStatus] -- 현재 수치에 대한 텍스트 컬러
+				
+				local targetFormat = "%d"	-- 스탯을 표시하는 형태입니다. 일반적으로 정수로 표현하나, 공격속도는 0.00 형태로 표시합니다.
+				if targetStatus == "AttackSpeed" then
+					targetFormat = "%.2f"
+				end
+				
+				local currentStatText = "<color="..currentStatTextColor..">"..string.format(targetFormat, currentStat).."</color>"
+				
+				
+				-- 증감 수치에 대한 텍스트 컬러
+				local addedStatText = ""
+				if currentStat < defaultStat then	-- 현재 스탯이 감소된 형태라면 부정 표시
+					addedStatText = "<color=#FF5E68>"..string.format(targetFormat, currentStat-defaultStat).."</color>"
+				elseif currentStat == defaultStat then
+					addedStatText = "<color=#DBE4ED>"..string.format("+"..targetFormat, 0.00).."</color>"
+				else								-- 현재 스탯이 더 높다면 긍정 표시
+					addedStatText = "<color=#71E2FF>"..string.format("+"..targetFormat, currentStat-defaultStat).."</color>"
+				end
+				
+				-- 텍스트 생성 >>> "현재 공격력: 100 (70+30)" 형태로 표시 
+				detailText = 
+					_LocalizationService:GetTextFormat("Status_Detail1", _LocalizationService:GetText("Status_"..targetStatus))
+					..currentStatText
+					..string.format(" ("..targetFormat, defaultStat)..addedStatText..")"
+				
+				-- 방어력의 경우, "이 유닛이 받는 ~피해가 x%만큼 감소합니다" 텍스트를 추가로 표시합니다.
+				if targetStatus == "Defence" or targetStatus == "MagicalResistance" then
+					local targetLocalizedKey = {
+						["Defence"] = "Status_Detail2",
+						["MagicalResistance"] = "Status_Detail3"
+					}
+					local guardRate = 100 - (100/(1+0.01*currentStat))
+					local guardRateText = string.format("<color=%s>%.1f%%</color>", currentStatTextColor, guardRate)
+					
+					detailText = detailText.."\n"..
+						_LocalizationService:GetTextFormat(targetLocalizedKey[targetStatus], guardRateText)
+				end
+				
+				detailUI.TextComponent.Text = detailText
+			end
+			
+			-- 스탯 종류에 따라 팝업의 Y축 위치를 조절합니다.
+			if targetStatus == "MaxHP" or targetStatus == "MaxMP" then
+				window.UITransformComponent.anchoredPosition.y = -409
+			else
+				window.UITransformComponent.anchoredPosition.y = -565.5
+			end
+			
+		else
+			self.RealtimeUpdateTargetUI = nil
+			self:SetMouseHoveredUI(nil)
+		end
+		
+		window.Enable = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Update_StatInfo()
+		-- 스탯 툴팁의 내용 길이에 따라 크기를 조정하고 유닛 정보창에 맞춰 위치 설정
+		-- 스탯 설명 툴팁의 크기와 위치를 변경합니다.
+		--------------------------------------------------------------------------
+		-- 유닛 정보 툴팁의 위치에 따라 위치를 변경합니다.
+		local ui_unitInfo = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+		self.UI_StatInfo.UITransformComponent.anchoredPosition.x = ui_unitInfo.UITransformComponent.anchoredPosition.x -224
+		--------------------------------------------------------------------------
+		local descUI = self.UI_StatInfo:GetChildByName("Text_Desc")
+		local deco_line = self.UI_StatInfo:GetChildByName("deco_line")
+		local detailUI = self.UI_StatInfo:GetChildByName("Text_Detail")
+		
+		-- 내용에 따라 y축 크기를 바꿉니다.
+		if detailUI.Enable == true then
+			deco_line.UITransformComponent.anchoredPosition.y = 
+				-math.abs(descUI.UITransformComponent.anchoredPosition.y)
+				- descUI.UITransformComponent.RectSize.y
+				- 10
+			
+			detailUI.UITransformComponent.anchoredPosition.y = 
+				-math.abs(deco_line.UITransformComponent.anchoredPosition.y)
+				- deco_line.UITransformComponent.RectSize.y
+				- 10
+			
+			self.UI_StatInfo.UITransformComponent.RectSize.y = 
+				math.abs(detailUI.UITransformComponent.anchoredPosition.y) 
+				+ detailUI.UITransformComponent.RectSize.y 
+				+ 20
+		else
+			self.UI_StatInfo.UITransformComponent.RectSize.y = 
+				math.abs(descUI.UITransformComponent.anchoredPosition.y) 
+				+ descUI.UITransformComponent.RectSize.y 
+				+ 20
+		end
+		--------------------------------------------------------------------------
+	end
+
+	@ExecSpace("Client")
+	method void SetItemInfo(boolean enable, string itemID, string showType)
+		-- 아이템 정보 툴팁을 설정하고 아이템의 상세 정보를 표시
+		-- 마우스를 올려 아이템 정보를 보는 팝업을 열거나 닫습니다.
+		--------------------------------------------------------------------------------
+		local targetUI = self.UI_ItemInfo
+		--------------------------------------------------------------------------------
+		if enable == true then
+			self.RealtimeUpdateTargetUI = targetUI
+			self.RealtimeUpdateShowType = showType
+			--------------------------------------------------
+			local iconDefaultBackgroundUI = targetUI:GetChildByName("Icon_DefaultBackground")
+			local iconUI = targetUI:GetChildByName("Icon")
+			local nameUI = targetUI:GetChildByName("Text_Name")
+			local nameUI2 = targetUI:GetChildByName("Text_Name_1")
+			local ui_decoLine1 = targetUI:GetChildByName("deco_line_1")
+			local specialUI = targetUI:GetChildByName("Text_Special")
+			local ui_decoLine2 = targetUI:GetChildByName("deco_line_2")
+			local statUI = targetUI:GetChildByName("Text_Stat")
+			local ui_decoLine3 = targetUI:GetChildByName("deco_line_3")
+			local guideTextUI = targetUI:GetChildByName("Text_GuideCombineTable")
+			local combineInfoUI = targetUI:GetChildByName("Panel_CombineInfo")
+			local equipInfoUI = targetUI:GetChildByName("Panel_EquipInfo")
+			--------------------------------------------------
+			-- DataSet에서 정보를 가져옵니다.
+			if self.ItemTable == nil then
+				self.ItemTable = _DataService:GetTable("ItemStatus")
+			end
+			---@type MODUserDataSet
+			local itemTable = self.ItemTable
+			local row = itemTable:FindRow("ItemID", itemID)
+			--------------------------------------------------
+			local itemType = string.sub(itemID, 1, 2)
+			--------------------------------------------------
+			local type = row:GetItem("Type")
+			local name = _LocalizationService:GetText("Item_"..itemID.."_Name")
+			local icon = row:GetItem("RUID")
+			local stat = ""
+			local specialAbility = ""
+			if itemType == "MI" then
+				specialAbility = _LocalizationService:GetText("Item_Material_SpecialAbility")
+			else
+				log("key = ", "Item_"..itemID.."_SpecialAbility")
+				specialAbility = _LocalizationService:GetText("Item_"..itemID.."_SpecialAbility")
+			end
+			------------------------------------------------------------------
+			-- 조합표를 볼 수 있는 아이템인 경우, 가이드를 표시하고 RectSize.y를 조절합니다.
+			------------------------------------------------------------------
+			local isCombinableItem = false
+			if itemType == "MI" then
+				isCombinableItem = true
+			elseif itemType == "IB" then
+				local boxIdx = tonumber(string.sub(itemID, -2, -1))
+				if boxIdx >=5 and boxIdx <= 12 then
+					isCombinableItem = true
+				end
+			end
+			
+			if isCombinableItem == true then
+				guideTextUI.Enable = true
+				ui_decoLine3.Enable = true
+				
+			-- 아닌 경우
+			else
+				guideTextUI.Enable = false
+				ui_decoLine3.Enable = false
+			end
+			------------------------------------------------------------------
+			-- 완성 아이템인 경우 조합 정보를 표시합니다.
+			if itemType == "NI" then
+				nameUI.Enable = false
+				nameUI2.Enable = true
+				nameUI2.TextComponent.Text = name
+				
+				local materialIDs = _ItemCombineService:GetMaterialItemIDsByNormalItemID(itemID)
+				for i=1, 2 do
+					local ui_materialIcon = combineInfoUI:GetChildByName(string.format("Material%d_Icon", i))
+					local materialIconRUID = itemTable:FindRow("ItemID", materialIDs[i]):GetItem("RUID")
+					ui_materialIcon.SpriteGUIRendererComponent.ImageRUID = materialIconRUID
+				end		
+				combineInfoUI.Enable = true
+				
+			-- 아닌 경우
+			else
+				nameUI.Enable = true
+				nameUI2.Enable = false
+				nameUI.TextComponent.Text = name
+				
+				combineInfoUI.Enable = false
+			end
+			------------------------------------------------------------------
+			-- 아이템으로 오르는 스탯 정보를 가져옵니다.
+			if self.StatusTable == nil then
+				self.StatusTable = _DataService:GetTable("Status")
+			end
+			---@type MODUserDataSet
+			local statusTable = self.StatusTable
+			
+			local itemStatusTypes = _ItemStatusLogic:GetItemStatusTypeTable()
+			
+			for i=1, #itemStatusTypes do
+				
+				local statValue = row:GetItem(itemStatusTypes[i])
+				
+				if statValue == nil or statValue == "" or tonumber(statValue) == 0 then
+					-- value가 없으면 아무 것도 하지 않습니다.
+				else
+					if stat ~= "" then
+						stat = stat.."\n"
+					end
+					
+					local rowInStatusTable = statusTable:FindRow("Key", itemStatusTypes[i])
+				
+					local statName = _LocalizationService:GetText("Status_"..itemStatusTypes[i])
+					local format = rowInStatusTable:GetItem("Format")
+					local ItemStatusFormat = rowInStatusTable:GetItem("ItemStatusFormat")
+					local colorCode = rowInStatusTable:GetItem("Color")
+					
+					stat = stat..string.format("<color=%s>%s %s</color>",colorCode, statName, string.format(ItemStatusFormat, tonumber(statValue)))
+				end		
+			end
+			
+			-- UI에 가져온 데이터를 반영합니다.
+			local itemUITable = _DataService:GetTable("ItemUI_Background")	
+			local itemUI_row = itemUITable:FindRow("Type", type)
+			iconDefaultBackgroundUI.SpriteGUIRendererComponent.ImageRUID = _UI_Inventory.TypeBackgroundRUID[type]
+			 
+			iconUI.SpriteGUIRendererComponent.ImageRUID = icon
+			
+			statUI.TextComponent.Text = stat
+			specialUI.TextComponent.Text = specialAbility
+			
+			if stat == "" then
+				ui_decoLine2.Enable = false
+			else
+				ui_decoLine2.Enable = true
+			end
+			--------------------------------------------------
+			-- UI RectSize 및 anchoredPosition.y를 조절합니다.
+		    --local statTextSize = math.ceil(statUI.TextComponent:GetPreferredHeight(stat, 660) / 40) * 40
+		    --local specialTextSize = math.ceil(specialUI.TextComponent:GetPreferredHeight(specialAbility, 660)/40) *40
+		    --
+		    --local decoLine2 = targetUI:GetChildByName("deco_line_2")
+		    --decoLine2.UITransformComponent.anchoredPosition.y = -140 -statTextSize 
+		    --specialUI.UITransformComponent.anchoredPosition.y = -140 -statTextSize -10 
+		    --targetUI.UITransformComponent.RectSize.y = 160 + statTextSize + specialTextSize
+			--------------------------------------------------
+			-- 상태이상이 있는 경우, 해당 정보를 표시합니다.
+			local statusEffects = { row:GetItem("StatusEffect_1"), row:GetItem("StatusEffect_2")}
+			local statusEffectCount = 0
+			for i=1, #statusEffects do
+				local ui_statusEffectPanel = targetUI:GetChildByName(string.format("StatusEffectInfo_%d", i))
+				if _UtilLogic:IsNilorEmptyString(statusEffects[i]) == false then
+		
+					local ui_se_title = ui_statusEffectPanel:GetChildByName("Title")
+					local ui_se_desc = ui_statusEffectPanel:GetChildByName("Desc")
+					
+					ui_se_title.TextComponent.Text = _LocalizationService:GetText("StatusEffect_Name_"..statusEffects[i])
+					ui_se_desc.TextComponent.Text = _LocalizationService:GetText("StatusEffect_Desc_"..statusEffects[i])				
+					ui_statusEffectPanel.Enable = true
+					statusEffectCount += 1
+				else
+					ui_statusEffectPanel.Enable = false
+				end
+			end
+			--------------------------------------------------
+			-- type에 따라 툴팁 위치를 조절합니다.
+			if showType == "Dictionary" then		-- 사전
+				targetUI.UITransformComponent.anchoredPosition = Vector2(450, 750)
+			elseif showType == "MostItemList" then
+				targetUI.UITransformComponent.anchoredPosition = Vector2(330, 260)
+			elseif showType == "ItemEquip" or showType == "BattleStatInfo" then			-- 아이템 장착 시도
+				local mousePos = _InputService:GetCursorPosition()
+				targetUI.UITransformComponent.anchoredPosition = Vector2(-0.5*_UILogic.ScreenWidth + mousePos.x +350, -0.5*_UILogic.ScreenHeight + mousePos.y -163)
+				local anchoredPos = targetUI.UITransformComponent.anchoredPosition
+				if anchoredPos.x + 350 > 1920 then
+					anchoredPos.x = 1920 - 350
+				elseif anchoredPos.x - 350 < 0 then
+					anchoredPos.x = 350
+				end
+				if anchoredPos.y + 163 > 1080 then
+					anchoredPos.y = 1080 - 163
+				elseif anchoredPos.y - 163 < 0 then
+					anchoredPos.y = 163
+				end
+			end
+			--------------------------------------------------
+			-- 특정 유닛에게 장착을 시도하는 경우, '장착 유닛'을 표시합니다.
+			if showType == "ItemEquip" then
+				equipInfoUI.Enable = true
+			else
+				equipInfoUI.Enable = false
+			end
+		--------------------------------------------------
+		else
+			self.RealtimeUpdateTargetUI = nil
+		end
+		--------------------------------------------------
+		targetUI.Enable = enable 
+		--------------------------------------------------
+	end
+
+	@ExecSpace("Client")
+	method void SetItemEquipInfo(boolean enable, string itemID, string charID, number level)
+		-- 특정 캐릭터에게 아이템을 장착할 때 표시되는 툴팁 정보를 설정
+		self:SetItemInfo(enable, itemID, "ItemEquip")
+		
+		local ui_equipInfoPanel = self.UI_ItemInfo:GetChildByName("Panel_EquipInfo")
+		if enable == true then
+		
+			-- UI Entities
+			local ui_charIcon = ui_equipInfoPanel:GetChildByName("Icon_CharBG"):GetChildByName("Icon_Char")
+			local ui_starIconList = ui_equipInfoPanel:GetChildByName("List_StarIcon")
+			
+			
+			-- Data
+			if self.CharacterTable == nil then
+				self.CharacterTable = _DataService:GetTable("CharacterInfo")
+			end
+			---@type MODUserDataSet
+			local charTable = self.CharacterTable
+			local charRUID = charTable:FindRow("CharID", charID):GetItem("IdleRUID")
+			
+			-- Apply
+			ui_charIcon.SpriteGUIRendererComponent.ImageRUID = charRUID
+			for i=1, 3 do
+				local ui_starIcon = ui_starIconList:GetChildByName(string.format("Star_%d",i))
+				if i <= level then
+					ui_starIcon.Enable = true
+				else
+					ui_starIcon.Enable = false
+				end
+			end
+			
+			local charRUIDResourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(charRUID)
+			ui_charIcon.SpriteGUIRendererComponent.LocalScale = charRUIDResourceInfo["scale"]
+			ui_charIcon.SpriteGUIRendererComponent.LocalPosition = charRUIDResourceInfo["pos"]
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Update_ItemInfo()
+		-- 아이템 툴팁의 내용에 따라 크기를 조정하고 표시 타입에 따라 위치를 설정
+		-- 아이템 툴팁의 높이(y축 길이)와 Position을 실시간으로 갱신합니다. (OnUpdate 에서 호출)
+		----------------------------------------------------------------------
+		-- (내용에 따라) 높이 갱신
+		local ui_specialAbility = self.UI_ItemInfo:GetChildByName("Text_Special")
+		local ui_decoLine2 = self.UI_ItemInfo:GetChildByName("deco_line_2")
+		local ui_stat = self.UI_ItemInfo:GetChildByName("Text_Stat")
+		local ui_decoLine3 = self.UI_ItemInfo:GetChildByName("deco_line_3")
+		local ui_combineGuide = self.UI_ItemInfo:GetChildByName("TexT_GuideCombineTable")
+		
+		local ui_statusEffectPanel1 = self.UI_ItemInfo:GetChildByName("StatusEffectInfo_1") 
+		local ui_statusEffectPanel2 = self.UI_ItemInfo:GetChildByName("StatusEffectInfo_2")
+		
+		local itemTooltipSizeY = 0
+		
+		-- targetUI의 위치를 referenceUI의 위치+사이즈를 참고하여 조정 
+		local reposition = function(targetUI, referenceUI, correctionValue)
+			targetUI.UITransformComponent.anchoredPosition.y = 
+				referenceUI.UITransformComponent.anchoredPosition.y
+				- referenceUI.UITransformComponent.RectSize.y	
+				- correctionValue
+		end
+		
+		local setTotalSize = function(referenceUI, correctionValue)
+			itemTooltipSizeY = math.abs(
+				referenceUI.UITransformComponent.anchoredPosition.y
+				- referenceUI.UITransformComponent.RectSize.y
+				- correctionValue	
+			) 
+			self.UI_ItemInfo.UITransformComponent.RectSize.y = itemTooltipSizeY
+		end
+		
+		
+		-- 스탯 표시가 있다면
+		if ui_decoLine2.Enable == true then
+			reposition(ui_decoLine2, ui_specialAbility, 20)
+			reposition(ui_stat, ui_decoLine2, 15)
+			
+			-- '우클릭으로 조합표 확인하기' 텍스트가 있다면
+			if ui_combineGuide.Enable == true then
+				reposition(ui_decoLine3, ui_stat, 15)
+				reposition(ui_combineGuide, ui_decoLine3, 15)
+				setTotalSize(ui_combineGuide, 15)
+			else
+				setTotalSize(ui_stat, 15)
+			end
+		else
+			-- '우클릭으로 조합표 확인하기' 텍스트가 있다면
+			if ui_combineGuide.Enable == true then
+				reposition(ui_decoLine3, ui_specialAbility, 15)
+				reposition(ui_combineGuide, ui_decoLine3, 15)
+				setTotalSize(ui_combineGuide, 15)
+			else
+				setTotalSize(ui_specialAbility, 15)
+			end
+		end
+		----------------------------------------------------------------------
+		-- showType에 따라 position 갱신
+		
+		local statusEffectCount = 0
+		if ui_statusEffectPanel1.Enable then statusEffectCount += 1 end
+		if ui_statusEffectPanel2.Enable then statusEffectCount += 1 end
+		
+		if self.RealtimeUpdateShowType == "Shop" then	-- 우하단 기준 (-380, +228)
+			self.UI_ItemInfo.UITransformComponent.anchoredPosition = Vector2(
+					580 - 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.x, -- // 580 = 1920*0.5 - 380
+					-312 + 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.y + 106*statusEffectCount -- -312 = -1080*0.5 +228 
+			)
+		elseif self.RealtimeUpdateShowType == "Inventory" then	-- 우상단 기준 (-434, -220)
+			self.UI_ItemInfo.UITransformComponent.anchoredPosition = Vector2(
+				526 - 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.x,  -- // 526 = 1920*0.5 - 434
+				(320 - 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.y)	-- // 320 = 1080*0.5 - 220 
+			)
+			
+		elseif self.RealtimeUpdateShowType == "UnitInfo" then -- 우상단 기준, (유닛정보-4, -456)
+			local ui_unitInfo = _EntityService:GetEntityByPath("/ui/UnitInfoPopupGroup/Popup_UnitInfo")
+			local targetX = 960 + ui_unitInfo.UITransformComponent.anchoredPosition.x - ui_unitInfo.UITransformComponent.RectSize.x - 4
+			
+			self.UI_ItemInfo.UITransformComponent.anchoredPosition = Vector2(
+				targetX - 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.x,  -- // 527 = 1920*0.5 - 433
+				(320 - 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.y)	-- // 320 = 1080*0.5 - 220 
+			)
+		
+					
+		elseif self.RealtimeUpdateShowType == "Dictionary" then
+			
+			
+		elseif self.RealtimeUpdateShowType == "MostItemList" then
+			
+			
+		elseif self.RealtimeUpdateShowType == "ItemEquip" or self.RealtimeUpdateShowType == "BattleStatInfo" then -- 좌하단 기준 마우스 좌표
+			local mousePos = _InputService:GetCursorPosition()
+			local targetPos = _Util:ScreenPostoUIPos(mousePos)
+			
+			self.UI_ItemInfo.UITransformComponent.anchoredPosition = Vector2(
+				-960 + targetPos.x + 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.x,
+				-540 + targetPos.y - 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.y
+			)
+			
+			-- 모니터 화면 안으로 바운더리 제한
+			--[[
+			local anchoredPos = self.UI_ItemInfo.UITransformComponent.anchoredPosition
+			if anchoredPos.x + 350 > 1920 then
+				anchoredPos.x = 1920 - 350
+			elseif anchoredPos.x - 350 < 0 then
+				anchoredPos.x = 350
+			end
+			if anchoredPos.y + 163 > 1080 then
+				anchoredPos.y = 1080 - 163
+			elseif anchoredPos.y - 163 < 0 then
+				anchoredPos.y = 163
+			end
+			]]
+		
+		elseif string.sub(self.RealtimeUpdateShowType, 1, 7) == "ItemBox" then	-- 좌하단 기준, slot의 위치와 맞춤
+			local slotIdx = string.sub(self.RealtimeUpdateShowType, 9, -1)
+			local ui_targetSlot = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ItemSelect/ItemSelectBg/Slot_"..slotIdx)
+			
+			self.UI_ItemInfo.UITransformComponent.anchoredPosition = Vector2(
+				-960 + 620 +( ui_targetSlot.UITransformComponent.anchoredPosition.x - 0.5 * ui_targetSlot.UITransformComponent.RectSize.x) + 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.x,
+				-312 + 0.5 * self.UI_ItemInfo.UITransformComponent.RectSize.y + 106*statusEffectCount 	
+			)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetGoldsRewardInfoUI()
+		-- 골드 획득 방법과 보상량에 대한 정보를 계산하여 툴팁에 표시
+		-- 골드 보상에 대한 툴팁을 갱신하고, Enable합니다.
+		------------------------------------------
+		-- UI에 채워질 텍스트를 완성합니다.
+		--[[
+		코인은 캐릭터, 아이템, 룬 카들르 구매하는 데 사용됩니다. 다음 방법으로 획득할 수 있습니다.\n
+		  1) 라운드 기본 보상 : 승리 시 {0}, 패배 시 {1}\n
+		  2) 이자 (최대 {2}) : {3}코인당 1\n
+		  3) 승리 보너스 : 전투에서 생존한 유닛 하나당 {4}
+		]]
+		
+		local tm = _UserService.LocalPlayer.TeamManager
+		local tm_propertyControl = _UserService.LocalPlayer.TM_PropertyControl
+		
+		local winReward = tm_propertyControl.Golds_baseReward
+		local loseReward = tm_propertyControl.Golds_baseReward + tm_propertyControl.Golds_baseReward_Lose
+		local masInterest = tm_propertyControl.Golds_MaxInterestReward
+		local interestStandard = 5
+		local winningBonus = 1
+		
+		local desc = _LocalizationService:GetTextFormat( "CoinInfo_Desc2",
+			winReward, loseReward, masInterest, interestStandard, winningBonus
+		)
+		------------------------------------------
+		-- UI에 반영합니다.
+		_EntityService:GetEntityByPath("/ui/Arena_Default/TooltipUI_Coin/Text_Desc2").TextComponent.Text = desc
+	end
+
+	@ExecSpace("Client")
+	method void SetEXPInfoUI()
+		-- 경험치 획득 방법과 수량 정보를 계산하여 툴팁에 표시
+		-- EXP 정보 UI를 갱신하고 활성화합니다.
+		-------------------------------------------------
+		local ui_desc = self.UI_ExpInfo:GetChildByName("Text_Desc") 
+		-------------------------------------------------
+		local user = _UserService.LocalPlayer
+		local tm_pc = user.TM_PropertyControl
+		local tm = user.TeamManager
+		
+		if tm_pc.Level_MaxLevel == 0 then
+			ui_desc.TextComponent.Text = _LocalizationService:GetTextFormat("EXPInfo_Desc", 4, 2) 
+		else
+			if tm.Level == tm_pc.Level_MaxLevel then
+				ui_desc.TextComponent.Text = ""
+			else
+				
+				local buyingEXP = tm_pc.Exp_BuyExpReward -- 구매 시 획득 경험치
+				local roundEXP=tm_pc.Exp_baseReward -- 라운드가 지날 때 획득하는 경험치
+				
+				if not tm_pc.Exp_CanGetBaseReward then
+					roundEXP = 0
+				end
+				
+				ui_desc.TextComponent.Text = _LocalizationService:GetTextFormat("EXPInfo_Desc",buyingEXP,roundEXP) 
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetRuneInfoUI(boolean enable, any ruid, string name, string desc, number grade, number cost, boolean indestructible, boolean deactivated, integer incineratation, string infoType)
+		-- 룬 카드의 정보와 상태를 표시하는 툴팁을 설정
+		if name == "" then
+			enable = false
+		end
+		----------------------------------------------------------------------------
+		if enable == true then
+			self.RealtimeUpdateTargetUI = self.UI_RuneInfo
+			self.RealtimeUpdateShowType = infoType
+			
+			-- 기본 정보 갱신
+			local gradeColorTable = _DataService:GetTable("GradeColor")
+			local ui_cardBG = self.UI_RuneInfo:GetChildByName("Card_BG")
+			local ui_cardImage = ui_cardBG:GetChildByName("CardImage")
+			local ui_cardFrame = ui_cardBG:GetChildByName("FrontFrame")
+			
+			local gradeKey = {
+				"Rune_Normal",
+				"Rune_Rare",
+				"Rune_Epic",
+				"Rune_Legendary"
+			}
+			ui_cardImage.SpriteGUIRendererComponent.ImageRUID = ruid
+			local gradeColor = Color.FromHexCode(gradeColorTable:FindRow("Key", gradeKey[grade]):GetItem("Default"))
+			ui_cardBG.SpriteGUIRendererComponent.Color = gradeColor
+			ui_cardFrame.SpriteGUIRendererComponent.Color = gradeColor 
+			
+			local ui_name = self.UI_RuneInfo:GetChildByName("Text_Name")
+			local ui_desc = self.UI_RuneInfo:GetChildByName("Text_Desc")
+			
+			ui_name.TextComponent.Text = name
+			ui_desc.TextComponent.Text = desc
+			----------------------------------------------------------------------------
+			for i=1, 4 do
+				local ui_grade = self.UI_RuneInfo:GetChildByName(string.format("Text_Grade_%d", i))
+				
+				if i == grade then
+					ui_grade.Enable = true
+				else
+					ui_grade.Enable = false
+				end
+			end
+			----------------------------------------------------------------------------
+			-- 태그 정보 갱신
+			local ui_decoLine1 = self.UI_RuneInfo:GetChildByName("deco_line_1")
+			local ui_tags = self.UI_RuneInfo:GetChildByName("List_Tags")
+			local ui_tagBreakable = ui_tags:GetChildByName("Tag_Indestructible")
+			local ui_deactivated = ui_tags:GetChildByName("Tag_Deactivated")
+			local ui_incineration = ui_tags:GetChildByName("Tag_Incineration")
+			
+			ui_tagBreakable.Enable = indestructible
+			ui_deactivated.Enable = deactivated
+			
+			if incineratation > 0 then
+				ui_incineration.Enable = true
+				ui_incineration.TextComponent.Text = _LocalizationService:GetTextFormat("RuneTag_Incineration", incineratation)
+			else
+				ui_incineration.Enable = false
+			end
+			
+			if ui_tagBreakable.Enable == false and ui_deactivated.Enable == false and ui_incineration.Enable == false then
+				ui_decoLine1.Enable = false
+			else
+				ui_decoLine1.Enable = true
+			end
+			----------------------------------------------------------------------------
+			
+		----------------------------------------------------------------------------	
+		else
+			self.RealtimeUpdateTargetUI = nil
+			self.RealtimeUpdateShowType = ""
+		end
+		----------------------------------------------------------------------------
+		self.UI_RuneInfo.Enable = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Update_RuneInfo()
+		-- 룬 카드 툴팁의 내용과 태그에 따라 크기를 조정하고 표시 타입별 위치 설정
+		-- 룬 카드 툴팁의 높이(y축 길이)와 포지션을 업데이트합니다. (OnUpdate에서 실시간 호출)
+		----------------------------------------------------------------------
+		-- 내용에 따라 높이 변경
+		local ui_desc = self.UI_RuneInfo:GetChildByName("Text_Desc")
+		local ui_decoLine1 = self.UI_RuneInfo:GetChildByName("deco_line_1")
+		local ui_tagList = self.UI_RuneInfo:GetChildByName("List_Tags")
+		
+		if ui_decoLine1.Enable == true then
+			ui_decoLine1.UITransformComponent.anchoredPosition.y = 
+				ui_desc.UITransformComponent.anchoredPosition.y
+				- ui_desc.UITransformComponent.RectSize.y	
+				- 20
+			
+			ui_tagList.UITransformComponent.anchoredPosition.y = 
+				ui_decoLine1.UITransformComponent.anchoredPosition.y
+				- ui_decoLine1.UITransformComponent.RectSize.y	
+				- 20
+			
+			local tagCount = 0
+			for _, child in pairs(ui_tagList.Children) do
+				if child.Enable then
+					tagCount += 1
+				end
+			end
+			self.UI_RuneInfo.UITransformComponent.RectSize.y = 
+				math.abs(ui_tagList.UITransformComponent.anchoredPosition.y)
+				+ tagCount * 24 
+				+ 20
+		else
+			self.UI_RuneInfo.UITransformComponent.RectSize.y = 
+				math.abs(ui_desc.UITransformComponent.anchoredPosition.y
+				- ui_desc.UITransformComponent.RectSize.y) 
+				+ 20
+		end
+		----------------------------------------------------------------------
+		-- infoType에 따라 툴팁 위치 변경
+		local infoType = self.RealtimeUpdateShowType
+		
+		if infoType == "Shop" then	-- 우하단 기준 (-210, 228)
+			self.UI_RuneInfo.UITransformComponent.anchoredPosition = Vector2(
+				 750 - 0.5*self.UI_RuneInfo.UITransformComponent.RectSize.x, 
+				-312 + 0.5*self.UI_RuneInfo.UITransformComponent.RectSize.y
+			)
+			
+		elseif infoType == "Inventory" then	-- 우상단 기준 (-433, -220)
+			self.UI_RuneInfo.UITransformComponent.anchoredPosition = Vector2(
+				527 - 0.5 * self.UI_RuneInfo.UITransformComponent.RectSize.x,  -- // 527 = 1920*0.5 - 433
+				320 - 0.5 * self.UI_RuneInfo.UITransformComponent.RectSize.y	-- // 320 = 1080*0.5 - 220 
+			)
+		elseif infoType == "Battle_User" then
+			self.UI_RuneInfo.UITransformComponent.anchoredPosition = Vector2(-750, -225)
+		elseif infoType == "Battle_Enemy" then
+			self.UI_RuneInfo.UITransformComponent.anchoredPosition = Vector2(750, -225)
+		elseif infoType == "BattleStat" then 
+			local uiPos = _Util:ScreenPostoUIPos(_InputService:GetCursorPosition())
+			local rectSize = self.UI_RuneInfo.UITransformComponent.RectSize
+			
+			local targetPos = Vector2(
+				-0.5 * _UILogic.ScreenWidth + uiPos.x + 0.5 * rectSize.x, 
+				-0.5 * _UILogic.ScreenHeight + uiPos.y - 0.5 * rectSize.y
+			)
+		
+			if targetPos.x + 0.5 * rectSize.x > 960 then
+				targetPos.x = 960 - 0.5 * rectSize.x
+			end
+			
+			if targetPos.y - 0.5 * rectSize.y < -540 then
+				targetPos.y = -540 + 0.5 * rectSize.y
+			end
+			
+			self.UI_RuneInfo.UITransformComponent.anchoredPosition = targetPos
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetGameModeInfo(integer modeLevel, string modeType)
+		-- 게임 모드별 정보와 시즌 정보를 표시하는 툴팁의 내용을 설정
+		-- '현재 진행 중인 모드에 대한 정보 툴팁'의 내용을 갱신합니다.
+		----------------------------------------------------------------
+		---@type Entity
+		local ui_gameModeTooltip = nil
+		
+		log("modeType = ", modeType)
+		local setUI = function(ui_gameModeTooltip, iconType)	
+			-- Children Entities
+			local ui_modeIcon = ui_gameModeTooltip:GetChildByName("Icon_Mode")
+			local ui_modeText = ui_gameModeTooltip:GetChildByName("Text_Mode")
+			local ui_levelDesc = ui_gameModeTooltip:GetChildByName("Text_LevelDesc")
+			local ui_seasonTitle = ui_gameModeTooltip:GetChildByName("Text_SeasonTitle")
+			local ui_seasonDesc = ui_gameModeTooltip:GetChildByName("Text_SeasonDesc")
+			
+			if modeLevel == nil or modeLevel < 1 then
+				return
+			end
+			------------------------------------------------------------------------------
+			-- 랭크 모드
+			if modeType == "Rank" then
+				local modeInfoTable = _DataService:GetTable("RankModeInfo")
+				
+				local row = modeInfoTable:FindRow("Level", string.format("%d", modeLevel))
+				local iconRUID = row:GetItem(iconType)
+				
+				local tier = row:GetItem("Tier")
+				local tierGrade = row:GetItem("Tier_Grade")
+				local presetLevel = row:GetItem("PresetLevel")
+				local enemyLevel = row:GetItem("EnemyLevel")
+				
+				ui_modeIcon.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				if tierGrade == "-" then
+					ui_modeText.TextComponent.Text = _LocalizationService:GetText("RankMode_"..tier)
+				else
+					ui_modeText.TextComponent.Text = _LocalizationService:GetText("RankMode_"..tier).." "..tierGrade
+				end
+				
+				ui_levelDesc.TextComponent.Text = _LocalizationService:GetText(string.format("Enemy_LevelDesc%s", enemyLevel))
+				
+				local season = string.format("%.1f", _ModeDataLogic.Season) 
+				ui_seasonTitle.TextComponent.Text = _LocalizationService:GetTextFormat("SeasonTitle", season)
+				ui_seasonDesc.TextComponent.Text = _LocalizationService:GetText(string.format("SeasonDesc_%s", season))
+			------------------------------------------------------------------------------
+			-- 싱글 모드	
+			elseif string.sub(modeType, 1, 6) == "Single" then
+				local mTypeTable = _UtilLogic:Split(modeType, "_")
+				local type = mTypeTable[1]
+				local season = tonumber(mTypeTable[2])
+				
+				local modeInfoTable = _DataService:GetTable("SingleModeInfo")
+				
+				local row = modeInfoTable:FindRow("Level", string.format("%d", modeLevel))
+				local iconRUID = row:GetItem(iconType)
+				local presetLevel = row:GetItem("PresetLevel")
+				
+				ui_modeIcon.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				ui_modeText.TextComponent.Text = _LocalizationService:GetText("GameMode_Single").." ".._LocalizationService:GetTextFormat("SingleMode_LevelText", modeLevel)
+				ui_levelDesc.TextComponent.Text = _LocalizationService:GetText(string.format("Enemy_LevelDesc%s", modeLevel))
+				
+				ui_seasonTitle.TextComponent.Text = _LocalizationService:GetTextFormat("SeasonTitle", season)
+				ui_seasonDesc.TextComponent.Text = _LocalizationService:GetText(string.format("SeasonDesc_%s", season))
+			------------------------------------------------------------------------------
+			-- 챌린지 모드 
+			elseif string.sub(modeType, 1, 9) == "Challenge" then
+				local mTypeTable = _UtilLogic:Split(modeType, "_")
+				local type = mTypeTable[1]
+				local season = tonumber(mTypeTable[2])
+				
+				local modeInfoTable = _DataService:GetTable("SingleModeInfo")
+				
+				local row = modeInfoTable:FindRow("Level", string.format("%d", modeLevel))
+				local iconRUID = row:GetItem(iconType)
+				local presetLevel = row:GetItem("PresetLevel")
+				
+				ui_modeIcon.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				ui_modeText.TextComponent.Text = _LocalizationService:GetText("GameMode_Challenge").." ".._LocalizationService:GetTextFormat("SingleMode_LevelText", modeLevel)
+				ui_levelDesc.TextComponent.Text = _LocalizationService:GetText(string.format("Enemy_LevelDesc%s", modeLevel))
+				
+				local challengeID = "CH"..string.format("%05d", 10000+season)
+				ui_seasonTitle.TextComponent.Text = _LocalizationService:GetText("ChallengeTitle_"..challengeID)
+				ui_seasonDesc.TextComponent.Text = _LocalizationService:GetText("ChallengeDesc_"..challengeID)
+			------------------------------------------------------------------------------
+			-- 튜토리얼 모드
+			elseif modeType == "Tutorial" then
+				local modeInfoTable = _DataService:GetTable("SingleModeInfo")
+				
+				local row = modeInfoTable:FindRow("Level", "1")
+				local iconRUID = row:GetItem(iconType)
+				local presetLevel = row:GetItem("PresetLevel")
+				
+				ui_modeIcon.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				ui_modeText.TextComponent.Text = _LocalizationService:GetText("Tutorial")
+				ui_levelDesc.TextComponent.Text = _LocalizationService:GetText("Enemy_LevelDesc0")
+			end
+		end
+		
+		setUI(_EntityService:GetEntityByPath("/ui/HoverPopupGroup/TooltipUI_GameMode"), "IconRUID")
+		setUI(_EntityService:GetEntityByPath("/ui/ESCMenu/Panel_ESCMenu/TooltipUI_GameMode"), "BigIconRUID")
+			
+		_UserService.LocalPlayer.PenaltyManager:SetGameModeTooltip_PenaltyList()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Update_GameModeInfo()
+		-- 게임 모드 툴팁의 패널티 정보 유무에 따라 크기를 동적으로 조정
+		local seasonDesc = self.UI_GameModeInfo:GetChildByName("Text_SeasonDesc")
+		
+		local deco_line2 = self.UI_GameModeInfo:GetChildByName("deco_line2")
+		local penaltyTitle = self.UI_GameModeInfo:GetChildByName("Text_PenaltyTitle")
+		local ui_penaltiesText = self.UI_GameModeInfo:GetChildByName("Text_Penalties")
+		local sizeY = 0
+		if ui_penaltiesText.TextComponent.Text == "" then
+			deco_line2.Enable = false
+			penaltyTitle.Enable = false
+			
+			sizeY = math.abs(
+				seasonDesc.UITransformComponent.anchoredPosition.y 
+				- seasonDesc.UITransformComponent.RectSize.y
+				- 20
+			)
+		else
+			deco_line2.Enable = true
+			penaltyTitle.Enable = true
+			
+			deco_line2.UITransformComponent.anchoredPosition.y = 
+			seasonDesc.UITransformComponent.anchoredPosition.y 
+			- seasonDesc.UITransformComponent.RectSize.y
+			- 20
+			
+			penaltyTitle.UITransformComponent.anchoredPosition.y = 
+				deco_line2.UITransformComponent.anchoredPosition.y 
+				- deco_line2.UITransformComponent.RectSize.y
+				- 20
+			
+			ui_penaltiesText.UITransformComponent.anchoredPosition.y = 
+				penaltyTitle.UITransformComponent.anchoredPosition.y 
+				- penaltyTitle.UITransformComponent.RectSize.y
+			
+			sizeY = math.abs(
+				ui_penaltiesText.UITransformComponent.anchoredPosition.y 
+				- ui_penaltiesText.UITransformComponent.RectSize.y
+				- 20
+			)
+			
+			
+		end
+		
+		self.UI_GameModeInfo.UITransformComponent.RectSize.y = sizeY
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCharShopInfo(boolean enable, string charID, integer slotIdx, boolean activateGuideText, string showType)
+		-- 캐릭터 상점에서 캐릭터 정보와 스킬을 표시하는 툴팁을 설정
+		-- 캐릭터 상점에서 각 상품 위에 마우스를 올렸을 때 띄우는 툴팁입니다.
+		-- 내용을 갱신하고 툴팁을 (비)활성화합니다.
+		------------------------------------------------------------------------------
+		local ui_tooltip = self.UI_ShopCharInfo
+		
+		if enable == true then
+			self.RealtimeUpdateTargetUI = self.UI_ShopCharInfo
+			local ui_name = ui_tooltip:GetChildByName("Name")
+			local ui_role = ui_tooltip:GetChildByName("Role")
+			local ui_mainStat = ui_tooltip:GetChildByName("MainStat")
+			
+			local characterInfo = _DataService:GetTable("CharacterInfo")
+			local charRow = characterInfo:FindRow("CharID", charID)
+			local mainStats = _UtilLogic:Split(charRow:GetItem("MainStats"), ",")
+			local mainStatText = _LocalizationService:GetText("MainStat")..": "
+			for i=1, #mainStats do
+				if i ~= 1 then
+					mainStatText = mainStatText..", "
+				end
+				mainStatText = mainStatText.._LocalizationService:GetText(mainStats[i])
+			end
+			
+			-- 기본 정보
+			ui_name.TextComponent.Text = _LocalizationService:GetText(charID.."_Name")
+			ui_role.TextComponent.Text = _LocalizationService:GetText("CharacterRole_"..charRow:GetItem("Role"))
+			ui_mainStat.TextComponent.Text = mainStatText
+			
+			-- 스킬 정보
+			local passiveDesc = _UnitSkillDescLogic:GetDefaultDesc(nil, charID, "passive")
+			local activeDesc = _UnitSkillDescLogic:GetDefaultDesc(nil, charID, "active")
+			local ui_passive = ui_tooltip:GetChildByName("Passive_Desc")
+			local ui_active = ui_tooltip:GetChildByName("Active_Desc")
+			ui_passive.TextComponent.Text = passiveDesc
+			ui_active.TextComponent.Text = activeDesc
+			
+			ui_tooltip:GetChildByName("GuideText").Enable = activateGuideText
+		else
+			self.RealtimeUpdateTargetUI = nil
+		end
+		
+		self.RealtimeUpdateShowType = showType
+		
+		ui_tooltip.Enable = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Update_CharShopInfo()
+		-- 캐릭터 상점 툴팁의 내용 길이에 따라 UI 요소들의 위치와 전체 크기를 조정
+		-- 내용 길이에 따라 툴팁 내용들의 위치, 툴팁 전체 크기 갱신합니다.
+		--------------------------------------------------------------------------------------------
+		-- 내용물들의 위치를 조절하고, 전체 크기를 조절합니다.
+		local ui_passiveDesc = self.UI_ShopCharInfo:GetChildByName("Passive_Desc")
+		local ui_activeTitle = self.UI_ShopCharInfo:GetChildByName("Active_Title")
+		local ui_activeDesc = self.UI_ShopCharInfo:GetChildByName("Active_Desc")
+		local ui_decoline = self.UI_ShopCharInfo:GetChildByName("deco_line_2")
+		local ui_guideText = self.UI_ShopCharInfo:GetChildByName("GuideText")
+		
+		local setUIPos = function(resizingUI, refUI, correctionValue)
+			---@type Entity
+			local targetUI = resizingUI
+			---@type Entity
+			local refrenceUI = refUI
+			
+			targetUI.UITransformComponent.anchoredPosition.y = 
+				refrenceUI.UITransformComponent.anchoredPosition.y
+				- refrenceUI.UITransformComponent.RectSize.y
+				- correctionValue
+		end
+		
+		setUIPos(ui_activeTitle, ui_passiveDesc, 20)
+		setUIPos(ui_activeDesc, ui_activeTitle, 0)
+		setUIPos(ui_decoline, ui_activeDesc, 20)
+		setUIPos(ui_guideText, ui_decoline, 20)
+		
+		self.UI_ShopCharInfo.UITransformComponent.RectSize.y = math.abs(
+			ui_guideText.UITransformComponent.anchoredPosition.y - ui_guideText.UITransformComponent.RectSize.y - 20)
+		
+		if self.RealtimeUpdateShowType == "BattleStat" then
+			-- 좌하단 + (0, 0) 기준 660, 180
+			self.UI_ShopCharInfo.UITransformComponent.anchoredPosition = Vector2(660, 180)
+		elseif self.RealtimeUpdateShowType == "CharShop" then
+			-- 좌하단 기준 540, 245
+			self.UI_ShopCharInfo.UITransformComponent.anchoredPosition = Vector2(540, 245)
+		end
+		--------------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("Client")
+	method void SetRuneInfoUI_OnBattlePhase(string name, string desc, integer grade)
+		-- 전투 페이즈에서 룬 카드의 간단한 정보를 표시하는 툴팁을 설정
+		local tooltipUI = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/RuneInfo")
+		local ui_name = tooltipUI:GetChildByName("Name")
+		local ui_desc = tooltipUI:GetChildByName("DescArea"):GetChildByName("Desc")
+		local ui_grade = tooltipUI:GetChildByName("Grade")
+		
+		local gradeList = {
+			[0] = "",
+			[1] = "Normal",
+			[2] = "Rare",
+			[3] = "Epic",
+			[4] = "Legendary"
+		}
+		
+		
+		ui_name.TextComponent.Text = name
+		ui_desc.TextComponent.Text = desc
+		ui_grade.TextComponent.Text = gradeList[grade]
+		if grade > 0 then
+			ui_grade.TextComponent.FontColor = _UI_Color.RuneGrade[gradeList[grade]]
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetBattleStatValue(string name, string statValue)
+		-- 전투 통계에서 특정 수치의 이름과 값을 표시하는 툴팁을 설정
+		
+		local ui_Name = self.UI_BattleStatValue:GetChildByName("Name")
+		local ui_Value = self.UI_BattleStatValue:GetChildByName("StatNumbers")
+		
+		ui_Name.TextComponent.Text = name
+		ui_Value.TextComponent.Text = statValue
+		
+		self.UI_BattleStatValue.UITransformComponent.anchoredPosition = _Util:ScreenPostoUIPos(_InputService:GetCursorPosition())
+		self.UI_BattleStatValue:SetEnable(true)
+	end
+
+end

@@ -1,0 +1,163 @@
+@Component
+script C40012_Irena_SkillProjectileInfo extends Component
+
+	property string onwerId = ""
+
+	property Entity onwerUnit = nil
+
+	property Entity targetUnit = nil
+
+	property number projectile_speed = 1
+
+	property boolean shot = false
+
+	property Vector2 moveVec = Vector2(0,0)
+
+	property number destroyTime = 0
+
+	property Vector2 setPos = Vector2(0,0)
+
+	property number TargetPosY = 0
+
+	property number AttackCount = 0
+
+	@ExecSpace("Server")
+	method void SetProjectile(Entity onwerUnit, Entity targetUnit, number speed, number scale, number vecY, number targetY)
+		local shotCompo = self.Entity.SkillShotCheckComponent
+		
+		self.Entity:SetEnable(true)
+		shotCompo.Shots = true
+		
+		self.onwerUnit = onwerUnit
+		self.targetUnit = targetUnit
+		self.projectile_speed = speed * _BTLogic_New.SSpeedValue
+		self.Entity.TransformComponent.Scale = Vector3(scale/3,scale/3,scale/3)
+		self.setPos = self.onwerUnit.UnitStatus.SetPos + Vector2(0, vecY)
+		self.TargetPosY = targetY
+		
+		self:SetFlipX(onwerUnit, shotCompo.ProjOwnerID)
+		
+		local interval = 0.01
+		local function ShotsFnc()
+			self.destroyTime += interval
+			if self.destroyTime >= 10 then
+				_TimerService:ClearTimer(shotCompo.ShotTimer)
+				self:Destroy()
+				return
+			end
+			
+			if isvalid(self.onwerUnit) then
+				if not isvalid(self.targetUnit) then
+					local unitInfo = self.onwerUnit.UnitInfo
+					
+					local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+					local teamManager = user.TeamManager
+					
+					---@type table
+					local enemies = nil
+					
+					if unitInfo.TeamType == "User" then
+						enemies = teamManager.EnemyUnits
+					elseif unitInfo.TeamType == "Enemy" then
+						enemies = teamManager.OwnUnits
+					end
+					
+					local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+					
+					self.targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+				elseif self.targetUnit.UnitStatus.HP <= 0 or (not self.targetUnit.Enable) then
+					local unitInfo = self.onwerUnit.UnitInfo
+					
+					local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+					local teamManager = user.TeamManager
+					
+					---@type table
+					local enemies = nil
+					
+					if unitInfo.TeamType == "User" then
+						enemies = teamManager.EnemyUnits
+					elseif unitInfo.TeamType == "Enemy" then
+						enemies = teamManager.OwnUnits
+					end
+					
+					local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+					
+					self.targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+				end
+				
+				
+				
+				-- 배틀 종료 여부
+				if not self.onwerUnit.UnitAIWanderComponent.setBattle then
+					_TimerService:ClearTimer(shotCompo.ShotTimer)
+					self:Destroy()
+				-- 타겟이 제대로 들어온건지 확인
+				elseif not isvalid(self.targetUnit) then
+					_TimerService:ClearTimer(shotCompo.ShotTimer)
+					self:Destroy()
+				elseif not self.onwerUnit.Enable then
+					_TimerService:ClearTimer(shotCompo.ShotTimer)
+					self:Destroy()
+				else
+					local selfVec2 = self.setPos
+					local targetVec2 = self.targetUnit.UnitStatus.SetPos + Vector2(0, self.TargetPosY)
+						
+					
+					if Vector2.Distance(targetVec2, selfVec2) <= 0.5 then
+						self.onwerUnit.UnitInfo.SkillComponent:SetSkillDamage(self.targetUnit, self.AttackCount)
+						_TimerService:ClearTimer(shotCompo.ShotTimer)
+						self:Destroy()
+					else
+						self.moveVec = Vector2.Normalize(targetVec2 - selfVec2)
+						
+						local zRotation = 0
+						if self.moveVec.x >= 0 then
+							if self.moveVec.y >= 0 then
+								zRotation = Vector2.Angle(Vector2(1,0), self.moveVec)
+							else
+								zRotation = - Vector2.Angle(Vector2(1,0), self.moveVec)
+							end
+						else
+							if self.moveVec.y >= 0 then
+								zRotation = Vector2.Angle(Vector2(1,0), self.moveVec)
+							else
+								zRotation = - Vector2.Angle(Vector2(1,0), self.moveVec)
+							end
+						end
+						
+						local posX = selfVec2.x + (self.moveVec.x * self.projectile_speed * interval * 20)
+						local posY = selfVec2.y + (self.moveVec.y * self.projectile_speed * interval * 20)
+						self.setPos = Vector2(posX, posY)
+						self:SetPosition(posX, posY, zRotation, shotCompo.ProjOwnerID)
+					end
+				end
+			else
+				_TimerService:ClearTimer(shotCompo.ShotTimer)
+				self:Destroy()
+			end
+		end
+		
+		shotCompo.ShotTimer = _TimerService:SetTimerRepeat(ShotsFnc, interval, 0)
+	end
+
+	@ExecSpace("Server")
+	method void Destroy()
+		self.destroyTime = 0
+		self:SetPosition(999, 999, 0)
+		self.Entity.SkillShotCheckComponent.Shots = false
+		self.Entity:SetEnable(false)
+		self.Entity:RemoveComponent(C40012_Irena_SkillProjectileInfo)
+	end
+
+	@ExecSpace("Client")
+	method void SetPosition(number x, number y, number zR)
+		self.Entity.TransformComponent.WorldPosition = Vector3(x,y,0)
+		self.Entity.TransformComponent.WorldZRotation = zR
+	end
+
+	@ExecSpace("Client")
+	method void SetFlipX(Entity onwerUnit)
+		self.Entity.SpriteRendererComponent.FlipX = true
+	end
+
+end

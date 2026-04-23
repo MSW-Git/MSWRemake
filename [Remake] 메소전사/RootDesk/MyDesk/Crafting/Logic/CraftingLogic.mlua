@@ -1,0 +1,458 @@
+@Logic
+script CraftingLogic extends Logic
+
+	property table craftingRecipe = {}
+
+	property string selectedCategory = ""
+
+	property string selectedRecipeId = ""
+
+	property integer craftingCount = 0
+
+	property integer craftingMaxCount = 100
+
+	property UICraftingComponent UICrafting = "cf7af21c-47fd-46a2-b46a-ae6ba93ae194"
+
+	property boolean resetItemType = false
+
+	property boolean resetCategoryType = false
+
+	property integer selectedResultItemSlotIndex = 0
+
+	method void OnBeginPlay()
+		-- 제작 로직 시작 시 데이터 초기화
+		self:Init()
+	end
+
+	method table DeleteDuplicateInTable(table targetTable)
+		-- 테이블에서 중복 요소 제거 후 새 테이블 반환
+		local seen = {}
+		local result = {}
+		
+		for _, value in ipairs(targetTable) do
+			
+		
+				if not seen[value] then
+					table.insert(result, value)
+					seen[value] = true
+		    	end
+		
+		end
+		
+		return result
+	end
+
+	method integer GetUserItemCount(string itemId, string userId)
+		-- 플레이어가 보유한 특정 아이템의 총 수량 반환
+		
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent.storage 
+		local count = 0 
+		
+		for key, value in pairs(storage) do
+			if value.originalId == itemId then
+				count += value.count 
+			end 
+		end
+		
+		return count
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean DoCraft(string recipeId, integer craftingCount, string userId)
+		-- 제작 레시피를 실제로 실행하여 아이템 생성
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent.storage
+		local category = self.craftingRecipe[recipeId].category
+		local type = self.craftingRecipe[recipeId].type
+		local resultItem = self.craftingRecipe[recipeId].itemId
+		local ingredients = self.craftingRecipe[recipeId].ingredients
+		local isAccessory = false
+		
+		for key, value in pairs (ingredients) do
+			if self:GetUserItemCount(key, userId) < value * craftingCount then 
+				return false
+			end
+		end
+		
+		local materialTable = self:GetMaterialTableFromPlayerStoage(ingredients, craftingCount, userId)
+		if isvalid(materialTable[1]) then
+			return false
+		end
+		
+		local grade = ""
+		local gradeList = {}
+		
+		if category == "accessory" then 
+			if _CheckLogic:IsEnoughAccessorySlot(userId, craftingCount) == true then
+				for key, value in pairs(materialTable) do
+					player.PlayerStorageComponent:RemoveItemByUniqueKey(key, value, "CraftingMaterial")
+				end
+				for i = 1, craftingCount do
+					grade = _AccessoryLogic:CraftAccessory(resultItem, userId) 
+					if grade == "B" then
+						if gradeList["B"] == nil then
+							gradeList["B"] = 1
+						else
+							gradeList["B"] += 1
+						end
+					elseif grade == "A" then
+						if gradeList["A"] == nil then
+							gradeList["A"] = 1
+						else
+							gradeList["A"] += 1
+						end
+			
+					elseif grade == "S" then
+						if gradeList["S"] == nil then
+							gradeList["S"] = 1
+						else
+							gradeList["S"] += 1
+						end
+					elseif grade == "SS" then
+						if gradeList["SS"] == nil then
+							gradeList["SS"] = 1
+						else
+							gradeList["SS"] += 1
+						end
+				
+					elseif grade == "SSS" then
+						if gradeList["SSS"] == nil then
+							gradeList["SSS"] = 1
+						else
+							gradeList["SSS"] += 1
+						end
+					end
+				end
+			else
+				_LocalizeLogic:ShowToast("toast79", userId)
+				return false
+			end
+			isAccessory = true
+		else
+			if type == "soulegg" then 
+				for key, value in pairs(materialTable) do
+					player.PlayerStorageComponent:RemoveItemByUniqueKey(key, value, "CraftingMaterial")
+				end
+				player.PlayerStorageComponent:RequestAddEgg(resultItem, craftingCount, resultItem, 1, "",0, "CraftingResult")
+			else  
+				if _CheckLogic:IsCanAddFieldItem(userId, craftingCount, resultItem) == false  then 
+					return false
+				end
+				for key, value in pairs(materialTable) do
+					player.PlayerStorageComponent:RemoveItemByUniqueKey(key, value, "CraftingMaterial")
+				end
+				player.PlayerStorageComponent:RequestAddItemFromServer(_GameUtil:CreateGUID(), craftingCount, resultItem, 1, userId, "CraftingResult", "")
+			end
+		end
+		
+		
+		self:ShowCraftingResult(resultItem, craftingCount, recipeId, isAccessory, gradeList,userId)
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void RequestCraftInServer(string recipeId, integer craftingCount)
+		-- 서버에서 제작 요청 수신 및 유효성 검증 후 제작 실행
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if self.craftingRecipe[recipeId].category == "accessory" then
+			if craftingCount > 10 then 
+				_LocalizeLogic:ShowToast("toast96", senderUserId)
+				return
+			end
+		end
+		
+		if not isvalid(player) then
+			return
+		end
+		
+		if self:CheckIsValidRecipeId(recipeId) == false then
+			return
+		end
+		
+		
+		if self:DoCraft(recipeId, craftingCount, senderUserId) == false then
+			_LocalizeLogic:ShowToast("toast97", senderUserId)
+		end
+		
+		self:ChangeCraftingCount(true, 0, senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void ChangeCraftingCount(boolean reset, integer value)
+		-- 제작 수량 조절 및 UI 업데이트
+		if reset == true then
+			self.craftingCount = 1
+		else
+			if value < 0 then 
+				if self.craftingCount > 2 then
+					self.craftingCount += value
+				else
+					self.craftingCount = 1
+				end
+			else 
+				self.craftingCount += value 	
+			end
+		end
+		if self.craftingCount >= self.craftingMaxCount then
+			self.craftingCount = self.craftingMaxCount
+		end
+		self.UICrafting:ChangeCraftingCountEvent(self.craftingCount)
+	end
+
+	method boolean CheckIsValidRecipeId(string recipeId)
+		-- 제작 레시피 ID의 유효성 검증
+		for key, value in pairs(self.craftingRecipe) do
+			if value.recipeId == recipeId then
+				return true
+			end	
+		end
+		
+		return false
+	end
+
+	method void Init()
+		-- 제작 레시피 데이터 테이블 로드 및 초기화
+		local data = _DataService:GetTable("CraftingRecipe")
+		local columns = data.Columns 
+		
+		for i = 1, data:GetRowCount() do
+			
+			local recipe = {}
+			recipe.recipeId = data:GetCell(i, "RecipeId")
+			recipe.itemName = data:GetCell(i, "ItemName")
+			recipe.itemId = data:GetCell(i, "ItemId")
+			recipe.category = data:GetCell(i, "ItemCategory")
+			recipe.type = data:GetCell(i, "ItemType")
+			recipe.grade = data:GetCell(i, "ItemGrade")
+			recipe.ingredients = {}
+			
+			for j = 7 , #columns - 1 do
+				if j % 2 == 1 then
+					recipe.ingredients[data:GetCell(i , j)] = tonumber(data:GetCell(i, j + 1))
+				end
+			end
+		
+			self.craftingRecipe[recipe.recipeId] = recipe
+		end
+		
+		self.craftingCount = 1 
+		
+	end
+
+	method table GetRecipeResultDataFromDataset(string resultId)
+		-- 제작 결과 아이템의 데이터 정보 반환
+		local temp = {}
+		
+		if not isvalid(_ItemDataLogic.itemData[resultId]) then
+			return temp
+		end
+		temp.name = _ItemDataLogic.itemData[resultId].name
+		temp.ruid = _ItemDataLogic.itemData[resultId].ruid
+		temp.grade = _ItemDataLogic.itemData[resultId].grade
+		temp.category =  _ItemDataLogic.itemData[resultId].category
+		temp.offsetX = _ItemDataLogic.itemData[resultId].offsetX
+		temp.offsetY = _ItemDataLogic.itemData[resultId].offsetY
+		return temp
+	end
+
+	method integer GetEnableCountCraftingByRecipeId(string recipeId, string ppsn)
+		-- 레시피로 제작 가능한 최대 수량 계산
+		
+		local enableCount = 0
+		
+		local player = _UserService:GetUserEntityByUserId(ppsn)
+		local storage = player.PlayerStorageComponent.storage
+		
+		local resultItem = self.craftingRecipe[recipeId].itemId
+		local ingredients = self.craftingRecipe[recipeId].ingredients
+		
+		
+		local temp = {}
+		
+		for key, value in pairs (ingredients) do
+		
+			table.insert(temp, self:GetUserItemCount(key, ppsn) / value )
+		
+		end
+		
+		table.sort(temp, function(a, b) return a < b end)
+		
+		if isvalid(temp[1]) then
+			enableCount = math.floor(temp[1])
+		end
+		
+		
+		return enableCount
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCraftingSlot(Entity slot, string itemId)
+		-- 제작 슬롯 UI에 아이템 정보 설정
+		local resultData = _CraftingLogic:GetRecipeResultDataFromDataset(itemId)
+		
+		if not isvalid(resultData) then
+			return
+		end
+		
+		
+		slot.SpriteGUIRendererComponent.ImageRUID = _GameUtil:GetBackgroundRUIDByItemGrade(resultData.grade) 
+		slot:GetChildByName("Item_Icon", true).SpriteGUIRendererComponent.ImageRUID =  "thumbnail://"..resultData.ruid   
+		slot:GetChildByName("Category_bg", true).SpriteGUIRendererComponent.ImageRUID =  _ItemDataLogic:GetCategoryColorRUIDByGrade(resultData.grade)
+		
+		
+		local iconRUID = self:GetCraftingCategoryIconByItemId(itemId)
+		
+		
+		slot:GetChildByName("Category_Icon", true).SpriteGUIRendererComponent.ImageRUID = iconRUID
+		
+		if isvalid(slot:GetChildByName("reinforceText", true)) then
+			slot:GetChildByName("reinforceText", true).Enable = false
+		end
+		
+		if isvalid(slot:GetChildByName("Grade_Alphabet", true)) then
+			local item = _ItemDataLogic.itemData[itemId]
+			if item.category == "accessory" then
+				slot:GetChildByName("Grade_Alphabet", true).Enable = true
+			else
+				slot:GetChildByName("Grade_Alphabet", true).Enable = false
+			end
+			local grade = ""
+			if item.grade == "normal" then
+				grade = "B"
+			elseif item.grade == "rare" then
+				grade = "A"
+			elseif item.grade == "epic" then
+				grade = "S"
+			elseif item.grade == "unique" then
+				grade = "SS"
+			elseif item.grade == "legendary" then
+				grade = "SSS"
+			end
+			slot:GetChildByName("Grade_Alphabet", true).SpriteGUIRendererComponent.ImageRUID =  _AccessoryLogic:GetAlphabetGradeRUID(grade)
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void ShowCraftingResult(string resultItem, integer craftingCount, string recipeId, boolean isAccessroy, table resultTable)
+		-- 제작 결과 UI 표시 및 사운드 재생
+		local grade = self.craftingRecipe[recipeId].grade
+		
+		_UIGroupManager.craftingUI:ShowCraftingResult(resultItem, craftingCount, grade, isAccessroy, resultTable) 
+		_UIGroupManager.craftingUI:RefresuResultItemEntity() 
+		_SoundService:PlaySound("88016467de6941528a91d25104593c2d",1) 
+	end
+
+	method string GetCraftingCategoryIconByItemId(string itemId)
+		-- 아이템 ID에 따른 카테고리 아이콘 RUID 반환
+		local iconRUID = ""
+		local itemData = _ItemDataLogic.itemData[itemId]
+		
+		iconRUID = _GameUtil:GetCategoryIconRUID(itemData.category)
+		
+		if _CheckLogic:IsFieldItem(itemId) == true then
+			if itemData.category == "etc" or itemData.category == "magicStone" then
+				iconRUID = "e6842de3a1e14624b9abbb328e878e8f"	
+			end
+		else
+			if itemData.category == "accessory" then
+				if string.sub(itemId, 1, 3) == "101" then
+					iconRUID = _GameUtil:GetCategoryIconRUID("ring")
+				elseif string.sub(itemId, 1, 3) == "102"  then
+					iconRUID = _GameUtil:GetCategoryIconRUID("earring")
+				elseif string.sub(itemId, 1, 3) == "103"  then
+					iconRUID = _GameUtil:GetCategoryIconRUID("necklace")
+				end
+			elseif itemData.category == "egg" then
+				iconRUID = _GameUtil:GetCategoryIconRUID("fieldEtc")
+			end
+		end
+		
+		return iconRUID
+	end
+
+	method string GetCraftingCategoryTextByItemId(string itemId)
+		-- 아이템 ID에 따른 카테고리 텍스트 반환
+		local text = ""
+		local itemData = _ItemDataLogic.itemData[itemId]
+		
+		text = _LocalizationService:GetText(_ItemDataLogic.itemData[itemId].category)
+		
+		if _CheckLogic:IsFieldItem(itemId) == true then
+			if itemData.category == "etc" or itemData.category == "magicStone" then
+				text = _LocalizationService:GetText("etc")
+			end
+		else
+			if itemData.category == "accessory" then
+				if string.sub(itemId, 1, 3) == "101" then
+					text = _LocalizationService:GetText("ring")
+				elseif string.sub(itemId, 1, 3) == "102"  then
+					text = _LocalizationService:GetText("earring")
+				elseif string.sub(itemId, 1, 3) == "103"  then
+					text = _LocalizationService:GetText("necklace")
+				end
+			elseif itemData.category == "egg" then
+				text = _LocalizationService:GetText("soulegg")
+			end
+		end
+		
+		return text
+	end
+
+	method integer GetEnableSlot(string userId)
+		-- 플레이어의 사용 가능한 슬롯 수 반환
+		local player = _UserService:GetUserEntityByUserId(userId) 
+		
+		return 1
+	end
+
+	method table GetMaterialTableFromPlayerStoage(table ingredients, integer craftingCount, string userId)
+		-- 플레이어 인벤토리에서 제작에 필요한 재료 테이블 생성
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent.storage
+		
+		local materialList = {}
+		local failed = {"failed"}
+		
+		for key, value in pairs(ingredients) do
+			local remainCount = value * craftingCount 
+		
+			for k, v in pairs(storage) do
+				if key == v.originalId then
+					if remainCount >= 1 then
+						materialList[k] = 0 
+						if v.count - remainCount < 0 then 
+							materialList[k] = v.count
+							remainCount = remainCount - v.count
+						else
+							materialList[k] = remainCount
+							remainCount = 0
+						end
+					
+					else
+						break
+					end
+				end
+			end
+			
+			if remainCount >= 1 then
+				return failed
+			end
+		end
+		
+		return materialList 
+	end
+
+	@ExecSpace("Client")
+	method void SetResultGrade(string grade, Entity slot)
+		-- 제작 결과 슬롯에 등급 아이콘 설정
+		local gradeEntity = _UIGroupManager.craftingUI.gradeEntity 
+		
+		slot:GetChildByName("Grade_Alphabet", true).SpriteGUIRendererComponent.ImageRUID = _AccessoryLogic:GetAlphabetGradeRUID(grade)
+		slot.Enable = true
+	end
+
+end

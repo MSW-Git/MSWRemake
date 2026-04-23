@@ -1,0 +1,483 @@
+@Component
+script UIRecipeBook extends Component
+
+	property Entity RecipeList = "1ea7eb9b-31a2-41ed-a508-b8084655b2e8"
+
+	property table buttonHandlers = {}
+
+	property Entity TrendInfo = "39fe0b9d-2801-427e-a493-d755c785d059"
+
+	property Entity RecipeComboInfo = "755a926d-9812-4d91-97ee-763c21c183a5"
+
+	property integer NowSlot = 0
+
+	property Entity OpenConditionTooltip = "36eb9840-ff7a-4a09-9101-2de5ee1b3ad3"
+
+	property Entity RecipeCountBar = "52d27064-65c3-4eca-bf12-fa3189b6bd81"
+
+	property Entity MoveToIngreCardSettingBtn = "ced9bdc2-1209-4481-aa1c-c62952b719cf"
+
+	property SyncTable<integer, Entity> ReplaceBtns
+
+	property SyncTable<integer, Entity> DeleteBtns
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 레시피북 UI를 여는 함수
+		if self.Entity.Enable == true then
+			return
+		end
+		
+		local playerRecipe = _UserService.LocalPlayer.PlayerRecipe
+		table.clear(playerRecipe.LastSetRecipesClientOnly)
+		for i, recipeId in pairs(playerRecipe.SetRecipes) do
+			---@type RecipeData
+			local recipeData = playerRecipe.Recipes[recipeId]
+			playerRecipe.LastSetRecipesClientOnly[i] = recipeData.UniqueId 
+		end
+		
+		_UIGroupManager:EnableBackToLobbyBtn(true)
+		_UIGroupManager:EnableMoneyBarGroup(true)
+		
+		playerRecipe:ChangeRecipeSetCompleteProgress(false)
+		
+		self._T.exRecipeCombo = playerRecipe.ActiveRecipeCombo
+		
+		
+		self.Entity.Enable = true
+		self:Refresh()
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean Close(boolean isComplete, boolean isInit)
+		-- 레시피북 UI를 닫는 함수
+		local player = _UserService.LocalPlayer
+		local playerRecipe = player.PlayerRecipe
+		
+		if #table.keys(playerRecipe.SetRecipes) <= 0 then
+		    _UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("RecipeSetErrorMessage1"))
+		    return false
+		end
+		
+		if isInit == false then
+			playerRecipe:ChangeRecipeSetCompleteProgress(true)
+			playerRecipe:RequestForceSyncSetRecipes()
+		end
+		
+		self.Entity.Enable = false
+		if isComplete then
+			_UIGroupManager:EnableRecipeGroup(false)
+		end
+		
+		if isInit == false then
+			_TimerService:SetTimerOnce(function()
+				player.MenuManager:SetMenu(player.PlayerRecipe.LastSetRecipesClientOnly, player.PlayerRecipe.SetRecipes)
+				player.PlayerLog:RequestMenuLog(player,player.PlayerRecipe.LastSetRecipesClientOnly,player.PlayerRecipe.SetRecipes)
+				
+				if player.PlayerRecipe.ActiveRecipeCombo ~= self._T.exRecipeCombo and player.PlayerRecipe.ActiveRecipeCombo ~= 0 then
+					---@type RecipeComboData
+					local recipeComboData = _RecipeTagDataSetLogic.RecipeComboData[player.PlayerRecipe.ActiveRecipeCombo]
+					local effectPercent = math.floor(recipeComboData.EffectAmount * 100)
+					
+					if recipeComboData.EffectTarget == _RecipeTagEnum.All then
+						_ReportMessageMaker:RequestAddToReportQueue(8018, tostring(effectPercent), "", "")
+					else
+						---@type RecipeTagData
+						local tagData = _RecipeTagDataSetLogic.RecipeTagData[recipeComboData.EffectTarget]
+						_ReportMessageMaker:RequestAddToReportQueue(8017, _GetLocalizationTextLogic:GetText(tagData.TagNameKey), tostring(effectPercent), "")
+					end
+				end
+				
+			end, 0) 
+		end
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 레시피북 UI를 새로고침하는 함수
+		local player = _UserService.LocalPlayer
+		local setRecipes = player.PlayerRecipe.SetRecipes
+		local slotLimit = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.DisplayCount)
+		for i = 1, _RecipeDataSetLogic.MaxRecipeSetSlot do
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_RecipeBurgerSlot", i, self.RecipeList)
+			entity.UIRecipeBurgerSlot.SlotIndex = i
+			if i > slotLimit then
+				entity.UIRecipeBurgerSlot:Refresh(true, nil, false, nil)
+			else
+				if setRecipes[i] == nil then
+					entity.UIRecipeBurgerSlot:Refresh(false, nil, false, nil)
+				else
+					entity.UIRecipeBurgerSlot:Refresh(false, setRecipes[i], false, nil)	
+				end
+			end
+		end
+		
+		self.TrendInfo.UITrendInfoBar:Refresh(false)
+		self:RefreshReplaceBtns()
+		self:RefreshComboInfo()
+		local enable = self.RecipeCountBar.UIRecipeCountBar:Refresh()
+		_UIEntityService:SetDimWithIcon(self.MoveToIngreCardSettingBtn, enable)
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenUIIngreCardSetting()
+		-- 재료 카드 설정 UI를 여는 함수
+		local canClose = self:Close(false, false)
+		if canClose then
+			_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting:Open()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickAutoSetBtn()
+		-- 자동 설정 버튼 클릭 시 호출되는 함수
+		local player = _UserService.LocalPlayer
+		local playerRecipe = player.PlayerRecipe
+		playerRecipe:RequestAutoSetRecipe()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearFunction()
+		-- 레시피 설정을 초기화하는 함수
+		_UserService.LocalPlayer.PlayerRecipe:RequestUnsetRecipe(0, true)
+		_UserService.LocalPlayer.PlayerRecipe:ChangeConnectingStatus(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshComboInfo()
+		-- 레시피 콤보 정보를 새로고침하는 함수
+		local notOpened = self.RecipeComboInfo:GetChildByName("NotOpened")
+		local lockedIcon = self.RecipeComboInfo:GetChildByName("LockedIcon")
+		local opened = self.RecipeComboInfo:GetChildByName("Opened")
+		
+		local infoBtn = self.RecipeComboInfo:GetChildByName("InfoBtn")
+		local infoTitle = opened:GetChildByName("Title")
+		local infoText = opened:GetChildByName("InfoText")
+		local openConditionTooltipBtn = self.RecipeComboInfo:GetChildByName("OpenConditionTooltip")
+		
+		local player = _UserService.LocalPlayer
+		local recipeCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.DisplayCount)
+		if recipeCount < 5 then
+			notOpened.Enable = true
+			opened.Enable = false
+			infoBtn.Enable = false
+			openConditionTooltipBtn.Enable = true
+			lockedIcon.Enable = true
+			
+			notOpened.TextComponent.Text = _GetLocalizationTextLogic:GetText("MenuComboLockedText")
+			return
+		end
+		
+		infoBtn.Enable = true
+		lockedIcon.Enable = false
+		notOpened.Enable = false
+		opened.Enable = true
+		
+		openConditionTooltipBtn.Enable = false
+		if player.PlayerRecipe.ActiveRecipeCombo == 0 then
+			notOpened.TextComponent.Text = _GetLocalizationTextLogic:GetText("MenuComboEmptyText")
+			
+			infoTitle.TextComponent.Text = _GetLocalizationTextLogic:GetText("RecipeBookMenuComboEmptyText")
+			infoText.TextComponent.Text = "-"
+		else
+			---@type RecipeComboData
+			local comboData = _RecipeTagDataSetLogic.RecipeComboData[player.PlayerRecipe.ActiveRecipeCombo]
+			local comboName = _GetLocalizationTextLogic:GetText(comboData.NameKey)
+			local effectTarget = comboData.EffectTarget
+			---@type RecipeTagData
+			local targetTagData = _RecipeTagDataSetLogic.RecipeTagData[effectTarget]
+			local targetTagName = _GetLocalizationTextLogic:GetText(targetTagData.TagNameKey)
+			
+			local effectAmount = comboData.EffectAmount
+			local positiveTrendId
+			for id, _ in pairs(player.PlayerRecipe.NowTrend) do
+				local trendData = _RecipeDataSetLogic:GetTrendData(id)
+			
+				if trendData.Type == "Positive" then
+					positiveTrendId = id
+					break
+				end
+			end
+			
+			local strategyBonus = 0
+			if positiveTrendId ~= nil then
+				local trendData = _RecipeDataSetLogic:GetTrendData(positiveTrendId)
+				if comboData.EffectTarget == trendData.TargetTag then
+					strategyBonus = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.TrendMenuComboBonus, player.PlayerStage.NowStage)
+				end
+			end
+			
+			effectAmount += strategyBonus
+			
+			local percent = math.floor(effectAmount * 100).."%"
+			infoTitle.TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("MenuComboEffectTitleText", comboName)	 
+			infoText.TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("MenuComboEffectDescText", targetTagName, percent)	
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickResetBtn()
+		-- 리셋 버튼 클릭 시 호출되는 함수
+		local onOk = function()
+			local playerRecipe = _UserService.LocalPlayer.PlayerRecipe
+			playerRecipe:ChangeConnectingStatus(true)
+			
+			playerRecipe:RequestUnsetRecipe(0, true)
+			
+			for i, uniqueId in pairs(playerRecipe.LastSetRecipesClientOnly) do
+				local recipeId = playerRecipe:ReturnRecipeIndexByUniqueId(uniqueId)
+				if recipeId ~= 0 then
+					playerRecipe:RequestSetRecipe(i, recipeId)
+				end	
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Btn_Reroll"], 1)
+			
+			playerRecipe:ChangeConnectingStatus(false)
+		end
+		
+		local onCancel = function() end
+		
+		_UIPopup:Open(_GetLocalizationTextLogic:GetText("RecipeResetPopupMsg"), onOk, onCancel, _GetLocalizationTextLogic:GetText("RecipeResetPopupTitle"))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 버튼 이벤트를 연결하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local recipeSetArea = self.Entity:GetChildByName("RecipeSetArea")
+		for i = 1, _RecipeDataSetLogic.MaxRecipeSetSlot do
+			local entity = recipeSetArea:GetChildByName("Replace"..i)
+			self.ReplaceBtns[i] = entity
+			entity:ConnectEvent(ButtonClickEvent, function()
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+				
+				local recipeIndex = player.PlayerRecipe.SetRecipes[i]
+				_UIEntityLogic_RecipeGroup.UIRecipeBook.UIRecipeBook.NowSlot = i
+				_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:Open(recipeIndex, "Recipe", nil)
+				
+			end)
+			
+			local delete = recipeSetArea:GetChildByName("Delete"..i)
+			self.DeleteBtns[i] = delete
+			delete:ConnectEvent(ButtonClickEvent, function()
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				local nowSelected = player.PlayerRecipe.SetRecipes[i]
+				if nowSelected == nil or nowSelected == 0 then
+					_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("RecipeSetErrorMessage2"))
+					return
+				end
+				
+				local onOk = function()
+					if player.PlayerRecipe.IsServerProcessing == true then
+						return
+					end
+					player.PlayerRecipe:ChangeConnectingStatus(true)
+					_UserService.LocalPlayer.PlayerRecipe:RequestDeleteRecipe(nowSelected)
+				end
+				
+				local onCancel = function()
+					player.PlayerRecipe:ChangeConnectingStatus(false)
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+				_UIPopup:Open(_GetLocalizationTextLogic:GetText("RecipeDeletePopupContents"), onOk, onCancel, _GetLocalizationTextLogic:GetText("RecipeDeletePopupTitle"))	
+				
+			end)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshReplaceBtns()
+		-- 교체 버튼들을 새로고침하는 함수
+		local player = _UserService.LocalPlayer
+		local setRecipes = player.PlayerRecipe.SetRecipes
+		local slotLimit = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.DisplayCount) 
+		
+		for i = 1, _RecipeDataSetLogic.MaxRecipeSetSlot do	
+			if i > slotLimit then
+				self.ReplaceBtns[i].Enable = false
+				self.DeleteBtns[i].Enable = false
+			else
+				if setRecipes[i] == nil then
+					self.ReplaceBtns[i].Enable = false
+					self.DeleteBtns[i].Enable = false
+				else
+					self.ReplaceBtns[i].Enable = true
+					self.DeleteBtns[i].Enable = true
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "aff6951a-521a-4426-95d6-44d9f72253eb")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		local player = _UserService.LocalPlayer
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		local canClose = self:Close(true, false)
+	end
+
+	@EventSender("Entity", "a4aee2ae-e515-42f7-9675-930b3c75f31a")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 레시피 그룹 열기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIGroupManager:EnableRecipeGroup(true)
+	end
+
+	@EventSender("Entity", "ced9bdc2-1209-4481-aa1c-c62952b719cf")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 재료 카드 설정 이동 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		
+		local playerRecipe = _UserService.LocalPlayer.PlayerRecipe
+		local recipeCount = #table.keys(playerRecipe.Recipes)
+		local recipeMaxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer, _UpgradeTypeEnum.RecipeBoxCount)
+		if recipeCount >= recipeMaxCount then
+			local onOk = function()
+				_UIEntityLogic_RecipeGroup.UIRecipeBook.UIRecipeBook.NowSlot = 0
+				_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:Open(nil, "Recipe", nil)
+			end
+			
+			local onCancel = function() end
+			
+			_UIPopup:Open(_GetLocalizationTextLogic:GetText("RecipeFullPopupMsg"), onOk, onCancel, _GetLocalizationTextLogic:GetText("RecipeFullPopupTitle"))
+		else
+			self:OpenUIIngreCardSetting()
+		end
+	end
+
+	@EventSender("Entity", "0098e201-f398-4c71-96d3-298232ca39a6")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 전체 삭제 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		local player = _UserService.LocalPlayer
+		if player.PlayerRecipe.IsServerProcessing then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		player.PlayerRecipe:ChangeConnectingStatus(true)
+		self:ClearFunction()
+	end
+
+	@EventSender("Entity", "ff105e44-0196-4235-a4a3-1cc3f97b5a47")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 자동 설정 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		local player = _UserService.LocalPlayer
+		if player.PlayerRecipe.IsServerProcessing then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_SettingMenu"], 1)
+		player.PlayerRecipe:ChangeConnectingStatus(true)
+		self:OnClickAutoSetBtn()
+	end
+
+	@EventSender("Entity", "126a8047-9083-43cc-950b-228e37023698")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 레시피 그룹 열기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIGroupManager:EnableRecipeGroup(true)
+	end
+
+	@EventSender("Entity", "849dbd73-67f3-4ea0-8845-17a3d90f7c17")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 레시피 콤보 정보 열기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIEntityLogic_RecipeGroup.UIRecipeComboInfoDim.UIRecipeComboInfo:Open()
+		
+	end
+
+	@EventSender("Entity", "c3ff22c0-7ce6-464d-9624-af1275f1806e")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- 메뉴 콤보 오픈 조건 툴팁 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_TooltipService:OpenTooltip(self.OpenConditionTooltip, _GetLocalizationTextLogic:GetText("MenuComboInfoText"))
+	end
+
+	@EventSender("Entity", "1f349184-af1d-41e1-9462-b5e2b79a2593")
+	handler HandleButtonClickEvent9(ButtonClickEvent event)
+		-- 리셋 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickResetBtn()
+	end
+
+	@EventSender("Entity", "044daecd-5349-4924-b671-ff6c426dc06e")
+	handler HandleButtonClickEvent10(ButtonClickEvent event)
+		-- 레시피 목록 열기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:Open(nil, "Recipe", nil)
+	end
+
+end

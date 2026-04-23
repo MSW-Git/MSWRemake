@@ -1,0 +1,747 @@
+@Logic
+script UI_SynergyList extends Logic
+
+	property any SynergyInfoTable = nil
+
+	property any CharacterSynergyTable = nil
+
+	property any CharacterTable = nil
+
+	property Entity UI_DefaultList = "fa007c33-8e36-4762-a860-529803e310d4"
+
+	property Entity UI_DetailList = "214cacf8-b87b-4643-90e8-799a7e3350a6"
+
+	property Entity UI_EnemyList = "a575f7f8-9838-44da-9b06-651578f3bee7"
+
+	property Entity UI_EnemyDetailList = "357bb5d4-a470-4c67-9fd2-f75742d0b670"
+
+	property number CurrentShowingPage_Left = 1
+
+	property number CurrentShowingPage_Right = 1
+
+	property number MaxShowingCount = 7
+
+	property table SortedOwnSynergyList_Player = {}
+
+	property table SortedOwnSynergyList_Enemy = {}
+
+	@ExecSpace("Client")
+	method void SetEnableSynergyHoverUI(boolean enable, Entity targetUI, string synergyID, string connectedUserID)
+		-- 시너지 호버 UI를 활성화/비활성화하고 정보를 표시합니다.
+		if enable == false then
+			targetUI.Enable = false
+		--------------------------------------------------------------------------------
+		else
+			-----------------------------------------------
+			-- 데이터셋을 가져옵니다.
+			if self.SynergyInfoTable == nil then
+				self.SynergyInfoTable = _DataService:GetTable("SynergyInfo")
+			end
+			
+			if self.CharacterSynergyTable == nil then
+				self.CharacterSynergyTable = _DataService:GetTable("CharacterSynergy")
+			end
+			
+			if self.CharacterTable == nil then
+				self.CharacterTable = _DataService:GetTable("CharacterInfo")
+			end
+			
+			---@type MODUserDataSet
+			local synergyTable = self.SynergyInfoTable
+			---@type MODUserDataSet
+			local characterSynergyTable = self.CharacterSynergyTable
+			---@type MODUserDataSet
+			local characterTable = self.CharacterTable
+			
+			local row = synergyTable:FindRow("SynergyID", synergyID)
+			-----------------------------------------------
+			-- 갱신이 필요한 UI엔티티 목록입니다.
+			local iconUI = targetUI:GetChildByName("Icon_Synergy")
+			local nameUI = targetUI:GetChildByName("Text_Name")
+			local decoLine1 = targetUI:GetChildByName("deco_line_1")
+			local descUI = targetUI:GetChildByName("Text_Desc")
+			local decoLine2 = targetUI:GetChildByName("deco_line_2")
+			local characterImageList = targetUI:GetChildByName("List_Character")
+			-----------------------------------------------
+			-- 데이터셋에서 갱신에 필요한 정보를 가져옵니다.
+														--------------
+			local name = row:GetItem("Name")			-- 이름
+														--------------
+			local iconRUID = row:GetItem("IconRUID")	-- 아이콘
+														--------------
+			---@type table<number>
+			local activateConditions = {}				-- 활성화 조건 (인원 수)
+			for i=1, 5 do
+				local count = row:GetItem(string.format("NeedCount_step%d", i))
+				if isvalid(tonumber(count)) then
+					table.insert(activateConditions, tonumber(count))
+				end
+			end
+			
+														--------------
+			local desc = row:GetItem("Desc")			-- 시너지 효과 (설명)
+														--------------
+			---@type table<string>		
+			local detailDescs = {}						-- 시너지 효과 (인원수 별 설명)
+			for i=1, 4 do
+				local detailDesc = row:GetItem(string.format("Detail_step%d", i))
+				if detailDesc ~= "" then
+					table.insert(detailDescs, detailDesc)
+				end
+			end
+														--------------
+														-- 해당 시너지를 가진 캐릭터 목록 및 정보
+			---@type table<table>
+			local characterList = {}
+			for i=1, characterSynergyTable:GetRowCount() do
+				local csRow = characterSynergyTable:GetRow(i)
+				
+				local isBattleOnly = csRow:GetItem("BattleOnly")
+				if isBattleOnly == nil or isBattleOnly == "" or isBattleOnly ~= "TRUE" then
+					---@type table<string>
+					local synergies = {csRow:GetItem("Synergy_1"), csRow:GetItem("Synergy_2"), csRow:GetItem("Synergy_3")}
+					
+					for j=1, #synergies do
+						if synergies[j] == synergyID then
+							local charID = csRow:GetItem("CharID")
+							local charInfoRow = characterTable:FindRow("CharID", charID)
+							local info = {
+								["ID"] = charID,
+								["RUID"] = charInfoRow:GetItem("IdleRUID"),
+								["Renderer"] = charInfoRow:GetItem("Renderer"),
+								["Cost"] = tonumber(charInfoRow:GetItem("Cost")),
+								["Own"] = false
+							}
+							
+							table.insert(characterList, info)
+							break
+						end
+					end
+				end		
+			end
+			-----------------------------------------------
+			-- 현재 연결된 유저의 정보에 따라 활성화된 유닛 정보를 바꿉니다.
+			-- 시너지 효과 부분 수정 (활성화된 인원 수에 따라)
+			local teamManagerEntity = _EntityService:GetEntityByPath("/maps/Field/TM_"..connectedUserID)
+			local tm = teamManagerEntity.TeamManager
+			local activatedSynergyCount = tm.OnFieldSynergy[synergyID]
+			if activatedSynergyCount == nil then
+				activatedSynergyCount = 0
+			end
+			
+			local activatedStep = 0
+			for i=1, #activateConditions do
+				if activatedSynergyCount >= activateConditions[i] then
+					activatedStep += 1
+				end
+			end
+			
+			for i=1, #detailDescs do
+				if i == activatedStep then
+					desc = desc.."\n".."<color=#e2ff00>"..string.format("(%d) ", activateConditions[i])..row:GetItem(string.format("Detail_step%d", i)).."</color>"
+				else
+					desc = desc.."\n".."<color=#888888>"..string.format("(%d) ", activateConditions[i])..row:GetItem(string.format("Detail_step%d", i)).."</color>"
+				end
+			end
+			
+			-- 캐릭터 전장 배치 여부 검사
+			local onFieldUnitList = tm.OnFieldUnitIDs
+			for i=1, #characterList do
+				if isvalid(onFieldUnitList[characterList[i]["ID"]]) then
+					characterList[i]["Own"] = true
+				end
+			end
+			-----------------------------------------------
+			-- 현재 보려는 시너지 기본 정보를 갱신합니다.
+			iconUI.SpriteGUIRendererComponent.ImageRUID = iconRUID 
+			nameUI.TextComponent.Text = name
+			descUI.TextComponent.Text = desc
+			-----------------------------------------------
+			-- 캐릭터 초상화 목록을 갱신합니다.
+			local gradeColorTable = _DataService:GetTable("GradeColor")
+			local gradeColor = {
+				gradeColorTable:GetRow(1):GetItem("Default"),
+				gradeColorTable:GetRow(2):GetItem("Default"),
+				gradeColorTable:GetRow(3):GetItem("Default"),
+				gradeColorTable:GetRow(4):GetItem("Default"),
+				gradeColorTable:GetRow(5):GetItem("Default"),
+			}
+			
+			for i=1, #characterList do
+				local charImage = characterImageList:GetChildByName(string.format("Character_%d", i))
+		 
+				local spritetype = charImage:GetChildByName("SpriteType")
+				local avatarType = charImage:GetChildByName("AvatarType") 
+				if characterList[i]["Renderer"] == "sprite" then
+					spritetype.Enable = true
+					avatarType.Enable = false
+					
+					-- 스프라이트 렌더러인 경우, ruid 변경
+					spritetype.SpriteGUIRendererComponent.ImageRUID = characterList[i]["RUID"]
+					
+					local resourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(characterList[i]["RUID"])
+					spritetype.SpriteGUIRendererComponent.LocalScale = resourceInfo["scale"]
+					spritetype.SpriteGUIRendererComponent.LocalPosition = resourceInfo["pos"]
+					
+					
+					-- 해당 캐릭터 미보유 시 흑백 머터리얼 적용
+					if characterList[i]["Own"] == false then
+						spritetype.SpriteGUIRendererComponent:ChangeMaterial("material://bfc15809-bc1f-4929-8575-0553f1f0dc4c")
+					else
+						spritetype.SpriteGUIRendererComponent:ChangeMaterial("")
+					end
+				else
+					spritetype.Enable = false
+					avatarType.Enable = true
+					
+					-- 아바타 렌더러인 경우, 코스튬 변경
+					
+					if characterList[i]["Own"] == false then
+						avatarType.AvatarGUIRendererComponent:ChangeMaterial("material://bfc15809-bc1f-4929-8575-0553f1f0dc4c")
+					else
+						avatarType.AvatarGUIRendererComponent:ChangeMaterial("")
+					end
+				end
+				
+				-- 코스트 등급에 따라 다른 색상으로 표시
+				local outline = charImage:GetChildByName("Outline")
+				outline.SpriteGUIRendererComponent.Color = Color.FromHexCode(gradeColor[characterList[i]["Cost"]])
+				
+				charImage.Enable = true
+			end
+			
+			for i=#characterList+1, 9 do
+				local charImage = characterImageList:GetChildByName(string.format("Character_%d", i))
+				charImage.Enable = false
+			end
+			-----------------------------------------------
+			-- 텍스트 및 캐릭터 수에 따라 UI 위치 및 크기를 갱신합니다.
+			local descUISize = descUI.TextComponent:GetPreferredHeight(desc, 660)
+			
+			decoLine2.UITransformComponent.anchoredPosition.y = -90 - math.ceil(descUISize/40)*40
+			characterImageList.UITransformComponent.anchoredPosition.y = -90 - math.ceil(descUISize/40)*40 -10
+			
+			local charImageListUISize = 100
+			if #characterList > 6 then
+				charImageListUISize = 210
+				characterImageList.UITransformComponent.RectSize.y = 210
+			else
+				characterImageList.UITransformComponent.RectSize.y = 100
+			end
+		
+			targetUI.UITransformComponent.RectSize.y = math.abs(-90 - math.ceil(descUISize/40)*40 -10 -charImageListUISize-10)
+			-----------------------------------------------
+			targetUI.Enable = true
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshSynergyList(SyncTable<string, number> onFieldSynergyList, string owner)
+		-- UI에 반영하기 위해, 현재 보유한 시너지 목록을 정렬합니다.
+		-- owner : "LocalPlayer" 또는 "Enemy"
+		--------------------------------------------------
+		-- Properties
+		local syTable = onFieldSynergyList
+		
+		local synergyDB = _DataService:GetTable("SynergyInfo")
+		local colorDB = _DataService:GetTable("GradeColor")
+		--------------------------------------------------
+		-- 우선순위를 체크하여 checkTable에 insert합니다.
+		local checkTable = {}
+		
+		for syID, count in pairs(syTable) do
+			local syRow = synergyDB:FindRow("SynergyID", syID)
+		
+			-- 우선 순위 체크
+			-- 1. 시너지 완성 단계
+			-- 2. 시너지 내 유닛 개수
+			local priority = count
+			
+			local checkStep = 0
+			for i = 1, 5 do
+				local needCount = syRow:GetItem("NeedCount_step" .. math.floor(i))
+				if needCount ~= "" then
+					if tonumber(needCount) <= count then
+						checkStep = i
+					else
+						break
+					end
+				end 
+			end
+			
+			priority += checkStep * 100
+			
+			-- 예외처리 : [전직교관] 하나 또는 다섯일 때에만 활성화
+			if syID == "S10024" then
+				if count == 1 or count == 5 then
+					
+				else
+					checkStep = 0
+				end
+			end
+			
+			table.insert(checkTable, {syID, count, checkStep})
+		end
+		--------------------------------------------------
+		-- 테이블 정렬 및 반영
+		table.sort(checkTable, function(a,b) return a[2] > b[2] end)
+		table.sort(checkTable, function(a,b) return a[3] > b[3] end)
+		
+		if owner == "LocalPlayer" then
+			table.initialize(self.SortedOwnSynergyList_Player, checkTable)
+			
+		elseif owner == "Enemy" then
+			table.initialize(self.SortedOwnSynergyList_Enemy, checkTable)
+		
+		else
+			log_warning("owner가 지정되지 않았습니다.")
+		end
+		--------------------------------------------------
+		self:RefreshUI(owner)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI(string owner)
+		-- 시너지 목록을 새로고침하는 함수입니다.
+		-- owner : "LocalPlayer" 또는 "Enemy"
+		----------------------------------------------------
+		---@type table
+		local sortedSynergyList = nil 		-- DATA
+		---@type Entity
+		local ui_list = nil					-- UI Entity (간소화 목록 = 아이콘 목록)
+		---@type Entity
+		local ui_detailList = nil			-- UI Entity (상세 목록 = 이름 및 활성화 수 정보)
+		local page = 1						-- Page Num
+		local targetTeam = ""				-- TeamInfo
+		if owner == "LocalPlayer" then	
+			sortedSynergyList = self.SortedOwnSynergyList_Player
+			ui_list = self.UI_DefaultList
+			ui_detailList = self.UI_DetailList 
+			page = self.CurrentShowingPage_Left
+			targetTeam = "User"
+		elseif owner == "Enemy" then
+			sortedSynergyList = self.SortedOwnSynergyList_Enemy
+			ui_list = self.UI_EnemyList
+			ui_detailList = self.UI_EnemyDetailList
+			page = self.CurrentShowingPage_Right
+			targetTeam = "Enemy"
+		else
+			log_warning("owner를 지정하지 않았습니다.")
+			return
+		end
+		----------------------------------------------------
+		if self.SynergyInfoTable == nil then
+			self.SynergyInfoTable = _DataService:GetTable("SynergyInfo")
+		end
+		---@type MODUserDataSet
+		local synergyTable = self.SynergyInfoTable
+		----------------------------------------------------
+		-- 기본 목록(간소화 목록)을 새로고침합니다.
+		local stepColor = {"#5f5f5f", "#785300", "#d5d5d5", "#eeb167", "#ffd348", "#e5a6ea"}
+		local breakedIdx = self.MaxShowingCount + 1
+		for i=1, self.MaxShowingCount do
+			------------------------------------
+			local slot = ui_list:GetChildByName(string.format("Slot_%d", i))
+			local idx = self.MaxShowingCount * (page-1) + i
+			if sortedSynergyList[idx] == nil then
+				breakedIdx = i
+				break -- 표시할 필요 없음
+			end
+			------------------------------------
+			-- Data
+			local synergyID = sortedSynergyList[idx][1]
+			local synergyIconRUID = synergyTable:FindRow("SynergyID", synergyID):GetItem("IconRUID")
+			local amount = sortedSynergyList[idx][2]
+			local step = sortedSynergyList[idx][3]
+			slot.Visible = true
+			------------------------------------
+			slot.UI_HUD_HoverSynergy.ConnectedSynergyID = synergyID
+			slot.UI_HUD_HoverSynergy.TargetTeam = targetTeam
+			------------------------------------
+			-- Entities
+			local ui_iconBack = slot:GetChildByName("Icon_Back")
+			local ui_icon = ui_iconBack:GetChildByName("Icon")
+			local ui_amount = slot:GetChildByName("Amount")
+			------------------------------------
+			-- Apply data to entities
+			ui_iconBack.SpriteGUIRendererComponent.Color = Color.FromHexCode(stepColor[step+1])
+			ui_icon.SpriteGUIRendererComponent.ImageRUID = synergyIconRUID
+			
+			if step > 0 then
+				ui_icon.SpriteGUIRendererComponent.MaterialId = ""
+				ui_amount.TextComponent.Text = string.format("%d", amount)
+				ui_amount.Enable = true
+			else
+				ui_icon.SpriteGUIRendererComponent.MaterialId = "material://bfc15809-bc1f-4929-8575-0553f1f0dc4c"
+				ui_amount.Enable = false
+			end
+			------------------------------------
+		end
+		----------------------------------------------------
+		-- 기본 목록 중, 현재 페이지에서 표시할 필요가 없는 슬롯들은 보이지 않도록 합니다.
+		for i=breakedIdx, self.MaxShowingCount do
+			local slot = ui_list:GetChildByName(string.format("Slot_%d", i))
+			slot.Visible = false
+		end
+		---------------------------------------------------- 
+		-- 상세 목록(텍스트 설명, 인원 수 등)을 새로고침합니다.
+		for i=1, self.MaxShowingCount do
+			------------------------------------
+			local slot = ui_detailList:GetChildByName(string.format("Slot_%d", i))
+			local idx = self.MaxShowingCount*(page-1) + i
+			if sortedSynergyList[idx] == nil then
+				breakedIdx = i
+				break -- 표시할 필요 없음
+			end
+			slot.Visible = true
+			------------------------------------
+			-- Data
+			local synergyID = sortedSynergyList[idx][1]
+			local row = synergyTable:FindRow("SynergyID", synergyID)
+			local synergyIconRUID = row:GetItem("IconRUID")
+			local amount = sortedSynergyList[idx][2]
+			local step = sortedSynergyList[idx][3]
+		
+			local needCount = {}
+			for j=1, 5 do
+				local cell = row:GetItem(string.format("NeedCount_step%d", j))
+				if cell == "" then
+				else 
+					table.insert(needCount, tonumber(cell))
+				end
+			end
+			
+			local whiteTextIdx = 0
+			for j=1, #needCount do
+				if needCount[j] <= amount then
+					whiteTextIdx = j
+				end
+			end
+			
+			local levelTextSizePeRStepCount = {16, 48, 64, 100}
+			local levelTextSize = 0
+			if step > 0 then
+				levelTextSize = levelTextSizePeRStepCount[#needCount]
+				
+			else
+				levelTextSize =	40
+			end
+			
+			------------------------------------
+			-- Entities
+			local ui_name = slot:GetChildByName("Name")
+			local ui_level = slot:GetChildByName("Level")
+			------------------------------------
+			-- Apply data to entities
+			local name = _LocalizationService:GetText(synergyID.."_Name")
+			
+			local levelText = ""
+			if step == 0 then
+				levelText = string.format("%d/%d", amount, needCount[1])
+			else
+				for j=1, #needCount do
+					local numberText = ""
+					if j == whiteTextIdx then
+						numberText = string.format("<color=white>%d</color>", needCount[j])
+					else
+						numberText = string.format("%d", needCount[j])
+					end
+					
+					if j == 1 then
+						levelText = numberText
+					else
+						levelText = levelText.." > "..numberText
+					end
+				end
+			end
+			
+			
+			local nameUISize = 16 * utf8.len(name)
+			local textBoxSize = math.floor(math.max(nameUISize, levelTextSize) * 16/15)
+			
+			if step > 0 then
+				ui_name.TextComponent.FontColor = Color.white
+				
+				if owner == "LocalPlayer" then
+					ui_name.TextComponent.Padding.left = 92
+					ui_level.TextComponent.Padding.left = 92
+				else
+					ui_name.TextComponent.Padding.right = 92
+					ui_level.TextComponent.Padding.right = 92
+				end
+				
+				slot.UITransformComponent.RectSize.x = 92 + textBoxSize
+			else 
+				ui_name.TextComponent.FontColor = Color.FromHexCode("#859098")
+				
+				if owner == "LocalPlayer" then
+					ui_name.TextComponent.Padding.left = 56
+					ui_level.TextComponent.Padding.left = 56
+				else
+					ui_name.TextComponent.Padding.right = 56
+					ui_level.TextComponent.Padding.right = 56
+				end
+				slot.UITransformComponent.RectSize.x = 56 + textBoxSize
+			end
+			
+			
+			ui_name.TextComponent.Text = name
+			ui_level.TextComponent.Text = levelText
+			
+		end
+		----------------------------------------------------
+		-- 상세 목록 중, 현재 페이지에서 표시할 필요가 없는 슬롯들은 보이지 않도록 합니다.
+		for i=breakedIdx, self.MaxShowingCount do
+			local slot = ui_detailList:GetChildByName(string.format("Slot_%d", i))
+			slot.Visible = false
+		end
+		----------------------------------------------------
+		-- 표시하는 슬롯 수에 따라 bg 사이즈를 변경하고, 다음 페이지 버튼을 활성화합니다.
+		---@type Entity
+		local ui_bg = nil
+		---@type Entity
+		local ui_nextPageButton = nil
+		if owner == "LocalPlayer" then
+			ui_bg = _EntityService:GetEntityByPath("/ui/Arena_Default/SynergyList_Left/deco_BgRect")
+			ui_nextPageButton = _EntityService:GetEntityByPath("/ui/Arena_Default/SynergyList_Left/Button_NextPage")
+		else
+			ui_bg = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/SynergyList_Right/deco_BgRect")
+			ui_nextPageButton = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/SynergyList_Right/Button_NextPage")
+		end
+		
+		if #sortedSynergyList == 0 then
+			ui_bg.Enable = false
+			ui_nextPageButton.Enable = false
+		else
+			ui_bg.Enable = true
+			
+			ui_bg.UITransformComponent.RectSize.y = 52*(breakedIdx-1) + 6*(breakedIdx-2) + 10
+			ui_nextPageButton.UITransformComponent.anchoredPosition.y = -410 + 55*(self.MaxShowingCount+1-breakedIdx)
+			
+			if #sortedSynergyList > 7 then
+				ui_bg.UITransformComponent.RectSize.y += 50
+				ui_nextPageButton.Enable = true
+			else
+				ui_nextPageButton.Enable = false
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 시너지 리스트 초기화
+		--self:RefreshUI("LocalPlayer")
+		--self:RefreshUI("Enemy")
+	end
+
+	method table GetSortedSynergyList(SyncTable<Entity> units, SyncTable<string> runeCardIDs, SyncTable<string> coachIDs)
+		-- 유닛 및 아이템, 룬 카드, 코치를 통해 획득하는 시너지 목록을 정렬하여 반환합니다.
+		-- 반환하는 테이블의 key=(없음), value={ ["synergyID"] = 시너지 아이디, ["count"] = 보유 수량, ["step"] = 단계 }
+		--------------------------------------------------------------------------------------------
+		--------------------------------------------------------------------------------------------
+		-- 1) 먼저 보유한 시너지 수를 체크합니다.
+		local ownSynergies = {}
+		local addSynergyCount = function(synergyID)
+			if isvalid(ownSynergies[synergyID]) == false then
+				ownSynergies[synergyID] = 1
+			else
+				ownSynergies[synergyID] += 1
+			end
+		end
+		--------------------------------------------------------------------------------------------
+		-- 1-1) units를 검사합니다 --> 캐릭터 기본 시너지 및 상징 아이템 검사
+		local charIdList = {} --> 중복을 제거한 캐릭터 아이디 목록
+		local emblemIdList = {} --> charID마다 장착한 상징 아이템 목록 (이중 테이블) 
+		for _, unit in pairs(units) do
+			local charID = unit.UnitInfo.charID
+			
+			local isAlreadyExist = false
+			for i=1, #charIdList do
+				if charID == charIdList[i] then
+					isAlreadyExist = true
+				end
+			end
+		
+			if isAlreadyExist == false then
+				table.insert(charIdList, charID)
+			end
+			
+			local equippedItems = unit.UnitStatus.EquippedItemIDList
+			for i=1, #equippedItems do
+				local itemID = _UtilLogic:Split(equippedItems[i], "_")[1]
+				local itemID_head = string.sub(itemID, 1, 2)
+					
+				if itemID_head == "EI" then
+					local synergyID = "S"..string.sub(itemID, 3, -1)
+					
+					if isvalid(emblemIdList[charID]) == false then
+						emblemIdList[charID] = {}
+					end
+					
+					emblemIdList[charID][synergyID] = 1
+				end
+			end
+		end
+		--------------------------------------------------------------------------------------------
+		-- 캐릭터가 기본적으로 보유한 시너지 목록
+		local characterSynergyDataset = _DataService:GetTable("CharacterSynergy")
+		for _, charID in pairs(charIdList) do
+			local row = characterSynergyDataset:FindRow("CharID", charID)
+			local ownSynergiesCount = tonumber(row:GetItem("SynergyCount"))
+			
+			for i=1, ownSynergiesCount do
+				local ownSynergyID = row:GetItem(string.format("Synergy_%d", i))
+				
+				addSynergyCount(ownSynergyID)
+			end
+		end
+		--------------------------------------------------------------------------------------------
+		-- 상징을 통한 시너지 목록
+		for charID, emblemSynergies in pairs(emblemIdList) do
+			for synergyID, count in pairs(emblemSynergies) do
+				addSynergyCount(synergyID)
+			end
+		end
+		--------------------------------------------------------------------------------------------
+		-- 1-2) 룬 카드를 통한 시너지 목록
+		---@type table<string, string>
+		local RuneAndSynergyIDPair = {
+			["RC10042"] = "S10015",
+			["RC10043"] = "S10016",
+			["RC10044"] = "S10017",
+			["RC10045"] = "S10019",
+			["RC10046"] = "S10020",
+			["RC10047"] = "S10021",
+			["RC10048"] = "S10022",
+			["RC10049"] = "S10023",
+			["RC10050"] = "S10025",
+			["RC10051"] = "S10001",
+			["RC10052"] = "S10002",
+			["RC10053"] = "S10003",
+			["RC10054"] = "S10004",
+			["RC10055"] = "S10005",
+			["RC10056"] = "S10006",
+			["RC10057"] = "S10008",
+			["RC10058"] = "S10009",
+			["RC10059"] = "S10010",
+			["RC10060"] = "S10011",
+		}
+		for _, runeID in pairs(runeCardIDs) do
+			if isvalid(RuneAndSynergyIDPair[runeID]) then
+				addSynergyCount(RuneAndSynergyIDPair[runeID])
+			end
+		end
+		--------------------------------------------------------------------------------------------
+		-- 1-3) 코치를 통한 시너지 목록
+		local CoachAndSynergyIDPair = {
+			["COP40001"] = "S10015",
+			["COP40002"] = "S10016",
+			["COP40003"] = "S10017",
+			["COP40004"] = "S10019",
+			["COP40005"] = "S10021",
+			["COP40006"] = "S10022",
+			["COP40007"] = "S10023",
+			["COP40008"] = "S10025",
+			["COP40009"] = "S10001",
+			["COP40010"] = "S10002",
+			["COP40011"] = "S10003",
+			["COP40012"] = "S10004",
+			["COP40013"] = "S10005",
+			["COP40014"] = "S10006",
+			["COP40015"] = "S10008",
+			["COP40016"] = "S10009",
+			["COP40017"] = "S10010",
+			["COP40018"] = "S10011",
+		}
+		for _, coachID in pairs(coachIDs) do
+			if isvalid(CoachAndSynergyIDPair[coachID]) then
+				addSynergyCount(CoachAndSynergyIDPair[coachID])
+			end
+		end
+		--------------------------------------------------------------------------------------------
+		--------------------------------------------------------------------------------------------
+		-- 2) 보유한 시너지 목록을 정렬합니다.
+		local sortedSynergies = {}
+		local synergyDataset = _DataService:GetTable("SynergyInfo")
+		
+		
+		-- 2-1) 보유한 시너지들의 단계, 보유 수량을 checkTable로 가공합니다.
+		local checkTable = {}
+		for syID, count in pairs(ownSynergies) do
+			if count == nil or count == 0 then
+				continue
+			end
+			
+			local syRow = synergyDataset:FindRow("SynergyID", syID)
+		
+			if not isvalid(syRow) then
+				log("synergyID = ", syID)
+				break
+			end
+			
+			-- 우선 순위 체크
+			-- 1. 시너지 완성 단계
+			-- 2. 시너지 내 유닛 개수
+			local priority = count
+			
+			local checkStep = 0
+			for i = 1, 5 do
+				local needCount = syRow:GetItem(string.format("NeedCount_step%d", i))
+				if needCount ~= "-" then
+					if tonumber(needCount) <= count then	-- 보유한 시너지 수가 조건보다 많다면
+						checkStep = i
+					else
+						break
+					end
+				end 
+			end
+			
+			priority += checkStep * 100
+			
+			-- 예외처리 : [전직교관] 하나 또는 다섯일 때에만 활성화
+			if syID == "S10024" then
+				if count == 1 then
+					checkStep = 1
+				elseif count == 5 then
+					checkStep = 4
+				else
+					checkStep = 0
+				end
+			end
+			
+			table.insert(checkTable, {syID, count, checkStep})
+		end
+		--------------------------------------------------
+		-- (step > count 순으로) 정렬하면서 checkTable >> sortedSynergies 으로 옮깁니다. 
+		table.insert(sortedSynergies, checkTable[1])
+		for i=2, #checkTable do
+			for j=1, #sortedSynergies do
+				if checkTable[i][3] > sortedSynergies[j][3] then
+					table.insert(sortedSynergies, j, checkTable[i])
+					break
+				elseif checkTable[i][3] < sortedSynergies[j][3] then
+					if j == #sortedSynergies then
+						table.insert(sortedSynergies, checkTable[i])
+					else
+						continue
+					end
+					
+				else -- same step
+					if checkTable[i][2] > sortedSynergies[j][2] then
+						table.insert(sortedSynergies, j, checkTable[i])
+						break
+					else -- lower or same count
+						if j == #sortedSynergies then
+							table.insert(sortedSynergies, checkTable[i])
+						else
+							continue
+						end	
+					end
+				end
+			end
+		end
+		
+		return sortedSynergies
+	end
+
+end

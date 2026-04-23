@@ -1,0 +1,988 @@
+@Component
+script BattleMap extends Component
+
+	property EntityRef spawnPoint = "3cbdbcf2-04cf-4429-81aa-a9b76ab48d26"
+
+	property number radius = 10
+
+	property integer chapter = 0
+
+	property number wave = 1
+
+	property number totalmonsterCnt = 1
+
+	property integer boxNum = 5
+
+	property Vector2 leftBottom = Vector2(-16,-11)
+
+	property Vector2 rightTop = Vector2(15,12)
+
+	property boolean isClear = false
+
+	property string theme = ""
+
+	property EntityRef tile = "d9813d06-ffc2-4d10-a4a9-223f92ea52de"
+
+	property boolean isRaidMode = false
+
+	property number bossRaidDamage = 0
+
+	property integer monsterIndex = 1
+
+	property integer eliteIndex = 1
+
+	property integer bossIndex = 1
+
+	property table stageData = {}
+
+	property RectTileMapComponentRef rectTile = "6ccfb976-2760-46bf-add7-f67a53e386b0"
+
+	property boolean isMultiMode = false
+
+	property RectTileMapComponentRef fenceRectTile = "891d0195-811e-420a-b8bc-20391765dff6"
+
+	property RectTileMapComponentRef fenceBottomRectTile = "2e0b6306-2c1e-498d-b838-db5be7addbf2"
+
+	property MapLayerComponentRef playerLayer = "ebc510be-3895-4499-93fe-3dd170efc86e"
+
+	property EntityRef mapEntities = "346348f2-2ab6-4eb3-a281-517ec46b1ca7"
+
+	property number width = 0
+
+	property number height = 0
+
+	property TriggerComponentRef innerTrigger = "13f64258-af25-4d07-bb0d-23a137618398"
+
+	property BackgroundComponentRef background = "20871646-746b-458d-8645-83786f6c5fc0"
+
+	property table bossInfo = {}
+
+	property boolean isAppearingBoss = false
+
+	property integer spawnedBox = 0
+
+	property boolean isEnd = false
+
+	property integer accumulatedSpawnedBox = 0
+
+	property boolean isBossDead = false
+
+	property boolean isTimerOut = false
+
+	property number requestedClearRewardTime = 0
+
+	property boolean isBossWave = false
+
+	method void OnBeginPlay()
+		-- 배틀맵 초기화 및 몬스터 풀 사전 로딩
+		if self:IsServer() then
+			return
+		end
+		self._T.monsterSpawnCall = 0
+		self._T.currentSpawners = {}
+		self._T.startedWaveTime = 0
+		self._T.leftBottom = self.leftBottom
+		self._T.rightTop = self.rightTop
+		self.chapter = _WaveLogic.currentChapter
+		
+		self.stageData = _StageLogic.stageData[tostring(self.chapter)]
+		
+		
+		local monsterPoolCnt = _GameUtil.MONSTER_POOL_COUNT
+		
+		_WaveLogic:SetDelayClearState(false)
+		_PoolingLogic:PreLoad(_MonsterLogic.baseModel,self.Entity,monsterPoolCnt)
+		_PoolingLogic:PreLoad("model://afa7a38c-67b8-45f5-87f5-d90af408383f",self.Entity,100)
+		
+		local simulator = self.Entity.PhysicsSimulatorComponent
+		
+		_BattleUIManager.suddenMissionUI:ForceClose()
+		_UserService.LocalPlayer.CameraComponent:SetZoomTo(80,1)
+	end
+
+	method void SpawnWave(table wave)
+		-- 웨이브 데이터에 따른 몬스터 스폰 처리
+		self.isTimerOut = false
+		
+		local playerTransform = _UserService.LocalPlayer.TransformComponent
+		
+		local pos = playerTransform.Position
+		local playerPos = pos:ToVector2()
+		
+		local monsterCnt = 0 
+		if wave.monster == "WAVE" then
+			monsterCnt = _UtilLogic:RandomIntegerRange(wave.spawnMin,wave.spawnMax) * _WaveLogic.spawnMultiply
+		else
+			monsterCnt =  _RandomLogic:RandomIntegerRange(wave.spawnMin,wave.spawnMax) * _WaveLogic.spawnMultiply
+		end
+		
+		
+		
+		local angleOffset = math.rad(_UtilLogic:RandomDouble() * 360)
+		local angle = angleOffset
+		for i = 1,monsterCnt do
+			local offsetX = 0
+			local offsetY = 0
+			local ignorePlayerPos = false
+			if wave.formation == "circle" then
+				angle = angleOffset + i * math.rad(wave.option)
+			elseif wave.formation == "group" then
+				offsetX = wave.option * (_UtilLogic:RandomDouble()  - 0.5)
+				offsetY = wave.option * (_UtilLogic:RandomDouble()  - 0.5)
+			else
+				angle = math.rad(_UtilLogic:RandomDouble() * 360)
+			end
+			local radius = wave.spawnRadius
+		
+			local x = radius * math.cos(angle) + offsetX
+			local y = radius * math.sin(angle) + offsetY
+			local z = pos.z
+			if wave.formation == "center" then
+				x = 0
+				y = 0
+				ignorePlayerPos = true
+			elseif wave.formation == "boss" then
+				x = 0
+				y = _StageLogic.rightTop.y - 2
+				ignorePlayerPos = true
+			end
+			
+			if wave.monster == "WAVE" then
+				self:SpawnMonsterWaveSkill(wave.monsterWave, wave.monsterWaveAtk)
+			else
+				local monsterData = _MonsterLogic:GetMonsterData(wave.monster)
+		
+				if monsterData == nil then
+				else
+					
+					local spawnFun = function(monster)
+						if ignorePlayerPos == false then
+							x = x + playerPos.x
+							y = y + playerPos.y
+						end
+						---@type MonsterObject
+						local monsterComp = monster.MonsterObject
+						
+						local spawnPos = Vector2(x,y)
+						
+						monsterComp:SetPosition(spawnPos)
+						monsterComp:Init(wave.monster, false,false,wave.life)
+						monsterComp:SetTarget(_UserService.LocalPlayer)
+						monsterComp.respawnPosition = spawnPos - playerPos
+						if monsterComp.id == 0 then
+							monsterComp.id = self.totalmonsterCnt
+							self.totalmonsterCnt = self.totalmonsterCnt + 1
+						end
+						self._T.monsterSpawnCall = self._T.monsterSpawnCall - 1
+					
+					end
+					
+					
+					if monsterData.model == _MonsterLogic.baseModel then
+						_PoolingLogic:SpawnModelForPendingAsync(monsterData.model,Vector3(x,y,z),self.Entity,spawnFun)
+					else
+						_PoolingLogic:SpawnModelAsync(monsterData.model,Vector3(x,y,z),self.Entity,spawnFun)
+					end
+					self._T.monsterSpawnCall = self._T.monsterSpawnCall + 1
+					
+				end		
+			end
+		end
+	end
+
+	method void StartWave()
+		-- 웨이브 시작 처리 및 보스 웨이브 특별 처리
+		if self._T.startedWaveTime + 5 > _TimerLogic.ElapsedSeconds then
+			
+			self._T.startedWaveTime = _TimerLogic.ElapsedSeconds
+			
+			return
+		end
+		
+		local wave = _WaveLogic:GetChapterWave(self.chapter,self.wave)
+		local battlePlayer = _UserService.LocalPlayer.BattlePlayer
+		
+		self.spawnedBox = 0
+		
+		if self.wave ~= _WaveLogic:GetLastWave(self.chapter) then
+			self.isBossWave = false
+			_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast7"),self.wave))
+			_WaveLogic:SendEvent(WaveStartEvent(false, self.wave))
+		else
+			self.isBossWave = true
+		
+			
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast9"))
+			
+			if Environment:IsMobilePlatform() then
+				
+				collectgarbage()
+				_ResourceService:UnloadUnusedResources(0)
+			end
+			_WaveLogic:SendEvent(WaveStartEvent(true, self.wave))
+			
+			if self.stageData ~= nil then
+				local bgm = self.stageData.bossBGM
+				if _UtilLogic:IsNilorEmptyString(bgm) == false then
+					self.Entity.SoundComponent.AudioClipRUID = bgm
+					self.Entity.SoundComponent:Play()
+					
+				end
+				local bossMapWidth = self.stageData.lastWidth
+				local bossMapHeight = self.stageData.lastHeight
+					
+				local count = math.abs(self.stageData.width - bossMapWidth) + math.abs(self.stageData.height - bossMapHeight)
+				local width = self.stageData.width
+				local height = self.stageData.height
+			
+				_UserService.LocalPlayer.PlayerComponent:SetPosition(Vector3(0,-bossMapHeight * 0.5 + 2,0))
+				_UserService.LocalPlayer.PlayerControllerComponent.Enable = false
+				
+				_UserService.LocalPlayer.CameraComponent:SetZoomTo(60,1)
+				
+				
+				if count > 0 then
+					
+					self._T.mapSizeChangeEventId = _TimerLogic:SetTimerRepeat(function() 
+							local changed = false
+							if width ~= bossMapWidth then
+								if width > bossMapWidth then
+									width = width - 1						
+								else
+									width = width + 1
+								end
+								changed = true
+							end
+							if height ~= bossMapHeight then
+								if height > bossMapHeight then
+									height = height - 1
+								else
+									height = height + 1
+								end
+								changed = true
+							end
+							if changed then
+								self:SetMapSize(width,height)
+							else
+								_UserService.LocalPlayer.PlayerControllerComponent.Enable = true
+								_UserService.LocalPlayer.PlayerComponent:SetPosition(Vector3(0,-bossMapHeight * 0.5 + 2,0))
+							
+								if Environment:IsMobilePlatform() then
+									_UserService.LocalPlayer.CameraComponent:SetZoomTo(70,1)
+								else
+									_UserService.LocalPlayer.CameraComponent:SetZoomTo(80,1)
+								end
+								
+							
+							
+								_TimerLogic:ClearTimer(self._T.mapSizeChangeEventId)
+							end
+							_UserService.LocalPlayer.CameraComponent:ShakeCamera(1,0.2)
+					end,0.1,0.1,"BattleMap.StartWave_bossMapSizeChange")
+				end
+			end
+			
+		end
+		_BattleUIManager:RefreshCurrentWave()
+		
+		self._T.waveSpawnEnd = false
+		
+		self._T.totalTimer = 0
+		self._T.monsterSpawnCall = 0
+		
+		for k,v in pairs(wave) do
+			local repeatId = 0
+			local spawnCount = 0
+			local monsterData = _MonsterLogic.monsterData[v.monster]
+			self._T.totalTimer = self._T.totalTimer + 1
+			repeatId = _TimerLogic:SetTimerRepeat(function() 
+					spawnCount = spawnCount + 1
+					
+					self:SpawnWave(v)
+					if spawnCount >= v.spawnCount then				
+						self._T.totalTimer = self._T.totalTimer - 1
+						if self._T.totalTimer == 0 then
+		
+							self.isTimerOut = true
+							
+						end
+						_TimerLogic:ClearTimer(repeatId)
+						self._T.currentSpawners[repeatId] = nil
+					end
+			end,v.interval,v.delay, "BattleMap.StartWave_spawnMonster")
+			if isvalid(monsterData) then
+				self._T.currentSpawners[repeatId] = monsterData.type
+			else
+				self._T.currentSpawners[repeatId] = "WAVE"
+				_MonsterWaveManageLogic:InitWaveStart(v.monsterWave, v.spawnMax * v.spawnCount)
+			end
+		end
+		_MonsterWaveManageLogic:AfterWaveStart()
+	end
+
+	method void SpawnBox()
+		-- 맵에 박스 오브젝트 랜덤 스폰
+		for i = 1, self.boxNum do
+			local randX = _UtilLogic:RandomIntegerRange(self.leftBottom.x + 1, self.rightTop.x - 1)
+			local randY = _UtilLogic:RandomIntegerRange(self.leftBottom.y + 1, self.rightTop.y - 1)
+			local pos = Vector3(randX, randY, 0)
+			
+			_SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Model_BoxObject"), "Box", pos, self.Entity:GetChildByName("Objects"):GetChildByName("Boxes"))
+		end
+		
+		self.spawnedBox = self.boxNum
+		self.accumulatedSpawnedBox = self.boxNum
+	end
+
+	method void ForceClear()
+		-- 강제로 웨이브 클리어 처리 (모든 스포너 정리)
+		for k,v in pairs(self._T.currentSpawners) do
+			_TimerLogic:ClearTimer(k)
+		end
+		
+		table.clear(self._T.currentSpawners)
+		self._T.waveSpawnEnd = true
+		self._T.monsterSpawnCall = 0
+		self.isTimerOut = true
+		_MonsterLogic:SendEvent(MonsterCountChange(0, true))
+	end
+
+	method void Init()
+		-- 배틀맵 초기화 및 게임 모드별 처리
+		if self:IsClient() then
+			self:SetTile()
+		end
+		
+		self.isAppearingBoss = false
+		self.isClear = false
+		self.isEnd = false
+		self.isBossDead = false
+		
+		if self.isRaidMode then
+			self.bossRaidDamage = 0
+			local bossId = _WorldBossRaidLogic.raidInfo.bossId
+			local monsterId = "RAID_Boss_slime"
+			local monsterData = _MonsterLogic:GetMonsterData(monsterId)
+			local boss = _PoolingLogic:SpawnModel(monsterData.model,Vector3(0,10,0),self.Entity)
+			boss.BossObject:Init(monsterId,false,false,1)
+			local damage = boss.BossObject.hp - _WorldBossRaidLogic.raidInfo.bossHP
+			boss.BossObject:SetDamage(damage,Vector2.zero,false,"")
+			boss.BossObject:SetTarget(_UserService.LocalPlayer)
+			_MonsterLogic:ConnectEvent(BossInfoChange,function(e)
+					self:AddBossDamage(e.damage)
+			end)
+			return
+		elseif self.isMultiMode then
+			return
+		end
+		
+		self.monsterIndex = 1
+		self.eliteIndex = 1
+		self.bossIndex = 1
+		
+		
+		
+		
+		self:StartWave()
+		self:SpawnBox()
+		self:SetBoss()
+		
+		if isvalid(self.stageData) and self.stageData.chapter == "8" then
+			self:SpawnWaterDrop()
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTile()
+		-- 스테이지 테마에 따른 타일 및 BGM 설정
+		self.stageData = _StageLogic.stageData[tostring(self.chapter)]
+		
+		local theme = "forest" 
+		local tile = "754ffa66c5384fb0967eb6199af24f5c"
+		
+		if  self.stageData ~= nil then
+			theme = self.stageData.theme
+			tile = self.stageData.tile
+		end
+		self.theme = theme
+		---@type Entity
+		local mapEntities = self.mapEntities 
+		local soundComponent = self.Entity.SoundComponent
+		
+		if theme == "forest" then
+			soundComponent.AudioClipRUID = "7ca2c33f65204582959207ac4c7c9870"
+		
+		elseif theme == "desert" then
+			soundComponent.AudioClipRUID = "2dd03c76b331416bbf9752f6a897988e"
+		
+		elseif theme == "pirates" then
+			soundComponent.AudioClipRUID = "bc60a5ce1e754011b22c1a29e938106c"
+		
+		elseif theme == "factory" then
+			soundComponent.AudioClipRUID = "87784fb48a1e435dad1c33f348322dc4"
+		
+		elseif theme == "cookie" then
+			soundComponent.AudioClipRUID = "754991d9176c47ea9bda8929f4f3733f"
+		
+		elseif theme == "winter" then
+			soundComponent.AudioClipRUID = "3c7eac1135c54c06963e44aeea3306f7"
+		elseif theme == "temple" then
+			soundComponent.AudioClipRUID = "b096f4699a334cdbb084d78bf7f590a5"
+		elseif theme == "hotSpring" then
+			soundComponent.AudioClipRUID = "729f9844bceb480089e5f1b2aed9fcb9"
+		end
+		
+		self.tile.SpriteRendererComponent.SpriteRUID = tile
+		soundComponent.Loop = true
+		soundComponent:Play()
+		
+		mapEntities.Visible = false
+		self._T.mapEntites = mapEntities
+		
+		if self.stageData == nil then
+			self:SetMapSize(15,8)
+		else
+			self:SetMapSize(self.stageData.width,self.stageData.height)
+		end
+		
+		self.tile.SpriteRendererComponent.SortingLayer = "Background"
+		self.tile.SpriteRendererComponent.OrderInLayer = 1
+		
+	end
+
+	method void SpawnMonsterWaveSkill(string model, number atk)
+		-- 몬스터 웨이브 스킬 스폰 (맵 외곽에서 플레이어 향해)
+		local angle = _UtilLogic:RandomDouble() * math.pi * 2
+		local radius = 20
+		local pos = Vector3(radius * math.cos(angle),radius * math.sin(angle),0)
+		
+		local spawnFun = function(wave)
+			wave.MonsterWaveSkill:StartWave(pos,_UserService.LocalPlayer, atk,self.wave == _WaveLogic:GetLastWave(self.chapter) )
+		end
+		_PoolingLogic:SpawnModelAsync(model,pos,self.Entity,spawnFun)
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void OnEndBossRaid(Entity player, number damage)
+		-- 보스 레이드 종료 시 데미지 집계
+		local damageToInt = math.floor(damage)
+		_WorldBossRaidLogic:AddBossDamage(player,damageToInt,1,function(clear)
+				
+		end)
+	end
+
+	method void AddBossDamage(number damage)
+		-- 보스 레이드 데미지 누적
+		self.bossRaidDamage = self.bossRaidDamage + damage
+	end
+
+	method Vector3 ConvertPositionByBound(Vector3 pos)
+		-- 위치를 맵 경계 내로 보정
+		if pos.x < self.leftBottom.x then
+			pos.x = self.leftBottom.x + _UtilLogic:RandomDouble()
+		elseif pos.x > self.rightTop.x then
+			pos.x = self.rightTop.x - _UtilLogic:RandomDouble()
+		end
+		
+		if pos.y < self.leftBottom.y then
+			pos.y = self.leftBottom.y + _UtilLogic:RandomDouble()
+		elseif pos.y > self.rightTop.y then
+			pos.y = self.rightTop.y - _UtilLogic:RandomDouble()
+		end
+		
+		return pos
+		
+	end
+
+	method void SetMapSize(number width, number height)
+		-- 맵 크기 설정 및 벽, 타일 배치 조정
+		self.width = width
+		self.height = height
+		local trigger = self.innerTrigger
+		trigger.BoxSize.x = width
+		trigger.BoxSize.y = height
+		
+		---@type Entity
+		local mapEntities = self._T.mapEntites
+		
+		local wallRight = mapEntities:GetChildByName("Wall_Right")
+		local wallTop = mapEntities:GetChildByName("Wall_Top")
+		local wallLeft = mapEntities:GetChildByName("Wall_Left")
+		local wallDown = mapEntities:GetChildByName("Wall_Down")
+		
+		wallRight.Visible = false
+		wallTop.Visible = false
+		wallLeft.Visible = false
+		wallDown.Visible = false
+		local offsetX = width %2
+		local offsetY = height %2
+		
+		local defaultWidth = 20
+		local defaultHeight = 12
+		local widthRatio = width / defaultWidth
+		local heightRatio = height / defaultHeight
+		
+		if self._T.mapSizeInited == nil then
+			self._T.mapSizeInited = true
+			self._T.originalTileSizeX = wallTop.SpriteRendererComponent.TiledSize.x
+			self._T.originalTileSizeY = wallLeft.SpriteRendererComponent.TiledSize.y
+		
+			self._T.originalTopPosition = wallTop.TransformComponent.Position:Clone()
+			self._T.originalDownPosition = wallDown.TransformComponent.Position:Clone()
+			self._T.originalLeftPosition = wallLeft.TransformComponent.Position:Clone()
+			self._T.originalRightPosition = wallRight.TransformComponent.Position:Clone()
+			self._T.originalLeftBottom = self.leftBottom:Clone()
+			self._T.originalRightTop = self.rightTop:Clone()
+		end
+		
+		wallTop.SpriteRendererComponent.TiledSize.x = math.ceil(self._T.originalTileSizeX * widthRatio)
+		
+		wallDown.SpriteRendererComponent.TiledSize.x = math.ceil(self._T.originalTileSizeX  * widthRatio)
+		
+		
+		
+		wallLeft.SpriteRendererComponent.TiledSize.y = math.ceil(self._T.originalTileSizeY * heightRatio)
+		
+		wallRight.SpriteRendererComponent.TiledSize.y = math.ceil(self._T.originalTileSizeY * heightRatio)
+		
+		
+		
+		local realWidthRatio = wallTop.SpriteRendererComponent.TiledSize.x  / self._T.originalTileSizeX
+		local realHeightRatio = wallLeft.SpriteRendererComponent.TiledSize.y  / self._T.originalTileSizeY
+		
+		wallRight.TransformComponent.Position.x = self._T.originalRightPosition.x * realWidthRatio + offsetX * 0.5
+		wallLeft.TransformComponent.Position.x = self._T.originalLeftPosition.x * realWidthRatio + offsetX * 0.5
+		
+		
+		wallTop.TransformComponent.Position.y = self._T.originalTopPosition.y * realHeightRatio + offsetY * 0.5
+		wallDown.TransformComponent.Position.y =self._T.originalDownPosition.y * realHeightRatio + offsetY * 0.5
+		
+		
+		wallRight.TransformComponent.Position.y = self._T.originalRightPosition.y * realHeightRatio + offsetY * 0.5
+		wallLeft.TransformComponent.Position.y = self._T.originalLeftPosition.y * realHeightRatio+ offsetY * 0.5
+		
+		
+		wallTop.TransformComponent.Position.x = self._T.originalTopPosition.x * realWidthRatio+ offsetX * 0.5
+		wallDown.TransformComponent.Position.x = self._T.originalDownPosition.x * realWidthRatio + offsetX * 0.5
+		
+		wallDown.SpriteRendererComponent.SortingLayer = "Effect"
+		
+		
+		if isvalid(self.rectTile) == false then
+			return
+		end
+		
+		self.rectTile.GridSize = Vector2(0.5,0.5)
+		
+		self.rectTile:Reset()
+		self.rectTile.Entity.Visible = false
+		
+		
+		local offset = 0
+		local tileWidth = (width + 1) * 2 - offset - 1
+		local tileHeight = (height + 1) * 2 - offset - 1
+		for i = offset, tileWidth do
+			for j = offset - 1, tileHeight  do
+				local x = math.floor(i - width - 0.5) + offset
+				local y = math.floor(j - height - 0.5) + offset
+				
+				if i == offset or j ==  (offset - 1) or i == tileWidth or j == tileHeight then
+					self.rectTile:SetTile("Name4",Vector2Int(x + offsetX,y + offsetY))
+				else
+					self.rectTile:SetTile("Name0",Vector2Int(x + offsetX,y + offsetY))
+				end
+			end
+		end
+		
+		self.fenceRectTile:Reset()
+		self.fenceBottomRectTile:Reset()
+		
+		
+		local chapterData =  nil
+		if self.stageData~=nil then
+			chapterData = _StageLogic.chapterData[self.stageData.chapter]
+		end
+		local tileset =  "tileset://34e00eef-5110-47fc-ac7f-063ffda30a3a"
+		if chapterData ~= nil then
+			tileset = chapterData.fence
+		end
+		
+		
+		self.fenceRectTile.TileSetRUID = tileset
+		self.fenceBottomRectTile.TileSetRUID = tileset
+		
+		
+		
+		local bottomY = math.floor(0 - height/2 - 0.5)  
+		local topY = math.floor(height + 1 - height/2 - 0.5)
+		local leftX = math.floor(0 - width/2 - 0.5) 
+		local rightX = math.floor(width + 1 - width/2 - 0.5)
+		for i = 1, width do
+			local x = math.floor(i - width/2 - 0.5)
+			self.fenceRectTile:SetTile("top",Vector2Int(x,topY))
+			self.fenceBottomRectTile:SetTile("bottom",Vector2Int(x,bottomY))
+		end
+		
+		for i = 1, height do
+			local y = math.floor(i - height/2 - 0.5)	
+			self.fenceRectTile:SetTile("left",Vector2Int(leftX,y))
+			self.fenceRectTile:SetTile("right",Vector2Int(rightX,y))
+		end
+		
+		self.fenceRectTile:SetTile("left_top",Vector2Int(leftX,topY))
+		self.fenceRectTile:SetTile("right_top",Vector2Int(rightX,topY))
+		self.fenceRectTile:SetTile("right_bottom",Vector2Int(rightX,bottomY))
+		self.fenceRectTile:SetTile("left_bottom",Vector2Int(leftX,bottomY))
+		
+		local tileSize = Vector2(math.max(defaultWidth, width * 2), math.max(defaultHeight, height * 2))
+		
+		self:SetTileInfo(tileSize,Vector3(tileSize.x * (-18/20),tileSize.y * (-18/20),0))
+		
+		self.leftBottom = Vector2(self._T.originalLeftBottom.x * widthRatio,self._T.originalLeftBottom.y * heightRatio)
+		self.rightTop = Vector2(self._T.originalRightTop.x * widthRatio,self._T.originalRightTop.y * heightRatio)
+		
+		_StageLogic:SendEvent(MapSizeChange(self.leftBottom,self.rightTop))
+		
+		_UserService.LocalPlayer.MyPlayer:RefreshCameraBound(self.Entity)
+		
+		self:RefreshInnerTile(width,height)
+	end
+
+	method void MapSizeUp()
+		-- 맵 크기 확장 (카메라 흔들림 효과 포함)
+		_UserService.LocalPlayer.CameraComponent:ShakeCamera(1,1)
+		self:SetMapSize(self.width+1,self.height+1)
+	end
+
+	@ExecSpace("Server")
+	method void AddKillMonsterMissionCount(integer monsterCount)
+		-- 몬스터 킬 미션 카운트 추가
+		local playerEntity = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(playerEntity) then
+			return
+		end
+		
+		
+		
+		
+		playerEntity:SendEvent(NewbieMissionUpdateEvent("killMonster", "0", monsterCount))
+	end
+
+	method void ChangeBossMap(string effectRuid, string backgroundRuid, string foregroundRuid, number effectDelay, Color foregroundColor)
+		-- 보스 맵으로 배경 변경 및 특수 효과 적용
+		
+		
+		if _UtilLogic:IsNilorEmptyString(effectRuid) == false then
+			self._T.effectAttachedId = _EffectService:PlayEffectAttached(effectRuid,_UserService.LocalPlayer,Vector3.zero,0,Vector3.one * 2)
+		end
+		
+		if effectDelay > 0 then
+			wait(effectDelay)
+		end
+		
+		self.tile.Enable = false
+		local background = _SpawnService:SpawnByModelId("model://mapobject","background",Vector3.zero,_UserService.LocalPlayer)
+		background.SpriteRendererComponent.SpriteRUID = backgroundRuid
+		background.TransformComponent.Scale = Vector3.one * 2
+		background.SpriteRendererComponent.SortingLayer = "Layer1"
+		self.rectTile.Enable = false
+		self.fenceRectTile.Enable = false
+		self.fenceBottomRectTile.Enable = false
+		
+		local foreground = _SpawnService:SpawnByModelId("model://mapobject","foreground",Vector3.zero,_UserService.LocalPlayer)
+		foreground.SpriteRendererComponent.SpriteRUID = foregroundRuid
+		foreground.TransformComponent.Scale = Vector3(1.5,1.2,1)
+		foreground.SpriteRendererComponent.SortingLayer = "Foreground"
+		foreground.SpriteRendererComponent.OrderInLayer = 9999
+		foreground.SpriteRendererComponent.Color = foregroundColor
+		
+		_UserService.LocalPlayer.CameraComponent.ConfineCameraArea = false
+		
+		
+		self._T.mapEntites.Enable = false
+		self.background:ChangeBackgroundBySolidColor(Color.white)
+		_UserService.LocalPlayer.CameraComponent:ShakeCamera(1,1)
+		
+		
+		if self._T.bossBackground == nil then
+			self._T.bossBackground = {}
+		end
+		
+		table.insert(self._T.bossBackground,background)
+		table.insert(self._T.bossBackground,foreground)
+		
+		
+		local mapEntities = self._T.mapEntites
+		
+		local wallRight = mapEntities:GetChildByName("Wall_Right")
+		local wallTop = mapEntities:GetChildByName("Wall_Top")
+		local wallLeft = mapEntities:GetChildByName("Wall_Left")
+		local wallDown = mapEntities:GetChildByName("Wall_Down")
+		
+		wallRight.Enable = false
+		wallTop.Enable = false
+		wallLeft.Enable = false
+		wallDown.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetBoss()
+		-- 보스 정보 설정
+		table.clear(self.bossInfo)
+		self.bossInfo.id = _WaveLogic:GetLastBossId()
+	end
+
+	method Vector2 GetNewPosOutBound(Vector2 pos)
+		-- 위치를 맵 경계 밖으로 보정
+		if pos.x < self.leftBottom.x then
+			pos.x = self.leftBottom.x - _UtilLogic:RandomDouble()
+		elseif pos.x > self.rightTop.x then
+			pos.x = self.rightTop.x + _UtilLogic:RandomDouble()
+		end
+		
+		if pos.y < self.leftBottom.y then
+			pos.y = self.leftBottom.y - _UtilLogic:RandomDouble()
+		elseif pos.y > self.rightTop.y then
+			pos.y = self.rightTop.y + _UtilLogic:RandomDouble()
+		end
+		
+		return pos
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 배틀맵 업데이트 (현재 빈 구현)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 배틀맵 파괴 시 보스 배경 정리
+		if isvalid(self._T.bossBackground) then
+			for k,v in pairs(self._T.bossBackground) do
+				v:Destroy()
+			end
+		end
+	end
+
+	method void RefreshInnerTile(number width, number height)
+		-- 내부 타일 갱신 (스테이지별 특수 타일)
+		if self.stageData ~= nil then
+			if self.stageData.innerTile ~= "0" then
+				if isvalid(self._T.innerTile) == false then
+					self._T.innerTile = self.tile:Clone("innerTile")
+					local innerTile = self._T.innerTile
+					innerTile.TransformComponent.Position = Vector3.zero
+					innerTile.SpriteRendererComponent.SortingLayer = "Background"
+					innerTile.SpriteRendererComponent.OrderInLayer = 2
+				end
+				
+				local innerTile = self._T.innerTile
+				local tiledWidth = (width +  1) 
+				local tiledHeight = (height +  1) 
+				
+				
+				local innerTiledSize = Vector2(tiledWidth/2.56,tiledHeight/2.56) 
+				innerTile.SpriteRendererComponent.TiledSize = innerTiledSize
+				innerTile.SpriteRendererComponent.SpriteRUID = self.stageData.innerTile
+				
+				
+				innerTile.TransformComponent.Position = Vector3(-innerTiledSize.x * 2.56 * 0.5 +  (width%2) * 0.5 + 1  ,-innerTiledSize.y * 2.56 * 0.5  +  (height%2) * 0.5 + 1,0)
+				
+				
+			
+			end
+		end
+	end
+
+	method void SpawnWaterDrop()
+		-- 물방울 오브젝트 스폰 (8챕터 전용)
+		for i = 1, 3 do
+			local randX = _UtilLogic:RandomIntegerRange(self.leftBottom.x + 1, self.rightTop.x - 1)
+			local randY = _UtilLogic:RandomIntegerRange(self.leftBottom.y + 1, self.rightTop.y - 1)
+			local pos = Vector3(randX, randY, 0)
+			
+			_SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Model_WaterDrop"), "WaterDrop", pos, self.Entity:GetChildByName("Objects"):GetChildByName("Boxes"))
+		end
+		
+	end
+
+	method void SetTileInfo(Vector2 tileSize, Vector3 pos)
+		-- 타일 크기 및 위치 설정
+		self.tile.SpriteRendererComponent.TiledSize = tileSize
+		self.tile.TransformComponent.Position = pos
+	end
+
+	method void OnChangeMonsterCount(any e)
+		-- 몬스터 수 변경 시 웨이브 클리어 및 다음 웨이브 처리
+		
+		local count = e.count
+		local causeForceClear = e.causeForceClear
+		
+		if _WaveLogic.delayClearState then
+			return
+		end
+		if self.isTimerOut then
+			if self._T.monsterSpawnCall == 0 then
+				self._T.waveSpawnEnd = true		
+			end
+		end
+		local tempEnd = false
+		_EditorTextLog:Log("monstercount",string.format("몬스터수 : %d",count))
+		
+		if count <= 0 and not self.isClear then
+			
+		
+			if self.wave == _WaveLogic:GetLastWave(self.chapter) then
+				
+				local monsters = self.Entity:GetChildComponentsByTypeName("BossObject")
+				for k,v in pairs(monsters) do
+					---@type BossObject
+					local m = v
+					if m.isDead == false then
+						return
+					end
+					
+				end
+				if self.isBossDead == false then
+					return
+				end
+				
+				if causeForceClear then return end
+				
+				for k,v in pairs(self._T.currentSpawners) do
+					if v == "monster" then
+						_TimerLogic:ClearTimer(k)
+					end
+				end
+				table.clear(self._T.currentSpawners)
+				
+				tempEnd = true
+			end
+		
+			if self._T.waveSpawnEnd then
+				self.isTimerOut = false
+				self._T.waveSpawnEnd = false
+				self.isClear = true
+				if self.wave == _WaveLogic:GetLastWave(self.chapter) then
+					_UserService.LocalPlayer.BattlePlayer:ApplyInvincible(999999)
+					local droppedItems = self.Entity:GetChildComponentsByTypeName("DroppedItemComponent")
+		
+					for _, item in pairs(droppedItems) do
+						item.waveClear = true
+					end
+					
+					_UIToast:ShowMessage(_LocalizeLogic:GetText("toast8"))
+					
+					_TimerService:SetTimerOnce(function()
+						local stageData = _DataService:GetTable("StageData")
+			
+						
+						if isvalid(_UserService.LocalPlayer) and isvalid(_UserService.LocalPlayer.BattlePlayer) then
+							_UserService.LocalPlayer.BattlePlayer:OnEndBattle(true)
+							if _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_BASIC then
+								self:AddKillMonsterMissionCount(self.monsterIndex)
+							end
+						end
+					end, 5)
+					
+					
+					
+					return
+				end
+		
+		
+				_WaveLogic:SendEvent(WaveEndEvent())
+				self.isClear = false
+				self.wave = self.wave + 1
+				if self.wave == _WaveLogic:GetLastWave(self.chapter) then
+					_BattleUIManager.bossAlertUI:Show()
+				end
+				self:StartWave()
+			end
+		
+			
+			if tempEnd then
+				self._T.waveSpawnEnd = true
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "MonsterLogic")
+	handler HandleMonsterCountChange(MonsterCountChange event)
+		-- 몬스터 카운트 변경 이벤트 핸들러
+		self:OnChangeMonsterCount(event)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleBattleChapterEnd(BattleChapterEnd event)
+		-- 배틀 챕터 종료 이벤트 핸들러 (보상 처리 및 결과 UI 표시)
+		
+		local clear = event.clear
+		
+		self.isEnd = true
+		
+		_BattleUIManager:Resume()
+		_BattleUIManager.levelUpPopup:Hide("",0,1)
+		_BuffLogic:Init()
+		_UserService.LocalPlayer.PlayerArmorSkillComponent:ResetArmorSkill(_UserService.LocalPlayer)
+		
+		
+		if self.requestedClearRewardTime + 5 < _UtilLogic.ServerElapsedSeconds then
+			_RewardLogic:RequestGetStageClearReward(self.chapter, clear, self.wave - 1, _WaveLogic:GetLastWave(self.chapter))
+			_UserService.LocalPlayer.PlayerTempStorageComponent:RequestGetRewards(clear)
+			if _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_BASIC then
+				self.requestedClearRewardTime = _UtilLogic.ServerElapsedSeconds
+			end
+		else
+			
+			return
+		end
+		
+		_MonsterWaveManageLogic:Clear()
+		
+		
+		if clear then
+			self.isClear = true
+			local playerQuest = _UserService.LocalPlayer.PlayerQuestComponent
+			playerQuest:AddObjectiveCount("stageClear", tostring(self.chapter), 1, playerQuest.currentQuestId, true, "play")
+			_WorldLog:RequestLogQuestFlow(playerQuest.questProgress[playerQuest.currentQuestId], _WorldLog.FlowType_Quest_Change, "play")
+		end
+		
+		local id = tostring(self.chapter)
+		
+		if self.isRaidMode then
+			self:OnEndBossRaid(_UserService.LocalPlayer,self.bossRaidDamage)
+		end
+		_ResultUILogic.resultUI:Show(clear)
+		
+		
+		
+		if self._T.effectAttachedId ~= nil then
+			_EffectService:RemoveEffect(self._T.effectAttachedId)
+			self._T.effectAttachedId = nil
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "MonsterLogic")
+	handler HandleBossDead(BossDead event)
+		-- 보스 사망 이벤트 핸들러
+		
+		if not isvalid(_UserService.LocalPlayer) then return end
+		
+		if _WaveLogic.delayClearState then
+			return
+		end
+		self.isBossDead = true
+	end
+
+end

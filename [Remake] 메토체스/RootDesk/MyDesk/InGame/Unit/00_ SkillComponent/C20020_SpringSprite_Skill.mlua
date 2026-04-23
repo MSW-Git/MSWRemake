@@ -1,0 +1,110 @@
+@Component
+script C20020_SpringSprite_Skill extends Component
+
+	property number skillAnimLength = 1.5
+
+	property string HitEffectRUID = "0d074f80994b4d6194e509351b562a55"
+
+	property string HitEffectRUID2 = "7d085a61fafd4e279335628fd03adbd1"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		local function damage()
+			if _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				self:SetDamage(targetUnit)
+			end
+		end
+		_TimerService:SetTimerOnce(damage, 0.75 / skillRate)
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0075",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			
+			-- 1초간 둔화 + 회복
+			-- 1초간 회복력 감소 + 추가 마법 피해
+			local debuffTime = tonumber(_S01_SkillDescLogic.C20020_Passive_DebuffTime_Int[unitInfo.level])
+			local debuffTime2 = tonumber(_S01_SkillDescLogic.C20020_Passive_DebuffTime2_Int[unitInfo.level])
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0014", debuffTime)
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0010", debuffTime2)
+			
+			local getHPPer = _S01_SkillDescLogic.C20020_Active_GetHP_Physic[unitInfo.level] + _S01_SkillDescLogic.C20020_Passive_GetHP_Physic[unitInfo.level]
+			local getHPAmount = unitStatus.PhysicalAttack * getHPPer
+			_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "HP", getHPAmount, "defaultAttack")
+			
+			if unitInfo.unitPhaseNumber == 1 then
+				unitInfo:SetPropertyToServer("unitPhaseNumber", 2, nil, true)
+			elseif unitInfo.unitPhaseNumber == 2 then
+				unitInfo:SetPropertyToServer("unitPhaseNumber", 1, nil, true)
+			end
+			
+			self:HitEffect(targetUnit, unitInfo.unitPhaseNumber, unitInfo.OwnerId)
+			
+			local addMagicalDmgPer = _S01_SkillDescLogic.C20020_Active_SDamage_Magic[unitInfo.level] + _S01_SkillDescLogic.C20020_Passive_Attack_Magic[unitInfo.level]
+			local addMagicalDamage = unitStatus.MagicalAttack * addMagicalDmgPer
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(unitStatus.PhysicalAttack, myUnit, targetUnit, 0, "Physical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], addMagicalDamage, damageInfo[2], "defaultAttack")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit, number phaseNum)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		local ruid = ""
+		if phaseNum == 1 then
+			ruid = self.HitEffectRUID
+		elseif phaseNum == 2 then
+			ruid = self.HitEffectRUID2
+		end
+		
+		-- hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(ruid, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Reset()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local animComponent = myUnit.UnitAnimationComponent
+		
+		-- 페이즈 변경
+		unitInfo:SetPropertyToServer("unitPhaseNumber", 1, nil, true)
+		animComponent:PlayAnimation(1, "Idle", myUnit, unitInfo.OwnerId)
+	end
+
+end

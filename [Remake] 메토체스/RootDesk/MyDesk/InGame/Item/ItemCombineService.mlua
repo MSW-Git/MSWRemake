@@ -1,0 +1,287 @@
+@Logic
+script ItemCombineService extends Logic
+
+	@Description([[ItemCombine데이터셋의 데이터입니다. 
+value(table) = {items = {itemId1,itemId2},result = combinedItem}
+]])
+	property table CombineData = {}
+
+	property string WatchingUI = ""
+
+	property string WatchingItemID = ""
+
+	property boolean IsShowingCombineTableUI = false
+
+	method void OnBeginPlay()
+		self:LoadData()
+	end
+
+	method void LoadData()
+		--테이블 ItemCombine의 데이터를 미리 저장해둡니다. 
+		----------------------------------------------------------------------------
+		
+		local data = _DataService:GetTable("ItemCombine"):GetAllRow()
+		
+		for _,row in pairs(data) do 
+			
+			
+			local itemId1 = row:GetItem("ItemId1") 
+			local itemId2 = row:GetItem("ItemId2")
+			local combinedItem = row:GetItem("CombinedItem")
+			
+			local tmp = {items = {itemId1,itemId2},result = combinedItem} 
+			
+			table.insert(self.CombineData,tmp)
+				
+		end
+		
+		--log(self:CombineItems("I10001","I10002"))
+		--log(self:CombineItems("I10001","I100033"))
+	end
+
+	method string GetNormalItemIDByMaterialItemIDs(string itemId1, string itemId2, Entity user)
+		-- 아이디가 itemId1, itemId2인 아이템들을 조합해서 생기는 결과(완성) 아이템 아이디를 찾아서 반환합니다. 
+		--------------------------------------------------------------------------
+		if isvalid(user) then
+			if user.TM_PropertyControl.Challenge_SetCheck["CH10002"] >= 1 then
+				return "NI10033"
+			end
+		end
+		--------------------------------------------------------------------------
+		for _, data in pairs(self.CombineData) do 
+			if (data['items'][1] == itemId1 and data['items'][2] == itemId2) or
+				(data['items'][1] == itemId2 and data['items'][2] == itemId1) then 
+				
+				return data['result']
+			end
+		end
+		
+		return nil
+	end
+
+	method string GetMateiralIDinUnitEquippedItems(table unitItems)
+		--유닛에게 장착된 아이템 중 재료아이템이 있는지 찾아서 반환합니다 
+		----------------------------------------------------------------------------
+		
+		for _,itemId in pairs(unitItems) do 
+		
+			if string.sub(itemId, 1, 2) == "MI" then --재료 아이템이라면 
+				return itemId
+			end
+			
+		end
+		
+		return nil
+	end
+
+	method SyncTable<string> GetMaterialItemIDsByNormalItemID(string normalItemID)
+		-- ID가 normalItemID인 아이템을 만들기 위한 재료 아이템 리스트를 반환합니다.
+		------------------------------------------------------------------
+		for _, data in pairs(self.CombineData) do
+			if data['result'] == normalItemID then
+				return data['items']
+			end
+		end
+		
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowCombineTableTooltip(string itemID, string showType)
+		-- 상점, 보관함에서 우클릭했을 때 조합표 툴팁을 보여주는 함수
+		------------------------------------------------------------------------
+		-- itemID 예외 처리 : 재료 아이템, 일부 아이템 상자만 볼 수 있습니다.
+		local keyType = string.sub(itemID, 1, 2)
+		local showable = false
+		if keyType == "MI" then
+			showable = true
+		elseif keyType == "IB" then
+			local boxIdx = tonumber(string.sub(itemID, -2, -1))
+			if boxIdx >=5 and boxIdx <=12 then
+				showable = true
+			end
+		end
+		if showable == false then
+			return
+		end
+		
+		self.IsShowingCombineTableUI = true
+		------------------------------------------------------------------------
+		-- item 툴팁을 끕니다.
+		local ui_itemTooltip = _EntityService:GetEntityByPath("/ui/HoverPopupGroup/HoverUI_ItemInfo")
+		ui_itemTooltip.Enable = false
+		------------------------------------------------------------------------
+		local baseItemID = itemID
+		local ingredientItems = { "MI10001", "MI10002", "MI10003", "MI10004", "MI10005", "MI10006", "MI10007", "MI10008"}
+		------------------------------------------------------------------------
+		local itemTable = _DataService:GetTable("ItemStatus")
+		local itemUIBGTable = _DataService:GetTable("ItemUI_Background")
+		local statusTable = _DataService:GetTable("Status")
+		------------------------------------------------------------------------
+		-- showType에 따라 툴팁의 위치를 조정합니다.
+		local ui_tooltip = _EntityService:GetEntityByPath("/ui/HoverPopupGroup/HoverUI_ItemCombineTable")
+		local itemStatusTypes = _ItemStatusLogic:GetItemStatusTypeTable()
+		local uiSize = ui_tooltip.Parent.UITransformComponent.RectSize
+		if showType == "Shop" then 		-- 우하단 기준 (-380, +228)
+			ui_tooltip.UITransformComponent.anchoredPosition = Vector2(
+					580 - 0.5 * ui_tooltip.UITransformComponent.RectSize.x, -- // 580 = 1920*0.5 - 380
+					-312 + 0.5 * ui_tooltip.UITransformComponent.RectSize.y -- -312 = -1080*0.5 +228 
+			)
+			 
+		elseif showType == "Inventory" then
+			ui_tooltip.UITransformComponent.anchoredPosition = Vector2(
+				527 - 0.5 * ui_tooltip.UITransformComponent.RectSize.x,  -- // 527 = 1920*0.5 - 433
+				320 - 0.5 * ui_tooltip.UITransformComponent.RectSize.y	-- // 320 = 1080*0.5 - 220 
+			)
+			
+		else
+			local uiPos = _Util:ScreenPostoUIPos(_InputService:GetCursorPosition())
+		
+			local uiRectSize = ui_tooltip.UITransformComponent.RectSize
+			if uiPos.x + uiRectSize.x > 1920 then
+				uiPos.x = 1920 - uiRectSize.x - 10
+			elseif uiPos.x < 0 then
+				uiPos.x = uiRectSize.x +10
+			end
+			if uiPos.y > 1080 then
+				uiPos.y = 1080 - uiRectSize.y -10
+			elseif uiPos.y - uiRectSize.y < 0 then
+				uiPos.y = uiRectSize.y +10
+			end
+			uiPos -= Vector2(960, 540)
+			ui_tooltip.UITransformComponent.anchoredPosition = uiPos
+		end
+		
+		
+		-- base item information
+		local itemRow = itemTable:FindRow("ItemID", itemID)
+		local itemType = itemRow:GetItem("Type")
+		local itemRUID = itemRow:GetItem("RUID")
+		
+		-- children entities
+		local ui_baseItemOutlineBG = ui_tooltip:GetChildByName("Icon_OutlineBG")
+			local ui_baseItemIcon = ui_baseItemOutlineBG:GetChildByName("Icon")
+		local ui_name = ui_tooltip:GetChildByName("Name")
+		local ui_ability = ui_tooltip:GetChildByName("Ability")
+		local ui_table = ui_tooltip:GetChildByName("List_CombineTable")
+		
+		-- 베이스 아이템에 따라 ui 갱신
+		ui_baseItemOutlineBG.SpriteGUIRendererComponent.ImageRUID = _UI_Inventory.TypeBackgroundRUID[itemType]
+			ui_baseItemIcon.SpriteGUIRendererComponent.ImageRUID = itemRUID
+			ui_baseItemIcon.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(itemRUID)["scale"]
+			ui_baseItemIcon.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(itemRUID)["pos"]
+		ui_name.TextComponent.Text = _LocalizationService:GetText("Item_"..itemID.."_Name")
+		
+		local ownItemCount = {}
+		if itemType == "MaterialItem" then
+			local stat = ""
+			for i=1, #itemStatusTypes do
+				local statValue = itemRow:GetItem(itemStatusTypes[i])
+				
+				if statValue == nil or statValue == "" or tonumber(statValue) == 0 then
+					-- value가 없으면 아무 것도 하지 않습니다.
+				else
+					if stat ~= "" then
+						stat = stat.."\n"
+					end
+					
+					local rowInStatusTable = statusTable:FindRow("Key", itemStatusTypes[i])
+				
+					local statName = _LocalizationService:GetText("Status_"..itemStatusTypes[i])
+					local ItemStatusFormat = rowInStatusTable:GetItem("ItemStatusFormat")
+					local colorCode = rowInStatusTable:GetItem("Color")
+			
+					stat = stat..string.format("<color=%s>%s %s</color>",colorCode, statName, string.format(ItemStatusFormat, tonumber(statValue)))
+				end		
+			end
+			ui_ability.TextComponent.Text = stat
+			----------------------------------------------------------
+			-- 보유한 다른 재료 아이템 수량을 체크합니다.
+			for i=1, #_UserService.LocalPlayer.TeamManager.OwnItems do	-- 인벤토리의 수량 체크
+				local ownItemId = _UserService.LocalPlayer.TeamManager.OwnItems[i]
+				
+				if isvalid(ownItemCount[ownItemId]) then
+					ownItemCount[ownItemId] += 1
+				else
+					ownItemCount[ownItemId] = 1
+				end
+			end
+			
+			local ownUnits = _UserService.LocalPlayer.TeamManager.OwnUnits	-- 장착한 수량 체크
+			for i=1, #ownUnits do
+				local equippedItems = ownUnits[i].UnitStatus.EquippedItemIDList
+				
+				for j=1, #equippedItems do
+					if isvalid(ownItemCount[equippedItems[j]]) then
+						ownItemCount[equippedItems[j]] += 1
+					else
+						ownItemCount[equippedItems[j]] = 1
+					end
+				end
+			end
+			
+			if self.WatchingUI == "UnitInfo" or self.WatchingUI == "Inventory" then	-- 유닛 정보 창이나 인벤토리에서 연 경우, 장착 중인 아이템은 개수 체크에서 1개 감소
+				ownItemCount[itemID] -= 1
+			end
+			----------------------------------------------------------
+			
+		elseif itemType == "Box" then
+			local specialAbilityText = string.format("Item_%s_SpecialAbility", itemID)
+			ui_ability.TextComponent.Text = _LocalizationService:GetText(specialAbilityText)
+			baseItemID = itemRow:GetItem("Tags")
+		end
+		
+		-- 조합표 갱신
+		for i=1, 8 do
+			local ui_slot = ui_table:GetChildByName(string.format("Slot_%d", i))
+			
+			-- 조합 정보
+			local targetItemID = ingredientItems[i]
+			local resultItemID = self:GetNormalItemIDByMaterialItemIDs(baseItemID, targetItemID, nil)
+			local resultItemRow = itemTable:FindRow("ItemID", resultItemID)
+			local resultItemType = "NormalItem"
+			
+			-- 아이템 보유 정보
+			local isCombinable = false
+			if itemType == "MaterialItem" then
+				if isvalid(ownItemCount[targetItemID]) == true and ownItemCount[targetItemID] >= 1 then
+					isCombinable = true
+				end
+			end
+			
+			
+			-- children entities
+			local ui_isCombinable = ui_slot:GetChildByName("IsCombinable")
+			local ui_resultItemBG = ui_slot:GetChildByName("Result_OutlineBG")
+			local ui_resultItemIcon = ui_resultItemBG:GetChildByName("Icon")
+			local ui_resultItemName = ui_slot:GetChildByName("Text_ResultName")
+			
+			-- refresh
+			ui_isCombinable.Enable = isCombinable	
+			ui_resultItemIcon.SpriteGUIRendererComponent.ImageRUID = resultItemRow:GetItem("RUID")
+			ui_resultItemName.TextComponent.Text = _LocalizationService:GetText("Item_"..resultItemID.."_Name")
+			
+			ui_slot.UI_CombineTable_ItemTooltipActivator.ItemID = resultItemID
+		end
+		
+		
+		ui_tooltip.Enable = true
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- Parameters
+		local key = event.key
+		---------------------------------------------------------
+		if key == KeyboardKey.Mouse0 then
+			if self.IsShowingCombineTableUI == true then		
+				local ui_tooltip = _EntityService:GetEntityByPath("/ui/HoverPopupGroup/HoverUI_ItemCombineTable")
+				if ui_tooltip.Enable == true and _InputService:IsPointerOverUI() == false then
+					ui_tooltip.Enable = false
+					self.IsShowingCombineTableUI = false
+				end
+			end
+		end
+	end
+
+end

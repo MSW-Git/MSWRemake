@@ -1,0 +1,163 @@
+@Logic
+script NewYearEventLogic extends Logic
+
+	property table attendanceReward = {}
+
+	property NewYearEventPopup newYearEventPopup = "5088f534-7185-4602-8db1-eb29e3eef13b"
+
+	property string firstDate = "2024/01/01 00:00:00"
+
+	property string lastDate = "2024/02/27 10:00:00"
+
+	property EntityRef rabbitNPC = "c6d569d5-ca2d-437e-b8ea-1b340e0df367"
+
+	property Entity newYearEventPopupButton = "faba1125-9b57-4678-a961-5a50c2bdc9c1"
+
+	method void OnBeginPlay()
+		-- 신년 이벤트 로직 초기화
+	end
+
+	@ExecSpace("Server")
+	method void RequestAttendanceReward(integer dayNum)
+		-- 출석 보상 요청을 처리하고 유효성 검증 후 보상 지급
+		
+		if self:CheckEventTerm() == false then
+			return
+		end
+		
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local rewardedDay = player.PlayerNewYearEventComponent.eventInfo.attenDay
+		
+		if rewardedDay == nil then
+			return
+		end
+		
+		if rewardedDay + 1 ~= dayNum or dayNum > 7 or rewardedDay > 7 then
+			return
+		end
+		
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		if not _UtilLogic:IsNilorEmptyString(player.PlayerNewYearEventComponent.eventInfo.attenTime) then 
+			local rewardedDate = DateTime(player.PlayerNewYearEventComponent.eventInfo.attenTime)
+		
+			if rewardedDate.Day == currentDate.Day and rewardedDate.Month == currentDate.Month and rewardedDate.Year == currentDate.Year then 
+				return 
+			end 
+		
+			if dayNum - 1 ~= rewardedDay then 
+				return 
+			end 
+		else 
+			if dayNum ~= 1 or rewardedDay ~= 0 then 
+				return
+			end
+		end
+		
+		self:GiveAttendanceReward(senderUserId, dayNum)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GiveAttendanceReward(string userId, integer dayNum)
+		-- 출석 보상을 실제로 지급하고 플레이어 진행도 업데이트
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local newYearEvent = user.PlayerNewYearEventComponent
+		local giftData = {}
+		local currentDate = _LocalTimeLogic:GetKST()
+			
+		for key, value in pairs(self.attendanceReward) do
+			if tonumber(value.id) <= 7 and value.day == dayNum then
+				giftData = value
+				break
+			end
+		end
+		
+		if _RewardLogic:CheckCanGetBundleReward(giftData.rewardId, userId, nil) == false then
+			return
+		end
+		
+		_RewardLogic:GetReward(giftData.itemType, giftData.rewardId, giftData.rewardNum, userId, true, "NewYearAttendanceReward")
+		
+		newYearEvent:SetPlayerAdvanceProgress(dayNum)
+		self:RefreshAttendanceUI(userId)
+	end
+
+	method boolean CheckEventTerm()
+		-- 현재 시간이 이벤트 기간 내인지 확인
+		
+		local currentTime = _LocalTimeLogic:GetKST() 
+		local firstDate = DateTime(self.firstDate) 
+		local lastData = DateTime(self.lastDate) 
+		
+		if firstDate < currentTime and lastData > currentTime then
+			return true
+		end
+		
+		return false
+	end
+
+	method void Init()
+		-- 출석 보상 데이터를 로드하고 이벤트 버튼 활성화
+		local data = _DataService:GetTable("NewYearAttendanceReward")
+		
+		for i = 1, data:GetRowCount() do
+			local giftData = {}
+			giftData.id = data:GetCell(i, "id")
+			giftData.day = tonumber(data:GetCell(i, "day"))
+			giftData.itemType = data:GetCell(i, "itemType")
+			giftData.rewardId = data:GetCell(i, "rewardId")
+			giftData.rewardNum = tonumber(data:GetCell(i, "rewardNum"))
+			table.insert(self.attendanceReward, giftData)
+		end
+		
+		
+		if self:IsClient() and self:CheckEventTerm() then
+			self.newYearEventPopupButton:SetEnable(true)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshAttendanceUI()
+		-- 출석 UI를 새로고침
+		self.newYearEventPopup:AttendanceSlotInit()
+	end
+
+	@ExecSpace("Server")
+	method void MoveToRabbit()
+		-- 플레이어를 토끼 NPC 위치로 이동시킴
+		_TeleportService:TeleportToEntity(_UserService:GetUserEntityByUserId(senderUserId), self.rabbitNPC)	
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "faba1125-9b57-4678-a961-5a50c2bdc9c1")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 첫 번째 이벤트 버튼 클릭 처리
+		
+		local Entity = event.Entity
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "22282d5e-ec92-4b2d-bbb1-14b694a264e3")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 두 번째 이벤트 버튼 클릭 처리
+		
+		local Entity = event.Entity
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "061c7e78-63ad-4571-b656-20f2299f4e9a")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 세 번째 이벤트 버튼 클릭 시 토끼 NPC로 이동
+		
+		local Entity = event.Entity
+		
+		if _UIGroupManager:IsEnableOpenPopup() == false then
+			return
+		end
+		
+		_UserService.LocalPlayer.MovementComponent:SetWorldPosition(self.rabbitNPC.TransformComponent.WorldPosition:ToVector2())
+		self.newYearEventPopup:Hide()
+		wait(0.2)
+	end
+
+end

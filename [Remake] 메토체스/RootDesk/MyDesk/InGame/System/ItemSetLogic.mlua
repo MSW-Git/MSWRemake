@@ -1,0 +1,1065 @@
+@Logic
+script ItemSetLogic extends Logic
+
+	property Entity DraggingEntity = nil
+
+	property Entity MouseChaser = "1409c059-4210-4d01-9199-fb746ba9d981"
+
+	@ExecSpace("ClientOnly")
+	method void SetDragStartEntity(Entity itemSlotEntity)
+		-- 아이템 드래그 시작 시 호출되는 함수로 UI 상태를 설정하고 시각적 피드백을 제공
+		self.DraggingEntity = itemSlotEntity
+		self.MouseChaser.Enable = true
+		
+		itemSlotEntity.Visible = false
+		
+		local itemRUID = self.DraggingEntity:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID
+		local backgroundRUID = self.DraggingEntity.SpriteGUIRendererComponent.ImageRUID
+		self.MouseChaser:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = itemRUID
+		self.MouseChaser.SpriteGUIRendererComponent.ImageRUID = backgroundRUID
+		--------------------------------------------------------------------------------
+		-- 아이템 상자를 잡은 상태인 경우, 판매 UI를 활성화합니다.
+		local slotIdx = tonumber(string.sub(itemSlotEntity.Name, 6, -1))
+		local itemIdx = (_UI_Inventory.CurrentShowingPage-1)*8 + slotIdx
+		local itemID = _UserService.LocalPlayer.TeamManager.OwnItems[itemIdx]
+		
+		local header = string.sub(itemID, 1, 2)
+		
+		if header == "IB" or itemID == "CI0010" then
+			local ui_sell = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/Panel_SellCharacter")
+			ui_sell:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = itemRUID
+			if header == "IB" then
+				ui_sell:GetChildByName("Title").TextComponent.Text = _LocalizationService:GetTextFormat("Item_OpenItemBox", _LocalizationService:GetText("Item_"..itemID.."_Name"))
+			else
+				ui_sell:GetChildByName("Title").TextComponent.Text = _LocalizationService:GetText("Item_UseHeart")
+			end
+			
+			ui_sell:GetChildByName("Price").TextComponent.Text = ""
+			ui_sell.Enable = true
+			
+			local ui_shopPanel = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel")
+			ui_shopPanel.Enable = false
+		end 
+		
+		-------------------------------------------------------------------------------------
+		--방해꾼의 가면을 잡은 경우, 장착 가능한 유닛을 표시합니다.
+		if itemID=="SI10001" then
+			local OwnUnits=_UserService.LocalPlayer.TeamManager.OwnUnits
+			
+			for i=1,#OwnUnits do
+				if OwnUnits[i].UnitInfo:DoesHaveSynergy("S10011") then
+					OwnUnits[i].UnitInfo.spriteRenderer.SpriteRendererComponent.Color.a=1
+				else
+					OwnUnits[i].UnitInfo.spriteRenderer.SpriteRendererComponent.Color.a=0.2
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 드래그 중인 아이템이 마우스 커서를 따라다니도록 위치를 업데이트하는 함수
+		if isvalid(self.DraggingEntity) then	
+			
+			local cursorPos = _InputService:GetCursorPosition()
+			local screenSize = Vector2(_UILogic.ScreenWidth, _UILogic.ScreenHeight)
+			local uiSize = self.MouseChaser.Parent.UITransformComponent.RectSize
+			
+			local uiPosX = (cursorPos.x * uiSize.x) / screenSize.x
+			local uiPosY = (cursorPos.y * uiSize.y) / screenSize.y	
+			self.MouseChaser.UITransformComponent.anchoredPosition = Vector2(uiPosX, uiPosY)    
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetDragEnd()
+		-- 아이템 드래그 종료 시 UI 상태를 원래대로 복구하는 함수
+		if isvalid(self.DraggingEntity) == true then
+			self.DraggingEntity.Visible = true
+			self.DraggingEntity = nil
+		end
+		
+		self.MouseChaser.Enable = false
+		
+		-- 되팔기 UI 비활성화
+		local ui_sell = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/Panel_SellCharacter")
+		ui_sell.Enable = false
+		
+		-- 상점 UI 활성화
+		local ui_shopPanel = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel")
+		ui_shopPanel.Enable = true
+		
+		-- 유닛 알파값 되돌리기 ('방해꾼의 가면'때문에)
+		local OwnUnits=_UserService.LocalPlayer.TeamManager.OwnUnits
+		for i=1,#OwnUnits do
+			OwnUnits[i].UnitInfo.spriteRenderer.SpriteRendererComponent.Color.a=1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDragEnd(Entity itemSlotEntity)
+		--self:SetDragEnd()
+		----------------------------------------
+		local slotIdx = tonumber(string.sub(itemSlotEntity.Name, 6, -1))
+		local itemIdx = (_UI_Inventory.CurrentShowingPage-1) * _UI_Inventory.ItemSlotCount_Item + slotIdx
+		----------------------------------------
+		---@type Entity
+		local targetUnit = nil
+		
+		if isvalid(_CursorPosManager.HoverEntity) == true and isvalid(_CursorPosManager.HoverEntity.UnitInfo) == true then
+			if _CursorPosManager.HoverEntity.UnitInfo.TeamType == "User" then
+				targetUnit = _CursorPosManager.HoverEntity
+			end
+		else
+			-- 현재 커서 위치로 ray를 쏴서 대상 엔티티를 검출합니다.
+			local simulator = _CollisionService:GetSimulator(_UserService.LocalPlayer.CurrentMapName)
+			local worldpoint = _InputService:GetCursorPosition()
+			worldpoint = _UILogic:ScreenToWorldPosition(worldpoint)
+			
+			local components = simulator:OverlapPointAll(CollisionGroups.TriggerBox,worldpoint)
+			
+			for i=1, #components do
+				local selectEntity = components[i].Entity
+				if isvalid(selectEntity.UnitInfo) == true then
+					if selectEntity.UnitInfo.TeamType == "User" then
+						targetUnit = selectEntity
+					end
+					break
+				elseif isvalid(selectEntity.SellZoneComponent) == true then
+					self:OpenItemBox_Check(itemIdx)
+					return
+				end
+			end
+		end
+		----------------------------------------
+		if isvalid(targetUnit) == true then
+			if _UserService.LocalPlayer.GameManager.ModeType=="Tutorial" then
+				if targetUnit.UnitInfo.charID == _UserService.LocalPlayer.TutorialManager_New.ItemTargetCharID then
+					
+				else
+					_UIToast:ShowMessageByLocalizingKey("Toast_TargetCharError")
+					return
+				end
+				--튜토리얼 과정에서 아이템을 장착해야 하는 대상이 아니라면 리턴
+				
+			end
+			
+			-- targetUnit에게 itemIdx번 아이템을 장착하자!
+			self:EquipItem_Check(itemIdx, targetUnit)
+			_UI_Tooltip:SetItemEquipInfo(false, "", "", 0)
+		else
+			return
+		end
+	end
+
+	@ExecSpace("Server")
+	method void EquipItem_Check(number itemSlotIdx, Entity targetUnit)
+		-- targetUnit에게 teamManager.OwnItems[itemSlotIdx] 아이템을 장착시킵니다.
+		----------------------------------------------------------------------------
+		-- Properties
+		local userId = senderUserId
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		local gameManager = user.GameManager
+		local teamManager = user.TeamManager
+		local ownItems = teamManager.OwnItems
+		----------------------------------------------------------------------------
+		-- 아이템을 보유하고 있는가?
+		local itemID = ownItems[itemSlotIdx]
+		if _UtilLogic:IsNilorEmptyString(itemID) == true then
+			log_warning("item is nil or empty")
+			return
+		end
+		
+		-- 해당 유닛이 존재하는가?
+		if isvalid(targetUnit) == false then
+			log_warning("target unit is not valid")
+			return
+		end
+		
+		-- 준비 단계인가?
+		if gameManager.PhaseType ~= "Ready" then
+			log_warning("준비 단계가 아님")
+			return
+		end
+		
+		-- 장착하려는 유닛이 아이템을 장착 불가능한가?
+		if targetUnit.UnitInfo.IsItemEquippable == false then
+			_UIToast:ShowMessageByLocalizingKey("CannotEquipment_2", userId)
+			return
+		end
+		----------------------------------------------------------------------------
+		local CIcheck = string.sub(itemID, 1, 2)
+		
+		-- 장착하려는 아이템이 상자인가?
+		if CIcheck == "IB" then
+			_UIToast:ShowMessageByLocalizingKey("NotEquipment", userId)
+			return
+		end
+		
+		-- 아이템이 소모품인가?
+		if CIcheck == "CI" then
+			self:UseConsumableItem(user,itemSlotIdx,targetUnit)
+			return
+		end
+		----------------------------------------------------------------------------
+		self:EquipItem(user, itemSlotIdx, targetUnit)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EquipItem(Entity user, number itemIdx, Entity targetUnit)
+		-- targetUnit에게 user.TeamManager.OwnItems[itemIdx]를 장착시킵니다.
+		----------------------------------------------------------------------------
+		local userPControl = user.TM_PropertyControl
+		local userID = user.OwnerId
+		local gameManager = user.GameManager
+		----------------------------------------------------------------------------
+		-- 검증 및 예외처리
+		local equippedItemList = targetUnit.UnitStatus.EquippedItemIDList
+		local itemID = user.TeamManager.OwnItems[itemIdx]
+		itemID = _UtilLogic:Split(itemID, "_")[1]
+		
+		local keyHead = string.sub(itemID, 1, 2) 
+		local keyTail = string.sub(itemID, 3, -1)
+		----------------------------------------------------------------------------
+		--아이템 조합
+		local materialItemID = _ItemCombineService:GetMateiralIDinUnitEquippedItems(equippedItemList) --유닛 장착 템 중 재료 아이템있으면 id반환
+		
+		--유닛이 재료 아이템을 착용하고 있으며 장착을 시도한 아이템이 재료 아이템인가? 
+		if keyHead == "MI" and _UtilLogic:IsNilorEmptyString(materialItemID) == false then
+		
+			local idx = 0 -- 원래 재료가 껴져있던 인덱스
+			for i=1, #equippedItemList do
+		
+				if equippedItemList[i] == materialItemID then
+					idx = i 
+					break
+				end
+			end
+			
+			local normalItemID = _ItemCombineService:GetNormalItemIDByMaterialItemIDs(itemID, materialItemID, user) -- 완성 아이템 아이디 (재료 두개의 결과)
+			
+			targetUnit.UnitStatus:SetProperty("EquippedItemIDList", normalItemID, string.format("replace,%d", idx))	-- 아이템 조합 처리
+			table.remove(user.TeamManager.OwnItems, itemIdx)	-- 장착 시도한 아이템을 인벤토리에서 제거
+			
+			----------------------------------------------------------------------------
+			-- 이벤트 호출
+			user:SendEvent(CombinationItem(normalItemID))	-- 에러 아님
+			
+			----------------------------------------------------------------------------
+			--산타 장갑 탈착 조건 예외처리 
+			
+			
+			--완성 아이템이 산타의 장갑이면서 이미 다른 아이템을 착용 중인가?
+			if normalItemID == "NI10033" and #equippedItemList > 1 then 
+				targetUnit.UnitStatus:SetProperty("EquippedItemIDList", normalItemID, string.format("remove,%d", idx))
+				table.insert(user.TeamManager.OwnItems, normalItemID)--인벤 보관
+		
+			end
+			
+			----------------------------------------------------------------------------
+			targetUnit.UnitItem:RefreshItemStatus()
+			--targetUnit.UnitStatus:SetUnitStatus(false)
+		
+			-- 아이템 장착 연출
+			self:PlayItemEquipDirection(targetUnit, user.OwnerId)
+			return
+		
+		end 
+		----------------------------------------------------------------------------
+		
+		-- 1. 해당 유닛이 이미 아이템 3개를 장착한 상태인가? 
+		if #equippedItemList >= userPControl.Unit_EquipableItemCount then
+			log_warning("이미 3개의 아이템을 장착한 유닛입니다.", userID)
+			return
+		end
+		
+		-- 2. 장착하려는 아이템이 상징이고, 이미 해당 시너지를 가진 캐릭터인 경우 장착 불가
+		if keyHead == "EI" then
+			-- 2-1. 해당 상징 아이템을 장착하고 있는 경우에는 장착 불가
+			for i=1, #equippedItemList do
+				if equippedItemList[i] == itemID then
+					log_warning("이미 해당 상징을 장착하고 있습니다.", userID)
+					return
+				end
+			end
+			
+			-- 2-2. 이미 해당 시너지를 보유하고 있는 경우 장착 불가
+			local synergies = targetUnit.UnitInfo.synergyList
+			local synergyID = "S"..keyTail
+			for i=1, #synergies do
+				if synergies[i] == synergyID then
+					log_warning("이미 해당 시너지를 보유한 캐릭터입니다.", userID)
+					return
+				end
+			end
+		end
+		
+		-- 3. 장착하려는 아이템이 '방해꾼의 가면'이고, 방해꾼이 아닌 유닛에게 장착하려고 한 경우
+		if keyHead == "SI" then
+			if keyTail == "10001" then
+				if targetUnit.UnitInfo:DoesHaveSynergy("S10011") == false then
+					log_warning("방해꾼이 아닌 유닛에게 장착하려고 했습니다.", userID)
+					return
+				end
+			end
+		end
+		
+		---4. 장착하려는 아이템이 '산타 장갑'이고, 이미 아이템을 1개 이상 장착하고 있는 경우 
+		if keyHead == "NI" then
+			if keyTail == "10033" then 
+				if #equippedItemList >= 1  then 
+					log_warning("아무것도 장착하지 않은 유닛만 착용 가능합니다.", userID)
+					return
+				end
+			end
+		end
+		
+		--5. 해당 유닛이 이미 산타 장갑을 장착한 상태인가? 
+		if targetUnit.UnitItem:IsEquipingItem("NI10033") then 
+			return 
+		end
+		----------------------------------------------------------------------------
+		-- 아이템 장착 처리
+		table.remove(user.TeamManager.OwnItems, itemIdx)
+		
+		targetUnit.UnitStatus:SetProperty("EquippedItemIDList", itemID, "insert,-1")
+		targetUnit.UnitItem:RefreshItemStatus()
+		--targetUnit.UnitStatus:SetUnitStatus(false)
+		
+		-- 이벤트 호출
+		user:SendEvent(EquipedItem(targetUnit,itemID))	-- 에러 아님
+		
+		-- 해당 아이템이 상징이고, 장착한 유닛이 OnField 유닛이라면 '시너지 활성화 숫자' 증가
+		if keyHead == "EI" then
+			if targetUnit.UnitInfo:IsOnFieldUnit() then
+				
+				-- 단, 전장에 해당 유닛과 동일한 ID를 가진 아군 유닛이 있고 동일한 메달을 장착한 경우는 예외처리
+				local targetUnitCharID = targetUnit.UnitInfo.charID
+				local ownUnits = user.TeamManager.OwnUnits
+				local hasSameCharWithSameEmblem = false 
+				for _, unit in pairs(ownUnits) do
+					if unit.UnitInfo:IsOnFieldUnit() then	-- 전장 위 유닛이고
+						if unit ~= targetUnit and unit.UnitInfo.charID == targetUnitCharID then	-- 동일한 캐릭터이며
+							local itemListToCompare = unit.UnitStatus.EquippedItemIDList
+							for _, equippedItemIDtoCompare in pairs(itemListToCompare) do
+								local itemIDtoCompare = _UtilLogic:Split(equippedItemIDtoCompare, "_")[1]
+								
+								if itemIDtoCompare == itemID then -- 동일한 상징 아이템을 장착했다면
+									hasSameCharWithSameEmblem = true
+								end
+							end
+						end
+					end
+				end
+				
+				if hasSameCharWithSameEmblem == false then
+					user.TeamManager:GetOnFieldSynergyCount("S"..keyTail, 1)
+				else
+					log("동일한 아이디를 가진 캐릭터가 동일한 메달을 장착한 상태이므로 시너지를 활성화하지 않습니다.")
+				end
+			end
+		end
+		
+		-- 아이템 장착 연출
+		self:PlayItemEquipDirection(targetUnit, user.OwnerId)
+		----------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EquipItemThroughItemID(Entity targetUnit, string setItemID)
+		-- targetUnit에게 user.TeamManager.OwnItems[itemIdx]를 장착시킵니다.
+		----------------------------------------------------------------------------
+		local userID = targetUnit.UnitInfo.OwnerId
+		----------------------------------------------------------------------------
+		-- 검증 및 예외처리
+		local equippedItemList = targetUnit.UnitStatus.EquippedItemIDList
+		local itemID = _UtilLogic:Split(setItemID, "_")[1]
+		
+		-- 1. 해당 유닛이 이미 아이템 3개를 장착한 상태인가?
+		-- 해당 부분은 수동으로 장착하는 게 아니므로, 따로 유저별 아이템 장착 가능 개수를 제한할 필요는 없음
+		if #equippedItemList >= 3 then
+			_UIToast:ShowMessageByLocalizingKey("AlreadyFullEquipmentSlot", userID)
+			return
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(itemID) == true then
+			log_warning("itemID is nil")
+			return
+		end
+		
+		local keyHead = string.sub(itemID, 1, 2) 
+		local keyTail = string.sub(itemID, 3, -1)
+		
+		-- 3. 장착하려는 아이템이 '방해꾼의 상징'이고, 방해꾼이 아닌 유닛에게 장착하려고 한 경우
+		if keyHead == "SI" then
+			if keyTail == "10001" then
+				if targetUnit.UnitInfo:DoesHaveSynergy("S10011") == false then
+					_UIToast:ShowMessageByLocalizingKey("CannotEquipment_1", userID)
+					return
+				end
+			end
+		end
+		----------------------------------------------------------------------------
+		targetUnit.UnitStatus:SetProperty("EquippedItemIDList", setItemID, "insert,-1")
+		targetUnit.UnitItem:RefreshItemStatus()
+		--targetUnit.UnitSynergy
+		--targetUnit.UnitStatus:SetUnitStatus(false)
+		
+		local user = _UserService:GetUserEntityByUserId(targetUnit.UnitInfo.OwnerId)
+		
+		-- 해당 아이템이 상징이고, 장착한 유닛이 OnField 유닛이라면 '시너지 활성화 숫자' 증가
+		-- 단, 해당 유닛과 동일한 ID를 가진 아군 유닛이 있고 동일한 메달을 장착한 경우는 예외처리
+		if keyHead == "EI" then
+			if targetUnit.UnitInfo:IsOnFieldUnit() then	
+				
+				local targetUnitCharID = targetUnit.UnitInfo.charID
+				local hasSameCharWithSameEmblem = false
+				
+				-- 아군인 경우
+				if targetUnit.UnitInfo.TeamType == "User" then
+					local ownUnits = user.TeamManager.OwnUnits
+					for _, unit in pairs(ownUnits) do
+						if unit.UnitInfo:IsOnFieldUnit() then	-- 전장 위 유닛이고
+							if unit ~= targetUnit and unit.UnitInfo.charID == targetUnitCharID then	-- 동일한 캐릭터이며
+								local itemListToCompare = unit.UnitStatus.EquippedItemIDList
+								for _, equippedItemIDtoCompare in pairs(itemListToCompare) do
+									local itemIDtoCompare = _UtilLogic:Split(equippedItemIDtoCompare, "_")[1]
+									
+									if itemIDtoCompare == itemID then -- 동일한 상징 아이템을 장착했다면
+										hasSameCharWithSameEmblem = true
+									end
+								end
+							end
+						end
+					end
+					
+					if hasSameCharWithSameEmblem == false then
+						user.TeamManager:GetOnFieldSynergyCount("S"..keyTail, 1)
+					end
+					
+				-- 적팀인 경우
+				else
+					local enemyUnits = user.TeamManager.EnemyUnits
+					for _, unit in pairs(enemyUnits) do
+						if unit.UnitInfo.charID == targetUnitCharID then
+							local itemListToCompare = unit.UnitStatus.EquippedItemIDList
+							for _, equippedItemIDtoCompare in pairs(itemListToCompare) do
+								local itemIDtoCompare = _UtilLogic:Split(equippedItemIDtoCompare, "_")[1]
+								
+								if itemIDtoCompare == itemID then -- 동일한 상징 아이템을 장착했다면
+									hasSameCharWithSameEmblem = true
+								end
+							end
+						end
+					end
+					if hasSameCharWithSameEmblem == false then
+						user.TeamManager:GetEnemyOwnedFieldSynergyCount("S"..keyTail, 1)
+					end
+				end
+			end
+		end
+		
+		self:PlayItemEquipDirection(targetUnit, user.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void PlayItemEquipDirection(Entity targetUnit)
+		if _UserService.LocalPlayer.GameManager.PhaseType=="Battle" or _UserService.LocalPlayer.GameManager.PhaseType=="Setting" then
+			_EffectService:PlayEffectAttached("4f02d8ff913a4936b1b887e54f3e66ff",
+			targetUnit,
+			Vector3.zero,
+			0,
+			Vector3.one*1.5,
+			false,
+			{["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)})
+		else
+			_EffectService:PlayEffectAttached("4f02d8ff913a4936b1b887e54f3e66ff",
+			targetUnit,
+			Vector3.zero,
+			0,
+			Vector3.one*1.5
+			)
+		end
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0142")
+	end
+
+	@ExecSpace("Server")
+	method void OpenItemBox_Check(number itemSlotIdx)
+		-- senderUser의 teamManager.OwnItems[itemSlotIdx]가 아이템 상자라면, 
+		-- 해당 아이템을 소모하고 아이템 상자를 엽니다.
+		----------------------------------------------------------------------------
+		-- Properties
+		local userId = senderUserId
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local gameManager = user.GameManager
+		local teamManager = user.TeamManager
+		local ownItems = teamManager.OwnItems
+		----------------------------------------------------------------------------
+		-- 준비 단계인가?
+		if gameManager.PhaseType ~= "Ready" then
+			log_warning("준비 단계가 아님")
+			return
+		end
+		
+		-- 이미 선택 중이진 않은지?
+		if #teamManager.ItemListFromBox > 0 then
+			_UIToast:ShowMessageByLocalizingKey("AlreadyFullEquipmentSlot", userId)
+			_UI_Inventory:ShowItemSelectPopup(true, userId)
+			return
+		end
+		
+		-- 아이템을 보유하고 있는가?
+		local itemID = ownItems[itemSlotIdx]
+		if _UtilLogic:IsNilorEmptyString(itemID) == true then
+			log_warning("item is nil or empty")
+			return
+		end
+		
+		-- 해당 아이템이 '아이템 박스'인가?
+		local itemTable = _DataService:GetTable("ItemStatus")
+		local row = itemTable:FindRow("ItemID", itemID)
+		if itemID == "CI0010" then
+			if teamManager.HP >= 5 then
+				_UIToast:ShowMessageByLocalizingKey("CannotUseFullTeamHP", userId)
+			else
+				teamManager:AddTeamHP(1)
+				user:SendEvent(UseConsumableItem(itemID))	-- 에러 아님
+				table.remove(user.TeamManager.OwnItems, itemSlotIdx)
+			end
+			return
+		elseif row:GetItem("Type") ~= "Box" then
+			log_warning("box 타입 아이템이 아닙니다.")
+			return
+		end
+		----------------------------------------------------------------------------
+		table.remove(teamManager.OwnItems, itemSlotIdx)
+		if itemID == "IB00014" then
+			--아이템이 '메달 박스'일 경우
+			teamManager:SetEmblemBoxList()
+		else
+			teamManager:SetItemBoxList(itemID)
+		end
+		
+		user:SendEvent(OpenItemBox())
+	end
+
+	@ExecSpace("ServerOnly")
+	method void WithdrawAllItems(Entity unit, boolean checked)
+		-- 유닛을 판매했을 때, 또는 자석 제거기를 사용했을 때 모든 아이템을 회수하는 함수입니다.
+		----------------------------------------------------
+		local equippedItems = unit.UnitStatus.EquippedItemIDList
+		local itemCombineTable = _DataService:GetTable("ItemCombine")
+		----------------------------------------------------
+		local userID = unit.UnitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		local specialShopManager = user.SpecialShopManager
+		local userPControl = user.TM_PropertyControl
+		local ownRuneEntity = user.TeamManager.OnEntityUsingToOwnedRunes
+		----------------------------------------------------
+		
+		-- 기본적으로 아이템 빼낼 때
+		if checked then
+			for i=1, #equippedItems do
+				local itemID = equippedItems[i]
+				local keyHead = string.sub(itemID, 1, 2)
+				local keyTail = string.sub(itemID, 3, -1)
+				
+				if keyHead == "EI" then
+					self:EmblemSynergyUpdate(unit,itemID)
+				end
+				table.insert(teamManager.OwnItems, itemID)
+			end
+			
+			unit.UnitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+			
+		
+		-- 룬 체크 해야할 때
+		else
+			if userPControl.Rune_SetCheck["RC10021"] > 0 then
+				local ownrune=teamManager.OwnRunes
+				for rune=1,#ownrune do
+					local runeIDs = ownrune[rune]
+					local runeID = _UtilLogic:Split(runeIDs, "_")[1]
+					local runeUID = _UtilLogic:Split(runeIDs, "_")[2]
+					
+					if runeID == "RC10021" then --선더
+						for j = 1, #ownRuneEntity do
+							if ownRuneEntity[j].RuneCardComponent.UID == runeUID then
+								_RuneCardDirector:ShakingCard_Ready(rune,userID)
+								break
+							end
+						end
+					end
+				end
+		
+				for i=1, #equippedItems do
+					local itemID = equippedItems[i]
+					
+					if string.sub(itemID, 1, 2) == "NI" then
+						local row = itemCombineTable:FindRow("CombinedItem", itemID)
+						table.insert(teamManager.OwnItems, row:GetItem("ItemId1"))
+						table.insert(teamManager.OwnItems, row:GetItem("ItemId2"))
+						
+						-- 분리된 조합 아이템이 상점에 있으면 해당 상품의 가격을 무료로 바꿈
+						for i = 1, 2 do
+							local setItemID = specialShopManager.ShopList_Items[i]
+							if setItemID == row:GetItem("ItemId1") or setItemID == row:GetItem("ItemId2")then
+								specialShopManager.Cost_Items[i] = 0
+							end
+						end
+					else
+						table.insert(teamManager.OwnItems, itemID)
+					end
+				end
+			else
+				for i=1, #equippedItems do
+					table.insert(teamManager.OwnItems, equippedItems[i])
+				end
+			end
+				
+			unit.UnitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void WithdrawItem(Entity unit, integer equippedIdx)
+		-- equippedIdx번에 장착한 아이템을 회수합니다.
+		----------------------------------------------------
+		local equippedItems = unit.UnitStatus.EquippedItemIDList
+		
+		local userID = unit.UnitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		
+		local itemID = equippedItems[equippedIdx]
+		
+		table.insert(teamManager.OwnItems, itemID)
+		unit.UnitStatus:SetProperty("EquippedItemIDList", nil, string.format("remove,%d", equippedIdx) )
+	end
+
+	@ExecSpace("ServerOnly")
+	method void WithdrawCopiedItem(Entity user)
+		-- 전투 종료 시 호출, 임시 아이템들을 삭제하는 로직
+		----------------------------------------------------
+		---@type table<Entity>
+		local units = {}
+		local unitParent = _UnitSetLogic_New.UnitsParentEntity[user.OwnerId]
+		
+		for _, unit in pairs(unitParent.Children) do
+			if unit.UnitInfo.use == true then
+				local withdrawCount = 0
+				local equippedItems = unit.UnitStatus.EquippedItemIDList
+				
+				for i=#equippedItems, 1, -1 do
+					if string.sub(equippedItems[i], -6, -1) == "copied" then
+						unit.UnitStatus:SetProperty("EquippedItemIDList", nil, string.format("remove,%d", i))
+						withdrawCount += 1
+					end
+				end
+				
+				if withdrawCount > 0 then
+					unit.UnitItem:RefreshItemStatus()
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseConsumableItem(Entity user, number itemIdx, Entity targetUnit)
+		-- 소모품 사용 로직 
+		-- targetUnit에게 user.TeamManager.OwnItems[itemIdx]를 사용하고, 효과를 발동하고 소모시킵니다.
+		----------------------------------------------------------------------------
+		local userID = user.OwnerId
+		----------------------------------------------------------------------------
+		-- 소모 아이템 확인, 검증 및 예외처리
+		local equippedItemList = targetUnit.UnitStatus.EquippedItemIDList
+		local itemID = user.TeamManager.OwnItems[itemIdx]
+		local teamManager = user.TeamManager
+		
+		-- 1. 보따리인 경우
+		if itemID == "CI0003" or itemID == "CI0004" then
+			-- 1-1. 코스트 조건에 맞지 않는 캐릭터일 경우
+			if itemID == "CI0003" and targetUnit.UnitInfo.cost > 2 then
+				_UIToast:ShowMessageByLocalizingKey("CannotUseItemUnit", userID)
+				--log_warning("보따리의 조건에 맞지 않습니다. 1 ~ 2코스트 캐릭터에게 사용할 수 있습니다.")
+				return
+			elseif itemID == "CI0004" and targetUnit.UnitInfo.cost > 4 then
+				_UIToast:ShowMessageByLocalizingKey("CannotUseItemUnit", userID)
+				--log_warning("보따리의 조건에 맞지 않습니다. 1 ~ 4코스트 캐릭터에게 사용할 수 있습니다.")
+				return
+			end
+		-- 2. 아이템 해제 관련 소모품을 사용하려고 했을 때, 대상 캐릭터에게 아이템이 장착되지 않은 경우
+		elseif itemID == "CI0001" or itemID == "CI0002" or itemID == "CI0006" or itemID == "CI0007"  then
+			if #equippedItemList <= 0  then
+				_UIToast:ShowMessageByLocalizingKey("MustUseEquipedUnit", userID)
+			return
+			end
+			--[[
+		-- 3. 체력 회복 아이템인 경우
+		elseif itemID == "CI0010" then
+			if teamManager.HP >= 5 then
+				_UIToast:ShowMessageByLocalizingKey("팀 체력이 가득찬 상태에서는 사용이 불가합니다.")
+				return
+			end
+			]]--
+		end
+		----------------------------------------------------------------------------
+		-- 아이템 효과 발동
+		
+		if itemID == "CI0001" or itemID == "CI0002" then
+			-- 카르마의 가위 효과
+			self:WithdrawAllItems(targetUnit, true)
+		elseif itemID == "CI0003" or itemID == "CI0004" or itemID == "CI0005" then
+			-- 보따리 효과
+			local createdUnitBySack = _UnitSetLogic_New:SpawnUnit(user.OwnerId, targetUnit.UnitInfo.charID, 1, "Sack")
+			if isvalid(createdUnitBySack) == false then
+				-- 대기석이 꽉 차고, 머지가 안되는 경우
+				_UIToast:ShowMessageByLocalizingKey("FullWatingTile", userID)
+				return
+			end
+		
+		elseif itemID == "CI0006" or itemID == "CI0007" then
+			-- 변환망치 효과
+			for i=1, #equippedItemList do
+				--시너지 아이템 있는지 확인
+				local equippeditemID = equippedItemList[i]
+				local keyHead = string.sub(equippeditemID,1,2)
+				if i == 1 and keyHead == "SI" then
+					if #equippedItemList == 1 then
+					--시너지 아이템만 장착했을 경우 사용되지 않고 리턴
+						return
+					elseif string.sub(equippedItemList[2],1,2) == "SI" then
+						if #equippedItemList == 2 then
+						--2번째 아이템까지 시너지 아이템만 장착했을 경우 사용되지 않고 리턴
+							return
+						elseif string.sub(equippedItemList[3],1,2) == "SI" then
+							if #equippedItemList == 3 then
+							--3번째 아이템까지 시너지 아이템만 장착했을 경우 사용되지 않고 리턴
+								return
+							end
+						end 
+					end
+				end
+			end	 
+			self:ChangeAllItems(targetUnit ,itemID)
+			
+		elseif itemID == "CI0008" then
+			--CharacterShopManager_New 호출하고 Reroll_special 돌리기.
+			user.CharacterShopManager_New:Reroll_Special(targetUnit)
+		
+		elseif itemID == "CI0009" then
+			-- 거짓말 탐지기 효과
+			user.CharacterShopManager_New.LeftUnitCount[targetUnit.UnitInfo.charID] = -999
+			-- log(string.format("%s's Left Count is %d", targetUnit.UnitInfo.charID, user.CharacterShopManager_New.LeftUnitCount[targetUnit.UnitInfo.charID])) 
+			
+		elseif itemID == "CI0010" then
+			-- 하트 효과
+			teamManager:AddTeamHP(1)
+			
+		end
+		----------------------------------------------------------------------------
+		-- 아이템 소모 처리
+		
+		if itemID == "CI0002" then
+			log("황금 카르마의 가위는 소모되지 않습니다.", userID)
+		else 
+			user:SendEvent(UseConsumableItem(itemID))	-- 에러 아님
+			table.remove(user.TeamManager.OwnItems, itemIdx)
+		end
+		
+		
+		--targetUnit.UnitStatus:SetUnitStatus(false)
+		
+		----------------------------------------------------------------------------
+		--아이템 장착 애니메이션 재생
+		self:PlayItemEquipDirection(targetUnit, user.OwnerId)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeAllItems(Entity unit, string itemIdx)
+		-- 유닛에게 변환 망치를 사용했을 때, 아이템을 변화시키고 회수하는 함수입니다.
+		----------------------------------------------------
+		local equippedItems = unit.UnitStatus.EquippedItemIDList
+		
+		local userID = unit.UnitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		local synergyCheck = {7,12,13,14,20,24} 
+		--시너지가 없는 번호를 기록합니다.
+		
+		local synergyItemCheck = {}
+		--방해꾼의 가면, 아랫마을 옥석 등 
+		
+		--나무망치는 CI0006, 황금 변환망치는 CI0007입니다.
+		if itemIdx == "CI0006" then
+			-- 나무 변환망치 효과
+			for i=1, #equippedItems do
+				local randomItemId
+				local randNum = 0
+				local itemID = equippedItems[i]
+				local keyHead = string.sub(itemID,1,2)
+				local keyTail = string.sub(itemID, 3, -1)
+				
+				if keyHead == "MI" then
+					while true do
+						randNum = 10000 + _UtilLogic:RandomIntegerRange(1,8)
+						if tostring(randNum) ~= keyTail then
+							break
+						end
+					end
+					randomItemId = "MI"..tostring(randNum)
+				elseif keyHead == "NI" then
+					while true do
+						randNum = 10000 + _UtilLogic:RandomIntegerRange(1,36)
+						if tostring(randNum) ~= keyTail then
+							break
+						end
+					end
+					randomItemId = "NI"..tostring(randNum)
+				elseif keyHead == "EI" then
+					while true do
+						randNum = _UtilLogic:RandomIntegerRange(1,25)
+						for j = 1,#synergyCheck do
+							if randNum == synergyCheck[j] then
+								randNum = _UtilLogic:RandomIntegerRange(1,25)
+								log_warning(randNum)
+								j = 1
+							end
+						end
+						randNum = 10000 + randNum
+						if tostring(randNum) ~= keyTail then
+							break
+						end
+					end
+					self:EmblemSynergyUpdate(unit,itemID)
+					
+					randomItemId = "EI"..tostring(randNum)
+					
+				elseif string.sub(equippedItems[i],1,2) == "SI" then
+					--시너지 아이템이 장착되어있다면 기록
+					table.insert(synergyItemCheck, equippedItems[i])
+				end
+				
+				table.insert(teamManager.OwnItems, randomItemId)
+			end
+		elseif itemIdx == "CI0007" then
+			-- 황금 변환망치 효과
+			for i=1, #equippedItems do
+				local itemID = equippedItems[i]
+				local keyHead = string.sub(itemID,1,2)
+				if keyHead == "MI" then
+					table.insert(teamManager.OwnItems, "IB00001")
+				elseif keyHead == "NI" then
+					table.insert(teamManager.OwnItems, "IB00004")
+				elseif keyHead == "EI" then
+					table.insert(teamManager.OwnItems, "IB00014")
+					self:EmblemSynergyUpdate(unit,itemID)
+		
+				elseif string.sub(equippedItems[i],1,2) == "SI" then
+					--시너지 아이템은 장착된 상태였다면 기록
+					table.insert(synergyItemCheck, equippedItems[i])
+				else
+					
+				end
+				
+			end
+		end
+		
+		-- 유닛 장착된 아이템 리스트 초기화
+		unit.UnitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+		
+		if #synergyItemCheck >= 1 then
+			--장착된 시너지 아이템이 있었다면 다시 장착시킴
+			for i = 1, #synergyItemCheck do
+				unit.UnitStatus:SetProperty("EquippedItemIDList", synergyItemCheck[i], "insert,-1")
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetItemBox(string userId, number boxIdx)
+		-- 지정된 인덱스의 아이템 상자를 유저에게 지급하는 함수
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		local itemDataSet = _DataService:GetTable("ItemStatus")
+		local bItemTable = self:GetItemList(userId, "Box")
+		local itemID = ""
+		
+		if boxIdx <= 0 then
+			boxIdx = _UtilLogic:RandomIntegerRange(1, #bItemTable)
+			itemID = bItemTable[boxIdx]
+		else
+			boxIdx = tostring(100000 + boxIdx)
+			itemID = string.format("IB%s", string.sub(boxIdx, 2))
+		end
+		
+		table.insert(user.TeamManager.OwnItems, itemID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetConsumableItem(string userId, number itemIdx)
+		-- 지정된 인덱스의 소모성 아이템을 유저에게 지급하는 함수
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		local cItemTable = self:GetItemList(userId, "Consumable")
+		local itemID = ""
+		if itemIdx == 0 then
+			local itemDataSet = _DataService:GetTable("ItemStatus")
+			itemIdx = _UtilLogic:RandomIntegerRange(1, #cItemTable)
+			itemID = cItemTable[itemIdx]
+		elseif itemIdx == -1 then
+			local itemNumTable = {1, 3, 4, 5, 6, 7, 8, 9}				-- 황금 카르마의 가위, 하트 제외
+			local idx = itemNumTable[_UtilLogic:RandomIntegerRange(1, #itemNumTable)]
+			idx += 10000
+			itemID = "CI".. string.sub(string.format("%d", idx), 2, -1)
+		else
+			itemIdx += 10000
+			itemID = "CI".. string.sub(string.format("%d", itemIdx), 2, -1)
+		end
+		
+		
+		table.insert(user.TeamManager.OwnItems, itemID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetMaterialItem(string userId, number itemIdx)
+		-- 지정된 인덱스의 재료 아이템을 유저에게 지급하는 함수
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local mItemTable = self:GetItemList(userId, "MaterialItem")
+		local itemID = ""
+		
+		if itemIdx <= 0 then
+			itemIdx = _UtilLogic:RandomIntegerRange(1, #mItemTable)
+			itemID = mItemTable[itemIdx]
+		else
+			itemIdx += 10000
+			itemID = string.format("MI%s", itemIdx)
+		end
+		
+		table.insert(user.TeamManager.OwnItems, itemID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetNormalItem(string userId, number itemIdx)
+		-- 지정된 인덱스의 일반 아이템을 유저에게 지급하는 함수
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local nItemTable = self:GetItemList(userId, "NormalItem")
+		local itemID = ""
+		
+		if itemIdx <= 0 then
+			itemIdx = _UtilLogic:RandomIntegerRange(1, #nItemTable)
+			itemID = nItemTable[itemIdx]
+		else
+			itemIdx += 10000
+			itemID = string.format("NI%s", itemIdx)
+		end
+		
+		table.insert(user.TeamManager.OwnItems, itemID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetEmblemItem(string userId, number itemIdx)
+		-- 지정된 인덱스의 상징 아이템을 유저에게 지급하는 함수
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local eItemTable = self:GetItemList(userId, "Emblem")
+		local itemID = ""
+		
+		if itemIdx <= 0 then
+			itemIdx = _UtilLogic:RandomIntegerRange(1, #eItemTable)
+			itemID = eItemTable[itemIdx]
+		else
+			itemIdx += 10000
+			itemID = string.format("EI%s", itemIdx)
+		end
+		
+		table.insert(user.TeamManager.OwnItems, itemID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EmblemSynergyUpdate(Entity unit, string ItemID)
+		-- 상징 아이템이 장착 해제될 때, 시너지에 반영하는 함수입니다.
+		----------------------------------
+		local userID = unit.UnitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		
+		local keyHead = string.sub(ItemID,1,2)
+		local keyTail = string.sub(ItemID, 3, -1)
+					
+		local synergyID = "S"..keyTail
+					
+		-- 단, 전장에 해당 유닛과 동일한 ID를 가진 아군 유닛이 있고 동일한 메달을 장착한 경우는 예외처리
+		local targetUnitCharID = unit.UnitInfo.charID
+		local ownUnits = user.TeamManager.OwnUnits
+		local hasSameCharWithSameEmblem = false 
+		for _, unitToCompare in pairs(ownUnits) do
+			if unitToCompare.UnitInfo:IsOnFieldUnit() then	-- 전장 위 유닛이고
+				if unitToCompare ~= unit and unitToCompare.UnitInfo.charID == targetUnitCharID then	-- 동일한 캐릭터이며
+					local itemListToCompare = unitToCompare.UnitStatus.EquippedItemIDList
+					for _, equippedItemIDtoCompare in pairs(itemListToCompare) do
+						local itemIDtoCompare = _UtilLogic:Split(equippedItemIDtoCompare, "_")[1]
+									
+						if itemIDtoCompare == ItemID then -- 동일한 상징 아이템을 장착했다면
+							hasSameCharWithSameEmblem = true
+						end
+					end
+				end
+			end
+		end
+					
+		if hasSameCharWithSameEmblem == false then
+			teamManager:GetOnFieldSynergyCount(synergyID, -1)
+		else
+			log("동일한 메달을 장착한 동일한 캐릭터가 전장에 남아 있으므로, 시너지를 제거하지 않습니다")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetItemList(string userId, string iType)
+		-- 지정된 타입과 시즌에 맞는 아이템 목록을 반환하는 함수
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local gameManager = user.GameManager
+		local setVersion = string.format("%.1f", gameManager.ModeSetVersion)
+		
+		local itemDataSet = _DataService:GetTable("ItemStatus")
+		local itemSeasonCheckTable = _DataService:GetTable("ItemListBySeason")
+		
+		local itemTable = {}
+		
+		for i=1, itemDataSet:GetRowCount() do
+			local row = itemDataSet:GetRow(i)
+			
+			local type = row:GetItem("Type")
+			local itemID = row:GetItem("ItemID")
+			local checked = itemSeasonCheckTable:FindRow("ItemID", itemID):GetItem(setVersion)
+			if checked == "TRUE" and (type == iType or iType == "All") then
+				table.insert(itemTable, itemID)
+			end
+		end
+		
+		return itemTable
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: InputService
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local key = event.key
+		---------------------------------------------------------
+		if key == KeyboardKey.Mouse0 then
+			log("cursor Pos = ", _InputService:GetCursorPosition())
+			log("해상도 = ", self.MouseChaser.Parent.UITransformComponent.RectSize)
+			log("uilogic = ", _UILogic.ScreenWidth, _UILogic.ScreenHeight)
+		end
+	end
+
+end

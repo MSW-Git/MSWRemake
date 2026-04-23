@@ -1,0 +1,878 @@
+@Component
+script PlayerDBComponent extends Component
+
+	@HideFromInspector
+	property string userId = ""
+
+	@HideFromInspector
+	property boolean loadedInventory = false
+
+	@HideFromInspector
+	property PlayerStorageComponent playerStorage = nil
+
+	@HideFromInspector
+	property number getStorageTime = 0
+
+	@HideFromInspector
+	property boolean dbInited = false
+
+	@HideFromInspector
+	property string oldSaveData = ""
+
+	property table playerData = {}
+
+	property boolean isKicked = false
+
+	property boolean eventBannerOn = false
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID와 스토리지 설정 및 DB 로드
+		self.userId = self.Entity.PlayerComponent.UserId
+		self.playerStorage = self.Entity.PlayerStorageComponent
+		
+		if self:IsServer() then
+			self:SetDefaultOption()
+			self:LoadDB()
+		else
+			self:SetDefaultOption(self.userId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadDB()
+		-- 서버에서 플레이어 데이터를 DB에서 로드하고 각 컴포넌트에 적용
+		local storage = self.Entity.PlayerStorageComponent
+		local petStorage = self.Entity.PlayerPetStorageComponent
+		local currency = self.Entity.PlayerCurrencyData
+		local character = self.Entity.PlayerCharacterData
+		local characteristic = self.Entity.PlayerCharacteristicData
+		local playerInfo = self.Entity.PlayerInfoComponent
+		local playerQuest = self.Entity.PlayerQuestComponent
+		local collection = self.Entity.PlayerCollectionComponent
+		local missionCompo = self.Entity.PlayerMissionComponent
+		local playerFieldMap = self.Entity.PlayerFieldMapComponent
+		local account = self.Entity.PlayerAccount
+		
+		
+		local onSuccess = function(data)
+			if _UtilLogic:IsNilorEmptyString(data) then
+				self:InitAccount()
+				self.Entity:SendEvent(DBLoadedEvent(self.userId))
+				return
+			end
+			
+			self:SyncDBInClient(data, self.userId)
+			self.Entity:SendEvent(DBLoadedEvent(self.userId))
+		
+			local playerData = _HttpService:JSONDecode(data)
+			
+			function dbLoadFunc()
+				for key, value in pairs(playerData) do
+					if key == "storageData" and not _UtilLogic:IsNilorEmptyString(value) then
+						local newData = _HttpService:JSONDecode(value)
+						
+						for k, data in pairs(newData) do
+							local itemData = _HttpService:JSONDecode(data)
+							local uniqueKey = itemData.uniqueKey 
+							
+							storage.storage[uniqueKey] = itemData
+						end
+						storage:CheckExpiredItems()
+					
+						storage.isLoaded = true
+						storage:SetStorageData(true)
+						storage:CheckArmorEquipped()
+					elseif key == "characteristic" and not _UtilLogic:IsNilorEmptyString(value) then
+						local newData = _HttpService:JSONDecode(value)
+						for k, data in pairs(newData) do
+							if not _UtilLogic:IsNilorEmptyString(data) then
+								local itemData = _HttpService:JSONDecode(data)
+								local type = itemData.type
+								characteristic.charStorage[type] = itemData
+							else
+								self.Entity.PlayerCharacteristicData:InitPlayerCharacteristicData()
+							end
+						end 
+		
+						characteristic:SetCharacteristicData()
+						characteristic:ApplyPlayerCharacteristics() 
+					elseif key == "character" and not _UtilLogic:IsNilorEmptyString(value) then
+						local newData = _HttpService:JSONDecode(value)
+						local equippedIndex = nil
+						
+						for k, data in pairs(newData) do
+							if not _UtilLogic:IsNilorEmptyString(data) then
+								local itemData = _HttpService:JSONDecode(data)
+								local index = itemData.index 
+								
+								character.charDeckStorage[index] = itemData
+		
+								local equipped = character.charDeckStorage[index].equipped
+			
+								character:InsertIndexTempTable(index)
+								character:SyncCharDeckstorage(character.charDeckStorage[index], index, self.userId) 
+		
+								if equipped == true then
+									character.charIndex = itemData.index
+									character.charLevel = itemData.level
+									equippedIndex = index
+								end
+							end
+						end
+				
+						character:GetRelationData() 
+						character:EquipCharacter(equippedIndex) 
+					elseif key == "characterPiece" and not  _UtilLogic:IsNilorEmptyString(value) then
+			
+						local newData = _HttpService:JSONDecode(value)
+						for k, data in pairs(newData) do
+							if not _UtilLogic:IsNilorEmptyString(data) then
+								local itemData = _HttpService:JSONDecode(data)
+								local index = itemData.index
+								character.charPieceStorage[index] = itemData
+								character:SyncCharPieceStorage(index, character.charPieceStorage[index])
+							end
+						end
+					elseif key == "characteristicPoint" then
+			
+						if tonumber(value) == 0 then
+							self.Entity.PlayerCharacteristicData.characteristicPoint = 0
+							_CharacteristicManager:RefreshCharacteristicCoin(self.Entity.PlayerCharacteristicData.characteristicPoint, self.userId)
+							self.Entity.PlayerCurrencyData:ApplyPlayerCharacteristicPoint(self.Entity.PlayerCharacteristicData.characteristicPoint)
+							self.Entity.PlayerCharacteristicData:SetCharacteristicData()
+						else	
+							for i =1 , tonumber(value) do
+								self.Entity.PlayerCharacteristicData:AddCharacteristicPoint("Load")
+							end
+						end
+					elseif key == "accumulatedUsedPoint" then
+						self.Entity.PlayerCharacteristicData:SetAccumulatedUsedPoint(tonumber(value))
+					elseif key == "accountData" and not _UtilLogic:IsNilorEmptyString(value) then
+						local newData = _HttpService:JSONDecode(value)
+						self.Entity.PlayerAccount:LoadData(newData)
+					elseif key == "accountShowTable" then
+						local newData = _HttpService:JSONDecode(value)
+						account:LoadShowData(newData)
+					elseif key == "currency" then
+						local newData = _HttpService:JSONDecode(value)
+						for k, data in pairs(newData) do
+							if not _UtilLogic:IsNilorEmptyString(data) then
+								local currencyData = _HttpService:JSONDecode(data)
+								local type = currencyData.type 
+								currency.currencyTable[type] = currencyData
+							end
+						end
+						if 	currency.currencyTable["FieldGem"] == nil then
+							currency.currencyTable["FieldGem"] = self.Entity.PlayerCurrencyData:SetCurrencyDataTable("FieldGem",0)
+						end
+						self.Entity.PlayerCurrencyData:ApplyPlayerCurrency(currency.currencyTable["Gold"].amount, currency.currencyTable["Diamond"].amount, 
+							currency.currencyTable["Essence"].amount, currency.currencyTable["WeaponScroll"].amount, currency.currencyTable["FieldGem"].amount)
+					elseif key == "GatherRewardTable" then
+						local newData = _HttpService:JSONDecode(value)
+						for k, data in pairs(newData) do
+							if not _UtilLogic:IsNilorEmptyString(data) then
+								local itemData = _HttpService:JSONDecode(data)
+								self.Entity.PlayerAutoGathering.GatherRewardTable[itemData.key] = itemData
+							end
+						end
+						self.Entity.PlayerAutoGathering:LoadData(self.Entity.PlayerAutoGathering.GatherRewardTable["lastAutoGatheringTime"].value, "Load")
+					elseif key == "playerInfo" then
+						playerInfo.playerInfo = _HttpService:JSONDecode(value)
+						
+						if playerInfo.playerInfo.raidLastTime == nil then
+							playerInfo.playerInfo.raidLastTime = 0
+						end
+		
+						local now = _LocalTimeLogic:GetUtcNow()	+ TimeSpan(48,0,0)	
+						local lastTime = DateTime(playerInfo.playerInfo.raidLastTime)
+						if lastTime.Day == now.Day and lastTime.Year == now.Year and lastTime.Month == now.Month then
+						else
+							playerInfo.playerInfo.raidCnt = _GameConfig:GetConfig().WORLD_RAID_MAX_TICKET
+						end
+						
+						playerInfo:RefreshDailyInit()
+						playerInfo:SetPlayerInfoData()
+						playerInfo:SetNameTag(playerInfo.playerInfo.nameTag, true)
+						playerInfo:SetChatBalloon(playerInfo.playerInfo.chatBalloon, true)
+						_DecorationLogic:LoadOtherUsersDecoration(self.userId)
+		
+						playerInfo:RequestGetRecommendStage()
+						playerInfo:CheckEnteredDate()
+					elseif key == "collection" then
+		
+						local newData = {}
+						if _UtilLogic:IsNilorEmptyString(value) == false then
+							newData = _HttpService:JSONDecode(value)
+						end
+						
+						if newData ~= nil then
+							collection.eCollectionTable = newData
+						end
+						
+						collection:SetStatusTable(true)
+					elseif key == "petInventoryData" and value ~= "" then
+						local newData = _HttpService:JSONDecode(value)
+						
+						for k, data in pairs(newData) do
+							local petData = _HttpService:JSONDecode(data)
+							local uniqueKey = petData.uniqueKey 
+							petStorage.petInventory[uniqueKey] = petData
+						end
+						
+						petStorage:SetPetInventoryData()
+					elseif key == "stageRewardData" and value ~= "" then
+						local newData = _HttpService:JSONDecode(value)
+						
+						for k, data in pairs(newData) do
+							local stageRewardData = _HttpService:JSONDecode(data)
+							local stageNum = stageRewardData.stageNum
+							
+							playerInfo.stageRewardData[stageNum] = stageRewardData
+						end
+						
+						playerInfo:SetStageRewardStatus()
+					elseif key == "chapterRewardData" and value ~= "" then
+						local newData = _HttpService:JSONDecode(value)
+						
+						for k, data in pairs(newData) do
+							local chapterRewardData = _HttpService:JSONDecode(data)
+							local chapterNum = chapterRewardData.chapterNum
+							
+							playerInfo.chapterRewardData[chapterNum] = chapterRewardData
+						end
+						
+						playerInfo:SetChapterRewardStatus()
+					elseif key == "fieldMapData" and value ~= "" then
+						local newData = _HttpService:JSONDecode(value)
+						for k, data in pairs(newData) do	
+							local visitData = _HttpService:JSONDecode(data)
+							local temp = {}
+							for i, visit in pairs(visitData) do
+								if i == #visitData then
+									temp[0] = visit
+								else
+									temp[i] = visit
+								end
+							end	
+							if k == #newData then
+								playerFieldMap.fieldMapData[0] = temp
+							else
+								playerFieldMap.fieldMapData[k] = temp
+							end
+						end
+					elseif key == "barricadeData" and value ~= "" then
+						local newData = _HttpService:JSONDecode(value)
+						for k, data in pairs(newData) do			
+							local barricadeData = _HttpService:JSONDecode(data)
+							playerFieldMap.barricadeData[k] = barricadeData
+						end
+					elseif key == "questData" and value ~= "" then
+						local newData = _HttpService:JSONDecode(value)
+						
+						for k, data in pairs(newData) do
+							local questData = _HttpService:JSONDecode(data)
+		
+							local questId = questData.id
+							
+							if isvalid(questId) and tonumber(questId) < math.maxinteger then
+								playerQuest.questProgress[questId] = questData
+								
+								if tonumber(questId) >= tonumber(playerQuest.currentQuestId) then
+									playerQuest.currentQuestId = questId
+								end
+							end
+						end
+						
+						playerQuest:CheckQuestTable()
+		
+						playerQuest:SetPlayerQuestData(false)
+						
+						playerQuest.questProgress[tostring(math.maxinteger)] = nil
+					elseif key == "optionData" and value ~= "" then
+						local newData = value
+						
+						if type(value) == "string" then
+							newData = _HttpService:JSONDecode(value)
+						end
+						if newData ~= nil then
+							self.playerData.optionData = newData
+						end
+					elseif key == "playerMissionInfo" then
+					elseif key == "playerDailyMission" then
+						local dayilMissionCompo = self.Entity.PlayerDailyMissionComponent
+						
+						for k, v in pairs(_HttpService:JSONDecode(value)) do
+							dayilMissionCompo.missionInfo[k] = v
+						end
+						
+						dayilMissionCompo.dbLoaded = true
+						
+						_TimerService:SetTimerOnce(function()
+							dayilMissionCompo:CheckEnteredDate() 
+						end, 3)
+		
+					elseif key == "ability" then
+						local abilityCompo = self.Entity.PlayerAbilityComponent
+						abilityCompo.ability = _HttpService:JSONDecode(value)
+						abilityCompo.level = abilityCompo.ability.lvData.lv
+						_PartyLogic:SetLevelTable(self.userId, abilityCompo.level)
+						abilityCompo.dbLoaded = true
+					end
+				end
+				
+				missionCompo:CheckMissionInfoIsValid()
+				playerFieldMap:CheckFieldMapDataIsValid()
+			end
+			
+			local result, error = pcall(dbLoadFunc)
+			
+			if result then
+				self:CheckNewData()
+				_WorldLog:LogConnectFlow(self.userId, "0")
+			else
+			end
+		end
+			
+		
+		_TimerService:SetTimerRepeat(function() 
+				self:SaveAllData(false)
+				self:RecordRank()
+		
+		end, 300,_UtilLogic:RandomIntegerRange(150,300))
+		
+		local db = _DataStorageService:GetUserDataStorage(self.userId)
+		self:LoadUserDB(_GameUtil.saveDBKey, db, 1, onSuccess)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveDB(SyncTable<string, string> playerData, any onSuccess)
+		-- 플레이어 데이터를 DB에 저장하고 중복 저장 방지
+		if self.dbInited == false then
+			return
+		end
+		if self.isKicked then
+			return
+		end
+		local db = _DataStorageService:GetUserDataStorage(self.userId)
+		
+		local data = _HttpService:JSONEncode(playerData)
+		
+		if data == self.oldSaveData then
+			return
+		end
+		self.oldSaveData = data
+		
+		
+		self:SaveUserDB(_GameUtil.saveDBKey, db, data, onSuccess)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveUserDB(string dbKey, any db, string data, any onSuccess)
+		-- DB에 사용자 데이터를 저장하고 재시도 로직 처리
+		local tryCount = 0
+		while(true) do
+			local error = db:SetByInfoAndWait(DataStorageKeyInfo(dbKey, _GameUtil.DBVersion,""), data)
+			if error == 0 then
+				onSuccess()
+				break
+			else
+				tryCount = tryCount + 1
+				if tryCount > 5 then
+					_UserService:KickUser(self.userId, KickReason.WorldError)
+					break
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadUserDB(string dbKey, any db, number tryCount, any onSuccess)
+		-- DB에서 사용자 데이터를 비동기로 로드하고 재시도 처리
+		db:GetByInfoAsync(DataStorageKeyInfo(dbKey,_GameUtil.DBVersion,""),
+			function(error,keyInfo,data)
+				if error == 0 then
+					local user = _UserService:GetUserEntityByUserId(self.userId)
+					if isvalid(user) then
+						onSuccess(data)
+					end
+				else
+					if tryCount < 5 then
+						self:LoadUserDB(dbKey, db, tryCount + 1, onSuccess)
+					else
+						_UserService:KickUser(self.userId, KickReason.WorldError)
+					end		
+		
+				end 
+			end
+		)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 컴포넌트 종료 시 모든 데이터를 DB에 저장
+		self:SaveAllData(true)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveAllData(boolean isLeaveUser)
+		-- 모든 플레이어 데이터를 DB에 저장하고 로그 기록
+		if self.dbInited == false then
+			return
+		end
+		
+		if self.isKicked then
+			return
+		end
+		
+		self.Entity.PlayerStorageComponent:SetStorageData(false)
+		self.Entity.PlayerPetStorageComponent:SetPetInventoryData()
+		self.Entity.PlayerCharacteristicData:SetCharacteristicData()
+		self.Entity.PlayerFieldMapComponent:SetPlayerFieldMapData()
+		self.Entity.PlayerFieldMapComponent:SetPlayerBarricadeData()
+		self.Entity.PlayerInfoComponent:SetPlayerInfoData()
+		self.Entity.PlayerInfoComponent:SetStageRewardStatus()
+		self.Entity.PlayerInfoComponent:SetChapterRewardStatus()
+		self.Entity.PlayerCharacterData:SetCharacterData()
+		self.Entity.PlayerAccount:TransferToPlayerData()
+		self.Entity.PlayerCurrencyData:SaveCurrencyData()
+		self.Entity.PlayerAutoGathering:TransferToPlayerData()
+		self.Entity.PlayerQuestComponent:SetPlayerQuestData(isLeaveUser)
+		self.Entity.PlayerCollectionComponent:TransferToPlayerData()
+		self.Entity.PlayerMissionComponent:SetPlayerMissionInfo()
+		self.Entity.PlayerDailyMissionComponent:SetPlayerMissionInfo()
+		
+		self.Entity.PlayerAbilityComponent:TransferToPlayerData()
+		
+		if isLeaveUser then
+			_WorldLog:LogConnectFlow(self.userId, "1")
+		end
+		
+		self:SaveDB(self.playerData, function()
+		end)
+	end
+
+	@ExecSpace("Client")
+	method void SendDBLoadedEvent()
+		-- 클라이언트에서 DB 로드 완료 이벤트 전송
+		self.Entity:SendEvent(DBLoadedEvent(self.Entity.PlayerComponent.UserId))
+	end
+
+	@ExecSpace("Client")
+	method void SyncDBInClient(string data)
+		-- 클라이언트에서 DB 데이터를 동기화하고 각 컴포넌트에 적용
+		if self.Entity ~= _UserService.LocalPlayer then return end
+		
+		local storage = self.Entity.PlayerStorageComponent
+		local petStorage = self.Entity.PlayerPetStorageComponent
+		local currency = self.Entity.PlayerCurrencyData
+		local character = self.Entity.PlayerCharacterData
+		local characteristic = self.Entity.PlayerCharacteristicData
+		local playerInfo = self.Entity.PlayerInfoComponent
+		local playerQuest = self.Entity.PlayerQuestComponent
+		local missionCompo = self.Entity.PlayerMissionComponent
+		local playerFieldMap = self.Entity.PlayerFieldMapComponent
+		local account = self.Entity.PlayerAccount
+		
+		
+		if _UtilLogic:IsNilorEmptyString(data) then
+			self.dbInited = true
+			_BattlePowerToast.realPreviousBattlePower = _MySpecLogic.mySpec.battlePower
+			return
+		end
+		
+		local playerData = _HttpService:JSONDecode(data)
+		
+		for key, value in pairs(playerData) do
+			if key == "storageData" and not _UtilLogic:IsNilorEmptyString(value) then
+				local newData = _HttpService:JSONDecode(value)
+				
+				for k, data in pairs(newData) do
+					local itemData = _HttpService:JSONDecode(data)
+					local uniqueKey = itemData.uniqueKey 
+					storage.storage[uniqueKey] = itemData
+					storage:SyncStorageInClient(tostring(uniqueKey), itemData)
+					self.Entity:SendEvent(ChangedEggEvent())
+				end
+			elseif key == "characteristic" and not _UtilLogic:IsNilorEmptyString(value) then
+				local newData = _HttpService:JSONDecode(value)
+				for k, data in pairs(newData) do
+					if not _UtilLogic:IsNilorEmptyString(data) then
+						local itemData = _HttpService:JSONDecode(data)
+						local type = itemData.type
+						characteristic:SetCharacteristicDataInClient(itemData, itemData.type)
+					end
+				end 
+			elseif key == "character" and not _UtilLogic:IsNilorEmptyString(value) then
+				local newData = _HttpService:JSONDecode(value)
+				local equippedIndex = nil
+				
+				for k, data in pairs(newData) do
+					if not _UtilLogic:IsNilorEmptyString(data) then
+						local itemData = _HttpService:JSONDecode(data)
+						local index = itemData.index 
+						character.charDeckStorage[index] = itemData
+						self.Entity.PlayerCharacterData.charDeckStorage[index] = itemData
+		
+						local equipped = character.charDeckStorage[index].equipped
+						if equipped == true then
+							equippedIndex = index
+							character.charIndex = itemData.index
+							character.charLevel = itemData.level
+						end
+					end
+				end
+			elseif key == "accountData" and not _UtilLogic:IsNilorEmptyString(value) then
+				local newData = _HttpService:JSONDecode(value)
+				self.Entity.PlayerAccount:LoadData(newData)
+			elseif key == "accountShowTable" then
+				local newData = _HttpService:JSONDecode(value)
+				account.accountShowTable = newData
+				account:LoadShowData(newData)
+			elseif key == "characterPiece" and not  _UtilLogic:IsNilorEmptyString(value) then
+				local newData = _HttpService:JSONDecode(value)
+				for k, data in pairs(newData) do
+					if not _UtilLogic:IsNilorEmptyString(data) then
+						local itemData = _HttpService:JSONDecode(data)
+						local index = itemData.index
+						character.charPieceStorage[index] = itemData
+					end
+				end
+			elseif key == "currency" then
+				local newData = _HttpService:JSONDecode(value)
+				for k, data in pairs(newData) do
+					if not _UtilLogic:IsNilorEmptyString(data) then
+						local currencyData = _HttpService:JSONDecode(data)
+						local type = currencyData.type 
+						currency.currencyTable[type] = currencyData
+					end
+				end
+				if currency.currencyTable["FieldGem"] == nil then
+					currency.currencyTable["FieldGem"] = self.Entity.PlayerCurrencyData:SetCurrencyDataTable("FieldGem",0)
+				end
+				currency:RefreshCurrencyUi(currency.currencyTable["Gold"].amount, currency.currencyTable["Diamond"].amount, currency.currencyTable["Essence"].amount, currency.currencyTable["WeaponScroll"].amount,currency.currencyTable["FieldGem"].amount)
+			elseif key == "playerInfo" then
+				playerInfo.playerInfo = _HttpService:JSONDecode(value)
+				
+				if playerInfo.playerInfo.raidLastTime == nil then
+					playerInfo.playerInfo.raidLastTime = 0
+				end
+		
+				local now = _LocalTimeLogic:GetUtcNow()	+ TimeSpan(48,0,0)	
+				local lastTime = DateTime(playerInfo.playerInfo.raidLastTime)
+				if lastTime.Day == now.Day and lastTime.Year == now.Year and lastTime.Month == now.Month then
+				else
+					playerInfo.playerInfo.raidCnt = _GameConfig:GetConfig().WORLD_RAID_MAX_TICKET
+				end
+				
+				if playerInfo.playerInfo.introPlayed ~= 1 then
+					_IntroStoryLogic:StartScene()
+				end
+				
+				playerInfo:RefreshDailyInit()
+				playerInfo:SetPlayerInfoInClient(_HttpService:JSONEncode(playerInfo.playerInfo))
+			elseif key == "collection" and not _UtilLogic:IsNilorEmptyString(value) then
+				local newData = {}
+				if _UtilLogic:IsNilorEmptyString(value) == false then
+					 newData = _HttpService:JSONDecode(value)
+				end
+				if newData ~= nil then
+					self.Entity.PlayerCollectionComponent.eCollectionTable = newData
+				end
+		
+			elseif key == "petInventoryData" and value ~= "" then
+				local newData = _HttpService:JSONDecode(value)
+				
+				for k, data in pairs(newData) do
+					local petData = _HttpService:JSONDecode(data)
+					local uniqueKey = petData.uniqueKey 
+					
+					petStorage:SyncPetInventoryInClient(tostring(uniqueKey), petData)
+				end
+			elseif key == "optionData" and value ~= "" then
+				local newData = value
+				
+				if type(value) == "string" then
+					newData = _HttpService:JSONDecode(value)
+				end
+		
+				_OptionLogic:LoadOptionData(newData)
+				_OptionLogic:SendOptionLoadedEvent()
+			elseif key == "stageRewardData" and value ~= "" then
+				local newData = _HttpService:JSONDecode(value)
+				
+				for k, data in pairs(newData) do
+					local stageRewardData = _HttpService:JSONDecode(data)
+					local stageNum = stageRewardData.stageNum
+					
+					playerInfo:SyncStageRewardStatusInClient(stageNum, stageRewardData)
+		
+				end
+			elseif key == "chapterRewardData" and value ~= "" then
+				local newData = _HttpService:JSONDecode(value)
+				
+				for k, data in pairs(newData) do
+					local chapterRewardData = _HttpService:JSONDecode(data)
+					local chapterNum = chapterRewardData.chapterNum
+					
+					playerInfo:SyncChapterRewardStatusInClient(chapterNum, chapterRewardData)
+				end
+			elseif key == "fieldMapData" and value ~= "" then
+				local newData = _HttpService:JSONDecode(value)
+		
+				for k, data in pairs(newData) do
+					local visitData = _HttpService:JSONDecode(data)
+					local temp = {}
+					for i, visit in pairs(visitData) do
+						if i == #visitData then
+							temp[0] = visit
+						else
+							temp[i] = visit
+						end
+					end
+					if k == #newData then
+						playerFieldMap:SyncDataInClient(0,temp)
+					else
+						playerFieldMap:SyncDataInClient(k,temp)
+					end
+				end
+			elseif key == "barricadeData" and value ~= "" then
+				local newData = _HttpService:JSONDecode(value)
+				for k, data in pairs(newData) do	
+					local barricadeData = _HttpService:JSONDecode(data)
+					playerFieldMap:SyncBarricadeDataInClient(k,barricadeData)
+				end
+			elseif key == "questData" and value ~= "" then
+				local newData = _HttpService:JSONDecode(value)
+				local questCount = 0
+				local allQuestCompleted = false
+				
+				for k, data in pairs(newData) do
+					local questData = _HttpService:JSONDecode(data)
+					local questId = questData.id
+					
+					if isvalid(questId) then
+						questCount += 1
+						
+						playerQuest.questProgress[questId] = questData
+								
+						if tonumber(questId) >= tonumber(playerQuest.currentQuestId) then
+							playerQuest.currentQuestId = questId
+							if tonumber(questId) == #table.keys(_QuestLogic.questData) and 
+								isvalid(playerQuest.questProgress[questId].questStatus) and playerQuest.questProgress[questId].questStatus == "COMPLETE" then
+								allQuestCompleted = true
+								playerQuest.allQuestCompleted = true
+							end
+						end
+						
+						if isvalid(playerQuest.questProgress[questId].questStatus) and playerQuest.questProgress[questId].questStatus == "INPROGRESS" then
+							_QuestUILogic.questUI.selectedQuestId = questId
+							
+							_QuestUILogic.questHUD:Refresh()
+							_QuestUILogic.questUI:Refresh()
+							_UserService.LocalPlayer:SendEvent(QuestDataUpdated(questId))
+						end
+						
+						if allQuestCompleted then
+							_QuestUILogic.questHUD.allQuestCompleted = true
+							_QuestUILogic.questHUD.Entity.Enable = false
+							_UserService.LocalPlayer:SendEvent(QuestDataUpdated(tostring(math.floor(#table.keys(_QuestLogic.questData)))))
+						end
+					end
+				end
+				
+				playerQuest.questProgress[tostring(math.maxinteger)] = nil
+			elseif key == "playerMissionInfo" then
+				missionCompo.missionInfo = _HttpService:JSONDecode(value)
+				
+				missionCompo:SyncDataInClient(_HttpService:JSONEncode(missionCompo.missionInfo))
+				_NewbieMissionEventLogic.newbieMissionUI:Init()
+			elseif key == "playerDailyMission" then
+				local dayilMissionCompo = self.Entity.PlayerDailyMissionComponent
+						
+				for k, v in pairs(_HttpService:JSONDecode(value)) do
+					dayilMissionCompo.missionInfo[k] = v
+				end
+				
+				dayilMissionCompo.dbLoaded = true
+		
+			elseif key == "ability" then
+				local abilityCompo = self.Entity.PlayerAbilityComponent
+				abilityCompo.ability = _HttpService:JSONDecode(value)
+				abilityCompo.level = abilityCompo.ability.lvData.lv
+				abilityCompo.dbLoaded = true
+			end
+		
+		end
+		
+		self:CheckNewData()
+		_MySpecLogic:RefreshSpec()
+		
+		_BattleUIManager.loadingUI:Hide(5,function()
+			if _UserService.LocalPlayer.PlayerInfoComponent.playerInfo.introPlayed ~= 1 then
+				return
+			end
+		end)
+		
+		self.Entity:SendEvent(DBLoadedEvent(self.Entity.PlayerComponent.UserId))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitAccount()
+		-- 신규 계정 초기화 시 기본 데이터와 시작 장비 지급
+		
+		self.Entity.PlayerAccount:InitAccountData()
+		local playerInfoCompo = self.Entity.PlayerInfoComponent
+		playerInfoCompo:InitData()
+		playerInfoCompo:SetNameTag(playerInfoCompo.playerInfo.nameTag, true)
+		playerInfoCompo:SetChatBalloon(playerInfoCompo.playerInfo.chatBalloon, true)
+		playerInfoCompo:SetDamageSkin(playerInfoCompo.playerInfo.damageSkin, true)
+		_DecorationLogic:LoadOtherUsersDecoration(self.userId)
+		self.Entity.PlayerCharacteristicData:InitPlayerCharacteristicData()
+		self.Entity.PlayerCharacterData:InitCharPieceStorage()
+		self.Entity.PlayerCharacterData:InitCharacterData()
+		self.Entity.PlayerCurrencyData:InitCurrencyData()
+		self.Entity.PlayerAccount:InitAccountShowPopup()
+		self.Entity.PlayerAutoGathering:InitGatheringData()
+		self.Entity.PlayerMissionComponent:InitData()
+		self.Entity.PlayerDailyMissionComponent:InitData()
+		self.Entity.PlayerFieldMapComponent:InitData()
+		
+		
+		self.Entity.PlayerAbilityComponent:InitAbilityData()
+		
+		local storage = self.Entity.PlayerStorageComponent
+		
+		local weaponId1 = _GameUtil:CreateGUID()
+		local weaponId2 = _GameUtil:CreateGUID()
+		local weaponId3 = _GameUtil:CreateGUID()
+		
+		storage:RequestAddItemFromServer(weaponId1, 1, "1_001001", 1, self.userId,"Join","")
+		storage:RequestAddItemFromServer(weaponId2, 1, "1_003001", 1, self.userId,"Join","")
+		storage:RequestAddItemFromServer(weaponId3, 1, "1_004001", 1, self.userId,"Join","")
+		
+		storage:Equip(weaponId1,1)
+		storage:Equip(weaponId2,2)
+		storage:Equip(weaponId3,3)
+		
+		local armorId1 = _GameUtil:CreateGUID()
+		local armorId2 = _GameUtil:CreateGUID()
+		local armorId3 = _GameUtil:CreateGUID()
+		local armorId4 = _GameUtil:CreateGUID()
+		
+		storage:RequestAddItemFromServer(armorId1, 1, "2_101001", 1, self.userId,"Join","")
+		storage:RequestAddItemFromServer(armorId2, 1, "2_201001", 1, self.userId,"Join","")
+		storage:RequestAddItemFromServer(armorId3, 1, "2_301001", 1, self.userId,"Join","")
+		storage:RequestAddItemFromServer(armorId4, 1, "2_401001", 1, self.userId,"Join","")
+		
+		storage:Equip(armorId1, 21)
+		storage:Equip(armorId2, 22)
+		storage:Equip(armorId3, 23)
+		storage:Equip(armorId4, 24)
+		
+		self.Entity.PlayerStorageComponent.isLoaded = true
+		
+		self.Entity.PlayerQuestComponent:RequestAcceptQuest("1")
+		
+		self.dbInited = true
+		
+		self:InitClient(self.userId)
+		
+		
+		
+		_WorldLog:LogConnectFlow(self.userId, "0")
+	end
+
+	@ExecSpace("Client")
+	method void InitClient()
+		-- 클라이언트에서 신규 계정 초기화 및 인트로 시작
+		self.Entity.PlayerAccount:InitAccountData()
+		self.Entity.PlayerMissionComponent:InitData()
+		self.Entity.PlayerInfoComponent:InitData()
+		
+		self.dbInited = true
+		
+		_DailyGiftLogic:InitUI()
+		self.Entity:SendEvent(ChangedEggEvent())
+		
+		_IntroStoryLogic:StartScene()
+		self.eventBannerOn = true
+	end
+
+	@ExecSpace("Server")
+	method void RecordRank()
+		-- 플레이어의 전투력과 계정 레벨을 랭킹에 기록
+		_RankingLogic:SetBattlePowerRecord(self.userId)
+		_RankingLogic:SetAccountLevelRecord(self.userId)
+	end
+
+	method void SetDefaultOption()
+		-- 기본 옵션 설정을 초기화하고 모바일 옵션 포함
+		local properties = {}
+		
+		properties["showDamageSkin"] = true
+		properties["myEffectTransparency"] = 1
+		properties["enemyEffectTransparency"] = 1
+		properties["enemyTransparency"] = 1
+		properties["animationQuality"] = 0
+		properties["expTransparency"] = 1
+		properties["fixAutoPotion"] = true
+		properties["autoPotionAdjust"] = 1
+		properties["autoMPPotionAdjust"] = 1
+		
+		
+		local mobileOption = {}
+		mobileOption["showDamageSkin"] = false
+		mobileOption["myEffectTransparency"] = 1
+		mobileOption["enemyEffectTransparency"] = 1
+		mobileOption["enemyTransparency"] = 1
+		mobileOption["animationQuality"] = 2
+		mobileOption["expTransparency"] = 1
+		mobileOption["fixAutoPotion"] = false
+		mobileOption["autoPotionAdjust"] = 1
+		mobileOption["autoMPPotionAdjust"] = 1
+		
+		properties["mobileOption"] = mobileOption
+		
+		self.playerData["optionData"] = properties
+	end
+
+	method void CheckNewData()
+		-- 새로운 데이터 컴포넌트들을 확인하고 초기화
+		local player = self.Entity
+		local dailyMissionCompo = player.PlayerDailyMissionComponent
+		
+		if not dailyMissionCompo.dbLoaded then
+			dailyMissionCompo:InitData()
+			
+			if self:IsServer() then
+				dailyMissionCompo:SetMissionData()
+			end
+		end
+		
+		
+		
+		local abilityCompo = player.PlayerAbilityComponent
+		if isvalid(abilityCompo) then
+			if not abilityCompo.dbLoaded and self:IsServer() then
+				abilityCompo:InitAbilityData()
+			end
+		end
+		
+		self.dbInited = true
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserKickEvent(UserKickEvent event)
+		-- 사용자 강제 퇴장 이벤트 처리
+		
+		local KickReason = event.KickReason
+		local UserId = event.UserId
+		
+		if self.userId == UserId then
+			self.isKicked = false
+		end
+	end
+
+end

@@ -1,0 +1,2302 @@
+@Component
+script GameManager extends Component
+
+	property any RoundInfoTable = nil
+
+	@TargetUserSync
+	property number Stage = 0
+
+	@TargetUserSync
+	property number Round = 0
+
+	@TargetUserSync
+	property number Round8_3Num = 0
+
+	@TargetUserSync
+	property number Phase = 0
+
+	@TargetUserSync
+	property string RoundType = ""
+
+	@TargetUserSync
+	property string PhaseType = ""
+
+	property number BattleTime = 0
+
+	property boolean IsPlayedOvertime = false
+
+	property Entity UI_BattleTimer = "4dd8af30-6f91-4d44-ba8c-cf7a45b1a641"
+
+	property Entity UIGroup_ReadyPhase = "d802ec62-a70c-45b9-81f0-477d3a86a86e"
+
+	property Entity UIGroup_BattlePhase = "218d9946-21e5-43a5-946e-6919a3c0106f"
+
+	property number MyUnitCount = 0
+
+	property number EnemyCount = 0
+
+	property number TeamHP_User = 0
+
+	property number TeamHP_Enemy = 0
+
+	property number TeamHPMax_User = 0
+
+	property number TeamHPMax_Enemy = 0
+
+	property Entity UI_UserTeamHPBar = "6bca6639-51ac-4578-8e06-e0eb2d70832b"
+
+	property Entity UI_UserTeamHPBar_dir = "72b4f896-7ae7-4a56-9287-e0cd1b1befbb"
+
+	property Entity UI_EnemyTeamHPBar = "4569de4e-e676-4683-ad9a-f584571f26e2"
+
+	property Entity UI_EnemyTeamHPBar_dir = "c8335a33-aea9-4b05-886a-bf8744c3984e"
+
+	property integer TeamHPUpdateTimer = 0
+
+	property number UnitPresetType = 1
+
+	@TargetUserSync
+	property number ModeSetVersion = 1
+
+	@TargetUserSync
+	property string ModeType = "Single"
+
+	@TargetUserSync
+	property integer ModeLevel = 0
+
+	property string NextEnemyPresetID = ""
+
+	property boolean NeedDataLoad = false
+
+	@TargetUserSync
+	property number NeedDataLoadVersion = 1.0
+
+	@TargetUserSync
+	property string NeedDataLoadType = "Single"
+
+	@TargetUserSync
+	property number NeedDataLoadLevel = 1
+
+	@TargetUserSync
+	property integer NeedDataLoadStage = 0
+
+	@TargetUserSync
+	property integer NeedDataLoadRound = 0
+
+	@TargetUserSync
+	property string NeedDataLoadPhaseType = "Ready"
+
+	@TargetUserSync
+	property boolean SetSavedData = false
+
+	property table RewardTable = {}
+
+	property number PlayTime = 0
+
+	property number PlayTimer = 0
+
+	property number PhaseChangeWaitTime = 3
+
+	@TargetUserSync
+	property boolean UsedRepechage = false
+
+	property boolean ChangeSeason = false
+
+	property number ReadyTime = 0
+
+	@Sync
+	property SyncTable<string, number> ReadyTimeRecord
+
+	property SyncTable<string, Entity> RoomTile
+
+	method void OnMapEnter(Entity enteredMap)
+		----------------------------------------------------------------
+		if self:IsServer() then 
+		
+			if enteredMap.MapComponent.IsDynamicMap == true then
+		--	if enteredMap.Name == "Arena" then
+				self.Entity.MovementComponent.Enable = false
+		
+				self.Stage = 1
+				self.Round = 1
+				self.Round8_3Num = 1
+				self.Phase = 0
+				self.PhaseType = ""
+		
+				self.RoundType = "Battle"
+				
+				-- 로딩창 활성화
+				self.Entity.LoadingManager:ClearLoadedCount()
+				
+				-- 전투에 사용하는 유닛 스폰
+				local userId = self.Entity.OwnerId
+				_SampleClientSpawnLogic:SpawnUnitSample(userId, "start")
+				-- _UnitSetLogic_New:UnitSampleSpawn(userId)
+				_UnitSetLogic_New:ProjectileSampleSpawn(userId)
+				
+				-- 진행 데이터를 불러오거나, 새로운 데이터를 생성합니다.
+				self.Entity.TeamManager:InitNewGame(true)
+				
+				
+			elseif enteredMap.Name == "Lobby" then
+				self.Entity.MovementComponent.Enable = true
+			end
+		----------------------------------------------------------------
+		else
+			if enteredMap.MapComponent.IsDynamicMap == true then
+				_UnitSetLogic_New.DragSample = _UserService.LocalPlayer.CurrentMap:GetChildByName("DragSample")
+			end
+		end
+		----------------------------------------------------------------
+		
+	end
+
+	method void OnBeginPlay()
+		if self:IsServer() then
+			-- 플레이어 룬 카드 엔티티 스폰
+			local runeEntity = _SpawnService:SpawnByModelId("model://e077af6b-58cf-4d5d-a5d8-addfc2d50594", "RuneCardParent", Vector3.zero, self.Entity)
+			self.RoundInfoTable = _DataService:GetTable("RoundInfo")
+		else
+			local localplayer = _UserService.LocalPlayer
+			local lpTimer = 0
+			local lpCount = 0
+			local function lpFnc()
+				if isvalid(localplayer) == false then
+					lpCount += 0.25
+				else
+					log("LocalPlayer 할당에 ", lpCount, "초 소요")
+					_TimerService:ClearTimer(lpTimer)
+				end
+			end
+			lpTimer = _TimerService:SetTimerRepeat(lpFnc, 0.25, 0)
+			
+			if localplayer ~= self.Entity then
+				return
+			end
+		
+			local ui_resultPanel = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/Panel_BattleResult")
+			local ui_title = ui_resultPanel:GetChildByName("Panel_Title")
+			local ui_result = ui_resultPanel:GetChildByName("Panel_Result")
+			
+			ui_resultPanel.Enable = false
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void GoToNextPhase()
+		-- 다음 페이즈로 넘기는 함수입니다.
+		----------------------------------------------------------
+		if (senderUserId ~= nil) and (self.Entity.OwnerId ~= senderUserId) then
+			log("client에서 phase 변경 요청했으나, 오너가 다름")
+			return
+		end
+		----------------------------------------------------------
+		local user = self.Entity
+		local userId = user.OwnerId
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		----------------------------------------------------------
+		-- 각종 검증 로직을 넣어야 합니다. (그냥 넘겨버리면 안되므로)
+		
+		if self.PhaseType == "Ready" then
+			-- 검증1. 준비 단계에서 실행했을 때, '배치 가능한 인원 수 < 배치한 인원 수' 인가?
+			if teamManager.OnFieldUnitCount > (teamManager.Level + userPControl.Level_MaxUnitAdjustment) then
+				_UIToast:ShowMessageByLocalizingKey("OverDeployedMessage", userId)
+				return
+			end
+			
+			-- 검증2. 사용 가능한 대기석 수보다 더 많은 대기석을 사용하고 있을 때
+			local availableWatingTileCount = userPControl.Tile_AvailableWaitingTile
+			local usingWatingTileCount = 0
+			
+			for i=1, 9 do
+				local checkTile = self.RoomTile[string.format("%d,0", i)]
+				if isvalid(teamManager.EntityOnTile[checkTile]) then
+					usingWatingTileCount += 1
+				end
+			end
+			
+			if usingWatingTileCount > availableWatingTileCount then
+				_UIToast:ShowMessageByLocalizingKey("OverDeployedMessage2", userId)
+				return
+			end
+		end
+		
+		
+		-- 연장전 처리에 대한 검증입니다.
+		if self.PhaseType == "Battle" and self.BattleTime <= 0 then
+			if self.IsPlayedOvertime == false then
+				self.IsPlayedOvertime = true
+				self:PlayOvertime()
+		
+				self:PlayOvertime_OnClient(userId)		
+				return
+			else
+		
+				-- 무승부가 승리 처리인 경우
+				if userPControl.Battle_DrawIsWin then
+					
+					self:SetBattleResult(true, self.MyUnitCount)
+					
+					--코치연출
+					local coachListEntity=user:GetChildByName("CoachListEntity")
+					for i=1,4 do
+						if isvalid(user.CoachManager.PlayCoachesID[i]) then
+							if user.CoachManager.PlayCoachesID[i] == "COP70003" then
+								coachListEntity:GetChildByName(string.format("Coach_%d", i)).COP70003:PlayAbilityEffect("",user.PlayerComponent.UserId)
+								break
+							end
+						end
+					end
+				
+				-- 무승부는 패배로 처리합니다.
+				else
+					log("무승부 패배")
+					if self.ModeType == "Rank" then  
+						_AchievementService:UpdateAchievement("AC006005",1,user) -- 업적 AC006013: 랭크 모드 연장전에서 승부가 나지 않아 패배하기
+					end
+					self:SetBattleResult(false, self.EnemyCount)
+				end
+			end
+		end
+		
+		-- 게임 종료에 대한 검증입니다.
+		if self.Entity.TeamManager.HP <= 0 and self.PhaseType == "Clean" then
+			self:SetGameOver(false)
+			return
+		end
+		
+		if self.Stage == 8 and self.Round == 3 and self.PhaseType == "Clean"then
+			-- (8-3)에서 승리한 경우에만 게임 오버 처리
+			local winCheck = false
+			
+			for i = 1, 5 do
+				local setKey = string.format("8-3-%d", i)
+				if isvalid(user.TeamBattleStatistics.SetRoundResult[setKey]) then
+					if user.TeamBattleStatistics.SetRoundResult[setKey] == "W" then
+						winCheck = true
+						break
+					end
+				end
+			end
+			
+			if winCheck then
+				self:SetGameOver(true)
+				_PlaySoundLogic:PlayBGM_Ver2(11, userId)
+				_AchievementService:UpdateProgress_SynergyVictory(user)
+				return
+			else
+				self.Round -= 1
+				self.Round8_3Num += 1
+				_UIToast:ShowMessageByLocalizingKey("MustWinFinalRound", userId)
+			end
+		
+		end
+		----------------------------------------------------------
+		local targetPhase = self.Phase + 1
+		local rowIdx = 3 * (self.Stage-1) + self.Round
+		
+		
+		---@type MODUserDataSet
+		local roundInfoTable = self.RoundInfoTable
+		local rowInRoundInfoTable = roundInfoTable:GetRow(rowIdx)
+		
+		-- 다음 페이즈가 없다면, 새로운 라운드를 시작합니다.
+		local nextstage=false
+		local phaseCount = tonumber(rowInRoundInfoTable:GetItem("PhaseCount"))
+		if targetPhase > phaseCount then
+			
+			self.Entity:SendEvent(RoundEnd(self.RoundType, self.Round))	-- 에러 아님
+			self.Round += 1
+			targetPhase = 1
+			self.Entity.TM_PropertyControl.Reroll_FreeCounts_Temporary = 0
+			
+			
+			
+			-- 다음 라운드가 없으면, 새로운 스테이지를 시작합니다.
+			if self.Round > 3 then
+				self.Stage += 1
+				self.Round = 1
+					
+				self.Entity:SendEvent(StageStart(self.Stage))	-- 에러 아님
+				nextstage=true
+			end
+			
+			rowInRoundInfoTable = roundInfoTable:GetRow(rowIdx)
+			self.RoundType = rowInRoundInfoTable:GetItem("RoundType")
+		end
+		----------------------------------------------------------
+		if self.PhaseType == "" then
+			-- 이어하기 데이터 불러오지 않도록 처리
+			_InGameInfoDataLogic:SetSavedDataDB(false, user)
+		end
+		
+		self.PhaseType = rowInRoundInfoTable:GetItem(string.format("PhaseType%d", targetPhase))
+		
+		if self.PhaseType == "Ready" then
+			--골드 지급
+			local getGolds = 0
+			for k, v in pairs(self.RewardTable) do
+				getGolds += v
+			end
+			teamManager:AddGolds(getGolds, "roundResult") 
+			_GeneralDirectorLogic:PlayCoinDirector_Sprite(getGolds/2,nil,"RoundResult",userId)
+			
+			if nextstage then
+				_BackgroundChangeLogic:GotoNextNode(self.Stage,self.Entity.OwnerId)
+				_TimerService:SetTimerOnce(function() self:Ready_OnClient(userId) end, 1.5)
+			else
+				if (self.Stage==1 and self.Round==1) or self.NeedDataLoad then
+					self:Ready_OnClient(userId)
+				else
+					_TimerService:SetTimerOnce(function() self:Ready_OnClient(userId) end, 1.2)
+				end
+			end
+			
+			if not self.NeedDataLoad then
+				self:Ready()
+			else
+				self.NeedDataLoad = false
+			end
+			
+			if self.PlayTimer == 0 then
+				local function setTime()
+					self.PlayTime += 1
+					
+					if isvalid(self.Entity) == false then
+						_TimerService:ClearTimer(self.PlayTimer)
+					end
+				end
+				self.PlayTimer = _TimerService:SetTimerRepeat(setTime, 1, 1)
+			end
+			
+			--self:Ready_OnClient(self.Entity.OwnerId)
+			
+		elseif self.PhaseType == "Setting" then
+			--사운드
+			_PlaySoundLogic:PlaySound("M0145", userId)
+			self:SetBattle()
+			self:SetBattle_OnClient(userId)
+			
+		elseif self.PhaseType == "Battle" then
+			self:StartBattle()
+			self:StartBattle_OnClient(userId)
+			
+		elseif self.PhaseType == "Clean" then
+			self:Clean()
+			self:Clean_OnClient(userId)
+		end
+		
+		self.Phase = targetPhase
+		
+	end
+
+	method void OnUpdate(number delta)
+		if self.PhaseType == "Battle" then
+			self.BattleTime -= delta
+			----------------------------------------------------------------------------------------------
+			if self:IsServer() then
+				if self.BattleTime <= 0 then
+					self:GoToNextPhase()	-- 연장전/무승부
+					return
+				end
+				
+				if self.EnemyCount <= 0 then
+					self.BattleTime += 1
+					self:SetBattleResult(true, self.MyUnitCount)
+					self:GoToNextPhase()
+				elseif self.MyUnitCount <= 0 then
+					self.BattleTime += 1
+					self:SetBattleResult(false, self.EnemyCount)
+					self:GoToNextPhase()
+				end
+			----------------------------------------------------------------------------------------------
+			else -- Client
+				if self.BattleTime < 0 then
+					self.UI_BattleTimer.TextComponent.Text = "0"
+					return
+				end
+				
+				self.UI_BattleTimer.TextComponent.Text = string.format("%d", self.BattleTime)
+						
+			end
+		elseif self.PhaseType == "Ready" then
+			--준비 단계에서 고민하는 시간 측정
+			self.ReadyTime += delta
+			
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Ready()
+		
+		-- 준비 단계 시작 시 수행되어야 하는 함수들을 실행합니다.
+		---------------------------------------------
+		---------------------------------------------
+		local user = self.Entity
+		local userPControl = user.TM_PropertyControl
+		---------------------------------------------
+		user.SynergyManager_New:OnReadyPhase()
+		user.CharacterShopManager_New:Reroll(0)		-- 캐릭터 상점 새로고침
+		user.SpecialShopManager:RerollList_Items()	-- 아이템 상점 새로고침
+		user.SpecialShopManager:RerollList_Runes()	-- 룬 카드 상점 새로고침
+		
+		
+		_UnitSetLogic_New:BattleSetting_UnitSet(self.Entity.OwnerId, "Ready")	-- 유닛 세팅 변경
+		
+		if user.CharacterShopManager_New.IsLocked == true then
+			user.CharacterShopManager_New:Lock() 	-- 캐릭터 상점 잠금 해제
+		end
+		
+		user:SendEvent(RoundStart(self.RoundType, self.Round, self.Stage))	-- 에러 아님
+		---------------------------------------------
+		-- 라운드를 넘어가면서 경험치를 얻습니다.
+		if self.Stage == 1 and self.Round == 1 then
+			-- 첫 라운드 예외처리
+			user.TeamManager:AddGolds(16, "start")
+			
+		else
+			local getExp = 0
+		
+			if userPControl.Exp_CanGetBaseReward then
+				getExp += math.max(0, self.Entity.TM_PropertyControl.Exp_baseReward)
+			end
+			self.Entity.TeamManager:AddEXP(getExp)
+		end
+		
+		--튜토리얼 스테이지일 시, 3스테이지 진입 전까지는 전투 시작 버튼을 비활성화합니다.
+		if self.ModeType == "Tutorial" then
+			if self.Stage < 4 then
+			_UI_TutorialLogic:BattleButtonOnOff(false,user.OwnerId)
+			--튜토리얼 스테이지일 시, 특정 아이템/룬 카드를 상점에 나타냅니다.
+			if self.Stage == 2 and self.Round == 2 then
+				user.SpecialShopManager:RerollList_ItemsSpecial("MI10004","MI10003")
+			elseif self.Stage == 2 and self.Round == 1 then
+				user.SpecialShopManager:RerollList_ItemsSpecial("MI10001","MI10002")
+			elseif self.Stage == 2 and self.Round == 3 then
+				user.SpecialShopManager:RerollList_RunesSpecial("RC10001","RC10005")
+			end
+			end
+		end
+		
+		
+		---------------------------------------------
+		-- 코치 Idle 처리
+		self.Entity.CoachManager:SetCoachRUID("Idle", self.Entity.OwnerId)
+		------------------------------
+		
+	end
+
+	@ExecSpace("Client")
+	method void Ready_OnClient()
+		self.UIGroup_ReadyPhase.Enable = true 
+		self.UIGroup_BattlePhase.Enable = false
+		self.UIGroup_BattlePhase.CanvasGroupComponent.GroupAlpha=1
+		_EntityService:GetEntityByPath("/ui/Arena_Default/Text_OnFieldUnitsCount").Enable = true
+		------------------------------------------------------------------------
+		-- 현재 단계 알림 팝업을 Ease 애니메이션으로 보여줍니다. 
+		
+		
+		local progressPopupUI = _EntityService:GetEntityByPath("/ui/Arena_Default/ProgressPoup")
+		progressPopupUI:GetChildByName("Text_Phase").TextComponent.Text = "Ready"
+		
+		-- 내려옵니다.
+		local t1 = 0
+		local moveEase = function()
+			t1 += 0.02
+			progressPopupUI.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(300, -300, 0.4, EaseType.QuintEaseOut, t1)
+		end
+		for i=1, 20 do
+			_TimerService:SetTimerOnce(moveEase, 0.02*i)
+		end
+		
+		-- 올라갑니다.
+		local t2 = 0
+		local moveEase2 = function()
+			t2 += 0.02
+			progressPopupUI.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(-300, 300, 0.4, EaseType.BackEaseIn, t2)
+		end
+		for i=1, 20 do
+			_TimerService:SetTimerOnce(moveEase2, 2.4+0.02*i)
+		end
+		------------------------------------------------------------------------
+		-- Progress UI의 사이즈를 조절합니다. (게임모드/라운드/하트 정보를 볼 수 있도록)
+		local ui_progressBar = _EntityService:GetEntityByPath("/ui/Arena_Default/Progress")
+		ui_progressBar.UITweenScale:Play()
+		local ui_progressBarPanel = ui_progressBar:GetChildByName("Panel")
+		ui_progressBarPanel.UITweenScale:Play()
+		
+		-- Progress UI의 트윈스케일 값을 변경합니다.
+		local changetweenscale = function()
+			ui_progressBar.UITweenScale.from.x = 650
+			ui_progressBar.UITweenScale.to.x = 1400
+		
+			ui_progressBarPanel.UITweenScale.from.x = 650
+			ui_progressBarPanel.UITweenScale.to.x = 1400
+		
+			ui_progressBar.UITweenScale.duration=0.1
+			ui_progressBarPanel.UITweenScale.duration=0.1
+		end
+		
+		_TimerService:SetTimerOnce(changetweenscale, 0.22)
+		------------------------------------------------------------------------
+		-- 마스코트 보상버튼을 보여줍니다.
+		local showmascotbutton=function()
+			local value = _UserService.LocalPlayer.SynergyManager_New.SynergyStack["S10001"]
+			local mascot = _UserService.LocalPlayer.CurrentMap:GetChildByName("MascotEntity")  --_EntityService:GetEntity("17e6364c-8a17-47c9-bb8a-a610cff19e2a")--/maps/Arena/MascotEntity
+			_SynergyReadyDirectorLogic:Set10001MascotInfo(value)
+			--mascot.Parent:GetChildByName("Button_GetReward").Enable = true
+		end
+		_TimerService:SetTimerOnce(showmascotbutton,0.5)
+		
+		-- 적: 오르비스 시너지로 활성화된 장판을 비활성화합니다.
+		for i=1, 3 do
+			local stoneEntity = _UnitSetLogic_New.UnitsParentEntity[self.Entity.OwnerId]:GetChildByName(string.format("EnemyUnit_OrbisStone%d", i))
+			_SynergyReadyDirectorLogic:Set10021TilesEffect(stoneEntity.Id, nil)
+		end
+		
+		--적군 타일 관련 연출 해제
+		--기사단장
+		if isvalid(_SynergyReadyDirectorLogic.Tile10025_Enemy) then
+			_SynergyReadyDirectorLogic.Tile10025_Enemy:GetChildByName("Knight").Enable=false
+			_GeneralDirectorLogic:OnOffTileVisible("Knight")
+			--_SynergyDirectorLogic.Tile10025_Enemy:GetChildByName("Knight").SpriteRendererComponent.Color.a=0.5
+		end
+		------------------------------------------------------------------------
+		--준비단계 UI를 보여줍니다
+		_GeneralDirectorLogic:ShowReadyPhaseUI()
+		------------------------------------------------------------------------
+		-- 유닛 정보 UI 위치를 옮깁니다.
+		_UI_UnitInfoPopup:UI_MoveOnPhaseChanged("Ready")
+		------------------------------------------------------------------------
+		--사운드
+		_PlaySoundLogic:PlaySound("M0001")
+		-----------------------------------------------------------------------
+		-- 라운드 결과창 룬카드/코치 연출용 함수
+		_GeneralDirectorLogic:SetResultCoinTable(false, "RC20036", 10)
+		_GeneralDirectorLogic:SetResultCoinTable(false, "RC40003", 10)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayOvertime()
+		self.BattleTime += 15
+		-- 유닛들에게 버프를 주세요!
+		local teamManager = self.Entity.TeamManager
+		--연장전 발생 시 이벤트 전송
+		self.Entity:SendEvent(BattleOverTime())
+		
+		for _, unit in pairs(teamManager.OwnUnits) do
+			if unit.UnitAIWanderComponent.Enable then
+				-- 아군 버프 주기
+				_StatusChangeLogic:GetBuff(unit, "Multi_AttackSpeed", 100, -1)
+				_StatusChangeLogic:GetBuff(unit, "Multi_MoveSpeed", 50, -1)
+				_StatusChangeLogic:GetBuff(unit, "Multi_DealingDamageRate", 50, -1)
+			end
+		end
+		
+		for _, unit in pairs(teamManager.EnemyUnits) do
+			if unit.UnitAIWanderComponent.Enable then
+				-- 적군 버프 주기
+				_StatusChangeLogic:GetBuff(unit, "Multi_AttackSpeed", 100, -1)
+				_StatusChangeLogic:GetBuff(unit, "Multi_MoveSpeed", 50, -1)
+				_StatusChangeLogic:GetBuff(unit, "Multi_DealingDamageRate", 50, -1)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayOvertime_OnClient()
+		self.BattleTime += 15
+		
+		-- 연장전 UI를 활성화합니다.
+		local overtimeUI = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/Panel_Overtime")
+		overtimeUI.Enable = true
+		
+		
+		
+		self.Entity.CoachManager:SetCoachRUID("Angry")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBattle()
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local teamBattleStatistics = user.TeamBattleStatistics
+		-------------------------------------------------------
+		
+		self.Entity:SendEvent(BattleSet(self.RoundType))		-- 에러 아님
+			-- 3초 뒤 전투 단계로 전환합니다.
+		-------------------------------------------------------
+		if self.ModeType == "Tutorial" and self.Stage == 1 and self.Round == 1 then
+			--튜토리얼일 시 잠시 전투 시작하지 않고 대기
+			_TimerService:SetTimerOnce(function() self.Entity.TutorialManager_New:CallAdviceMessage("AD105_1",self.Entity.OwnerId) end,3)
+		else
+			_TimerService:SetTimerOnce(self.GoToNextPhase, 3)
+		end
+		
+		
+		_UnitSetLogic_New:BattleSetting_UnitSet(self.Entity.OwnerId, "Setting")
+		_UnitSetLogic_New:BattleSetting_OnSettingPhase(self.Entity.OwnerId)
+		self.Entity.SynergyManager_New:OnBattleSettingPhase()
+		
+		-------------------------------------------------------
+		-- 팀 체력 정보를 연산하고, 상대팀 닉네임을 결정합니다.
+		-------------------------------------------------------
+		local calculateTotalHP = function(targetFrom)
+			local totalValue = 0
+			for _, unit in pairs(targetFrom) do
+				if unit.UnitInfo:IsOnFieldUnit() then
+					-- 예외처리 : 시즌1. 시간의 신전 '도도'
+					if unit.UnitInfo.charID == "C00002" then
+						continue
+					end
+					
+					totalValue += unit.UnitStatus.MaxHP
+				end
+			end
+			
+			return totalValue
+		end
+		
+		local alliesTotalHP = calculateTotalHP(teamManager.OwnUnits)
+		local enemiesTotalHP = calculateTotalHP(teamManager.EnemyUnits)
+		
+		
+		-- 시즌1. 예티와 페페 예외 처리
+		local synergyManager = self.Entity.SynergyManager_New
+		for _, unit in pairs(synergyManager.S10026_PepeUnits) do
+			if unit.UnitInfo.TeamType == "User" then
+				alliesTotalHP += unit.UnitStatus.MaxHP * 0.5
+			elseif unit.UnitInfo.TeamType == "Enemy" then
+				enemiesTotalHP += unit.UnitStatus.MaxHP * 0.5
+			end
+		end
+		for _, unit in pairs(synergyManager.S10026_YetiUnits) do
+			if unit.UnitInfo.TeamType == "User" then
+				alliesTotalHP += unit.UnitStatus.MaxHP * 0.5
+			elseif unit.UnitInfo.TeamType == "Enemy" then
+				enemiesTotalHP += unit.UnitStatus.MaxHP * 0.5
+			end
+		end
+		
+		local randomEnemyIdx = _UtilLogic:RandomIntegerRange(1, #teamManager.EnemyUnits) 
+		local mainEnemyID = teamManager.EnemyUnits[randomEnemyIdx].UnitInfo.charID
+		local localizationKey = string.format("%s_EnemyName", mainEnemyID)
+		
+		self:InitUI_BattleTeamInfo(mainEnemyID, _UtilLogic:TableToString(self.Entity.TeamManager.EnemyOwnedRunes), enemiesTotalHP, alliesTotalHP, self.Entity.OwnerId)
+		teamBattleStatistics:SetProperty("SetEnemyNameKey", localizationKey)
+		teamBattleStatistics:SetRankCountProperty(string.format("%d-%d", self.Stage, self.Round), 0, "SetBattle")
+		
+		-- 코치 Idle 처리
+		self.Entity.CoachManager:SetCoachRUID("Angry", self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetBattle_OnClient()
+		
+		self.UIGroup_ReadyPhase.Enable = false 
+		self.UIGroup_BattlePhase.Enable = true
+		_EntityService:GetEntityByPath("/ui/Arena_Default/Text_OnFieldUnitsCount").Enable = false
+		_UI_Tooltip:ClearAllTooltipUI()
+		------------------------------------------------------------------------
+		-- Drag중인 유닛이 있는 경우, Drag를 종료합니다.
+		if isvalid(_UnitSetLogic_New.SelectUnit) then
+			_UnitSetLogic_New.SelectUnit.Visible = true 
+			_UnitSetLogic_New.DragSample.Visible = false 
+			_UnitSetLogic_New.SelectUnit = nil
+			
+			_UserService.LocalPlayer.CharacterShopManager_New:UI_ShowSellUI(false, 0)
+			
+			_GeneralDirectorLogic:SetTileDirection_Main("OnDragging", false)
+		end
+		------------------------------------------------------------------------
+		-- Drag중인 아이템이 있는 경우, Drag를 종료
+		if isvalid(_ItemSetLogic.DraggingEntity) then
+			_ItemSetLogic.MouseChaser.Enable = false
+			_ItemSetLogic.DraggingEntity.Visible = true
+			_ItemSetLogic.DraggingEntity = nil
+		end
+		------------------------------------------------------------------------
+		-- Drag중인 룬카드가 있는 경우, Drag를 종료
+		if isvalid(_RuneCardSetLogic.CurrentDraggingEntity) then
+			_RuneCardSetLogic.DragChaser.Enable = false
+			_RuneCardSetLogic.CurrentDraggingEntity.Visible = true
+			_RuneCardSetLogic.CurrentDraggingEntity = nil
+		end
+		------------------------------------------------------------------------
+		-- 현재 단계 알림 팝업을 Ease 애니메이션으로 보여줍니다. 
+		local progressPopupUI = _EntityService:GetEntityByPath("/ui/Arena_Default/ProgressPoup")
+		progressPopupUI:GetChildByName("Text_Phase").TextComponent.Text = "Battle"
+			-- 내려옵니다.
+		local t1 = 0
+		local moveEase = function()
+			t1 += 0.02
+			progressPopupUI.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(300, -300, 0.4, EaseType.QuintEaseOut, t1)
+		end
+		for i=1, 20 do
+			_TimerService:SetTimerOnce(moveEase, 0.02*i)
+		end
+		
+			-- 올라갑니다.
+		local t2 = 0
+		local moveEase2 = function()
+			t2 += 0.02
+			progressPopupUI.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(-300, 300, 0.4, EaseType.BackEaseIn, t2)
+		end
+		for i=1, 20 do
+			_TimerService:SetTimerOnce(moveEase2, 2.4+0.02*i)
+		end
+		------------------------------------------------------------------------
+		-- 타이머 30초 설정
+		self.UI_BattleTimer.TextComponent.Text = "30"
+		
+		-- Progress UI의 사이즈를 조절합니다. (게임모드/라운드/하트 정보를 볼 수 있도록)
+		local ui_progressBar = _EntityService:GetEntityByPath("/ui/Arena_Default/Progress")
+		ui_progressBar.UITweenScale:Play()
+		
+		local ui_progressBarPanel = ui_progressBar:GetChildByName("Panel")
+		ui_progressBarPanel.UITweenScale:Play()
+		
+		-- Progress UI의 트윈스케일 값을 변경합니다.
+		local changetweenscale = function()
+			ui_progressBar.UITweenScale.from.x = 1400
+			ui_progressBar.UITweenScale.to.x = 650
+		
+			ui_progressBarPanel.UITweenScale.from.x = 1400
+			ui_progressBarPanel.UITweenScale.to.x = 650
+			
+			ui_progressBar.UITweenScale.duration = 0.2
+			ui_progressBarPanel.UITweenScale.duration = 0.2
+		end
+		
+		_TimerService:SetTimerOnce(changetweenscale, 0.12)
+		
+		-- Background Enable
+		local bgEntity = _UserService.LocalPlayer.CurrentMap:GetChildByName("TestBackground") --_EntityService:GetEntityByPath("/maps/Arena/TestBackground")
+		local alpha_BG = 0
+		local setBGAlpha = function()
+			alpha_BG += 1/30
+			bgEntity.SpriteRendererComponent.Color.a = alpha_BG
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setBGAlpha, i/30)
+		end
+		------------------------------------------------------------------------
+		--마스코트 보상버튼을 가립니다.
+		local mascot = _UserService.LocalPlayer.CurrentMap:GetChildByName("MascotSynergy"):GetChildByName("MascotEntity")  --_EntityService:GetEntity("17e6364c-8a17-47c9-bb8a-a610cff19e2a")--/maps/Arena/MascotEntity
+		mascot.Parent:GetChildByName("Button_GetReward").Enable=false
+		------------------------------------------------------------------------
+		-- 유닛 정보 UI 위치를 옮깁니다.
+		_UI_UnitInfoPopup:UI_MoveOnPhaseChanged("Battle")
+		------------------------------------------------------------------------
+		--인벤토리 UI와 오른쪽 시너지 리스트 UI를 표시합니다.
+		_GeneralDirectorLogic:ShowBattleUI()
+	end
+
+	@ExecSpace("Client")
+	method void InitUI_BattleTeamInfo(string mainEnemyID, string runeList_str, number enemiesTotalHP, number alliesTotalHP)
+		-- 전투UI 중 '팀 정보' UI를 처음 세팅합니다.
+		--------------------------------------------------
+		local setUI = function(targetUI, nickname, runeList, teamType)
+			local ui_hpBar = targetUI:GetChildByName("HPBar")
+			local ui_hpBarDir = targetUI:GetChildByName("HPBar_Dir")
+			ui_hpBar.SpriteGUIRendererComponent.FillAmount = 1
+			ui_hpBarDir.SpriteGUIRendererComponent.FillAmount = 1
+			
+			local ui_TeamName = targetUI:GetChildByName("TeamName")
+			ui_TeamName.TextComponent.Text = nickname
+			
+			-- 룬 카드 정보 갱신
+			local ui_runeList = targetUI:GetChildByName("RuneList")
+			local runeTable = _DataService:GetTable("RuneInfo")
+			local synergyTable = _DataService:GetTable("SynergyInfo")
+			local colorTable = _DataService:GetTable("GradeColor")
+			local gradeIdx = {["Normal"] = 1, ["Rare"] = 2, ["Epic"] = 3, ["Legendary"] = 4}
+			
+			local runeCardParent = _UserService.LocalPlayer:GetChildByName("RuneCardParent")
+			for i=1, 5 do
+				local ui_runeCard = ui_runeList:GetChildByName(string.format("Rune_%d", i))
+				local ui_sprite = ui_runeCard:GetChildByName("Sprite_ProductBG"):GetChildByName("Sprite_Product")
+		
+				----------------------------------------------------
+				---@type table<string>
+				local runeIDInfo
+				local runeID = ""
+				if isvalid(runeList[i]) then
+					runeIDInfo = _UtilLogic:Split(runeList[i], "_")
+					runeID = runeIDInfo[1]
+				end
+				-- 보유 중인 룬 카드인 경우
+				if _UtilLogic:IsNilorEmptyString(runeID) == false then
+					local row = runeTable:FindRow("RuneID", runeID)
+					local spriteRUID = row:GetItem("IconRUID")
+					local cost = tonumber(row:GetItem("PurchaseCost"))
+					local grade = row:GetItem("Grade")
+					
+					---@type RuneCardComponent
+					local runeCardComponent = nil
+					if teamType == "User" then
+						local runeUID = tonumber(runeIDInfo[2])
+						for j=1, 5 do
+							local runeEntity = runeCardParent:GetChildByName(string.format("PlayerRune%d", j))
+							---@type RuneCardComponent
+							local currentRCCompo = runeEntity:GetComponent(runeID)
+							if isvalid(currentRCCompo) == true and currentRCCompo.UID == runeUID and currentRCCompo.Copied == false then
+								runeCardComponent = currentRCCompo
+								break
+							end
+						end
+						
+						--runeCardComponent = runeCardParent:GetChildByName(string.format("PlayerRune%d", i)).RuneCardComponent
+					elseif teamType == "Enemy" then
+						for j=1, 5 do
+							local runeEntity = runeCardParent:GetChildByName(string.format("EnemyRune%d", j))
+							---@type RuneCardComponent
+							local currentRCCompo = runeEntity:GetComponent(runeID)
+							if isvalid(currentRCCompo) == true and currentRCCompo.Copied == false then
+								runeCardComponent = currentRCCompo
+								break
+							end
+						end
+						
+					end
+					
+					local name = _LocalizationService:GetText("RuneCard_"..runeID.."_Name")
+					local desc_isUseStack = row:GetItem("Desc_UseStack")
+					local desc_isUseString = row:GetItem("Desc_UseString")
+					local desc = ""
+					if desc_isUseStack == "TRUE" then
+						desc = _LocalizationService:GetTextFormat("RuneCard_"..runeID.."_Desc", runeCardComponent.RuneStack)
+					elseif desc_isUseString == "TRUE" then
+						local stringTypeValue = runeCardComponent.RuneStringTypeValue
+						if isvalid(synergyTable:FindRow("SynergyID", stringTypeValue)) then
+							stringTypeValue = synergyTable:FindRow("SynergyID", stringTypeValue):GetItem("Name")
+						else
+							stringTypeValue = _LocalizationService:GetText("RuneCard_AddDesc_"..stringTypeValue)
+						end
+						desc = _LocalizationService:GetTextFormat("RuneCard_"..runeID.."_Desc", stringTypeValue)
+					else
+						desc = _LocalizationService:GetText("RuneCard_"..runeID.."_Desc")
+					end
+					
+					ui_sprite.SpriteGUIRendererComponent.ImageRUID = spriteRUID
+					ui_sprite.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(spriteRUID)["scale"]	
+					ui_sprite.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(spriteRUID)["pos"]
+		
+					ui_runeCard.SpriteGUIRendererComponent.Color = _UI_Color.RuneGrade[grade]
+					
+					ui_runeCard.UI_BattleTeamInfo_RuneButton:SetProperty(name, desc, gradeIdx[grade], cost)
+					
+					-- 비활성화 상태 여부
+					if runeCardComponent.OnActive == true then
+						ui_runeCard:GetChildByName("Tag_Deactivated").Enable = false
+					else
+						ui_runeCard:GetChildByName("Tag_Deactivated").Enable = true
+					end
+					
+					ui_runeCard.Enable = true
+				----------------------------------------------------	
+				-- 빈 칸인 경우
+				else
+					ui_runeCard.Enable = false
+					ui_sprite.SpriteGUIRendererComponent.ImageRUID = ""
+				end
+			end
+		end
+		
+		------------------------------------------------------------------------
+		-- 전투 단계의 룬 카드 스택 정보를 갱신합니다.
+		_UI_Inventory:RefreshUI_BattleRuneList()
+		--------------------------------------------------
+		-- 유저의 팀 정보 UI를 갱신합니다.
+		local ui_userTeamInfo = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/TeamInfo/TeamInfo_User")
+		setUI(ui_userTeamInfo, self.Entity.PlayerComponent.Nickname, self.Entity.TeamManager.OwnRunes, "User")
+		--------------------------------------------------
+		-- 상대의 팀 정보 UI를 갱신합니다.
+		local ui_enemyTeamInfo = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/TeamInfo/TeamInfo_Enemy")
+		setUI(ui_enemyTeamInfo, _LocalizationService:GetText(string.format("%s_EnemyName", mainEnemyID)), _UtilLogic:StringToTable(runeList_str), "Enemy")
+		--------------------------------------------------
+		-- 팀 체력 데이터를 갱신합니다.
+		self.TeamHP_User = alliesTotalHP
+		self.TeamHPMax_User = alliesTotalHP
+		
+		self.TeamHPMax_Enemy = enemiesTotalHP
+		self.TeamHP_Enemy = enemiesTotalHP
+		
+		self:RefreshUI_TeamHPInfo_Barcode()
+		
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_TeamHPInfo(string team, boolean isHPMax, number changedAmount)
+		if team == "User" then
+			if isHPMax then
+				self.TeamHPMax_User += changedAmount
+				self:RefreshUI_TeamHPInfo_Barcode()
+			else
+				self.TeamHP_User += changedAmount
+			end
+			
+			self.UI_UserTeamHPBar.SpriteGUIRendererComponent.FillAmount = self.TeamHP_User / self.TeamHPMax_User
+			self.UI_UserTeamHPBar_dir.UI_HPShrinkBar.ShrinkTime = 1
+		else
+			if isHPMax then
+				self.TeamHPMax_Enemy += changedAmount
+				self:RefreshUI_TeamHPInfo_Barcode()
+			else
+				self.TeamHP_Enemy += changedAmount
+			end
+			
+			self.UI_EnemyTeamHPBar.SpriteGUIRendererComponent.FillAmount = self.TeamHP_Enemy / self.TeamHPMax_Enemy
+			self.UI_EnemyTeamHPBar_dir.UI_HPShrinkBar.ShrinkTime = 1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshUI_TeamHPInfo_ByCalculate()
+		local userUnits = self.Entity.TeamManager.OwnUnits
+		local enemyUnits = self.Entity.TeamManager.EnemyUnits
+		
+		
+		local userHPMax = 0
+		local userHP = 0
+		local enemyHPMax = 0
+		local enemyHP = 0
+		
+		
+		for _, unit in pairs(userUnits) do
+			if unit.UnitStatus.state == "dead" then
+				userHPMax += unit.UnitStatus.MaxHP	
+				log(unit.UnitInfo.charID, "dead 상태 --> maxHP + ",  unit.UnitStatus.MaxHP)
+			elseif unit.UnitInfo:IsOnFieldUnit() then
+				userHPMax += unit.UnitStatus.MaxHP
+				userHP += unit.UnitStatus.HP
+				
+				log(unit.UnitInfo.charID, "on field unit --> maxHP + ",  unit.UnitStatus.MaxHP, ", HP + ", unit.UnitStatus.HP)
+			end
+		end
+		
+		for _, unit in pairs(enemyUnits) do
+			enemyHPMax += unit.UnitStatus.MaxHP
+			enemyHP += unit.UnitStatus.HP
+		end
+		
+		self.TeamHP_User = userHP
+		self.TeamHPMax_User = userHPMax
+		self.TeamHP_Enemy = enemyHP
+		self.TeamHPMax_Enemy = enemyHPMax
+		
+		self.UI_UserTeamHPBar.SpriteGUIRendererComponent.FillAmount = self.TeamHP_User / self.TeamHPMax_User
+		self.UI_UserTeamHPBar_dir.UI_HPShrinkBar.ShrinkTime = 1
+		
+		self.UI_EnemyTeamHPBar.SpriteGUIRendererComponent.FillAmount = self.TeamHP_Enemy / self.TeamHPMax_Enemy
+		self.UI_EnemyTeamHPBar_dir.UI_HPShrinkBar.ShrinkTime = 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartBattle()
+		self.BattleTime = 30
+		_UnitSetLogic_New:BattleSetting_OnBattlePhase(self.Entity.OwnerId)
+			
+		self.Entity:SendEvent(BattleStart(self.RoundType))	-- 에러 아님
+	end
+
+	@ExecSpace("Client")
+	method void StartBattle_OnClient()
+		self.BattleTime = 30
+		local calculateTeamHPSync = function()
+		    self:RefreshUI_TeamHPInfo_ByCalculate()
+		end
+		--self.TeamHPUpdateTimer = _TimerService:SetTimerRepeat(calculateTeamHPSync, 1, 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Clean()
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local teamBattleStatistics = user.TeamBattleStatistics
+		-------------------------------------------------------
+		teamBattleStatistics:SetRankCountProperty(string.format("%d-%d", self.Stage, self.Round), 0, "EndBattle")
+		
+		self.Entity:SendEvent(BattleEnd(self.RoundType))		-- 에러 아님
+		self.IsPlayedOvertime = false
+		
+		-- 장착된 임시 아이템을 제거합니다.
+		_ItemSetLogic:WithdrawCopiedItem(self.Entity)
+		
+		-- 전투 종료 관련 처리합니다. (버프 및 상태이상 제거 등)
+		_UnitSetLogic_New:BattleSetting_UnitSet(self.Entity.OwnerId, "Clean")
+		
+		-- 일회성 유닛들을 제거합니다.
+		self.Entity.TeamManager:DespawnOnetimeUnits()
+		
+		-- 3초 뒤 준비 단계로 전환합니다.
+		--_TimerService:SetTimerOnce(self.GoToNextPhase, 3)
+	end
+
+	@ExecSpace("Client")
+	method void Clean_OnClient()
+		-- 연장전 UI를 끕니다.
+		local overtimeUI = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/Panel_Overtime")
+		overtimeUI.Enable = false
+		
+		
+		-- Background Disable
+		local bgEntity = _UserService.LocalPlayer.CurrentMap:GetChildByName("TestBackground") --_EntityService:GetEntityByPath("/maps/Arena/TestBackground")
+		local alpha_BG = 1
+		local setBGAlpha = function()
+			alpha_BG -= 1/30
+			bgEntity.SpriteRendererComponent.Color.a = alpha_BG
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setBGAlpha, 1+i/30)
+		end 
+		
+		-- TeamHPUpdate를 끕니다.
+		if self.TeamHPUpdateTimer > 0 then
+			_TimerService:ClearTimer(self.TeamHPUpdateTimer)
+			self.TeamHPUpdateTimer = 0
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		if name == "Stage" or name == "Round" then
+			_EntityService:GetEntityByPath("/ui/Arena_Default/Progress/Text_Round").TextComponent.Text = string.format("%d-%d", self.Stage, self.Round)
+			
+			if name=="Stage" then
+				_BackgroundChangeLogic:SetNodeForce(self.Stage)
+				--_PlaySoundLogic:PlayBGM_Ver2(self.Stage)
+				_BackgroundChangeLogic:SetBg(self.Stage)
+			end
+			
+			-- (1-1 라운드)에서는 통계를 열 수 없습니다.
+			if self.Stage == 1 and self.Round == 1 then
+				_EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/Button_Statistics").ButtonComponent.Enable = false
+			else
+				_EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/Button_Statistics").ButtonComponent.Enable = true
+			end
+			
+			self.Entity.TeamManager:OnSyncProperty("Level", nil)
+		---------------------------------------------------------
+		elseif name == "PhaseType" then
+			local phaseText = _EntityService:GetEntityByPath("/ui/Arena_Default/Progress/Text_Phase")
+			phaseText.TextComponent.Text = _LocalizationService:GetText("PhaseType_"..self.PhaseType)
+		---------------------------------------------------------
+		elseif name == "ModeType" or name == "ModeLevel" then
+			if self.ModeType == "" or self.ModeLevel == 0 then
+				return
+			end
+			
+			_UI_Tooltip:SetGameModeInfo(self.ModeLevel, self.ModeType)
+			
+			---@type MODUserDataSet
+			local modeInfo = nil
+			if self.ModeType == "Rank" then
+				modeInfo = _DataService:GetTable("RankModeInfo")
+			else
+				modeInfo = _DataService:GetTable("SingleModeInfo")
+			end
+			
+			local ui_modeIcon = _EntityService:GetEntityByPath("/ui/Arena_Default/Progress/GameMode")
+			ui_modeIcon.SpriteGUIRendererComponent.ImageRUID = 
+				modeInfo:FindRow("Level", string.format("%d", self.ModeLevel)):GetItem("IconRUID") 
+		---------------------------------------------------------
+		elseif name == "SetSavedData"  or name == "NeedDataLoadType" or name == "NeedDataLoadLevel" or name == "NeedDataLoadStage" or name == "NeedDataLoadRound" then
+			_UI_LobbyHUD:RefreshUI_LobbyHUD_GameStart()
+			--self:SetLobbyHUD_HasSavedData()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBattleResult(boolean win, number surviveUnitCount)
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local coachManager = user.CoachManager
+		local userPControl = user.TM_PropertyControl
+		local rewardTable=self.RewardTable
+		---------------------------------------------
+		-- 배틀의 승패 및 남은 유닛 수에 따라 체력을 깎습니다.
+		-- 연승/연패 데이터를 저장합니다.
+		---------------------------------------------
+		user.SynergyManager_New:OnBattleEnd()
+		---------------------------------------------
+		-- 승리 했을 때
+		---@type table<string, number>
+		self.RewardTable = {
+			["Default"] = userPControl.Golds_baseReward,	-- 기본 보상
+			["Interest"] = math.min(math.max(0, userPControl.Golds_MaxInterestReward), math.floor(teamManager.Golds/5)),	-- 이자
+			["WinningBonus"] = 0,	-- 승리 보너스
+			["RuneCard"] = userPControl.Golds_BattleReward_Win + userPControl.Golds_BattleReward,	-- 룬 카드 보너스
+		}
+		--------------------------------------------
+		-- 패배 했을 때
+		if not win then
+			self.RewardTable["RuneCard"] = userPControl.Golds_BattleReward_Lose + userPControl.Golds_BattleReward
+			coachManager:SetBattleResultRUID(false, user.OwnerId)
+		end
+		---------------------------------------------
+		if win then
+			coachManager:SetBattleResultRUID(true, user.OwnerId)
+			local roundIdx = (self.Stage-1)*3 + self.Round
+			user.TeamBattleStatistics:SetProperty("SetRoundResult", "W")
+			user:SendEvent(BattleWin(surviveUnitCount))	-- 에러 아님
+		
+			-- 일일 미션 : 라운드 승리
+			_TimerService:SetTimerOnce(function()
+				if string.sub(self.ModeType, 1, 6) == "Single" then
+					self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10014", self.ModeLevel, 1)
+				end
+			end, 0.5)
+		else
+			local roundIdx = (self.Stage-1)*3 + self.Round
+			user.TeamBattleStatistics:SetProperty("SetRoundResult", "L")
+			user:SendEvent(BattleLose(surviveUnitCount))	-- 에러 아님
+			self.RewardTable["Default"] += userPControl.Golds_baseReward_Lose	-- 패배 보너스 골드 추가
+			
+			teamManager:AddTeamHP(-1)
+		end
+		------------------------------------------------------------------------------------------
+		-- 현재 상황에 따라 돈을 얻습니다.
+		-- 기본 획득 소지금
+		-- 현재 소지금에 대한 이자 (10원당 1원, 최대 5원)
+		-- 연승/연패에 따라 획득하는 돈
+		---------------------------------------------
+		-- 생존한 아군 수에 비례한 돈
+		if win then
+			local survivorBonusCount = 0
+			local unitsParent = _UnitSetLogic_New.UnitsParentEntity[self.Entity.OwnerId]
+			
+			for _, unit in pairs(unitsParent.Children) do
+				local teamType = unit.UnitInfo.TeamType
+				
+				if teamType == "User" 
+				and unit.UnitInfo.use
+				and unit.UnitStatus.HP > 0
+				and not unit.UnitInfo.IsOnetimeUnit
+				and unit.UnitInfo:IsOnFieldUnit() 
+				and unit.UnitInfo.IsResellable then
+					survivorBonusCount += 1 
+				end
+			end
+			
+			if survivorBonusCount >= 3 then
+				-- 라나(RC20036) : 아군 유닛이 셋 이상 생존한 채로 승리한 경우, 10코인을 획득합니다.
+				local checkCount = teamManager:GetRuneCardCount("RC20036")
+				if checkCount > 0 then
+					self.RewardTable["RuneCard"] += 10 * checkCount
+					
+					-- 라운드 결과창 룬카드/코치 연출용 함수
+					_GeneralDirectorLogic:SetResultCoinTable(true, "RC20036", 10 * checkCount, user.PlayerComponent.UserId)
+				end
+				
+				-- 팬텀(RC40003) + 라나
+				if teamManager:GetRuneCardCount("RC40003") > 0 then
+					local runeCardParent = self.Entity:GetChildByName("RuneCardParent")
+					for i=1, 5 do
+						local playerRune = runeCardParent:GetChildByName(string.format("PlayerRune%d", i))
+						if isvalid(playerRune.RC40003) and playerRune.RC40003.CopyRuneID == "RC20036" then
+							self.RewardTable["RuneCard"] += 10
+							
+							-- 라운드 결과창 룬카드/코치 연출용 함수
+							_GeneralDirectorLogic:SetResultCoinTable(true, "RC40003", 10, user.PlayerComponent.UserId)
+						end
+					end
+				end
+			end
+				
+			--getGolds += surviveUnitCount	-- 보상에 소환수 포함하는 경우
+			self.RewardTable["WinningBonus"] = survivorBonusCount
+			user.TeamBattleStatistics:SetRankCountProperty("CT10004", survivorBonusCount, "Add")
+		end
+		
+		-- PEN10006 : 더 이상 이자를 받지 못하고, 대신 생존한 아군 수의 비례한 보상이 100% 증가합니다.
+		if userPControl.Penalty_SetCheck["PEN10006"] > 0 then
+			self.RewardTable["WinningBonus"] *= 2
+			self.RewardTable["Interest"] = 0
+		end
+		---------------------------------------------
+		--업적: 전투 종료 후 진행도 체크하는 업적 처리  
+		_AchievementService:BattleEnd(win,self.ModeType,self.ModeLevel,self.Stage,self.Round,self.Round8_3Num,user)
+		---------------------------------------------
+		-- 탈락한 경우, 라운드 종료 UI 없이 즉시 게임 종료 UI 발생
+		if teamManager.HP <= 0 then
+			_TimerService:SetTimerOnce(self.GoToNextPhase, 1)
+			--self:GoToNextPhase()
+		else
+			-- 우승한 경우, 라운드 종료 UI 없이 즉시 게임 종료 UI 발생
+			if win and self.Stage == 8 and self.Round == 3 then
+				_TimerService:SetTimerOnce(self.GoToNextPhase, 1)
+				--self:GoToNextPhase()
+				
+			else
+				self:SetUI_BattleOver(_UtilLogic:TableToString(self.RewardTable), win,self.Entity.OwnerId)
+				self.Entity:SendEvent(BattleReward(self.RewardTable))	-- 에러 아님
+			end
+		end
+		
+		--로그 기록용 시간 측정 등록 & 초기화
+		local roundKey = string.format("%d-%d", self.Stage, self.Round)
+		self.ReadyTimeRecord[roundKey] = self.ReadyTime
+		self.ReadyTime = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetGameOver(boolean win)
+		-- 아직 패자 부활권을 사용할 기회가 남았다면
+		if win == false and self.UsedRepechage == false then
+			self.PhaseType = "Repechage"
+			self.UsedRepechage = true
+			
+			self:SetUI_Repechage(self.Entity.OwnerId)
+			return
+		end
+		
+		----------------------------------------------
+		self.PhaseType = "End"
+		local user = self.Entity
+		local userID = user.OwnerId
+		----------------------------------------------
+		_InGameInfoDataLogic:SaveGameEndData(user, win)
+		----------------------------------------------
+		-- 클리어 시, 시즌과 차수 기준으로 데이터 저장
+		local rankResults = {}
+		local mType = _UtilLogic:Split(self.ModeType, "_")
+		local isInitClear = false
+		if self.ModeType == "Rank" then
+			_ModeDataLogic:CheckFirstRank(userID)
+			if win then
+				isInitClear = _ModeDataLogic:SaveModeClearCountData(self.ModeType, self.ModeLevel, userID)
+			end
+			rankResults = _ModeDataLogic:SaveRankModeScoreData(win, self.ModeLevel, self.Stage, self.Round, userID)
+		elseif mType[1] == "Single" then
+			local modeSeasonNum = 0
+			if isvalid(mType[2]) then
+				modeSeasonNum = tonumber(mType[2])
+			end
+			
+			if win then
+				isInitClear = _ModeDataLogic:SaveModeClearCountData(self.ModeType, self.ModeLevel, userID)
+				self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10002", self.ModeLevel, 1)
+			end
+		elseif mType[1] == "Challenge" then
+			local chNum = mType[2]
+			
+			if win then
+				-- 챌린지 클리어 기록 남기기
+				isInitClear = _ModeDataLogic:SaveModeClearCountData(self.ModeType, self.ModeLevel, userID)
+				self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10015", self.ModeLevel, 1)
+			end
+		end
+		
+		if win then
+			_ModeDataLogic:SaveClearStageNumData(self.ModeType, 0, userID)
+		else
+			_ModeDataLogic:SaveClearStageNumData(self.ModeType, self.Stage, userID)
+		end
+		
+		--게임 플레이 도중 하루가 지났을 경우를 위해 로그인 체크 
+		_AchievementService:UpdateProgress_Graduate("AC001001",1,self.Entity)
+		-----------------------------------------------
+		-- 플레이 동안 완료해야 하는 조건을 가진 업적들 초기화
+		self.Entity.AchievementManager:Init_AchieveStack("all")
+		
+		-- 클리어 시, 업적 데이터 저장 
+		_PlayerDataLogic:SetPlayerAchievementData(self.Entity)
+		_PlayerDataLogic:SetPlayerAchievementCategoryData(self.Entity)
+		------------------------------------------------------------------------------------------------
+		
+		
+		--self.Entity.BackLogDataComponent:SetCoachLog()
+		
+		---------------------------------------
+		-- 단판 게임 보상을 지급합니다. 
+		---------------------------------------
+		local playerDataCompo = user.PlayerDataComponent
+		local rewardRate = 1
+		
+		if win == false then -- 도달 라운드에 비례한 보상 비율을 결정합니다.
+			if self.Stage < 4 then
+				rewardRate = 0
+			else
+				local rewardRateTable = _DataService:GetTable("GameRewardRateByClearRound")
+				local row = rewardRateTable:FindRow("Round", string.format("%d-%d", self.Stage, self.Round))
+				rewardRate = tonumber(row:GetItem("RewardRate"))
+			end
+		end
+		
+		-- 시럽 보상 (※ 시럽은 기본 보상이 200개로 고정)
+		local syrup_default = math.floor(200 * rewardRate) -- 시럽 보상
+		
+		-- 경험치 보상
+		local exp_default = _PlayerLevelLogic:GetRewardEXPAmount(self.ModeType, self.ModeLevel) * rewardRate
+		
+		local syrup_extra = 0
+		local exp_extra = 0
+		-- 최초 클리어 시 기본 보상의 2.4배 지급
+		if isInitClear == true then
+			log("최초 클리어!")
+			syrup_extra = syrup_default * 2.4
+			exp_extra = exp_default * 2.4
+		end
+		
+		-- 보상 획득 처리합니다.
+		playerDataCompo:AddSyrup("Syrup", syrup_default + syrup_extra, "PlayGame")
+		local expInfo = {
+			["BeforeLevel"] = playerDataCompo.Level,
+			["BeforeEXP"] = playerDataCompo.EXP,
+			["RewardEXP"] = exp_default + exp_extra,
+			["LevelUpAmount"] = playerDataCompo:AddEXP(exp_default + exp_extra,"PlayGame"),
+			["remainEXP"] = playerDataCompo.EXP
+		}
+		----------------------------------------------
+		-- 도감 보상 지급
+		self.Entity.PlayerCollectionDataComponent:GetGameOverUnitSet(self.Entity.TeamManager.OwnUnits, tostring(self.ModeSetVersion))
+		self.Entity.PlayerCollectionDataComponent:GetGameOverSynergySet(self.Entity.TeamManager.OnFieldSynergy, tostring(self.ModeSetVersion))
+		_PlayerDataLogic:SetPlayerFavoriteDicData(self.Entity)
+		----------------------------------------------
+		local syrupRewardText = string.format("%d,%d", syrup_default, syrup_extra)
+		local expRewardText = string.format("%d,%d", exp_default, exp_extra)
+		self:SetUI_GameOver(win, syrupRewardText, expRewardText, _UtilLogic:TableToString(expInfo), _UtilLogic:TableToString(rankResults), self.Entity.OwnerId)
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_GameOver(boolean win, string syrupReward, string expRewards, string expInfo_str, string rankResults_str)
+		------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------
+		-- 게임 결과 UI의 내용을 갱신합니다.
+		--------------------------------------------------------------------
+		local ui_gameResultPanel = _EntityService:GetEntityByPath("/ui/GameResultGroup")
+		
+		local ui_resultPanel = ui_gameResultPanel:GetChildByName("GameResultPanel")
+		local ui_title = ui_resultPanel:GetChildByName("Title")
+		local ui_winParticle = ui_resultPanel:GetChildByName("Particle_light")
+		local ui_loseParticle = ui_resultPanel:GetChildByName("Particle_Fog")
+		
+		local ui_message = ui_gameResultPanel:GetChildByName("Message")
+		
+		
+		local ui_buttonPanel = ui_gameResultPanel:GetChildByName("ButtonPanel")
+		
+		if win then
+			-- 이미지로 대체 예정
+			ui_title.TextComponent.Text = _LocalizationService:GetText("Victory")	
+			ui_title.TextComponent.FontColor = Color.FromHexCode("#FFEC6B")
+			
+			ui_message.TextComponent.Text = _LocalizationService:GetText("VictoryMessage")
+			ui_message.TextComponent.FontColor = Color.FromHexCode("#e9be1b")
+			
+			ui_winParticle.Enable = true
+			ui_loseParticle.Enable = false
+		else 
+			-- 이미지로 대체 예정
+			ui_title.TextComponent.Text = _LocalizationService:GetText("Fail")
+			ui_title.TextComponent.FontColor = Color.FromHexCode("#ff8774")
+			
+			ui_message.TextComponent.Text = _LocalizationService:GetText("FailMessage")
+			ui_message.TextComponent.FontColor = Color.FromHexCode("#ce4025")
+			
+			ui_winParticle.Enable = false
+			ui_loseParticle.Enable = true
+		end
+		
+		
+		------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------
+		-- 게임 결과 UI 관련 애니메이션
+		ui_gameResultPanel.CanvasGroupComponent.GroupAlpha = 0
+		ui_gameResultPanel.UITransformComponent.anchoredPosition.y = -50
+		ui_message.TextComponent.FontColor.a = 0
+		ui_message.UITransformComponent.anchoredPosition.y = -50
+		ui_buttonPanel.CanvasGroupComponent.GroupAlpha = 0
+		ui_buttonPanel.UITransformComponent.anchoredPosition.y = -70
+		
+		local buttons = ui_buttonPanel.Children
+		for _, uiEntity in pairs(buttons) do
+			if isvalid(uiEntity.ButtonComponent) then
+				uiEntity.ButtonComponent.Enable = false
+			end
+		end
+		
+		local t1 = 0
+		local moveMain = function()
+			t1 += 1/30
+			ui_gameResultPanel.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(-125, -50, 1, EaseType.QuintEaseOut, t1)
+			ui_gameResultPanel.CanvasGroupComponent.GroupAlpha = t1
+		end
+		
+		local t2 = 0
+		local moveMessage = function()
+			t2 += 1/30
+			ui_message.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(-125, -50, 1, EaseType.QuintEaseOut, t2)
+			ui_message.TextComponent.FontColor.a = t2
+		end
+		
+		local t3 = 0
+		local moveButtonPanel = function()
+			t3 += 1/30
+			ui_buttonPanel.UITransformComponent.anchoredPosition.y = _TweenLogic:Ease(-145, -70, 1, EaseType.QuintEaseOut, t3)
+			ui_buttonPanel.CanvasGroupComponent.GroupAlpha = t3
+			
+			if t3 >= 0.99 then
+				for _, uiEntity in pairs(buttons) do
+					if isvalid(uiEntity.ButtonComponent) then
+						uiEntity.ButtonComponent.Enable = true
+					end
+				end
+			end
+		end
+		
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(moveMain, i/60) 					-- 0 	~ 0.5초
+			_TimerService:SetTimerOnce(moveMessage, 0.5 + i/60) 		-- 0.5 	~ 1초
+			_TimerService:SetTimerOnce(moveButtonPanel, 1 + i/60) 		-- 1 	~ 1.5초
+		end
+		
+		ui_gameResultPanel.Enable = true
+		------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------
+		--사전 초기화
+		--_DictionaryManager:Initialize()
+		------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------
+		-- 로비에 나가면 보이는 게임 결과 창을 세팅합니다. (인게임에서 미리 세팅해둡니다.)
+		_UI_GameResult:SetUI_GameResultPanel(syrupReward, expRewards, win, expInfo_str, rankResults_str)
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_BattleOver(string rewardTable_str, boolean win)
+		-- 매 전투 종료 시마다 획득한 보상을 확인하는 팝업을 발생시킵니다.
+		--------------------------------------------------
+		local rewardTable = _UtilLogic:StringToTable(rewardTable_str)
+		--------------------------------------------------
+		local ui_parent = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/Panel_BattleResult")
+		local ui_title = ui_parent:GetChildByName("Panel_Title")
+		local ui_result = ui_parent:GetChildByName("Panel_Result")
+		--------------------------------------------------
+		local ui_resultTitle = ui_title:GetChildByName("Text_Result")
+		local ui_roundText = ui_title:GetChildByName("Text_Round")
+		
+		ui_roundText.TextComponent.Text = string.format("%d   -   %d", self.Stage, self.Round)
+		--------------------------------------------------
+		-- 승패에 따라 ui_title의 내용을 변경
+		if win then
+			ui_title.SpriteGUIRendererComponent.OutlineColor = Color.FromHexCode("#39e8a4") -- 이미지로 대체 예정
+			
+			ui_resultTitle.TextComponent.Text = _LocalizationService:GetText("Win")	-- 이미지로 대체 예정
+			ui_resultTitle.TextComponent.FontColor = Color.FromHexCode("#39e8a4")
+			
+			ui_roundText.TextComponent.FontColor = Color.FromHexCode("#39e8a4")
+		else
+			ui_title.SpriteGUIRendererComponent.OutlineColor = Color.FromHexCode("#ffa055") -- 이미지로 대체 예정
+			
+			ui_resultTitle.TextComponent.Text = _LocalizationService:GetText("Lose")	-- 이미지로 대체 예정
+			ui_resultTitle.TextComponent.FontColor = Color.FromHexCode("#ffa055")
+			
+			ui_roundText.TextComponent.FontColor = Color.FromHexCode("#ffa055")
+		end
+		--------------------------------------------------
+		-- 승패에 따라 RoundMap 내용을 변경함
+		local ui_roundMap = ui_title:GetChildByName("RoundMap")
+		
+		local setNodeDefault = function(node)
+			node:GetChildByName("Default").Enable = true
+			node:GetChildByName("Win").Enable = false
+			node:GetChildByName("Lose").Enable = false
+		end
+		
+		local setNodeWin = function(node)
+			node:GetChildByName("Default").Enable = false
+			node:GetChildByName("Win").Enable = true
+			node:GetChildByName("Lose").Enable = false
+		
+		end
+		
+		local setNodeLose = function(node)
+			node:GetChildByName("Default").Enable = false
+			node:GetChildByName("Win").Enable = false
+			node:GetChildByName("Lose").Enable = true
+		end
+		
+		-- node
+		for i=1, 3 do
+			local node = ui_roundMap:GetChildByName(string.format("Node_%d", i))
+			local link = ui_roundMap:GetChildByName(string.format("Link_%d", i))
+			if i == self.Round then
+				if win then
+					setNodeWin(node)
+					setNodeWin(link)
+				else
+					setNodeLose(node)
+					setNodeLose(link)
+				end
+			elseif i > self.Round then
+				setNodeDefault(node)
+				setNodeDefault(link)
+			else
+				local roundKey = string.format("%d-%d", self.Stage, i)
+				local roundResult = self.Entity.TeamBattleStatistics.SetRoundResult[roundKey]
+				if roundResult == "W" then
+					setNodeWin(node)
+					setNodeWin(link)
+				else
+					setNodeLose(node)
+					setNodeLose(link)
+				end
+			end
+		end
+		
+		local ui_particle = ui_roundMap:GetChildByName("Particle")
+		if self.Round == 3 then
+			ui_particle.Enable = false
+		else
+			ui_particle.Enable = true
+			ui_particle.UITransformComponent.anchoredPosition.x = -60 + 120 * (self.Round-1)
+			if win then
+				ui_particle.UIBasicParticleComponent.Color = Color.FromHexCode("#39e8a4")
+			else
+				ui_particle.UIBasicParticleComponent.Color = Color.FromHexCode("#ffa055")
+			end
+		end
+		--------------------------------------------------
+		-- 1. 배경이 점차 불투명해짐 (구간: 0 ~ 0.3초)
+		local ui_bgPanel = ui_parent:GetChildByName("blackPanel")
+		local ui_fog = ui_parent:GetChildByName("Particle_Fog")
+		local alpha1 = 0
+		ui_bgPanel.SpriteGUIRendererComponent.Color.a = 0
+		
+		ui_fog.UIAreaParticleComponent.Color.a = 0
+		
+		local setBgColor = function()
+			alpha1 += 1/30
+			ui_bgPanel.SpriteGUIRendererComponent.Color.a = alpha1 * 0.5
+			ui_fog.UIAreaParticleComponent.Color.a = alpha1
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setBgColor, i/90)
+		end
+		--------------------------------------------------
+		-- 2. ui_title 이 밑에서 올라옴 (구간: 0.2초 ~ 0.5초)
+		ui_title.UITransformComponent.anchoredPosition.y = -1200
+		ui_result.UITransformComponent.anchoredPosition.y = -1200
+		local frame = 0
+		local moveTitle = function()
+			frame += 1/15
+			local movedPos = _TweenLogic:Ease(-1200, 0, 1, EaseType.CubicEaseOut, frame)
+			ui_title.UITransformComponent.anchoredPosition.y = movedPos
+			ui_result.UITransformComponent.anchoredPosition.y = movedPos
+		end
+		for i=1, 15 do
+			_TimerService:SetTimerOnce(moveTitle, 0.2 + 0.02*i)
+		end
+		
+		--------------------------------------------------
+		-- 2. ui_title을 왼쪽으로 밀고, ui_result를 오른쪽으로 미는 연출 (구간: 1.02초 ~ 1.5초)
+		ui_title.UITransformComponent.anchoredPosition.x = 0
+		ui_result.UITransformComponent.anchoredPosition.x = 0
+		local t3 = 0
+		local movePanel = function()
+			t3 += 0.02
+			local easeX = _TweenLogic:Ease(0, 250, 0.5, EaseType.SineEaseOut, t3)
+			ui_title.UITransformComponent.anchoredPosition.x = -easeX
+			ui_result.UITransformComponent.anchoredPosition.x = easeX
+		end
+		for i=1, 25 do
+			_TimerService:SetTimerOnce(movePanel, 1+0.02*i)
+		end
+		--------------------------------------------------
+		-- ui_result에 표시할 내용들을 미리 가져옵니다.
+		local list_UITextReward = {
+			ui_result:GetChildByName("Text_Reward_Default"),
+			ui_result:GetChildByName("Text_Reward_Interest"),
+			ui_result:GetChildByName("Text_Reward_Winning"),
+			ui_result:GetChildByName("Text_Reward_RuneCard"),
+		}
+		local reward = {
+			rewardTable["Default"],
+			rewardTable["Interest"],
+			rewardTable["WinningBonus"],
+			rewardTable["RuneCard"],
+		}
+		for i=1, 4 do
+			list_UITextReward[i].TextComponent.Text = "-"
+		end
+		ui_result:GetChildByName("Text_TotalResult").TextComponent.Text = "-"
+		--------------------------------------------------
+		-- 3. ui_result 내 결과들을 점차적으로 공개 (구간: 2.1 ~ 2.5초)
+		local t5 = 0
+		local setRewardText = function()
+			t5 += 1
+			list_UITextReward[t5].TextComponent.Text = string.format("%d", reward[t5])
+			
+			-- 룬 카드 효과를 표시할 때 카드 연출 적용
+			if t5==4 then
+				_GeneralDirectorLogic:ShowResultCoins({win})
+				
+			elseif t5==2 then
+				if rewardTable["Interest"] > 5 then
+					--룬 카드 효과 적용
+					_RuneCardDirector:BattleResultDirector("interest",rewardTable["Interest"]-5)
+				end
+			end
+		end
+		for i=1, 4 do
+			_TimerService:SetTimerOnce(setRewardText, 2 + 0.1*i)
+		end
+		--------------------------------------------------
+		-- 5. 최종 결과를 공개 (구간: 2.5초 ~ 3.17초)
+		local totalReward = 0
+		for i=1, #reward do
+			totalReward += reward[i]
+		end
+		ui_result:GetChildByName("Text_TotalResult").TextComponent.Text = "0"
+		
+		local reward_frame = 0
+		local setTotalReward = function()
+			reward_frame += 1/30
+		
+			local easingReward = _TweenLogic:Ease(0, totalReward, 1, EaseType.CircEaseOut, reward_frame)
+			ui_result:GetChildByName("Text_TotalResult").TextComponent.Text = string.format("%d", easingReward)
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setTotalReward, 2.5 + i/45)
+		end
+		--------------------------------------------------
+		-- 6. OK 버튼 공개 (구간: 2.5초 ~ 3.5초)
+		local ui_okButton = ui_result:GetChildByName("Button_OK")
+		
+		--다음 라운드인지, 스테이지인지 버튼 내용 변경(임시로 사용하는거라 로컬라이징은 안함)
+		if self.Round<3 then
+			ui_result:GetChildByName("Button_OK").TextComponent.Text = "GoToNextRound"
+			--ui_result:GetChildByName("Button_OK").SpriteGUIRendererComponent.ImageRUID="250ad9f22ed55ce44bdaa1d206563fc7"
+		else
+			ui_result:GetChildByName("Button_OK").TextComponent.Text = "GoToNextStage"
+			--ui_result:GetChildByName("Button_OK").SpriteGUIRendererComponent.ImageRUID="081281c836bed4f4681e2baac90f726d"
+		end
+		
+		ui_okButton.ButtonComponent.Enable = false
+		ui_okButton.CanvasGroupComponent.GroupAlpha = 0
+		local t6 = 0
+		local setOKButtonAlpha = function()
+			t6 += 0.02
+			ui_okButton.CanvasGroupComponent.GroupAlpha = t6
+		end
+		for i=1, 50 do
+			_TimerService:SetTimerOnce(setOKButtonAlpha, 2.5+0.02*i)
+		end
+		
+		local setOKButtonEnable = function()
+			ui_okButton.ButtonComponent.Enable = true
+		end
+		_TimerService:SetTimerOnce(setOKButtonEnable, 3.5)
+		-------------------------------------------------------
+		ui_parent.Enable = true
+		
+		--코인 연출
+		--_GeneralDirectorLogic:PlayCoinDirector_Sprite(totalReward,nil,"RoundResult")
+		-------------------------------------------------------
+	end
+
+	@ExecSpace("Server")
+	method void MoveToArena(Entity user, number modeVersion, string modeType, number modeLevel, boolean needLoad)
+		----------------------------------------------------------
+		local userId = user.OwnerId
+		----------------------------------------------------------
+		-- 조건 검증
+		local mType = _UtilLogic:Split(modeType, "_")
+		
+		-- 1. 유저인지 체크
+		if (senderUserId ~= nil) and (user.OwnerId ~= senderUserId) then
+			log("client에서 phase 변경 요청했으나, 오너가 다름")
+			return
+		end
+		
+		-- 1-2. 입장 시도한 난이도가 입장 가능한 레벨인지
+		local clearedLevel = 0
+		if modeType == "Rank" then
+			clearedLevel = user.PlayerDataComponent.ClearLevelByMode[string.format("Rank_%d_%d", _ModeDataLogic.Season, _ModeDataLogic.OrdinalNumber)]
+			if clearedLevel == nil then
+		        --log_error("clearedLevel이 nil입니다.")
+		        --log_error("_ModeDataLogic.Season = ",_ModeDataLogic.Season, ", _ModeDataLogic.OrdinalNumber = ", _ModeDataLogic.OrdinalNumber)
+				clearedLevel = 0
+			end
+			
+			modeLevel = clearedLevel + 1
+			
+			if modeLevel < 1 then
+				modeLevel = 1
+			elseif modeLevel > 20 then
+				modeLevel = 20
+			end
+		else
+			clearedLevel = user.PlayerDataComponent.ClearLevelByMode[modeType]
+			log("clearedLevel =", clearedLevel)
+			if not isvalid(clearedLevel) then
+				clearedLevel = 0
+			end
+			
+			if clearedLevel < (modeLevel-1) then
+				log_error("입장이 불가능한 레벨입니다.")
+				return
+			end 
+			
+		end
+		
+		-- 1-3. (랭크 모드인 경우) 접속 가능한 시간인지, (미적용) 계정 레벨이 X 이상인지
+		if modeType == "Rank" then
+			local leftTimeToNextOrdinalUpdate = _ModeDataLogic:GetLeftTimeToNextOrdinal()
+			if leftTimeToNextOrdinalUpdate["days"] <= 0 and leftTimeToNextOrdinalUpdate["hours"] <= 0 then
+				_UIToast:ShowMessageByLocalizingKey("Ranking_CoolTime", userId)
+				_ModeDataLogic:RefreshUI_RankModeButton(self.Entity.OwnerId)
+				return
+			end
+		end
+		
+		-- 1-4. (챌린지 모드인 경우 / 이어하기가 아닐 때) 남은 입장 횟수가 있는지
+		if needLoad == false and mType[1] == "Challenge" then
+			if user.PlayerDataComponent.ChallengeMode_LeftTryCount < 1 then
+				_UIToast:ShowMessageByLocalizingKey("NoHaveChanceChallenge", userId)
+				return
+			end
+		end
+		----------------------------------------------------------
+		-- 2. 레벨 및 이어하기 설정
+		if self.SetSavedData then
+			self.NeedDataLoad = needLoad
+		else
+			self.NeedDataLoad = false
+		end
+		
+		self.ModeSetVersion = modeVersion
+		self.ModeType = modeType
+		self.ModeLevel = modeLevel
+		
+		
+		if modeType == "Rank" then
+			self.UnitPresetType = tonumber(_DataService:GetTable("RankModeInfo"):GetRow(modeLevel):GetItem("PresetLevel"))
+		elseif modeType == "Tutorial" then
+			self.UnitPresetType = tonumber(_DataService:GetTable("TutorialModeInfo"):GetRow(modeLevel):GetItem("PresetLevel"))
+		else
+			self.UnitPresetType = tonumber(_DataService:GetTable("SingleModeInfo"):GetRow(modeLevel):GetItem("PresetLevel"))
+		end
+		----------------------------------------------------------
+		-- 3. 패널티 ID 설정
+		local penaltyManager = user.PenaltyManager
+		
+		-- 시즌 로직에 패널티 Data를 미리 파싱해두고, 해당 패널티 ID를 매니저에 불러오기
+		penaltyManager:SetPenalties(modeType, modeLevel)
+		----------------------------------------------------------
+		-- 4. 챌린지 모드인 경우, 챌린지 세팅
+		local challengeManager = user.ChallengeManager
+		if mType[1] == "Challenge" then
+			-- 시즌 로직에 패널티 Data를 미리 파싱해두고, 해당 패널티 ID를 매니저에 불러오기
+			challengeManager:SetChallenge(tonumber(mType[2]))
+		else
+			challengeManager:SetChallenge(0)
+		end
+		----------------------------------------------------------
+		
+		local targetMapName = "Arena" .. tostring(userId)
+		local isCreated = _DynamicMapSystemLogic:CreateDynamicMap(userId)
+		if isCreated == false then
+			log_error("다이나믹 맵 생성 실패! 로그 체크")
+			return
+		end
+		
+		wait(3)
+		
+		_TeleportService:TeleportToMapPosition(self.Entity, Vector3(-5, 6, 1), targetMapName)	
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshUI_TeamHPInfo_Barcode()
+		----------------------------------------------------
+		local ui_user_barcode = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/TeamInfo/TeamInfo_User/Barcode")
+		local ui_enemy_barcode = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/TeamInfo/TeamInfo_Enemy/Barcode")
+		
+		local ui_bar_user = ui_user_barcode:GetChildByName("Bar")
+		local ui_bar_enemy = ui_enemy_barcode:GetChildByName("Bar")
+		----------------------------------------------------
+		local maxBarCount = math.floor(ui_user_barcode.UITransformComponent.RectSize.x / 2)
+		local barcodeGapStandardHP_user = 1000
+		local barcodeGapStandardHP_enemy = 1000
+		
+		local barCount_user = math.floor(self.TeamHPMax_User / barcodeGapStandardHP_user)
+		local barCount_enemy = math.floor(self.TeamHPMax_Enemy / barcodeGapStandardHP_enemy)
+		
+		if barCount_user > maxBarCount then
+			barcodeGapStandardHP_user = 10000
+			barCount_user = math.floor(self.TeamHPMax_User / barcodeGapStandardHP_user)
+		end
+		
+		if barCount_enemy > maxBarCount then
+			barcodeGapStandardHP_enemy = 10000
+			barCount_enemy = math.floor(self.TeamHPMax_Enemy / barcodeGapStandardHP_enemy)
+		end
+		
+		local barPos_user = ui_user_barcode.UITransformComponent.RectSize.x * (barcodeGapStandardHP_user / self.TeamHPMax_User)
+		local barPos_enemy = ui_enemy_barcode.UITransformComponent.RectSize.x * (barcodeGapStandardHP_enemy / self.TeamHPMax_Enemy)
+		----------------------------------------------------
+		-- 유저 팀의 바코드 정리
+		for i=1, barCount_user do
+			local ui_bar = ui_user_barcode:GetChildByName(string.format("Bar_%d", i))
+			if isvalid(ui_bar) == false then
+				ui_bar = ui_bar_user:Clone(string.format("Bar_%d", i))
+			end
+			
+			ui_bar.UITransformComponent.anchoredPosition.x = barPos_user * i
+			ui_bar.Enable = true
+		end
+		
+		for i=barCount_user+1, 9999 do
+			local ui_bar = ui_user_barcode:GetChildByName(string.format("Bar_%d", i))
+			if isvalid(ui_bar) == false then
+				break
+			else
+				ui_bar.Enable = false
+			end
+		end
+		----------------------------------------------------
+		-- 적 팀의 바코드 정리
+		for i=1, barCount_enemy do
+			local ui_bar = ui_enemy_barcode:GetChildByName(string.format("Bar_%d", i))
+			if isvalid(ui_bar) == false then
+				ui_bar = ui_bar_enemy:Clone(string.format("Bar_%d", i))
+			end
+			
+			ui_bar.UITransformComponent.anchoredPosition.x = -barPos_enemy * i
+			ui_bar.Enable = true
+		end
+		
+		for i=barCount_enemy+1, 9999 do
+			local ui_bar = ui_enemy_barcode:GetChildByName(string.format("Bar_%d", i))
+			if isvalid(ui_bar) == false then
+				break
+			else
+				ui_bar.Enable = false
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void CleanUI_BattleOverUI()
+		----------------------------------------------------------------
+		-- [인게임 > 게임 종료 UI]를 원래 상태로 되돌립니다.
+		----------------------------------------------------------------
+		local ui_resultPanel = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/Panel_BattleResult")
+		local ui_bgPanel = ui_resultPanel:GetChildByName("blackPanel")
+		local ui_fog = ui_resultPanel:GetChildByName("Particle_Fog")
+		local ui_title = ui_resultPanel:GetChildByName("Panel_Title")
+		local ui_result = ui_resultPanel:GetChildByName("Panel_Result")
+		
+		
+		local t1 = 0
+		local setUIPosX = function()
+			t1 += 1/60
+			local uiPos = _TweenLogic:Ease(250, 0, 1, EaseType.ExpoEaseOut, t1)
+			ui_title.UITransformComponent.anchoredPosition.x = -uiPos
+			ui_result.UITransformComponent.anchoredPosition.x = uiPos
+			
+		end
+		
+		local t2 = 0
+		local setUIPosY = function()
+			t2 += 1/60
+			local uiPos = _TweenLogic:Ease(0, -1200, 1, EaseType.ExpoEaseOut, t2)
+			ui_title.UITransformComponent.anchoredPosition.y = uiPos
+			ui_result.UITransformComponent.anchoredPosition.y = uiPos
+		end
+		
+		local alpha = 1
+		local setGroupAlpha = function()
+			alpha -= 1/60
+			--self.UIGroup_BattlePhase.CanvasGroupComponent.GroupAlpha = alpha
+			ui_bgPanel.SpriteGUIRendererComponent.Color.a = alpha / 2
+			ui_fog.UIAreaParticleComponent.Color.a = alpha
+		end
+		
+		
+		for i=1, 60 do
+			_TimerService:SetTimerOnce(setUIPosX, i/120)
+			_TimerService:SetTimerOnce(setUIPosY, 0.5 + i/120)
+			_TimerService:SetTimerOnce(setGroupAlpha,0.5+i/120)
+		end
+		----------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearGameInfo()
+		-- 로비로 퇴장할 때 진행한 게임 정보를 모두 삭제하는 함수
+		---------------------------------------------------------
+		
+		-- self.Entity.TeamManager:InitNewGame(false)
+		
+		local unitParent = _UnitSetLogic_New.UnitsParentEntity[self.Entity.OwnerId]
+		for _, unit in pairs(unitParent.Children) do
+			unit.UnitInfo:CleanCharInfo()
+		end
+		_UnitSetLogic_New:BattleSetting_UnitSet(self.Entity.OwnerId, "Ready")	-- 유닛 세팅 변경
+		
+		if self.Entity.CharacterShopManager_New.IsLocked == true then
+			self.Entity.CharacterShopManager_New:Lock() 	-- 캐릭터 상점 잠금 해제
+		end
+		
+		_UI_BattleStatistics:ClearGameProperties(self.Entity.OwnerId) -- 통계 관련 변수 초기화
+	end
+
+	@ExecSpace("Server")
+	method void MoveToLobby(string type)
+		----------------------------------------------------------
+		-- 검증
+		if (senderUserId ~= nil) and (self.Entity.OwnerId ~= senderUserId) then
+			log("client에서 phase 변경 요청했으나, 오너가 다름")
+			return
+		end
+		
+		if type ~= "SaveAndExit" then
+			if self.PhaseType ~= "End" then
+				return
+			end
+		end
+		----------------------------------------------------------
+		self:CleanUI_BattleOverUI(senderUserId)
+		self:MoveToLobby_OnClient(type, senderUserId)
+		----------------------------------------------------------
+		if type == "SaveAndExit" then
+			self.Entity.TeamManager:SaveCurrentGame()
+		end
+		
+		self:ClearGameInfo()
+		--[[
+		_UnitSetLogic_New.UnitsParentEntity[self.Entity.OwnerId]:Destroy()
+		_UnitSetLogic_New.UnitsParentEntity[self.Entity.OwnerId] = nil
+		_UnitSetLogic_New.ProjectilesParentEntity[self.Entity.OwnerId]:Destroy()
+		_UnitSetLogic_New.ProjectilesParentEntity[self.Entity.OwnerId] = nil
+		_UnitSetLogic_New:UnitSampleDestroy(self.Entity.OwnerId)
+		_UnitSetLogic_New:ProjectileSampleDestroy(self.Entity.OwnerId)
+		]]--
+		_TeleportService:TeleportToMapPosition(self.Entity, Vector3(-1, 3.5, 1), "Lobby")
+		_DynamicMapSystemLogic:DestoryDynamicMap(senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void MoveToLobby_OnClient(string type)
+		-- 로비로 이동할 때 로딩창을 활성화합니다.
+		-- 맵 이동 화면(인게임 접속 로딩화면 활용)을 켰다가 자동으로 끕니다.
+		----------------------------------------------------------------
+		self.Entity.LoadingManager.LoadingUI.UI_Loading.TipUpdate_IsGoingToLobby = true
+		--_PlaySoundLogic:FadeInFadeOut(false, 1, 0.5, 0)
+		------------------------------------------------------------------------------
+		-- 인게임 Progress UI의 트윈스케일 값을 변경합니다.
+		local ui_progressBar = _EntityService:GetEntityByPath("/ui/Arena_Default/Progress")
+		local ui_progressBarPanel = ui_progressBar:GetChildByName("Panel")
+		
+		
+		ui_progressBar.UITransformComponent.RectSize.x = 650
+		ui_progressBarPanel.UITransformComponent.RectSize.x = 650
+		
+		ui_progressBar.UITweenScale.from.x = 650
+		ui_progressBar.UITweenScale.to.x = 650
+		
+		ui_progressBarPanel.UITweenScale.from.x = 650
+		ui_progressBarPanel.UITweenScale.to.x = 650
+			
+		ui_progressBar.UITweenScale.duration = 0.2
+		ui_progressBarPanel.UITweenScale.duration = 0.2
+		------------------------------------------------------------------------------
+		---- 로딩 끄기
+		--local disableLoadingUI = function()
+		--    loadingAlphaValue -= 1/30
+		--    ui_loadingGroup.CanvasGroupComponent.GroupAlpha = loadingAlphaValue
+		--end
+		--
+		---- 임시로 사용한 내용들 원래대로 돌리기
+		--local clearLoadingUI = function()
+		--    ui_loadingGroup.Enable = false
+		--    
+		--    for _, child in pairs(disableChildren) do
+		--        child.Enable = true
+		--    end	
+		--    
+		--    ui_loadingGroup.CanvasGroupComponent.GroupAlpha = 1
+		--end
+		
+		-- 맵 이동 체크
+		local timerID = 0
+		local InLobbyChecker = function()
+			-- 맵 이동이 완료됐다면
+			if _UserService.LocalPlayer.CurrentMapName == "Lobby" then
+				
+				-- 로딩을 0 > 1.3 > 2.6초에 각각 33%씩 올립니다.
+				local progressRate = 0.0
+				local setProgressUp = function()
+					progressRate += 0.33
+					self.Entity.LoadingManager:SetProgressUI(progressRate)
+				end
+				
+				for i=1, 3 do
+					_TimerService:SetTimerOnce(setProgressUp, 1.3*(i-1))
+				end
+				
+				-- 2.9초에 로딩 화면을 자동으로 끕니다.
+				_TimerService:SetTimerOnce(function()
+					self.Entity.LoadingManager:SetProgressUI(2.0)
+					
+					-- 게임이 끝나고 나가는 상황인 경우, 게임 결과 화면을 활성화합니다.
+					if type == "GameEnd" then
+						_EntityService:GetEntityByPath("/ui/Lobby_GameResult").Enable = true	-- 결과 화면을 활성화하고, 애니메이션 재생을 예약합니다.
+						_TimerService:SetTimerOnce(function()
+							_UI_GameResult:PlayAnim_EXP()
+						end, 1.5)
+					end
+					
+					--BGM변경
+					_PlaySoundLogic:PlayBGM_Ver2(9)
+					
+				end, 2.9)
+				
+				_TimerService:SetTimerOnce(function()
+					self.Entity.LoadingManager:SetEnableUI(false)
+				end, 4)
+				
+				_TimerService:ClearTimer(timerID)
+			end
+		end
+		timerID = _TimerService:SetTimerRepeat(InLobbyChecker, 0.5)
+	end
+
+	@ExecSpace("Server")
+	method void RestartArena()
+		--1-1부터 다시 시작하는 함수입니다.
+		----------------------------------------------------------------
+		-- 검증: 챌린지 모드에서 다시시작하는 경우, 남은 도전 횟수가 없다면 예외 처리
+		if string.sub(self.ModeType, 1, 9) == "Challenge" then
+			local leftTryCount = self.Entity.PlayerDataComponent.ChallengeMode_LeftTryCount
+			if leftTryCount < 1 then
+				_UIToast:ShowMessageByLocalizingKey("ExhaustAllTryChange", self.Entity.OwnerId)
+				return
+			end
+		end
+		----------------------------------------------------------------
+		-- 즐겨찾기 데이터 즉시 저장
+		_PlayerDataLogic:SetPlayerFavoriteDicData(self.Entity)
+		
+		
+		--사용했던 유닛, 정보들을 초기화합니다.
+		self:ClearGameInfo()
+		--[[
+		_UnitSetLogic_New.UnitsParentEntity[self.Entity.OwnerId]:Destroy()
+		_UnitSetLogic_New.UnitsParentEntity[self.Entity.OwnerId] = nil
+		_UnitSetLogic_New.ProjectilesParentEntity[self.Entity.OwnerId]:Destroy()
+		_UnitSetLogic_New.ProjectilesParentEntity[self.Entity.OwnerId] = nil
+		_UnitSetLogic_New:UnitSampleDestroy(self.Entity.OwnerId)
+		_UnitSetLogic_New:ProjectileSampleDestroy(self.Entity.OwnerId)
+		]]--
+		-----------------------------------------------------------------
+		
+		self.Entity.MovementComponent.Enable = false
+				
+		self.Stage = 1
+		self.Round = 1
+		self.Round8_3Num = 1
+		self.Phase = 0
+		self.PhaseType = ""
+		self.RoundType = "Battle"
+				
+		-- 로딩창 활성화
+		self.Entity.LoadingManager:ClearLoadedCount()
+		
+		--Esc메뉴 닫은 것으로 처리
+		_ESCMenuService:SetESCMenuFromServer(false,self.Entity.OwnerId)
+		
+		-- 전투에 사용하는 유닛 스폰
+		local userId = self.Entity.OwnerId
+		_SampleClientSpawnLogic:SpawnUnitSample(userId, "restart")
+		-- _UnitSetLogic_New:UnitSampleSpawn(userId)
+		_UnitSetLogic_New:ProjectileSampleSpawn(userId)
+		--_IngameEnteranceLogic:InsertQueue(userId)
+		
+		
+		-- 새로운 데이터를 생성합니다.
+		self.Entity.TeamManager:InitNewGame(false)
+		----------------------------------------------------------------
+		
+		--연출들 초기화
+		_SynergyReadyDirectorLogic:S10001Direction(0, true, self.Entity.OwnerId)
+		_SynergyReadyDirectorLogic:S10025Direction(0, true, self.Entity.OwnerId)
+		_BackgroundChangeLogic:Init(self.Entity.OwnerId)
+		_SynergyReadyDirectorLogic:InitOrbistile(self.Entity.OwnerId)
+		_RuneCardDirector:InitRuneCardManagingValue("All", "", self.Entity.OwnerId)
+		
+		-- UID 초기화
+		self.Entity.SpecialShopManager.NextUID = 1
+		
+		----------------------------------------------------------------
+		self.Entity.LoadingManager:SetEnableUI(true, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_Repechage()
+		local ui_repechage = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/Panel_Repechage")
+		ui_repechage.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void CloseUI_Repechage()
+		local ui_repechage = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/Panel_Repechage")
+		ui_repechage.Enable = false
+	end
+
+	@ExecSpace("Server")
+	method void UseRepechage()
+		-- 패자부활권을 사용했을 때 호출하는 함수입니다.
+		--------------------------------------------------------------------------
+		local playerData = self.Entity.PlayerDataComponent
+		--------------------------------------------------------------------------
+		-- 검증: 보유 여부
+		if (playerData.Repechage + playerData.Repechage_Free) < 1 then
+			--_UIToast:ShowMessageByLocalizingKey("NoHaveRepechage", self.Entity.OwnerId)
+			return
+		end
+		
+		-- 검증: 페이즈가 다른 경우
+		if self.PhaseType ~= "Repechage" then
+			return
+		end
+		--------------------------------------------------------------------------
+		-- 무료 아이템을 먼저 소모합니다.
+		if playerData.Repechage_Free > 0 then
+			self.Entity.PlayerDataComponent:AddSyrup("Repechage_Free", -1, "PlayGame")
+		else
+			self.Entity.PlayerDataComponent:AddSyrup("Repechage", -1, "PlayGame")
+		end
+		
+		-- 하트를 1개 회복하고, 20코인을 얻습니다.
+		self.Entity.TeamManager:AddTeamHP(1)
+		self.Entity.TeamManager:AddGolds(20, "repechage")
+		
+		-- 패배 결과 UI를 보여줍니다.
+		self:SetUI_BattleOver(_UtilLogic:TableToString(self.RewardTable), false, self.Entity.OwnerId)
+		self.Entity:SendEvent(BattleReward(self.RewardTable))	-- 에러 아님
+		
+		self.PhaseType = "Clean"
+		
+		self:CloseUI_Repechage()
+	end
+
+	@ExecSpace("Server")
+	method void GiveUpRepechage()
+		-- 패자부활권 사용을 포기했을 때 호출하는 함수입니다.
+		--------------------------------------------------------------------------
+		-- 검증: 페이즈가 다른 경우
+		if self.PhaseType ~= "Repechage" then
+			return
+		end
+		--------------------------------------------------------------------------
+		self:CloseUI_Repechage()
+		
+		self:SetGameOver(false)
+	end
+
+	@EventSender("Entity", "d1c05f42-b77f-434f-9ed6-b463c014138f")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		if _UserService.LocalPlayer ~= self.Entity then
+			return
+		end
+		
+		if Entity.Enable == false then
+			return
+		end
+		---------------------------------------------------------
+		if self.PhaseType == "Clean" then
+			self:CleanUI_BattleOverUI()
+			self:GoToNextPhase()
+		
+		end
+		---------------------------------------------------------
+		-- 연속 클릭 방지
+		Entity.Enable = false
+		local buttonActivate = function()
+		    Entity.Enable = true 
+		end
+		_TimerService:SetTimerOnce(buttonActivate, 3)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "4188357f-cb6e-4854-beb0-197cb46f240f")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		if _UserService.LocalPlayer ~= self.Entity then
+			return
+		end
+		
+		if Entity.Enable == false then
+			return
+		end
+		
+		if self.PhaseType ~= "End" then
+			return
+		end
+		---------------------------------------------------------
+		self.Entity.LoadingManager:SetEnableUI(true)
+		_TimerService:SetTimerOnce(function()
+			self:MoveToLobby("GameEnd")
+		end, 1)
+		---------------------------------------------------------
+		-- 연속 클릭 방지
+		Entity.Enable = false
+		local buttonActivate = function()
+		    Entity.Enable = true 
+		end
+		_TimerService:SetTimerOnce(buttonActivate, 3)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "4991d5e5-764e-49a9-8a1e-7bcf8cc80562")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------------------------
+		local playerData = self.Entity.PlayerDataComponent
+		
+		-- 검증: 보유 여부
+		if (playerData.Repechage + playerData.Repechage_Free) < 1 then
+		
+		
+			_UIToast:ShowMessageByLocalizingKey("NoHaveRepechage")
+			return
+		end
+		--------------------------------------------------------------------------
+		self:UseRepechage()
+		
+		Entity.ButtonComponent.Enable = false
+		_TimerService:SetTimerOnce(function()
+			Entity.ButtonComponent.Enable = true
+		end, 3)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "8625a9e0-8cd5-44ba-a4f3-022821683377")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		self:GiveUpRepechage()
+		---------------------------------------------------------
+		Entity.ButtonComponent.Enable = false
+		_TimerService:SetTimerOnce(function()
+			Entity.ButtonComponent.Enable = true
+		end, 3)
+	end
+
+end

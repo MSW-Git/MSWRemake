@@ -1,0 +1,899 @@
+@Component
+script UIIngreCardSetting extends Component
+
+	property integer MaxIngreSlotCount = 20
+
+	property integer MinSettingCount = 4
+
+	property Entity IngreSlotList = "406a8306-e872-4ad9-aab9-4b8b28c3dcea"
+
+	property Entity BunSetArea = "6d75c595-9454-40df-a30c-c5fda46cdc4b"
+
+	property Entity BalanceBar = "fa8a82d2-6329-463f-b0f4-c3080ffc9831"
+
+	property Entity OpenIngreGachaBtn = "b68ce7ae-714f-46b4-af26-7dc35a52e7b3"
+
+	property Entity FilterSelectArea = "1ce78843-62a9-45f2-b2c2-f94e9970c750"
+
+	property Entity FilterBtn = "1539f6e7-ca1c-42b5-be77-126160356d50"
+
+	property Entity AutoSetSelectArea = "8c864894-3d0a-473a-add5-8ae73c045ff9"
+
+	property Entity BunSelectBtn = "9132a3fd-a651-4232-9949-788706cdbd28"
+
+	property integer ExBunCount = nil
+
+	property Entity AutoSetButton = "f086cbc8-e009-4667-8155-98337e27c2cc"
+
+	property UIVIPOrderPreview VIPOrderPreview = "e28be010-1978-4cb0-8919-d26d46bc7177"
+
+	property Entity SortBtn = "c4de18cb-0904-4f76-a883-2af90fd83691"
+
+	property Entity SortSelectArea = "1db26f65-b61f-431b-bcd1-59f07bd8aeb9"
+
+	property Entity SideMenuInfo = "f2c67602-93c1-4cd9-ad3d-5ab3a839d9b9"
+
+	property Entity SideMenuInfoTooltip = "3f7ee7bd-00b3-4f71-9057-a1740556ad13"
+
+	property string NowFilter = ""
+
+	property string NowSort = ""
+
+	property integer autoCoolTimer = 0
+
+	property integer autoCoolDelay = 1
+
+	property boolean isAutoCoolTime = false
+
+	property RecycleScrollView IngreCardScroll = "b1f54a66-02b6-4cc9-9d6e-349da5cb2a69"
+
+	property SyncTable<string, Entity> FilterOptions
+
+	property SyncTable<string, Entity> SortOptions
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 재료 카드 설정 UI 초기화 및 이벤트 연결하는 함수
+		self.BunSelectBtn:GetChildByName("RedDot").Enable = false
+		
+		for i, child in pairs(self.SortSelectArea.Children) do
+			if isvalid(child.ButtonComponent) then
+				child:ConnectEvent(ButtonClickEvent, function()
+					if _UIGroupManager:IsEnableOpenPopUp() == false then
+						return
+					end
+					
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+					self:SetSort(child.Name)
+				end)
+				
+				self.SortOptions[child.Name] = child
+			end
+		end
+		
+		self._T.sortByGrade = function(a, b)
+			local aScore = _IngredientDataSetLogic:GetIngredientData(a).Grade
+			local bScore = _IngredientDataSetLogic:GetIngredientData(b).Grade
+			return aScore > bScore
+		end
+		
+		self._T.getBestGradePool = function(keys, countTable)
+			local bestGrade = _IngredientDataSetLogic:GetIngredientData(keys[1]).Grade
+			local pool = {}
+			for i = 1, #keys do
+				local id = keys[i]
+				
+				local count = countTable[id]
+				if count <= 0 or count == nil then
+					continue
+				end
+				
+				if _IngredientDataSetLogic:GetIngredientData(id).Grade >= bestGrade then
+					table.insert(pool, id)
+				end
+			end
+			
+			return pool
+		end
+		
+		self._T.getIndex = function(tb, key)
+			for i, k in pairs(tb) do
+				if k == key then
+					return i
+				end
+			end
+			
+			return nil
+		end
+		
+		self.IngreCardScroll.onUpdateCell = function(i, e)
+			local ingreId = self._T.drawList[i]
+			e.UIIngreCard:Refresh(ingreId, _IngreCardSetLogic.SelectedIngreCards[ingreId])
+		end
+		
+		for i, child in pairs(self.FilterSelectArea.Children) do
+			if isvalid(child.ButtonComponent) == false then
+				continue
+			end
+			
+			self.FilterOptions[child.Name] = child
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 재료 카드 설정 UI를 열고 초기 설정을 하는 함수
+		if self.Entity.Enable == true then
+			return
+		end
+		
+		self.FilterSelectArea.Enable = false
+		self.AutoSetSelectArea.Enable = false
+		self.SortSelectArea.Enable = false
+		
+		self.AutoSetButton.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+		
+		local balanceZone = self.BalanceBar:GetChildByName("BalanceZone")
+		balanceZone.UITransformComponent.RectSize.x = self.BalanceBar.UITransformComponent.RectSize.x * _IngredientDataSetLogic:GetBalanceThreshold(_UserService.LocalPlayer)/50
+		
+		if _UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NowKey == "VIPOrder" then
+			local slotIndex = _UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NowParams[1]
+			self.VIPOrderPreview:Refresh(slotIndex)
+		else
+			self.VIPOrderPreview:Refresh(0)
+		end
+		
+		self.NowFilter = nil
+		self.NowSort = "Grade_1"
+		_SelectDropDownLogic:RefreshSelected(self.SortOptions, self.NowSort)
+		_IngreCardSetLogic:UnsetIngreCardAll(true)
+		
+		self:SetFilter(self.NowFilter)
+		self:RefreshIngreSlotList()
+		self:RefreshBunSetSlot()
+		self:RefreshSideMenuInfo()
+		
+		self:CheckTutorial()
+		self.Entity.Enable = true
+		
+		self.isAutoCoolTime = false
+		_TimerService:ClearTimer(self.autoCoolTimer)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close(boolean isFully)
+		-- 재료 카드 설정 UI를 닫는 함수
+		if _UIEntityLogic_RecipeGroup.NowPlayFlow == "VIPOrder" and self.Entity.Enable == true and isFully then
+			local player = _UserService.LocalPlayer
+			
+			local nowData = player.PlayerVIPOrder.VIPOrderSlotData[_VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot]
+			_UIGroupManager:EnableRecipeGroup(false)
+			_VIPOrderDataSetLogic.UIVIPOrderPanel:Open()
+			
+			if nowData ~= {} and nowData ~= nil then
+				if nowData["OrderType"] == _VIPOrderTypeEnum.Recipe then
+					_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:Open(nil, "VIPOrder", {_VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot})
+				end
+			end	
+		end
+		
+		self.Entity.Enable = false
+		
+		self.isAutoCoolTime = false
+		_TimerService:ClearTimer(self.autoCoolTimer)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestMoveToRecipeMaking(Entity player)
+		-- 레시피 제작으로 이동을 요청하는 함수
+		if #_IngreCardSetLogic.SelectedIngreList < self.MinSettingCount then
+			player.PlayerRecipe:ChangeConnectingStatus(false)
+			_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("IngreCardSetErrorMessage2"))
+			return
+		end
+		
+		player.PlayerRecipe:CheckCanStartRecipeMaking(_IngreCardSetLogic.SelectedIngreList)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshIngreCardList(string filter)
+		-- 필터에 따라 재료 카드 리스트를 새로고침하는 함수
+		local player = _UserService.LocalPlayer
+		
+		if filter == nil then
+			filter = self.NowFilter
+		end
+		
+		local isFiltered = function(ingreId)
+			if _UtilLogic:IsNilorEmptyString(filter) or filter == "None" or filter == "All" then
+				return true
+			end
+			
+			local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+			if filter == _RecipeTagEnum.Spicy then
+				if ingreData.SpicyPoint ~= nil then
+					return true
+				end
+				
+			elseif filter == "Etc" then
+				if ingreData.Type == "Etc" then
+					return true
+				end 
+				
+			else
+				if ingreData.Type == filter then
+					return true
+				end
+				
+			end
+			
+			return false
+		end
+		
+		local firstCardData = {}
+		local ingreCardData = {}
+		local playerIngres = player.PlayerIngredient.IngredientCards
+		for k, v in pairs(playerIngres) do
+			if isFiltered(k) == false then
+				continue
+			end
+			
+			local isOrderRelated = _VIPOrderDataSetLogic:IsIngreRelatedToOrder(k, _VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot, player)
+			if isOrderRelated then
+				table.insert(firstCardData, k)
+			else
+				table.insert(ingreCardData, k)
+			end
+		end
+		
+		local split = _UtilLogic:Split(self.NowSort, "_")
+		local sortKey = split[1]
+		local sortValue = tonumber(split[2])
+		
+		table.sort(ingreCardData, function(a, b)
+			local aData = _IngredientDataSetLogic:GetIngredientData(a)
+			local bData = _IngredientDataSetLogic:GetIngredientData(b)	
+			if sortKey == "Grade" then
+				if sortValue == 1 then
+					return aData.Grade > bData.Grade
+				else
+					return aData.Grade < bData.Grade
+					
+				end
+				
+			elseif sortKey == "TasteScore" then
+				if sortValue == 1 then
+					return aData:GetTasteScore(player.PlayerStage.NowStage, player) > bData:GetTasteScore(player.PlayerStage.NowStage, player)
+				else
+					return aData:GetTasteScore(player.PlayerStage.NowStage, player) < bData:GetTasteScore(player.PlayerStage.NowStage, player)
+				end
+		
+			elseif sortKey == "Cost" then
+				if sortValue == 1 then
+					return aData:GetCost(player.PlayerStage.NowStage, player) > bData:GetCost(player.PlayerStage.NowStage, player)
+				else
+					return aData:GetCost(player.PlayerStage.NowStage, player) < bData:GetCost(player.PlayerStage.NowStage, player)
+				end
+			end
+		end)
+		
+		self._T.drawList = {}
+		for i = 1, #firstCardData do
+			table.insert(self._T.drawList, firstCardData[i])
+		end
+		
+		for i = 1, #ingreCardData do
+			table.insert(self._T.drawList, ingreCardData[i])
+		end
+		
+		self.IngreCardScroll:SetTotalCount(#self._T.drawList)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshIngreSlotList()
+		-- 선택된 재료 슬롯 리스트를 새로고침하는 함수
+		local player = _UserService.LocalPlayer
+		
+		for i = 1, self.MaxIngreSlotCount do
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_IngreSetSlot", i, self.IngreSlotList)
+			local ingreId = _IngreCardSetLogic.SelectedIngreList[i]
+			entity.UIIngreSetSlot:Refresh(i, ingreId)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DeselectCardAll(boolean isRefreshBalance)
+		-- 모든 카드 선택을 해제하는 함수
+		
+		
+		self:SetFilter(self.NowFilter)
+		self:RefreshIngreSlotList()
+		
+		if isRefreshBalance then
+			self:RefreshBalanceBar()
+		end
+		
+		_UserService.LocalPlayer.PlayerRecipe:ChangeConnectingStatus(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshBunSetSlot()
+		-- 번 설정 슬롯을 새로고침하는 함수
+		local playerRecipe = _UserService.LocalPlayer.PlayerRecipe
+		local playerIngre = _UserService.LocalPlayer.PlayerIngredient
+		local bunIndex = playerRecipe.SetBun
+		
+		if _IngredientDataSetLogic.BunData[bunIndex] == nil then
+			playerIngre:RequestSetBun(1) 
+			bunIndex = 1
+		end
+		
+		---@type BunData
+		local bunData = _IngredientDataSetLogic.BunData[bunIndex]
+		
+		---@type BunDetailData
+		local topBunData = bunData.Top
+		local iconEntity = self.BunSetArea:GetChildByName("BunIcon")
+		iconEntity.SpriteGUIRendererComponent.ImageRUID = topBunData.IconRUID
+		
+		local nameEntity = self.BunSetArea:GetChildByName("BunNameText")
+		nameEntity.TextComponent.UseOutLine = true
+		nameEntity.TextComponent.Text = _GetLocalizationTextLogic:GetText(topBunData.NameKey)
+		if playerIngre.Buns[bunIndex] == nil then
+			nameEntity.TextComponent.FontColor = _ColorCodeEnum:GetColor("#fa5246")
+			nameEntity.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#ffffff")
+			
+		else
+			nameEntity.TextComponent.FontColor = _ColorCodeEnum:GetColor("#FFFFFF")
+			nameEntity.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#A08561")
+				
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshBalanceBar()
+		-- 밸런스 바를 새로고침하는 함수
+		local pointer = self.BalanceBar:GetChildByName("Pointer")
+		
+		local balanceBarLength = self.BalanceBar.UITransformComponent.RectSize.x
+		local balanceBarMax = 50
+		
+		local balancePoint = 0
+		for i = 1, #_IngreCardSetLogic.SelectedIngreList do
+			local card = _IngredientDataSetLogic:GetIngredientData(_IngreCardSetLogic.SelectedIngreList[i])
+			local point = card.BalancePoint
+			balancePoint = balancePoint + point
+		end
+		
+		local lastPos = pointer.UITransformComponent.anchoredPosition
+		local newPosX = balanceBarLength/2 * balancePoint / balanceBarMax
+		if newPosX >= balanceBarLength/2 then
+			newPosX = balanceBarLength/2
+		end
+		if newPosX <= -balanceBarLength/2 then
+			newPosX = -balanceBarLength/2
+		end
+		
+		local tween = _TweenLogic:PlayTween(lastPos, Vector2(newPosX, lastPos.y), 0.3, EaseType.CubicEaseOut, function(t)
+			pointer.UITransformComponent.anchoredPosition = t
+		end)
+		
+		_TimerService:SetTimerOnce(function()	
+			if balancePoint >= -_IngredientDataSetLogic:GetBalanceThreshold(_UserService.LocalPlayer) and balancePoint <= _IngredientDataSetLogic:GetBalanceThreshold(_UserService.LocalPlayer) then
+				pointer.SpriteGUIRendererComponent.ImageRUID = "3a178133919e4171a09ce815f6a58a6a"
+			else
+				pointer.SpriteGUIRendererComponent.ImageRUID = "e7d7ef61793f426097204ceec35045b1"
+			end
+		end, 0.1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetIngreGachaRedDot(boolean enable)
+		-- 재료 가차 버튼의 빨간점 표시를 설정하는 함수
+		self.OpenIngreGachaBtn:GetChildByName("RedDot").Enable = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickFilterBtn()
+		-- 필터 버튼 클릭 시 호출되는 함수
+		self.FilterSelectArea.UIIngreFilterSelectArea:Open()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickAutoSetBtn()
+		-- 자동 설정 버튼 클릭 시 호출되는 함수
+		self.AutoSetSelectArea.UIIngreAutoSetSelectArea:Open()
+	end
+
+	@ExecSpace("ClientOnly")
+	method table ReturnAutoSetIngreCardList(string tag, integer setCount)
+		-- 태그에 따라 자동 설정할 재료 카드 리스트를 반환하는 함수
+		local playerIngreCards = _UserService.LocalPlayer.PlayerIngredient.IngredientCards
+		
+		local exclusiveIds = {}
+		local totalIds = table.keys(playerIngreCards)
+		local tagMatchedCount = 0
+		
+		local exclusiveCount = {}
+		local totalCount = {}
+		
+		for id, count in pairs(playerIngreCards) do
+			local ingreData = _IngredientDataSetLogic:GetIngredientData(id)
+			local isTagMatch = _IngredientDataSetLogic:ReturnIsTagMatch(tag, ingreData, true, true, _UserService.LocalPlayer)
+			if isTagMatch then
+				tagMatchedCount += count
+				totalCount[id] = count
+			end
+			
+			local isTagExclusive = _IngredientDataSetLogic:ReturnIsTagExclusive(tag, ingreData)
+			if isTagExclusive then
+				table.insert(exclusiveIds, id)
+				exclusiveCount[id] = count
+			end	
+		end
+		
+		local exclusiveKey = table.keys(exclusiveCount)
+		table.sort(exclusiveKey, self._T.sortByGrade)
+		local totalKey = table.keys(totalCount)
+		table.sort(totalKey, self._T.sortByGrade)
+		
+		if setCount > tagMatchedCount then
+			setCount = tagMatchedCount
+		end
+		
+		table.sort(exclusiveIds, self._T.sortByGrade)
+		
+		
+		local selectedCards = {}
+		local isExclusiveIncluded = true
+		local index = 0
+		
+		while(true) do
+			if index >= setCount then
+				break
+			end
+			
+			local isNeedToExclusive = self:IsNeedToExclusive(selectedCards, tag, _UserService.LocalPlayer)
+			
+			if #exclusiveIds <= 0 then
+			isNeedToExclusive = false
+				if tag ~= _RecipeTagEnum.None then
+					isExclusiveIncluded = false
+				end
+			end
+			
+			local selectedCount = {}
+			for i = 1, #selectedCards do
+				local key = selectedCards[i]
+				if selectedCount[key] == nil then
+					selectedCount[key] = 0
+				end
+				selectedCount[key] += 1
+			end
+			
+			local isExclusive = {}
+			local isExclusiveLeft = false
+			for i, id in pairs(exclusiveIds) do
+				if selectedCount[id] ~= nil then
+					if selectedCount[id] >= playerIngreCards[id] then
+						isExclusive[id] = false
+					else
+						isExclusive[id] = true
+					end
+				else
+					isExclusive[id] = true
+				end
+			end
+			
+			for id, isExclusive in pairs(isExclusive) do
+				if isExclusive == true then
+					isExclusiveLeft = true
+				end
+			end
+			
+			if isExclusiveLeft == false then
+				if isNeedToExclusive then
+					if tag == _RecipeTagEnum.Spicy then
+						isExclusiveIncluded = false
+						isNeedToExclusive = false
+					end
+				end
+			end
+			
+			local ingreId
+			if isNeedToExclusive then
+				local pool = self._T.getBestGradePool(exclusiveKey, exclusiveCount)
+				ingreId = pool[_UtilLogic:RandomIntegerRange(1, #pool)]
+			else
+				local pool = self._T.getBestGradePool(totalKey, totalCount)
+				ingreId = pool[_UtilLogic:RandomIntegerRange(1, #pool)]
+			end
+			
+			local cardCount = 0
+			for i, id in pairs(selectedCards) do
+				if id == ingreId then
+					cardCount += 1
+				end
+			end
+			
+			if cardCount < playerIngreCards[ingreId] then		
+				table.insert(selectedCards, ingreId)
+				index += 1
+				
+				if isNeedToExclusive then
+					exclusiveCount[ingreId] -= 1
+					if exclusiveCount[ingreId] <= 0 then
+						exclusiveCount[ingreId] = nil
+						local keyIdx = self._T.getIndex(exclusiveKey, ingreId)
+						if keyIdx ~= nil then
+							table.remove(exclusiveKey, keyIdx)
+						end
+					end
+				end
+				
+				totalCount[ingreId] -= 1
+				if totalCount[ingreId] <= 0 then
+					totalCount[ingreId] = nil
+					local keyIdx = self._T.getIndex(totalKey, ingreId)
+					if keyIdx ~= nil then
+						table.remove(totalKey, keyIdx)
+					end
+				end
+			end
+			
+			continue
+		end
+		
+		if isExclusiveIncluded == false then
+			local tagData = _RecipeTagDataSetLogic:GetRecipeTagData(tag)
+			local tagName = _GetLocalizationTextLogic:GetText(tagData.TagNameKey)
+			if tag == _RecipeTagEnum.Spicy then
+				_UIToast:ShowMessage(_LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("IngreCardSetErrorMessage3", tagName))
+			else	
+				_UIToast:ShowMessage(_LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("IngreCardSetErrorMessage4", tagName))
+			end	
+		end
+		
+		table.sort(selectedCards, function(a, b)
+			local aScore = _IngredientDataSetLogic:GetIngredientData(a).Grade
+			local bScore = _IngredientDataSetLogic:GetIngredientData(b).Grade
+			return aScore > bScore
+		end)
+		
+		return selectedCards
+	end
+
+	method boolean IsNeedToExclusive(table ingreList, string tag, Entity player)
+		-- 배타적 재료가 필요한지 판단하는 함수
+		if tag == _RecipeTagEnum.Spicy then
+			local spicy = 0
+			for i = 1, #ingreList do
+				local ingreId = ingreList[i]
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+				if ingreData.SpicyPoint ~= nil then
+					spicy = spicy + ingreData.SpicyPoint
+				end
+			end
+			
+			if spicy >= _IngredientDataSetLogic:GetSpicyThreshold(player) * 1.5 then 
+				return false
+			else
+				return true
+			end	
+			
+		else
+			for i = 1, #ingreList do
+				local ingreId = ingreList[i]
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+				if ingreData.Type == tag then
+					return false
+				end
+			end
+			return true
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetBunRedDot()
+		-- 번 선택 버튼의 빨간점 표시를 설정하는 함수
+		local bunTotalCount = 0
+		local player = _UserService.LocalPlayer
+		
+		for id, count in pairs(player.PlayerIngredient.Buns) do
+			bunTotalCount = bunTotalCount + count
+		end
+		
+		if self.ExBunCount == nil then
+			self.ExBunCount = bunTotalCount
+			return
+		end
+		
+		if self.ExBunCount < bunTotalCount then
+			self.BunSelectBtn:GetChildByName("RedDot").Enable = true
+		end
+		self.ExBunCount = bunTotalCount
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AutoSetIngreCard(string tag)
+		-- 태그에 따라 재료 카드를 자동으로 설정하는 함수
+		self.isAutoCoolTime = true
+		local timer = _TimerService:SetTimerOnce(function()
+			self.isAutoCoolTime = false
+		end, self.autoCoolDelay)
+		
+		_IngreCardSetLogic:UnsetIngreCardAll(false)
+		
+		local player = _UserService.LocalPlayer
+		local ingreValues = table.values(player.PlayerIngredient.IngredientCards)
+		if #ingreValues <= 0 then
+			player.PlayerRecipe:ChangeConnectingStatus(false)
+			return
+		end
+		
+		local countSum = 0
+		for i = 1, #ingreValues do
+			if ingreValues[i] ~= nil then
+				countSum = countSum + ingreValues[i]
+			end	
+		end
+		
+		local burgerStackLimit = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.BurgerStack)
+		local setCount = burgerStackLimit*2
+		if setCount > countSum then
+			setCount = countSum
+		end
+		
+		local cardList = self:ReturnAutoSetIngreCardList(tag, setCount)
+		
+		for i = 1, #cardList do
+			_IngreCardSetLogic:SetIngreCard(cardList[i], false)
+		end
+		
+		self:RefreshBalanceBar()
+		player.PlayerRecipe:ChangeConnectingStatus(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckTutorial()
+		-- 튜토리얼 조건을 체크하는 함수
+		local player = _UserService.LocalPlayer
+		local ingreBoxIdBase = "B000"
+		
+		local canTutorial = player.PlayerAchievement:IsAchievementAchieved(90005001)
+		if canTutorial == false then
+			return
+		end
+		
+		for i = 1, 3 do
+			local ingreBoxId = ingreBoxIdBase..i
+			local playerBoxCnt = player.PlayerInventory:GetItemCount(ingreBoxId)
+			if playerBoxCnt == nil then
+				playerBoxCnt = 0
+			end
+			if playerBoxCnt > 0 then
+				local result = _TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.IngreBoxFirstGet)
+				if result then
+					return
+				end		
+			end
+		end
+		
+		for i, count in pairs(player.PlayerIngredient.Buns) do
+			if i ~= 1 and count > 0 then
+				local result = _TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.BunFirstGet)
+				if result then
+					return
+				end		
+			end
+		end
+	end
+
+	method void SetSort(string sortKey)
+		-- 정렬 방식을 설정하는 함수
+		self.NowSort = sortKey
+		self.SortSelectArea.Enable = false
+		_SelectDropDownLogic:RefreshSelected(self.SortOptions, self.NowSort)
+		
+		self:RefreshIngreCardList(self.NowFilter)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetFilter(string tagName)
+		-- 필터를 설정하는 함수
+		if _UtilLogic:IsNilorEmptyString(tagName) then
+			tagName = _RecipeTagEnum.All
+		end
+		
+		self.NowFilter = tagName
+		_SelectDropDownLogic:RefreshSelected(self.FilterOptions, self.NowFilter)
+		
+		---@type RecipeTagData
+		local tagData = _RecipeTagDataSetLogic.RecipeTagData[tagName]
+		
+		local textEntity = self.FilterBtn:GetChildByName("Text")
+		local tagIcon = textEntity:GetChildByName("IngredientIcon")
+		local filterName
+		if isvalid(tagData) then
+			tagIcon.Enable = true
+			tagIcon.SpriteGUIRendererComponent.ImageRUID = tagData.IconRUID
+			
+			filterName = _GetLocalizationTextLogic:GetText(tagData.TagNameKey)
+			if tagName == _RecipeTagEnum.All then
+				filterName = _GetLocalizationTextLogic:GetText("IngreCardFilterAllText")
+			end
+		else
+			tagIcon.Enable = false
+			if tagName == "Etc" then
+				filterName = _GetLocalizationTextLogic:GetText("IngreCatdFilterEtcText")
+			end
+		end
+		
+		textEntity.TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("IngreCardFilterTitleText", filterName)
+		
+		self:RefreshIngreCardList(tagName)
+		self.FilterSelectArea.UIIngreFilterSelectArea:Close()
+	end
+
+	method void RefreshSideMenuInfo()
+		-- 사이드 메뉴 정보를 새로고침하는 함수
+		self.SideMenuInfoTooltip.Enable = false
+		
+		local sideMenuData = _StrategyDataSetLogic:GetSideMenuData(_UserService.LocalPlayer.PlayerIngameManager.StageSideMenu)
+		if sideMenuData == nil then
+			self.SideMenuInfo.Enable = false
+			return
+		end
+		
+		self.SideMenuInfo.Enable = true
+		local iconEntity = self.SideMenuInfo:GetChildByName("Dish"):GetChildByName("Icon")
+		iconEntity.SpriteGUIRendererComponent.ImageRUID = sideMenuData.IconRUID
+		_StrategyDataSetLogic:SetSideMenuIconPos(iconEntity, sideMenuData.Id)
+		self.SideMenuInfoTooltip.TextComponent.Text = _StrategyDataSetLogic:GetSideMenuDescText(sideMenuData.Id)
+	end
+
+	@EventSender("Entity", "7d6d9767-3510-4dc1-bddb-4f8f23d1a2ba")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 레시피 제작 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		local player = _UserService.LocalPlayer
+		if player.PlayerRecipe.IsServerProcessing then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		player.PlayerRecipe:ChangeConnectingStatus(true)
+		
+		self:RequestMoveToRecipeMaking(_UserService.LocalPlayer)
+	end
+
+	@EventSender("Entity", "c9b4c3ee-5d5f-42c0-88c3-5fe0b5c41974")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close(true)
+		_UIEntityLogic_RecipeGroup.UIRecipeBook.UIRecipeBook:Open()
+	end
+
+	@EventSender("Entity", "bead1ff8-d7d5-407a-9687-7d3dd5330fbc")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 모든 선택 해제 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		local player = _UserService.LocalPlayer
+		if player.PlayerRecipe.IsServerProcessing then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_IngreCardSetLogic:UnsetIngreCardAll(true)
+	end
+
+	@EventSender("Entity", "f086cbc8-e009-4667-8155-98337e27c2cc")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 자동 설정 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickAutoSetBtn()
+	end
+
+	@EventSender("Entity", "9132a3fd-a651-4232-9949-788706cdbd28")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 번 선택 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIEntityLogic_RecipeGroup.UIBunListDim.UIBunList:Open()
+	end
+
+	@EventSender("Entity", "b68ce7ae-714f-46b4-af26-7dc35a52e7b3")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 재료 가차 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIEntityLogic_RecipeGroup.UIIngreGachaDim.UIIngreGacha:Open(false)
+	end
+
+	@EventSender("Entity", "1539f6e7-ca1c-42b5-be77-126160356d50")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 필터 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickFilterBtn()
+	end
+
+	@EventSender("Entity", "c4de18cb-0904-4f76-a883-2af90fd83691")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- 정렬 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self.SortSelectArea.Enable = not self.SortSelectArea.Enable
+		if self.SortSelectArea.Enable == true then
+			_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting.AutoSetSelectArea.UIIngreAutoSetSelectArea:Close()
+			_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting.FilterSelectArea.UIIngreFilterSelectArea:Close()
+		end
+	end
+
+	@EventSender("Entity", "f2c67602-93c1-4cd9-ad3d-5ab3a839d9b9")
+	handler HandleButtonClickEvent9(ButtonClickEvent event)
+		-- 사이드 메뉴 정보 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_TooltipService:OpenTooltip(self.SideMenuInfoTooltip, nil)
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleChangedSelectedIngreCardsEvent(ChangedSelectedIngreCardsEvent event)
+		-- 선택된 재료 카드 변경 이벤트를 처리하는 핸들러
+		local ingreId = event.ingreId
+		local refreshBalance = event.refreshBalance
+		if refreshBalance == true then
+			self:RefreshBalanceBar()
+		end
+		
+		self.VIPOrderPreview:RefreshNowRequirements()
+	end
+
+end

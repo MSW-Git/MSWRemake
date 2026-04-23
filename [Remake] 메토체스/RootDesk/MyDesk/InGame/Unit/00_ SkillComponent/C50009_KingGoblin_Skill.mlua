@@ -1,0 +1,199 @@
+@Component
+script C50009_KingGoblin_Skill extends Component
+
+	property number skillAnimLength = 1
+
+	property string hitEffectRUID = "6b3d667e6bdc4af2aa4fbd81e7960435"
+
+	property string hitEffect2RUID = "56cee13972174bf587960a7d4536a391"
+
+	property number deathCount = 0
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		local enemies = {}
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		if unitInfo.unitPhaseNumber == 1 then
+			local setCount = tonumber(_S01_SkillDescLogic.C50009_Active_AttackCount_Int[unitInfo.level])
+			local hitCount = 0
+			local hitTimer = 0
+			local function damage()
+				hitCount += 1
+				if _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+					self:SetDamage(targetUnit, 1)
+				else
+					local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+					local checkTarget = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+					
+					if _BTLogic_New:CheckAttackAble(myUnit, checkTarget, "Skill") then
+						self:SetDamage(checkTarget, 1)
+					end
+				end
+				if hitCount >= setCount then
+					_TimerService:ClearTimer(hitTimer)
+				end
+			end
+			hitTimer = _TimerService:SetTimerRepeat(damage, 0.42, 0.18)
+			
+		elseif unitInfo.unitPhaseNumber == 2 then
+			local setCount = tonumber(_S01_SkillDescLogic.C50009_Active_AttackCount2_Int[unitInfo.level])
+			local hitCount = 0
+			local hitTimer = 0
+			local function damage()
+				hitCount += 1
+				if _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+					self:SetDamage(targetUnit, 2)
+				else
+					local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+					local checkTarget = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+					
+					if _BTLogic_New:CheckAttackAble(myUnit, checkTarget, "Skill") then
+						self:SetDamage(checkTarget, 2)
+					end
+				end
+				if hitCount >= setCount then
+					_TimerService:ClearTimer(hitTimer)
+				end
+			end
+			hitTimer = _TimerService:SetTimerRepeat(damage, 0.24, 0.25)
+			
+		end
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0237",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetDamage(Entity targetUnit, number phaseNum)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		self:HitEffect(targetUnit, unitInfo.unitPhaseNumber, unitInfo.OwnerId)
+		
+		local skillSetDamage = 0
+		
+		if phaseNum == 1 then
+			skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C50009_Active_SDamage_Physic[unitInfo.level]
+		elseif phaseNum == 2 then
+			skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C50009_Active_SDamage2_Physic[unitInfo.level] +
+								unitStatus.MaxHP * _S01_SkillDescLogic.C50009_Active_SDamage2_MaxHPPer[unitInfo.level]
+		end
+			
+		local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Physical")
+		_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+	end
+
+	@ExecSpace("Server")
+	method void PhaseChange()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		-----------------------------------------------------
+		if unitInfo.unitPhaseNumber == 1 then
+			-- 1.5초간 무적/행동불가
+			_StatusChangeLogic:SetStatus(myUnit, self.Entity, "SE0001", 1.5)
+			self.Entity.UnitAIWanderComponent.setBattle = false
+			unitStatus:SetProperty("state", "Idle", "")
+			
+			-- 페이즈 변경
+			unitInfo:SetPropertyToServer("unitPhaseNumber", 2, nil, true)
+			
+			
+			
+			-- 1.5초 후, 다시 전투 참여
+			local function ChangedFnc()
+				self.Entity.UnitAIWanderComponent.setBattle = true
+				-- 이속 및 공속 증가, 저지불가
+				_StatusChangeLogic:GetBuff(myUnit, "Multi_MoveSpeed", 200, -1)
+				_StatusChangeLogic:GetBuff(myUnit, "Multi_AttackSpeed", 50, -1)
+				_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0016", -1)
+			end
+			
+			_TimerService:SetTimerOnce(ChangedFnc, 1.49)
+			
+			-- 페이즈 변경 애니메이션
+			self:PhaseChangeAnimationSet(unitInfo.OwnerId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PhaseChangeAnimationSet()
+		local unit = self.Entity
+		local unitInfo = unit.UnitInfo
+		local spriteRenderer = unitInfo.spriteRenderer
+		local spriteRUID = "1f03e68c9f00453bb2da7b5682377c13"
+		
+		if isvalid(unitInfo.spriteRenderer) then
+			spriteRenderer.SpriteRendererComponent.PlayRate = 1
+			spriteRenderer.SpriteRendererComponent.SpriteRUID = spriteRUID
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit, number phaseNum)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		local ruid = ""
+		if phaseNum == 1 then
+			ruid = self.hitEffectRUID
+		elseif phaseNum == 2 then
+			ruid = self.hitEffect2RUID
+		end
+		
+		
+		-- hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(ruid, targetUnit, Vector3(0, 0.3, 0), 0, Vector3(1.8, 1.8, 1.8), false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		self.deathCount = 0
+	end
+
+	@ExecSpace("Server")
+	method void Reset()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local animComponent = myUnit.UnitAnimationComponent
+		
+		-- 페이즈 변경
+		unitInfo:SetPropertyToServer("unitPhaseNumber", 1, nil, true)
+		animComponent:PlayAnimation(1, "Idle", myUnit, unitInfo.OwnerId)
+	end
+
+end

@@ -1,0 +1,1628 @@
+@Component
+script CustomerManager extends Component
+
+	property integer Idx = 1
+
+	property integer MaxCustomerSpawnNum = 150
+
+	property SyncTable<integer, Entity> AvatarPool
+
+	property number CustomerSpawnDelay = 10
+
+	@TargetUserSync
+	property number MyAttractiveScore = 0
+
+	property table CustomerSpawnDataTable = {}
+
+	property table WaitCustomers = {}
+
+	property number WaitRowMaxNum = 3
+
+	property table CustomerInfo = {}
+
+	property table CustomerDropTips = {}
+
+	@TargetUserSync
+	property number SpeedUpCustomerSpawnDelay = 0
+
+	property integer NotAvailableRecipe = -1
+
+	property boolean IsSpawnerInited = false
+
+	@TargetUserSync
+	property integer CustomerCount = 0
+
+	property table LessThen1YearCustomerOrderTags = {}
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 서버에서 고객 매니저를 초기화하는 함수
+		self.CustomerCount = 0
+		self.IsSpawnerInited = false
+		self.SpeedUpCustomerSpawnDelay = _GetConfigDataLogic:GetConfigNumDataByKey("SpeedUpCustomerSpawnDelay")
+	end
+
+	@ExecSpace("Client")
+	method void Init(integer level)
+		-- 클라이언트에서 고객 매니저를 초기화하고 고객 풀을 생성하는 함수
+		self.Idx = 1
+		
+		if level >= 6 then 
+			self.WaitRowMaxNum = 6
+		end
+		
+		
+		table.clear(self.WaitCustomers)
+		for i = 1, 15 do 
+			self.WaitCustomers[i] = {}	
+			for j=1,6 do
+				self.WaitCustomers[i][j] = ""
+			end
+			
+		end
+		
+		
+		for i = 1, self.MaxCustomerSpawnNum do
+			local spawnPosNum = #_LobbyEntityLogic.CustomerSpawnGroup.Children
+			local spawnPosEntity = _LobbyEntityLogic.CustomerSpawnGroup.Children[_UtilLogic:RandomIntegerRange(1,spawnPosNum)]
+			
+			local modelId =  _EntryService:GetModelIdByName("Model_Customer") 
+			local customer = _SpawnService:SpawnByModelId(modelId,"Customer".._StringUtilLogic:NumToString(i), spawnPosEntity.TransformComponent.WorldPosition, _LobbyEntityLogic.CustomerGroup)
+			
+			self.AvatarPool[i] = customer
+			customer.Enable = false
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCustomerSpawnDelay(number spawnDelay)
+		-- 고객 스폰 딜레이를 계산하고 설정하는 함수
+		local player = self.Entity
+		
+		local delay = _ReputationDataSetLogic:ReturnSpawnDelay(self.Entity)
+		
+		local managementLevel = player.PlayerManagement.ManagementLevel 
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local speedUpSpawnCustomerCount = stageData:GetReputationManagementData(managementLevel).SpeedUpSpawnCustomerCount
+		
+		if self._T.IsCustomerSpawnSpeedUp == nil then
+			self._T.IsCustomerSpawnSpeedUp = true
+		end
+		
+		if self._T.IsCustomerSpawnSpeedUp == true then 
+			delay = self.SpeedUpCustomerSpawnDelay
+		end
+		
+		if spawnDelay ~= nil then 
+			delay = spawnDelay
+		end
+		
+		self.CustomerSpawnDelay = delay
+	end
+
+	@ExecSpace("Client")
+	method void CreateCustomer(integer idx, string pickTag, integer orderMenu, integer orderNum, boolean canEnter, table debugInfos)
+		-- 고객 엔티티를 풀에서 가져와서 생성하는 함수
+		if #self.AvatarPool < 1 then
+			return
+		end
+		---@type Entity
+		local customer = table.remove(self.AvatarPool, 1)
+		if isvalid(customer) then
+			customer.CustomerAIScript:Create(idx, canEnter, pickTag, orderMenu, orderNum, debugInfos)
+			customer.Enable = true
+		else	
+		end
+		
+		if not isvalid(pickTag) or not isvalid(idx) then
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean RefreshSpawnTable()
+		-- 고객 스폰 테이블을 새로고침하고 각 고객의 정보를 설정하는 함수
+		local customerSpawnTable = {} 
+		local group = "Group"
+		local requiredAttractive = "RequiredAttractive"
+		local targetTag = "TargetTag"
+		local uniqueId = "UniqueId"   
+		local orderCount = "OrderCount"
+		local tip = "Tip"
+		
+		
+		if isvalid(self._T.refreshTimer) then
+			_TimerService:ClearTimer(self._T.refreshTimer)
+		end
+		
+		local stageData = _StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage)
+		if stageData == nil then
+			self._T.refreshTimer = _TimerService:SetTimerOnce(function()
+				self:RefreshSpawnTable()
+			end, 0.2)
+			return false
+		end
+		
+		local stageEarningLevelData = stageData:GetStageEarningLevelData(self.Entity.PlayerSettlement.EarningLevel)
+		if stageEarningLevelData == nil then
+			self._T.refreshTimer = _TimerService:SetTimerOnce(function()
+				self:RefreshSpawnTable()
+			end, 0.2)
+			return false
+		end
+		
+		local storeAttractiveLevelData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+		if storeAttractiveLevelData == nil then
+			self._T.refreshTimer = _TimerService:SetTimerOnce(function()
+				self:RefreshSpawnTable()
+			end, 0.2)
+			return false
+		end
+		
+		local menuSlotNum = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.DisplayCount)
+		menuSlotNum = math.min(menuSlotNum,5)
+		local customerCount = storeAttractiveLevelData.MaxCustomerCountPerMonth 
+		local extraRate = _GetConfigDataLogic:GetConfigNumDataByKey("CustomerSpawnCountExtraRate")
+		
+		local day = self.Entity.TimeManager.Utc.Day
+		local remainDayRate = math.abs(1 - (day/30))
+		
+		
+		customerCount = math.ceil( customerCount * (1 + extraRate ) * remainDayRate ) + 1
+		
+		
+		local requiredAttractiveByGroup = {}
+		for i = 1, 9 do
+			requiredAttractiveByGroup[i] = storeAttractiveLevelData.RequiredAttractiveGroup[i]
+		end
+		
+		local useCount = 0
+		local groupCount = 0
+		
+		for i = 1 , 8 do
+			
+			if i < 8  then
+				local constantRate = tonumber(_CustomerService.CustomerGroupRate[i])
+				groupCount = math.floor( customerCount * constantRate ) -  useCount
+				
+			elseif i == 8 then	
+				groupCount = customerCount -  useCount
+				
+			end
+			
+			
+			for id = useCount + 1 , useCount+groupCount do
+				
+				local info = {} 
+				info[group] = "G"..tostring(i)
+				
+				local groupGap = requiredAttractiveByGroup[i+1] - requiredAttractiveByGroup[i]
+		
+				local variationNum = groupGap * (id - useCount) / groupCount
+				info[requiredAttractive] = math.floor(requiredAttractiveByGroup[i]	+ variationNum)
+				customerSpawnTable[id] = info 	
+			end
+			
+			useCount = useCount + groupCount
+		end
+		
+		local setRecipes = self.Entity.PlayerRecipe.SetRecipes
+		local recipes = self.Entity.PlayerRecipe.Recipes
+		local setTags = {}
+		
+		local currentRecipeCount = 0
+		
+		for i , recipeId in pairs(setRecipes) do
+			---@type RecipeData
+			local recipeData = recipes[recipeId]
+			
+			setTags[i] = recipeData.Tag
+			currentRecipeCount = currentRecipeCount + 1
+		end
+		
+		local guaranteeRate 
+		local guaranteeCustomerCount
+		local guranteeMenuCount
+		local remainCustomerCount
+		
+		local tutorialTagByOrder = {} 
+		
+		
+		for i , tag in pairs(self.LessThen1YearCustomerOrderTags) do
+			tutorialTagByOrder[i] = tag
+		end
+		
+		local curYear = self.Entity.TimeManager.Utc.Year
+		local customerOrderMenuCount = 5
+		local enableExtendOrderMenuTag = false
+		
+		local isTutorialOrderChicken = false
+		
+		if menuSlotNum < 2 then	
+			
+			local isChickenOn = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.ChuchuAtOnceSetCount) >= 4
+			if isChickenOn then
+				guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay1GuaranteeRate")	
+				customerOrderMenuCount = 2
+				
+				if self.Entity.PlayerStage.NowStage == 1 then
+					isTutorialOrderChicken = true
+					enableExtendOrderMenuTag = true
+								
+				end
+				
+			else
+				if menuSlotNum == 2 then
+					guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay1GuaranteeRate")	
+					customerOrderMenuCount = 2
+					enableExtendOrderMenuTag = true
+		
+				elseif menuSlotNum == 1 then
+					guaranteeRate = 0
+					customerOrderMenuCount = 1
+				end
+						
+			end	
+				
+			guaranteeCustomerCount = math.floor(customerCount * guaranteeRate)
+			local count = 0 	
+			
+			if customerOrderMenuCount == 2 then
+				
+				for id = 1 , guaranteeCustomerCount do
+					local info = customerSpawnTable[id] 
+					info[targetTag] = tutorialTagByOrder[2] 
+				end
+				
+				count = count + 1	
+			end
+			
+		
+			for i =  1 , customerCount do
+				
+				local info = customerSpawnTable[i] 
+				
+				if info[targetTag] == nil then
+					info[targetTag] = self:SetRandomOrderTag("","",currentRecipeCount,setTags)
+				end
+			end
+			
+		end
+		
+		
+		
+		if isTutorialOrderChicken == false then
+			
+			if curYear <= 1 then	
+			
+				if menuSlotNum<= 2 then
+				
+					if menuSlotNum == 2 then
+						guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay1GuaranteeRate")	
+						customerOrderMenuCount = 2
+						enableExtendOrderMenuTag = true
+			
+					elseif menuSlotNum == 1 then
+						guaranteeRate = 0
+						customerOrderMenuCount = 1
+					end
+					
+				elseif menuSlotNum <= 3 then	
+					if self.Entity.PlayerAchievement:IsAchievementAchieved(_TutorialAchievementTypeEnum.AppDisplayCount2) then 
+						guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay2GuaranteeRate")	
+						customerOrderMenuCount = 3
+						enableExtendOrderMenuTag = true
+					else
+						guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay1GuaranteeRate")	
+						customerOrderMenuCount = 2
+			
+					end
+					
+				elseif menuSlotNum <= 4 then	
+					if self.Entity.PlayerAchievement:IsAchievementAchieved(_TutorialAchievementTypeEnum.AppDisplayCount3) then 
+						guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay3GuaranteeRate")	
+						customerOrderMenuCount = 4
+						enableExtendOrderMenuTag = true
+					else
+						guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay2GuaranteeRate")	
+						customerOrderMenuCount = 3
+			
+					end
+					
+				elseif menuSlotNum > 4 then	
+					if self.Entity.PlayerAchievement:IsAchievementAchieved(_TutorialAchievementTypeEnum.AppDisplayCount4) then 
+						guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay4GuaranteeRate")	
+						customerOrderMenuCount = 5
+						enableExtendOrderMenuTag = true
+					else
+						guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("InTutorialPlay3GuaranteeRate")	
+						customerOrderMenuCount = 4
+			
+					end
+				end
+				
+				
+				guaranteeCustomerCount = math.floor(customerCount * guaranteeRate)
+				local count = 0 	
+				
+				if customerOrderMenuCount < 2 then
+					
+					for id = 1 , guaranteeCustomerCount do
+						local info = customerSpawnTable[id] 
+						info[targetTag] = tutorialTagByOrder[2] 
+					end
+					
+					count = count + 1	
+					
+				elseif customerOrderMenuCount >= 2 then
+					
+					if enableExtendOrderMenuTag then
+						for i = 1 , customerOrderMenuCount do
+							
+							for id = (guaranteeCustomerCount * count)+1 , guaranteeCustomerCount*(count+1) do
+								local info = customerSpawnTable[id] 
+								info[targetTag] = tutorialTagByOrder[count+1]
+							end
+							
+							count = count + 1	
+						end
+						
+					elseif not enableExtendOrderMenuTag then
+						
+						for i = 1 , (customerOrderMenuCount-1) do
+							
+							for id = (guaranteeCustomerCount * count)+1 , guaranteeCustomerCount*(count+1) do
+								local info = customerSpawnTable[id] 
+								info[targetTag] = tutorialTagByOrder[count+1]
+							end
+							
+							count = count + 1	
+						end			
+					end	
+					
+				end	
+				
+			
+				for i =  1 , customerCount do
+					
+					local info = customerSpawnTable[i] 
+					
+					if info[targetTag] == nil then
+						info[targetTag] = self:SetRandomOrderTag("","",currentRecipeCount,setTags)
+					end
+				end
+				
+			else	
+				
+				local nowTrend = self.Entity.PlayerRecipe.NowTrend
+				local positiveTrendTag = ""
+				local negativeTrendTag = ""
+				
+				for k,v in pairs(nowTrend) do 
+					---@type TrendData
+					local trendData =  _RecipeDataSetLogic.TrendData[k]
+					local trendTag = trendData.TargetTag
+					local trendType = trendData.Type 
+					
+					if trendType == "Positive" then
+						positiveTrendTag = trendData.TargetTag
+					elseif trendType == "Negative" then
+						negativeTrendTag = trendData.TargetTag
+					end
+				end
+				
+				
+				if _UtilLogic:IsNilorEmptyString(positiveTrendTag) and _UtilLogic:IsNilorEmptyString(negativeTrendTag) then 
+					
+					guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("NotAnyTrendGuaranteeRate")	
+					
+					guaranteeCustomerCount =  math.floor(customerCount * guaranteeRate)
+					
+					local count = 0 
+					
+					for i = 1 , menuSlotNum do
+						for id = (guaranteeCustomerCount*count)+1 , guaranteeCustomerCount*(count+1) do
+							local info = customerSpawnTable[id] 
+							info[targetTag] = tutorialTagByOrder[count+1]
+						end			
+			
+						count = count + 1	
+					end
+					
+					for id = guaranteeCustomerCount*menuSlotNum+1 , customerCount do
+						local info = customerSpawnTable[id] 
+						
+						
+						info[targetTag] = self:SetRandomOrderTag( positiveTrendTag , negativeTrendTag , menuSlotNum , setTags)
+					end
+							
+					
+				elseif not _UtilLogic:IsNilorEmptyString(positiveTrendTag) and _UtilLogic:IsNilorEmptyString(negativeTrendTag) then 
+					
+					guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("PositiveTrendGuaranteeRate")	
+					guaranteeCustomerCount =  math.floor(customerCount * guaranteeRate)
+					for id = 1 , guaranteeCustomerCount do
+						local info = customerSpawnTable[id] 
+						info[targetTag] = positiveTrendTag 
+					end			
+			
+					for id = guaranteeCustomerCount+1 , customerCount do
+						local info = customerSpawnTable[id] 
+			
+						info[targetTag] = self:SetRandomOrderTag( positiveTrendTag , negativeTrendTag , menuSlotNum , setTags)
+					end
+					
+					
+				elseif _UtilLogic:IsNilorEmptyString(positiveTrendTag) and not  _UtilLogic:IsNilorEmptyString(negativeTrendTag) then 
+					
+					guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("NegativeTrendGuaranteeRate")	
+					guaranteeCustomerCount =  math.floor(customerCount * guaranteeRate)
+					
+					local negativeIndex 
+					for k , v in ipairs(tutorialTagByOrder) do
+						if v == negativeTrendTag then
+							negativeIndex = k
+						end
+					end		
+					tutorialTagByOrder[negativeIndex] = nil
+					
+					local count = 0 
+					
+					for i = 1 , (menuSlotNum) do
+						for id = (guaranteeCustomerCount*count)+1 , guaranteeCustomerCount*(count+1) do
+							local info = customerSpawnTable[id] 
+							
+							if tutorialTagByOrder[count+1] == nil then
+								info[targetTag] =  self:SetRandomOrderTag( positiveTrendTag , negativeTrendTag , menuSlotNum , setTags) 
+								
+							else	
+								info[targetTag] = tutorialTagByOrder[count+1]	
+							end
+			
+						end			
+			
+						count = count + 1	
+					end
+					
+					for id = guaranteeCustomerCount*menuSlotNum+1 , customerCount do
+						local info = customerSpawnTable[id]  
+						info[targetTag] =  self:SetRandomOrderTag( positiveTrendTag , negativeTrendTag , menuSlotNum , setTags) 
+					end
+					
+					
+				elseif not _UtilLogic:IsNilorEmptyString(positiveTrendTag) and not _UtilLogic:IsNilorEmptyString(negativeTrendTag) then 
+					
+					guaranteeRate = _GetConfigDataLogic:GetConfigNumDataByKey("PosAndNegaTrendGuaranteeRate")	
+					
+					guaranteeCustomerCount =  math.floor(customerCount * guaranteeRate)
+			
+					for id = 1 , guaranteeCustomerCount do
+						local info = customerSpawnTable[id] 
+						info[targetTag] = positiveTrendTag 
+					end			
+			
+					for id = guaranteeCustomerCount+1 , customerCount do
+						local info = customerSpawnTable[id] 
+						info[targetTag] =  self:SetRandomOrderTag( positiveTrendTag , negativeTrendTag , menuSlotNum , setTags) 
+					end
+					
+				else		
+					
+					
+				end
+				
+			end
+		end
+			
+		for id , info in pairs(customerSpawnTable) do
+			
+			local tag = info[targetTag]
+			info[uniqueId] = self.Entity.MenuManager:ReturnRecipeUniqueID(self:SetOrderRecipeId(tag))
+			
+		end
+		
+		
+		
+		local minCount = stageEarningLevelData.BurgerOrderCountMin
+		local maxCount = stageEarningLevelData.BurgerOrderCountMax
+		
+		for id , info in pairs(customerSpawnTable) do
+			local orderNum = _UtilLogic:RandomIntegerRange(minCount,maxCount)
+			info[orderCount] = orderNum
+		end
+		
+		for i = 1, customerCount do
+			local randNum = math.random(1, customerCount)		
+			local tempData = customerSpawnTable[i]	
+			customerSpawnTable[i] = customerSpawnTable[randNum]	
+			customerSpawnTable[randNum] = tempData	
+		end
+		
+		for i = 1 , customerCount do
+			local info = customerSpawnTable[i]
+		end
+		
+		
+		local myEarningLevel = self.Entity.PlayerSettlement.EarningLevel
+		
+		local tipPerCustomer = storeAttractiveLevelData.TipValuePerCustomer
+		
+		local tipDropProb = _GetConfigDataLogic:GetConfigNumDataByKey("TipDropProb")
+		local tipDropValueRangeRate = _GetConfigDataLogic:GetConfigNumDataByKey("TipDropValueRangeRate")
+		
+		local tipDropCustomerCount = math.floor(customerCount * tipDropProb * (1 + extraRate ))
+		
+		local myCounterLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.CounterLevel)
+		local tipValueByCounterLevel = _KitchenAppService:GetData(_KitchenAppEnumType.Counter..myCounterLevel).EffectValue 
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(self.Entity.PlayerStage.NowStage).TipDropValueRate
+		local strategyEffect = _StrategyEnum:GetPlayerStrategyEffect(self.Entity , _StrategyEnum.CustomerTipBonus, self.Entity.PlayerStage.NowStage)
+		
+		local tipDropTotalAmount = tipDropCustomerCount * tipPerCustomer * (( 1 + tipValueByCounterLevel/100 ) * (1 + strategyEffect + stageConfig))
+		
+		
+		local tipDorpOrder = {}
+		for i = 1 , customerCount do
+			if i <= tipDropCustomerCount then
+				table.insert(tipDorpOrder,1)
+			else
+				table.insert(tipDorpOrder,0)
+			end	
+		end
+		
+		for i = 1, customerCount do
+			local randNum = math.random(1, customerCount)		
+			local tempData = tipDorpOrder[i]	
+			tipDorpOrder[i] = tipDorpOrder[randNum]	
+			tipDorpOrder[randNum] = tempData	
+		end
+		
+		local tipPerCustomerStandard = tipDropTotalAmount / tipDropCustomerCount 	
+		
+		
+		local tableTipSum = 0 
+		for id , info in pairs(customerSpawnTable) do
+			
+			if tipDorpOrder[id] == 1 then
+				local randomNum = _UtilLogic:RandomIntegerRange(-tipDropValueRangeRate*100 , tipDropValueRangeRate*100)
+				local randomRate = randomNum/100
+				local tipDropValue = math.floor( tipPerCustomerStandard * ( 1 + randomRate ))
+				
+				info[tip] = tipDropValue
+				tableTipSum = tableTipSum + tipDropValue
+			else
+				info[tip] = 0	
+				
+			end
+		end
+		
+		
+		local customerSpawnTableIdx = {}
+		local uniquId = self.Idx  
+		for id , info in pairs(customerSpawnTable) do
+			customerSpawnTableIdx[uniquId] = info 
+			uniquId = uniquId + 1	
+		end
+		
+		
+		
+		
+		if isTutorialOrderChicken == true then
+			
+			local firstCustomerInfo = customerSpawnTableIdx[1]
+			
+			local chickenOrderCustomerIndex = 1
+			local chickenOrderCustomerInfo = {}	
+			
+			for i , info in ipairs(customerSpawnTableIdx) do		
+						
+				if  info[targetTag] == _RecipeTagEnum.Chicken then	
+					if i == 1 then
+						break
+						
+					else
+						chickenOrderCustomerIndex = i
+						chickenOrderCustomerInfo = info
+						break
+					end
+					
+				end		
+			end
+			
+			if chickenOrderCustomerIndex ~= 1 then
+				customerSpawnTableIdx[1] = chickenOrderCustomerInfo
+				customerSpawnTableIdx[chickenOrderCustomerIndex] = firstCustomerInfo 
+			end
+		end
+		
+		table.clear(customerSpawnTable)
+		self.CustomerSpawnDataTable = customerSpawnTableIdx
+		
+		self:SyncCustomerInfoTable(customerSpawnTableIdx,self.Entity.PlayerComponent.UserId)
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void SyncCustomerInfoTable(table customerSpawnTable)
+		-- 서버에서 전송된 고객 스폰 정보를 클라이언트에 동기화하는 함수
+		table.clear(self.CustomerSpawnDataTable)
+		for id , info in pairs(customerSpawnTable) do
+			self.CustomerSpawnDataTable[id] = info
+		end
+		
+		if isvalid(self.Entity.PlayerDebugMonitor.SpawnPoolMonitor) then
+			self.Entity.PlayerDebugMonitor.SpawnPoolMonitor.DebugMonitorSpawnPool:ResetButtonHilight()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string SetRandomOrderTag(string positiveTrendTag, string negativeTrendTag, integer currentRecipeCount, table setTags)
+		-- 트렌드와 메뉴 상황에 따라 고객의 주문 태그를 결정하는 함수
+		
+		
+		local notTrandTags = {} 
+		
+		for i , tag in ipairs(self.LessThen1YearCustomerOrderTags) do
+			notTrandTags[i] = tag
+		end
+		
+		
+		local pickTag
+		
+		if _UtilLogic:IsNilorEmptyString(positiveTrendTag) and _UtilLogic:IsNilorEmptyString(negativeTrendTag) then 
+			local randomNum = _UtilLogic:RandomIntegerRange( 1 , currentRecipeCount )
+			pickTag = setTags[randomNum] 
+			if _UtilLogic:IsNilorEmptyString(pickTag) then
+				randomNum = _UtilLogic:RandomIntegerRange( 1 , #notTrandTags )
+				pickTag = notTrandTags[randomNum]
+			end
+			
+		elseif not _UtilLogic:IsNilorEmptyString(positiveTrendTag) and _UtilLogic:IsNilorEmptyString(negativeTrendTag) then 
+			
+			local availableTags = {}	
+			for index , tag in pairs(setTags) do
+				if positiveTrendTag ~= tag then
+					table.insert(availableTags,tag) 
+				end
+			end
+				
+			local randomNum = _UtilLogic:RandomIntegerRange( 1 , #availableTags)
+			pickTag = setTags[randomNum] 	
+				
+			if _UtilLogic:IsNilorEmptyString(pickTag) then
+				for i = #notTrandTags , 1 , -1 do
+					if notTrandTags[i] == positiveTrendTag then
+						table.remove(notTrandTags,i)
+					end
+				end
+				randomNum = _UtilLogic:RandomIntegerRange( 1 , #notTrandTags )
+				pickTag = notTrandTags[randomNum]
+			end
+				
+		elseif _UtilLogic:IsNilorEmptyString(positiveTrendTag) and not _UtilLogic:IsNilorEmptyString(negativeTrendTag) then 
+			
+			local hasMenuNegativeTrendTag = false
+			for i , tag in pairs(setTags) do
+				if tag == negativeTrendTag then
+					hasMenuNegativeTrendTag = true
+				end	
+			end
+			
+			local availableTags = {}	
+			for index , tag in pairs(setTags) do
+				if negativeTrendTag ~= tag then
+					table.insert(availableTags,tag)	
+				end
+			end
+			
+			
+			local negativeTagOrderPercentage = _GetConfigDataLogic:GetConfigNumDataByKey("NegativeTagOrderRate")*100 
+			
+			if hasMenuNegativeTrendTag == true then
+			
+				local negativeOrderWeight = _UtilLogic:RandomIntegerRange( 1 , 100 )
+				if negativeOrderWeight <= negativeTagOrderPercentage then
+					pickTag = negativeTrendTag	
+		
+				else
+					
+					local randomNum = _UtilLogic:RandomIntegerRange( 1 , #availableTags)
+					pickTag = availableTags[randomNum]
+					
+					if _UtilLogic:IsNilorEmptyString(pickTag) then
+						
+						for i = #notTrandTags , 1 , -1 do
+							if notTrandTags[i] == negativeTrendTag then
+								table.remove(notTrandTags,i)
+							end
+						end
+						
+						randomNum = _UtilLogic:RandomIntegerRange( 1 , #notTrandTags )
+						pickTag = notTrandTags[randomNum]
+					end
+					
+				end
+				
+			elseif hasMenuNegativeTrendTag == false then
+				
+				local randomNum = _UtilLogic:RandomIntegerRange( 1 , #availableTags)
+				pickTag = availableTags[randomNum]
+							
+				if _UtilLogic:IsNilorEmptyString(pickTag) then
+					
+					for i = #notTrandTags , 1 , -1 do
+						if notTrandTags[i] == negativeTrendTag then
+							table.remove(notTrandTags,i)
+						end
+					end
+					
+					randomNum = _UtilLogic:RandomIntegerRange( 1 , #notTrandTags )
+					pickTag = notTrandTags[randomNum]
+				end
+				
+			end
+			
+		elseif not _UtilLogic:IsNilorEmptyString(positiveTrendTag) and not _UtilLogic:IsNilorEmptyString(negativeTrendTag) then 
+			
+		
+			
+			local hasMenuNegativeTrendTag = false
+			for i , tag in pairs(setTags) do
+				if tag == negativeTrendTag then
+					hasMenuNegativeTrendTag = true
+				end	
+			end
+			
+			local availableTags = {}	
+			for index , tag in pairs(setTags) do
+				if negativeTrendTag ~= tag then
+					table.insert(availableTags,tag)	
+				end
+			end	
+		
+			local negativeTagOrderPercentage = _GetConfigDataLogic:GetConfigNumDataByKey("NegativeTagOrderRate")*100 
+			
+			if hasMenuNegativeTrendTag == true then
+			
+				local negativeOrderWeight = _UtilLogic:RandomIntegerRange( 1 , 100 )
+				if negativeOrderWeight <= negativeTagOrderPercentage then
+					pickTag = negativeTrendTag 
+		
+				else
+						
+					local randomNum = _UtilLogic:RandomIntegerRange( 1 , #availableTags)
+					pickTag = availableTags[randomNum]
+					
+							
+					if _UtilLogic:IsNilorEmptyString(pickTag) then
+						
+						for i = #notTrandTags , 1 , -1 do
+							if notTrandTags[i] == negativeTrendTag or notTrandTags[i] == positiveTrendTag then
+								table.remove(notTrandTags,i)
+							end
+						end
+						
+						randomNum = _UtilLogic:RandomIntegerRange( 1 , #notTrandTags )
+						pickTag = notTrandTags[randomNum]
+					end
+					
+				end
+				
+				
+				
+			elseif hasMenuNegativeTrendTag == false then
+				
+				local randomNum = _UtilLogic:RandomIntegerRange( 1 , #availableTags)
+				pickTag = availableTags[randomNum]
+				
+							
+				if _UtilLogic:IsNilorEmptyString(pickTag) then
+					
+					for i = #notTrandTags , 1 , -1 do
+						if notTrandTags[i] == negativeTrendTag or notTrandTags[i] == positiveTrendTag then
+							table.remove(notTrandTags,i)
+						end
+					end
+					
+					randomNum = _UtilLogic:RandomIntegerRange( 1 , #notTrandTags )
+					pickTag = notTrandTags[randomNum]
+				end
+				
+			end
+			
+		end
+		
+		if pickTag == nil then
+		end		
+		
+		return pickTag
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer SetOrderRecipeId(string targetTag)
+		-- 타겟 태그에 맞는 레시피 ID를 선택하여 반환하는 함수
+		
+		local recipeId = self.NotAvailableRecipe
+		
+		local setRecipes = self.Entity.PlayerRecipe.SetRecipes
+		local recipes = self.Entity.PlayerRecipe.Recipes
+		
+		local veggieMyRecipeIds = {}
+		local meatMyRecipeIds = {}
+		local seafoodMyRecipeIds = {}
+		local chickenMyRecipeIds = {}
+		local spicyMyRecipeIds = {}
+		local mixedMyRecipeIds = {}
+		
+		for i , recipeId  in pairs(setRecipes) do
+			---@type RecipeData
+			local recipeData = recipes[recipeId]
+			local tag = recipeData.Tag
+			
+			if tag == _RecipeTagEnum.Veggie then
+				table.insert(veggieMyRecipeIds,recipeId)
+				
+			elseif tag == _RecipeTagEnum.Meat then
+				table.insert(meatMyRecipeIds,recipeId)
+				
+			elseif tag == _RecipeTagEnum.Seafood then
+				table.insert(seafoodMyRecipeIds,recipeId)
+				
+			elseif tag == _RecipeTagEnum.Chicken then
+				table.insert(chickenMyRecipeIds,recipeId)
+				
+			elseif tag == _RecipeTagEnum.Spicy then
+				table.insert(spicyMyRecipeIds,recipeId)
+				
+			elseif tag == _RecipeTagEnum.Mixed then
+				table.insert(mixedMyRecipeIds,recipeId)
+			end
+			
+		end
+		
+		
+		if targetTag == _RecipeTagEnum.Veggie then
+			
+			if #veggieMyRecipeIds > 0 then
+				local randomNum = _UtilLogic:RandomIntegerRange( 1 , #veggieMyRecipeIds )
+				recipeId = veggieMyRecipeIds[randomNum]
+			end
+		
+		elseif targetTag == _RecipeTagEnum.Meat then
+			
+			if #meatMyRecipeIds > 0 then
+				local randomNum = _UtilLogic:RandomIntegerRange( 1 , #meatMyRecipeIds )
+				recipeId = meatMyRecipeIds[randomNum]
+			end
+		
+		elseif targetTag == _RecipeTagEnum.Seafood then
+		
+			if #seafoodMyRecipeIds > 0 then
+				local randomNum = _UtilLogic:RandomIntegerRange( 1 , #seafoodMyRecipeIds )
+				recipeId = seafoodMyRecipeIds[randomNum]
+			end
+		
+		elseif targetTag == _RecipeTagEnum.Chicken then
+		
+			if #chickenMyRecipeIds > 0 then
+				local randomNum = _UtilLogic:RandomIntegerRange( 1 , #chickenMyRecipeIds )
+				recipeId = chickenMyRecipeIds[randomNum]
+			end
+			
+		elseif targetTag == _RecipeTagEnum.Spicy then
+		
+			if #spicyMyRecipeIds > 0 then
+				local randomNum = _UtilLogic:RandomIntegerRange( 1 , #spicyMyRecipeIds )
+				recipeId = spicyMyRecipeIds[randomNum]
+			end
+			
+		elseif targetTag == _RecipeTagEnum.Mixed then
+		
+			if #mixedMyRecipeIds > 0 then
+				local randomNum = _UtilLogic:RandomIntegerRange( 1 , #mixedMyRecipeIds )
+				recipeId = mixedMyRecipeIds[randomNum]
+			end
+		
+			
+		elseif _UtilLogic:IsNilorEmptyString(targetTag) then
+			local randomIndex = _UtilLogic:RandomIntegerRange(1, #setRecipes)
+			local randomKey = table.keys(setRecipes)[randomIndex]
+			recipeId = setRecipes[randomKey]
+			
+		else		
+		end	
+		return recipeId
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CalcMyAttractive()
+		-- 가게의 총 매력도를 계산하는 함수
+		
+		local recipeTotalScore = self:CalcAttractiveRecipe()
+		
+		local storeAttractiveExpension = self:CalcAttractiveExpension()
+		local storeAttactiveInterior = self:CalcAttractiveInterior()
+		local storeAttactiveDeco = self:CalacAttractiveDeco()
+		
+		self.MyAttractiveScore = recipeTotalScore +  storeAttractiveExpension + storeAttactiveInterior + storeAttactiveDeco
+		
+		if self:IsServer() then
+			self:ResetLeaveCustomerAttractive(self.Entity.PlayerComponent.UserId)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void ResetLeaveCustomerAttractive()
+		-- 떠난 고객 매력도 통계를 초기화하는 함수
+		self.Entity.PlayerSettlement.LeaveCustomerAttractive = 0
+		
+		for k , v in pairs( self.Entity.PlayerSettlement.LeaveCustomerTag) do
+			v = 0
+		end
+		
+	end
+
+	method number CalcAttractiveRecipe()
+		-- 설정된 레시피들의 총 매력도를 계산하는 함수
+		
+		local setRecipes = self.Entity.PlayerRecipe.SetRecipes
+		local recipeTotalScore = 0
+		
+		for i , recipeId in pairs(setRecipes) do
+		
+			local recipeScore = self:CalcRecipeAttractive(recipeId)
+			recipeTotalScore = recipeTotalScore + recipeScore 
+		end	
+		
+		return recipeTotalScore 
+	end
+
+	method number CalcAttractiveExpension()
+		-- 매장 확장 단계에 따른 매력도를 계산하는 함수
+		local storeAttractiveScore = 0
+		
+		local expansionLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.ExpansionStep)
+		local expansionScorePerLv = _GetConfigDataLogic:GetConfigNumDataByKey("AttractiveScorePerStoreSizeLevel")
+		
+		local storeAttractiveExpension = expansionLv * expansionScorePerLv 
+		
+		storeAttractiveExpension = storeAttractiveExpension * (1 + _StrategyEnum:GetPlayerStrategyEffect(self.Entity, _StrategyEnum.AttractiveUpgradeBonus, self.Entity.PlayerStage.NowStage))
+		
+		return storeAttractiveExpension
+	end
+
+	method number CalcAttractiveInterior()
+		-- 매장 인테리어 레벨에 따른 매력도를 계산하는 함수
+		local interiorLv = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity,_UpgradeTypeEnum.InteriorLevel)
+		local interiorScorePerLv = _GetConfigDataLogic:GetConfigNumDataByKey("AttractiveScorePerStoreInteriorLevel")
+		
+		local storeAttactiveInterior = interiorLv * interiorScorePerLv
+		
+		storeAttactiveInterior = storeAttactiveInterior * (1 + _StrategyEnum:GetPlayerStrategyEffect(self.Entity, _StrategyEnum.AttractiveUpgradeBonus, self.Entity.PlayerStage.NowStage))
+		
+		return storeAttactiveInterior
+	end
+
+	method number CalacAttractiveDeco()
+		-- 매장 장식에 따른 매력도를 계산하는 함수
+		
+		local decoScore = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.StoreDeco)
+		
+		decoScore = decoScore * (1 + _StrategyEnum:GetPlayerStrategyEffect(self.Entity, _StrategyEnum.AttractiveUpgradeBonus, self.Entity.PlayerStage.NowStage))
+		
+		return decoScore
+	end
+
+	method number CalcRecipeAttractive(integer recipeId)
+		-- 특정 레시피의 매력도를 계산하는 함수
+		local recipeAttractiveScore = 0
+		
+		---@type RecipeData
+		local recipeData = self.Entity.PlayerRecipe.Recipes[recipeId]
+		if recipeData == nil then
+			return 0
+		end
+		
+		recipeAttractiveScore = _TasteGradeDataSetLogic:ReturnAttractiveScoreByScore(recipeData.TasteScore)
+		
+		
+		local positiveTrendTag = ""
+		local negativeTrendTag = ""
+		for k,v in pairs(self.Entity.PlayerRecipe.NowTrend) do 
+			local trendData = _RecipeDataSetLogic:GetTrendData(k)
+			if trendData.Type == "Positive" then
+				positiveTrendTag = trendData.TargetTag
+			elseif trendData.Type == "Negative" then
+				negativeTrendTag = trendData.TargetTag
+			end
+		end
+		
+		local penaltyForNegativeTrend = _GetConfigDataLogic:GetConfigNumDataByKey("AttractiveScoreDownForNegativeTrendRecipe")	
+		
+		
+		if not _UtilLogic:IsNilorEmptyString(negativeTrendTag) then
+			
+			if recipeData.Tag == negativeTrendTag then
+				recipeAttractiveScore = recipeAttractiveScore * ( 1 - penaltyForNegativeTrend )
+			end	
+			
+		end
+		
+		local bonusForTrialWin = _GetConfigDataLogic:GetConfigNumDataByKey("AttractiveScoreBonusRateForTrialWin")	
+		
+		if recipeData.IsTrialBuff == true then
+			
+			recipeAttractiveScore = recipeAttractiveScore * ( 1 + bonusForTrialWin )
+			
+		end
+		
+		recipeAttractiveScore = recipeAttractiveScore * ( 1 + _StrategyEnum:GetPlayerStrategyEffect(self.Entity, _StrategyEnum.AttractiveRecipeBonus, self.Entity.PlayerStage.NowStage))
+		
+		return recipeAttractiveScore
+	end
+
+	@ExecSpace("Server")
+	method void RequestPayPurchase(integer customerID, Vector3 customerPos, string customerPath)
+		-- 고객의 결제 요청을 처리하고 매출을 계산하는 함수
+		local player = self.Entity
+		
+		if not isvalid(self.CustomerInfo[customerID]) then 
+			return
+		end
+		
+		if player.TimeManager:CheckCanTimeFlows() == false then 
+			return 
+		end
+		
+		local orderNum = self.CustomerInfo[customerID]["orderNum"]
+		local orderUniqueID = self.CustomerInfo[customerID]["uniqueID"]
+		
+		local recipeData = self.Entity.MenuManager:ReturnRecipeDataByUniqueID(orderUniqueID) 
+		local burgerTag = recipeData.Tag 
+		
+		local burgerPrice = _RecipeDataSetLogic:GetRecipeCost(recipeData, player, true, true) 
+		local totalOrderPirce = math.floor( orderNum * burgerPrice ) 
+		
+		self.Entity.PlayerInventory:ModifyMoney(totalOrderPirce,"Lobby burger sales","Lobby HUD")	
+		
+		
+		
+		local tip = math.ceil( self.CustomerInfo[customerID]["tip"] )
+		
+		if tip ~= 0 then 
+			
+			self:RequestAddStorageTip(customerID,tip,customerPos)
+			_CustomerService:SetEmotion("tip",customerPath) 
+			
+		end
+		
+		_CustomerUIService:CreatePayProductionUI(customerPos,tostring(totalOrderPirce),"G0001",self.Entity.PlayerComponent.UserId)
+		
+		
+		for i =1,orderNum do
+		
+			
+			local achiTypeId
+			if burgerTag == _RecipeTagEnum.Meat then
+				achiTypeId = _AchievementTypeEnum.MenuSellCount_Meat
+			elseif burgerTag == _RecipeTagEnum.Chicken then
+				achiTypeId = _AchievementTypeEnum.MenuSellCount_Chicken
+			elseif burgerTag == _RecipeTagEnum.Seafood then
+				achiTypeId = _AchievementTypeEnum.MenuSellCount_Seafood
+			elseif burgerTag == _RecipeTagEnum.Veggie then
+				achiTypeId = _AchievementTypeEnum.MenuSellCount_Veggie
+			elseif burgerTag == _RecipeTagEnum.Spicy then
+				achiTypeId = _AchievementTypeEnum.MenuSellCount_Spicy
+			end
+			
+			if isvalid(achiTypeId) then
+				local tagProgress = player.PlayerAchievement:ReturnAchievementProgress(achiTypeId)
+				player.PlayerAchievement:RequestChangeProgress(achiTypeId, tagProgress+1)
+			end
+					
+					
+			local burgerMoneyProgress = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.MenuSellPrice)
+			if math.floor(burgerPrice) > burgerMoneyProgress then
+				player.PlayerAchievement:RequestChangeProgress(_AchievementTypeEnum.MenuSellPrice, math.floor(burgerPrice))
+			end
+			
+			player.PlayerSettlement:RequestAddValueForSettlement(_SettlementPropertyEnum.BurgerCount, 1)
+			
+		end
+		
+		
+		player.PlayerSettlement:RequestAddValueForSettlement(_SettlementPropertyEnum.P_RecipeTotal, totalOrderPirce)
+		player.PlayerSettlement:RequestAddValueForSettlement(_SettlementPropertyEnum.CustomerCount, 1)
+		
+		local customerProgress = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.AccumCustomerCount)
+		player.PlayerAchievement:RequestChangeProgress(_AchievementTypeEnum.AccumCustomerCount, customerProgress+1)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestAddStorageTip(integer ownerID, integer amount, Vector3 customerPos)
+		-- 고객이 주는 팁을 저장소에 추가하거나 드롭으로 생성하는 함수
+		local player = self.Entity
+		local level = player.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(_UpgradeTypeEnum.TipStorageLevel)
+		local maxValue = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.TipStorageLevel)
+		
+		local curTip = player.PlayerInventory.Tip 
+		local changeTip = curTip + amount 
+		
+		
+		if player.PlayerEvent:IsEventOccured(_TutorialEventEnum.CustomerPurchase[1]) == false then
+		    return
+		end
+		
+		if level < 1 then 
+			self.CustomerDropTips[ownerID] = amount
+			_CustomerService:SpawnDropItem(ownerID,amount,customerPos,player.PlayerComponent.UserId)
+		
+		elseif changeTip > maxValue  then 
+			
+			local remainStorage = maxValue - curTip 
+			local dropAmount = amount - remainStorage 
+				
+			player.PlayerInventory:ModifyTip(remainStorage) 
+			
+			_CustomerService:SpawnDropItem(ownerID,dropAmount,customerPos,player.PlayerComponent.UserId) 
+			self.CustomerDropTips[ownerID] = dropAmount
+		
+		else 
+			
+			player.PlayerInventory:ModifyTip(amount)
+		
+		end 
+	end
+
+	@ExecSpace("Server")
+	method void RequestAddDropTip(integer ownerID, integer amount)
+		-- 드롭된 팁을 플레이어 인벤토리에 추가하는 함수
+		if not isvalid(self.CustomerDropTips[ownerID]) then 
+			return 
+		end
+		
+		if self.CustomerDropTips[ownerID] ~= amount then 
+			return 
+		end
+		
+		self.Entity.PlayerInventory:AddItem("G0005", amount,"Customer drop tip","Lobby HUD")
+		
+		self.CustomerDropTips[ownerID] = nil 
+		
+		
+		local tipProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.TipHeart)
+		self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.TipHeart, tipProgress + amount)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CalcAppliacneBonus()
+		-- 주방 기기 레벨에 따른 보너스를 계산하는 함수
+		local level = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.GrillLevel)
+		
+		local applianceBonus = _KitchenAppService:GetData(_KitchenAppEnumType.Grill..level).EffectValue / 100 
+		
+		if not isvalid(applianceBonus) then 
+			return 1
+		end
+		
+		return applianceBonus
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CalcRecipeComboBonus()
+		-- 레시피 콤보 보너스를 계산하는 함수
+		local recipeComboBonus = 0
+		local recipeCombo = self.Entity.PlayerRecipe.ActiveRecipeCombo
+		
+		if recipeCombo ~= 0 then
+			---@type RecipeComboData
+			local recipeComboData = _RecipeTagDataSetLogic.RecipeComboData[self.Entity.PlayerRecipe.ActiveRecipeCombo]
+			recipeComboBonus = recipeComboData.EffectAmount
+		
+		end
+		
+		return recipeComboBonus
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean HasWaitingCustomer()
+		-- 대기 중인 고객이 있는지 확인하는 함수
+		for k,v in pairs( self.WaitCustomers) do 
+			for _,entity in pairs(v) do 
+				if entity ~= "" then 
+					return false 
+				end
+			end
+			
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AddWaitCustomer(string col, string row, any customer)
+		-- 대기열에 고객을 추가하는 함수
+		self.WaitCustomers[col][row] = customer
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RemoveWaitCustomer(string row, string col, Entity customer)
+		-- 대기열에서 고객을 제거하는 함수
+		if self.WaitCustomers[row][col] == customer then 
+			self.WaitCustomers[row][col] = ""
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ExitWaitCustomer()
+		-- 대기 중인 고객들을 상황에 따라 퇴장시키는 함수
+		local counterNum = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.CounterCount) 
+		
+		
+		for i = 1, counterNum do 
+			for j = 1 , self.WaitRowMaxNum do
+				---@type Entity 
+				local customerTable = self.WaitCustomers[i]
+				if isvalid(customerTable) then
+					---@type Entity 
+					local customer = customerTable[j]
+					if isvalid(customer) then 
+						
+						if customer == "" then continue end 
+						
+						if j == 1 then 
+							local customerSeat = customer.CustomerAIScript.WaitSpotId
+							self:RemoveWaitCustomer(customerSeat[1],customerSeat[2],customer)
+							customer.CustomerAIScript:ResetEntity()
+							
+						else
+		
+							local customerOrderIdx = customer.CustomerAIScript.UniqueRecipeId 
+		
+							local recipeChanged = true 
+							for slotIdx,curRecipeId in pairs(_UserService.LocalPlayer.MenuManager.CurrentSetRecipes) do
+								
+								local uniqueId = _UserService.LocalPlayer.PlayerRecipe.Recipes[curRecipeId].UniqueId
+								if uniqueId == customerOrderIdx then
+									recipeChanged = false
+									break
+								end
+							end
+			
+							if recipeChanged then
+		
+								local customerSeat = customer.CustomerAIScript.WaitSpotId
+								self:RemoveWaitCustomer(customerSeat[1],customerSeat[2],customer)
+								customer.CustomerAIScript:ResetEntity()
+		
+					
+							end
+						end
+					end
+				end
+			end
+		end
+		
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method table ReturnWaitSeat()
+		-- 사용 가능한 대기 좌석을 찾아 반환하는 함수
+		local player = _UserService.LocalPlayer
+		local counterNum = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player,_UpgradeTypeEnum.CounterCount)
+		
+		local expansionLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player,_UpgradeTypeEnum.ExpansionStep)
+		local waitRowNum = 3 
+		if expansionLv >= 6 then 
+			waitRowNum = expansionLv 
+		end
+		
+		
+		for row = 1, 6 do 
+		
+			if waitRowNum < row then 
+				break
+			end
+			
+			local centerCounterNum = math.floor(counterNum/2 + 1)
+			local col = centerCounterNum
+			local q = 1
+			if counterNum % 2 == 0 then 
+				q = 0
+			end
+			for i = 1, counterNum do
+				
+				if player.EmployeeManager.ServingEmployeeLocationTable[i] == true and self.WaitCustomers[i][row] == "" then
+					return {i,row}
+				end		
+				
+				if i % 2 == q then
+					col = col + i 
+				else
+					col = col - i 
+				end
+			end
+		end
+		
+		return nil 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveAllCustomerForward()
+		-- 모든 대기 고객들을 앞으로 이동시키는 함수
+		for col,cutomers in pairs(self.WaitCustomers) do
+		
+			local customerCount = 1
+			for idx,entity in pairs(cutomers) do
+		
+		
+			if not isvalid(entity) or entity == "" then
+			
+				for befIdx = idx +1, #cutomers do  
+					local target = cutomers[befIdx]
+					if target ~= "" and isvalid(target) then 
+						
+						self.WaitCustomers[col][befIdx] = ""
+						local moveChangedEvent = EmployeeMoveChangedEvent()
+						moveChangedEvent:InitExcpetType(false, _LobbySpawnPositionLogic.CustomerWaitSeatGroup[col][idx])
+						target:SendEvent(moveChangedEvent)
+		
+						self.WaitCustomers[col][idx] = target
+						target.CustomerAIScript.WaitSpotId = {col,idx}
+			
+						break
+					end
+				end
+		
+				
+			end
+			
+		
+				
+			end
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveCustomerForwardByCounterID(string col)
+		-- 특정 카운터의 대기 고객들을 앞으로 이동시키는 함수
+		local expansionLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.ExpansionStep)
+		local waitRowNum = 3 
+		if expansionLv >= 6 then 
+			waitRowNum = expansionLv 
+		end
+		
+		
+		
+		for idx,entity in pairs(self.WaitCustomers[col]) do
+			if idx == 1 then 
+				continue
+			end
+			if entity == "" then 
+				continue
+			end
+			
+			---@type Entity
+			local customer = entity
+			local customerRow = customer.CustomerAIScript.WaitSpotId[2]
+			
+			local changeRow = idx -1
+			
+			if customer.CustomerAIScript.State == "ORDER" then
+				local moveChangedEvent = EmployeeMoveChangedEvent()
+				moveChangedEvent:InitExcpetType(false, _LobbySpawnPositionLogic.CustomerWaitSeatGroup[col][changeRow])
+				customer:SendEvent(moveChangedEvent)
+			else
+			end
+			
+			self.WaitCustomers[col][customerRow] = ""
+			self.WaitCustomers[col][changeRow] = customer
+			customer.CustomerAIScript:UpdateWaitSpotId(col, changeRow)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UpdateAllWaitCustomerPos(integer expansionLv)
+		-- 확장 레벨 변경 시 모든 대기 고객의 위치를 업데이트하는 함수
+		if expansionLv == 6 then 
+			self.WaitRowMaxNum = 6
+		else 
+			self.WaitRowMaxNum = 3
+		end
+		
+		
+		for counterIdx,v in pairs (self.WaitCustomers) do 
+			for waitingIdx, customer in pairs(self.WaitCustomers[counterIdx]) do 
+				
+				if customer == "" then 
+					continue
+				end		
+				
+				if customer.CustomerAIScript.State == "ORDER" or customer.CustomerAIScript.State == "CHECKOUT" then
+					local waitSeatPos = _LobbySpawnPositionLogic.CustomerWaitSeatGroup[counterIdx][waitingIdx]
+					customer.MovementComponent:SetWorldPosition(Vector2(waitSeatPos.x, waitSeatPos.y))
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapLeave(Entity leftMap)
+		-- 맵을 떠날 때 고객 매니저를 정리하는 함수
+		if _UtilLogic:Contains(leftMap.Name, "Lobby") then 
+			self.IsSpawnerInited = false
+			self.CustomerSpawnDelay = 10
+			self.CustomerCount = 0
+			table.clear(self.CustomerSpawnDataTable)
+			table.clear(self.WaitCustomers) 
+			table.clear(self.CustomerInfo)
+			table.clear(self.CustomerDropTips)
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitCustomerSpawner()
+		-- 고객 스폰너를 초기화하는 함수
+		
+		self:SetCustomerSpawnDelay(nil)
+		
+		self._T.spawnTime = 0
+		self.IsSpawnerInited = true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SpawnCustomer()
+		-- 실제로 고객을 스폰하는 함수
+		
+		local player = self.Entity
+		local managementLevel = player.PlayerManagement.ManagementLevel 
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local speedUpSpawnCustomerCount = stageData:GetReputationManagementData(managementLevel).SpeedUpSpawnCustomerCount
+		
+		
+		local customerInfo = self.CustomerSpawnDataTable[self.Idx]
+						
+		if not isvalid(customerInfo) then
+			local result = self:RefreshSpawnTable()  
+			if result == false then 
+				return
+			end
+			customerInfo = self.CustomerSpawnDataTable[self.Idx]
+		end
+		
+		
+		if self.MyAttractiveScore == 0 then 
+			self:CalcMyAttractive()
+		end
+		
+		self.CustomerCount += 1		
+		
+		if self.CustomerCount <= speedUpSpawnCustomerCount then
+			
+			if self._T.IsCustomerSpawnSpeedUp == true then
+				self._T.IsCustomerSpawnSpeedUp = false
+				self:SetCustomerSpawnDelay(nil)
+				return
+			end
+			
+		end			
+		
+		local group = customerInfo["Group"]			
+		local targetTag = customerInfo["TargetTag"]				
+		local uniqueId = customerInfo["UniqueId"]		
+		local orderCount = customerInfo["OrderCount"]
+		local tip = tonumber(customerInfo["Tip"])
+		
+		
+		
+		if player.PlayerEvent:IsEventOccured("T1004") == false then
+		    if self.CustomerCount == 2 then
+		        local myEarningLevel = self.Entity.PlayerSettlement.EarningLevel
+				local stageEarningLevelData = _StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage):GetStageEarningLevelData(self.Entity.PlayerSettlement.EarningLevel)
+				local storeAttractiveData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+				
+		        local tipPerCustomer = storeAttractiveData.TipValuePerCustomer
+		        
+		        local tipDropValueRangeRate = _GetConfigDataLogic:GetConfigNumDataByKey("TipDropValueRangeRate")
+		        
+		        local randomNum = _UtilLogic:RandomIntegerRange(-tipDropValueRangeRate*100 , tipDropValueRangeRate*100)
+		        local randomRate = randomNum/100
+		        local tipDropValue = math.floor( tipPerCustomer * ( 1 + randomRate ))
+		
+		        tip = tipDropValue
+		    end
+		end
+		
+		local requiredAttractive = customerInfo["RequiredAttractive"]
+		local canEnter = true
+		
+		if self.MyAttractiveScore < requiredAttractive then
+			canEnter = false
+		end
+		
+		self.CustomerInfo[self.Idx] = {["tip"] = tip , ["orderNum"] = orderCount, ["uniqueID"] = uniqueId }
+		
+		local debugInfos = {["Group"] = group, ["Attractive"] = requiredAttractive, ["TargetTag"] = targetTag, ["OrderCount"] = orderCount, ["DropTip"] = tip }
+		
+		
+		self:CreateCustomer(self.Idx, targetTag, uniqueId, orderCount, canEnter, debugInfos, player.PlayerComponent.UserId)
+		
+		table.remove(self.CustomerSpawnDataTable,1)
+		self.Idx = self.Idx + 1
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 고객 스폰 타이밍을 처리하는 함수
+		if self.IsSpawnerInited == false then
+			return
+		end
+		
+		if self.Entity.TimeManager:CheckCanTimeFlows() == false then
+			return
+		end
+		
+		if _BalanceDataSetLogic.IsLoadConfigData == false then
+			return
+		end
+		
+		self._T.spawnTime += delta
+		if self._T.spawnTime >= self.CustomerSpawnDelay then
+			self._T.spawnTime = 0
+			self:SpawnCustomer()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateCustomerSpawnPos(integer expansionLevel)
+		-- 확장 레벨에 따라 고객 스폰 위치를 업데이트하는 함수
+		
+		local cameraData = _CameraDataSetLogic:GetLobbyCameraData(expansionLevel)
+		local typeData = cameraData:GetCameraTypeDataByKey("FullView")
+		local posX = typeData.CustomBoundRT.x + 1
+		
+		for _, entity in pairs(_LobbyEntityLogic.CustomerSpawnGroup.Children) do
+			entity.TransformComponent.WorldPosition.x = posX 
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetTurialTagByOrderByNowStage(integer stageId)
+		-- 현재 스테이지에 따라 튜토리얼 태그 순서를 설정하는 함수
+		local stageData = _StageDataSetLogic:GetStageData(stageId)
+		if stageData == nil then
+			return
+		end
+		
+		table.clear(self.LessThen1YearCustomerOrderTags)
+		for _, tag in pairs(stageData.LessThen1YearCustomerOrderTags) do
+			table.insert(self.LessThen1YearCustomerOrderTags, tag)
+		end
+		
+		self.Entity.CustomerManager:RefreshSpawnTable()
+		self.Entity.CustomerManager:SetCustomerSpawnDelay(nil)
+	end
+
+	@ExecSpace("Server")
+	method void CustomerOrderChange(integer customerId, integer recipeId)
+		-- 고객의 주문 내용을 변경하는 함수
+		self.CustomerInfo[customerId]["uniqueID"] = recipeId
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandlePlayerReputationChangedEvent(PlayerReputationChangedEvent event)
+		-- 플레이어 평판 변경 이벤트를 처리하는 핸들러
+		local Current = event.Current
+		local Amount = event.Amount
+		self:SetCustomerSpawnDelay(nil)
+	end
+
+end

@@ -1,0 +1,144 @@
+@Component
+script Room extends Map
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property table room = nil
+
+	method table GetProperties()
+		-- 룸의 속성을 테이블로 반환
+		local propertyTable = {
+			room = self.room,
+		}
+		
+		_Table:Assign(__base:GetProperties(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		-- 클라이언트에서 속성 동기화 시 UI 모듈들 생성
+		__base:OnSyncProperties()
+		
+		if _UtilLogic:IsNilorEmptyString(self.mode) then
+			return
+		end
+		
+		self.uiManager:SpawnAndSetModule("GalleryModule", self.Entity)
+		if self.mode == "Tutorial" then
+			self.uiManager:SpawnAndSetModule("TutorialModule", self.Entity)
+		else
+			self.uiManager:SpawnAndSetModule("NoticeModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("RewardModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("EventModule", self.Entity)
+			
+			self.uiManager:SpawnAndSetModule("DuelModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("PlayerModule", self.Entity)
+			
+			self.uiManager:SpawnAndSetModule("CardModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("ShopModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("CardPackModule", self.Entity)
+		end
+		
+		self.uiManager:SpawnAndSetModule("GuideModule", self.Entity)
+		
+		if self.mode == "FriendlyMatch" then
+			self.uiManager:SpawnAndSetModule("FriendlyMatchModule", self.Entity)
+			self.duel.mainModule = self.uiManager.FriendlyMatchModule
+			self.uiManager.LocationModule:SetFriendlyMatch()
+		elseif self.mode == "Practice" then
+			self.uiManager:SpawnAndSetModule("PracticeModule", self.Entity)
+			self.duel.mainModule = self.uiManager.PracticeModule
+			self.uiManager.LocationModule:SetPractice()
+		elseif self.mode == "Tutorial" then
+			self.uiManager.LocationModule:SetTutorial()
+		end
+		if self.duel.isDueling then
+			self.duel.mainModule.panelEntity.Enable = false
+		end
+		
+		self.input = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Input"), "Input", Vector3.zero, self.Entity).Input
+	end
+
+	method void ReturnToLobbyServerAttribute()
+		-- 서버 속성 메서드 - 로비 복귀 권한 확인용
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReturnToLobby(Character character)
+		-- 플레이어를 로비로 이동시키거나 정적 룸으로 이동
+		if not isvalid(character) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		if Environment:IsPublishedPlay() then
+			_TeleportService:WarpUserToWorldInstanceAsync(character.Entity.Name, self.room.channel.key, "", function(result) end)
+		else
+			_RoomService:MoveUserToStaticRoom(character.Entity.Name)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Initialize(table room)
+		-- 룸 초기화 - 모드에 따라 봇 생성 및 설정
+		if not _Table:IsEmpty(self.room) then
+			return
+		end
+		
+		self.mode = room.mode
+		self.theme = room.theme
+		self.room = room
+		
+		self.duel = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Duel"), "Duel", Vector3.zero, self.Entity).Duel
+		
+		if self.mode == "Practice" then
+			local botName
+			if self.theme == "Perion" then
+				botName = "PracticeWarriorBot"
+			elseif self.theme == "Ellinia" then
+				botName = "PracticeMagicianBot"
+			elseif self.theme == "Henesys" then
+				botName = "PracticeBowmanBot"
+			elseif self.theme == "KerningCity" then
+				botName = "PracticeThiefBot"
+			elseif self.theme == "Nautilus" then
+				botName = "PracticePirateBot"
+			end
+			local bot = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName(botName), botName, Vector3.zero, self.Entity).Bot
+			bot:SetDifficulty(room.difficulty)
+			local botPlayer = self.duel.playerArray[2]
+			botPlayer:Ready(bot.Entity.Character)
+		elseif self.mode == "Tutorial" then
+			local bot = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("TutorialBot"), "TutorialBot", Vector3.zero, self.Entity).Bot
+			local botPlayer = self.duel.playerArray[2]
+			botPlayer:Ready(bot.Entity.Character)
+			
+			self.tutorial = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Tutorial"), "Tutorial", Vector3.zero, self.Entity).Tutorial
+			self.tutorial.bot = bot
+			self.duel.tutorial = self.tutorial
+		end
+		
+		self.isWaiting = false
+	end
+
+	@EventSender("Service", "RoomService")
+	handler HandleSetRoom(SetRoom event)
+		-- 룸 설정 이벤트 처리
+		-- Parameters
+		local room = event.room
+		---------------------------------------------------------
+		
+		self:Initialize(room)
+	end
+
+end

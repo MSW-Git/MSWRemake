@@ -1,0 +1,240 @@
+@Component
+script UIVIPOrderPanel extends Component
+
+	property Entity OrderList = "51766aa9-b075-4e8f-9051-464c7aec0bb1"
+
+	property SyncTable<integer, Entity> VIPOrderSlot
+
+	property TextComponent VIPOrderCountText = "e61a4749-0b95-44be-9106-c29bf4cc5d34"
+
+	property UIVIPOrderSeasonInfo SeasonInfo = "f0ec2a00-ec76-414f-8e9b-fcc48b4ecf52"
+
+	property boolean IsWaiting = false
+
+	property Entity EmptyList = "ae06637c-20f2-4699-963d-80b6d828bba8"
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- VIP 주문 패널을 열고 튜토리얼 및 상태를 업데이트
+		if self.Entity.Enable then
+			return
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(_UserService.LocalPlayer.PlayerVIPOrder.NowSeasonMainTag) == true then
+			return
+		end
+		
+		_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.VIPOrderEnter)
+		
+		_UIGroupManager:EnableVIPOrderGroup(true)
+		
+		if _VIPOrderDataSetLogic.UIVIPOrderNewSeasonPopup.Entity.Enable then
+			_VIPOrderDataSetLogic.UIVIPOrderNewSeasonPopup:Close()
+		end
+		
+		_MainMenuRedDotManager:EnableVIPOrderRedDot(false)
+		_LobbyHUDService.DropDown_Event.UIHUDDropDown:SetItemRedDot(_HUDDropDownEnum.VIPOrderBtn, false)
+		
+		_UserService.LocalPlayer.PlayerAchievement:RequestChangeProgress(_TutorialAchievementTypeEnum.VIPOrderUIEnter, 1)
+		
+		self.Entity.Enable = true
+		
+		self:CheckOpenSeasonPopup()
+		self:CheckOpenAfterCloseSeason()
+		
+		self:Refresh(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh(boolean isOpen)
+		-- 패널의 시즌 정보와 주문 목록을 새로고침
+		if isOpen == nil then
+			isOpen = false
+		end
+		
+		self.SeasonInfo:Refresh()
+		
+		self:RefreshOrderList(isOpen)
+		self:RefreshCountBar()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshOrderList(boolean isOpen)
+		-- 각 주문 슬롯의 데이터를 업데이트하고 애니메이션 적용
+		local delay = 0.2
+		for i, slot in pairs(self.VIPOrderSlot) do
+			local slotData = _UserService.LocalPlayer.PlayerVIPOrder.VIPOrderSlotData[i]
+			if isOpen then
+				_TimerService:SetTimerOnce(function()
+					slot.UIVIPOrderSlot:SetSlotData(slotData)
+				end, delay*(i-1))
+			else
+				slot.UIVIPOrderSlot:SetSlotData(slotData)
+			end	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 VIP 주문 슬롯들을 생성하고 초기화
+		for i = 1, _VIPOrderDataSetLogic.ORDER_SLOT_COUNT do
+			local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_VIPOrderSlot", i, self.OrderList)
+			self.VIPOrderSlot[i] = slot
+			slot.UIVIPOrderSlot.SlotIndex = i
+			slot.UIVIPOrderSlot:Init()
+		end
+		
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close(boolean isComplete)
+		-- VIP 주문 패널을 닫고 슬롯들을 정리
+		self.Entity.Enable = false
+		
+		self.IsWaiting = false 
+		
+		for i, slot in pairs(self.VIPOrderSlot) do
+			slot.UIVIPOrderSlot:ClearEntities()
+			slot.UIVIPOrderSlot.SavedSlotData = {}
+		end
+		
+		self:ClearAllTweenerAndTimer()
+		
+		if isComplete then
+			_UIGroupManager:EnableVIPOrderGroup(false)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCountBar()
+		-- 완료된 주문 수와 최대 주문 수를 표시하고 상태 업데이트
+		local player = _UserService.LocalPlayer
+		
+		local userCount = player.PlayerVIPOrder.SeasonCompleteCount
+		local maxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.VIPOrderCount)
+		
+		self.VIPOrderCountText.Text = string.format("%d / %d", tostring(userCount), tostring(maxCount))
+		
+		self.OrderList.Enable = userCount < maxCount
+		self.EmptyList.Enable = userCount >= maxCount
+		
+		local emptyText = _GetLocalizationTextLogic:GetText("VIPOrderEmptyText1")
+		if maxCount < _UpgradeDataSetLogic:ReturnMaxLevelValueOfType(_UpgradeTypeEnum.VIPOrderCount, player) then
+			emptyText = emptyText.._GetLocalizationTextLogic:GetText("VIPOrderEmptyText2")
+		end
+		self.EmptyList:GetChildByName("Desc").TextComponent.Text = emptyText
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckOpenSeasonPopup()
+		-- 처음 UI 진입 시 새 시즌 팝업을 표시할지 확인
+		local player = _UserService.LocalPlayer
+		if player.PlayerVIPOrder.IsFirstEnterUI == false then
+			_VIPOrderDataSetLogic.UIVIPOrderNewSeasonPopup:Open()
+			self:StartWaitRefresh()
+			
+			player.PlayerVIPOrder:RequestSetFirstEnterUI()
+				
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckOpenAfterCloseSeason()
+		-- 시즌 종료 후 UI 진입 상태를 확인하고 설정
+		local player = _UserService.LocalPlayer
+		
+		if player.PlayerVIPOrder.IsCloseToEndSeason == false then
+			return
+		end
+		
+		if player.PlayerVIPOrder.IsCloseEnterUI == true then
+			return
+		end
+		
+		player.PlayerVIPOrder:RequestSetCloseEnterUI()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndWaitRefresh()
+		-- 대기 상태를 종료하고 슬롯들의 상태를 업데이트
+		self.IsWaiting = false
+		
+		for i, slot in pairs(self.VIPOrderSlot) do
+			slot.UIVIPOrderSlot:OnChangedIsWaiting(self.IsWaiting)
+			_VIPOrderResultRenderLogic:RequestOpenExtraReward()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartWaitRefresh()
+		-- 대기 상태를 시작하고 슬롯들에 대기 상태를 알림
+		self.IsWaiting = true
+		
+		for i, slot in pairs(self.VIPOrderSlot) do
+			slot.UIVIPOrderSlot:OnChangedIsWaiting(self.IsWaiting)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearAllTweenerAndTimer()
+		-- 모든 슬롯의 애니메이션과 타이머를 정리
+		for i, slot in pairs(self.VIPOrderSlot) do
+			slot.UIVIPOrderSlot.IsInteractable = true
+			slot.UIVIPOrderSlot:ClearSlotMovement()
+			
+		end
+	end
+
+	@EventSender("Entity", "e6546503-d989-4590-8dff-f1f0b18bfe1f")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- VIP 주문 패널 열기 버튼 클릭을 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open()
+	end
+
+	@EventSender("Entity", "f9d3b31e-93e3-470e-bc39-488b28ca75b9")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- VIP 주문 패널 닫기 버튼 클릭을 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close(true)
+	end
+
+	@EventSender("Entity", "50ca3d25-31cc-41c3-814d-61de5b70e5c9")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- VIP 주문 업그레이드 패널 열기 버튼 클릭을 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel:Open(_UpgradeTypeEnum.VIPOrderCount)
+	end
+
+	@EventSender("Entity", "60c86eee-8198-468d-b179-3295e5b0eba7")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- VIP 주문 패널 다시 열기 버튼 클릭을 처리
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open()
+	end
+
+end

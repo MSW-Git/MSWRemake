@@ -1,0 +1,381 @@
+@Logic
+script CustomChatLogic extends Logic
+
+	property table ChatDatas = {}
+
+	property table chatQueue = {}
+
+	property number BROADCAST_INTERVAL = 0.2
+
+	property integer TYPE_DEFAULT = 0
+
+	property integer TYPE_PARTY = 1
+
+	property integer TYPE_WHISPER = 2
+
+	property integer TYPE_CACHED = -1
+
+	property integer TYPE_SYSTEM = 3
+
+	property integer TYPE_MEGAPHONE = 4
+
+	property integer cachedDefaultMessageCount = 10
+
+	property integer currentCachedDefaultMessageCount = 0
+
+	property integer CharacterLimit = 20
+
+	property number minChatInterval = 1
+
+	property UICustomChat uiCustomChat = "298da51f-f1c2-4c03-a8a1-acc68b26113d"
+
+	property boolean usingCommand = false
+
+	property string colorDefaultMsg = "#ffffff"
+
+	property string colorSysMsg = "#ffff00"
+
+	property string colorMyNickname = "#ffb000"
+
+	property string colorNickname = "#06ebff"
+
+	property string colorWhisperMsg = "#249bff"
+
+	property string colorMegaphoneMsg = "#ff0000"
+
+	property integer MaxChatCount = 15
+
+	property integer chatIndex = 0
+
+	property integer ReportSendChatLogCount = 20
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 서버 시작 시 채팅 큐를 초기화하고 메시지 브로드캐스트 타이머를 설정
+		self.chatQueue[self.TYPE_CACHED] = {}
+		self.chatQueue[self.TYPE_DEFAULT] = {}
+		self.chatQueue[self.TYPE_PARTY] = {}
+		self.chatQueue[self.TYPE_WHISPER] = {}
+		self.chatQueue[self.TYPE_MEGAPHONE] = {}
+		local lastSyncTime = 0
+		local updateDefaultMsg = function() 
+			if _UtilLogic.ServerElapsedSeconds - lastSyncTime < self.BROADCAST_INTERVAL then
+				return
+			end
+			lastSyncTime = _UtilLogic.ServerElapsedSeconds 
+			if #self.chatQueue[self.TYPE_DEFAULT] > 0 then		
+				self:OnGetMessage(_HttpService:JSONEncode(self.chatQueue[self.TYPE_DEFAULT]))
+				table.clear(self.chatQueue[self.TYPE_DEFAULT])
+			end
+			if #self.chatQueue[self.TYPE_MEGAPHONE] > 0 then		
+				self:OnGetMessage(_HttpService:JSONEncode(self.chatQueue[self.TYPE_MEGAPHONE]))
+				table.clear(self.chatQueue[self.TYPE_MEGAPHONE])
+			end
+		end
+		
+		self._T.chatTimer = _TimerService:SetTimerRepeat(function() 
+			updateDefaultMsg()
+		end,0.02)
+	end
+
+	@ExecSpace("Server")
+	method void RequestChat(string msg, integer ts, integer type, string to)
+		-- 클라이언트로부터 채팅 메시지 요청을 처리하고 적절한 채팅 타입에 따라 메시지를 배포
+		local ppsn = senderUserId
+		
+		if Environment:IsPublishedPlay() then
+			pcall(function() 		
+				if _CheckProhibitedWordLogic:IsProhibitedWordUsingAPI(msg, true) then
+					msg = self:ReplaceNonSpaceWithAsterisk(msg)
+				end
+			end)
+		end
+		
+		local user = _UserService:GetUserEntityByUserId(ppsn)
+		if isvalid(user) == false then
+			return
+		end
+		
+		
+		local userInfo = _UserService.Users[ppsn]
+		local name = string.format("%s[%s]",userInfo.Nickname,_UserService.Users[ppsn].ProfileCode)
+		local profileCodeReceived = _UserService.Users[ppsn].ProfileCode
+		local stageRank = user.PlayerStage:GetChustarLevel()
+		
+		local data = {
+						name = name,
+						stageRank = stageRank,
+						ppsn = ppsn,
+						msg = msg,
+						type = type,
+						ts = ts,
+						profileCode = profileCodeReceived
+					}
+		if type == self.TYPE_WHISPER then
+			for k,v in pairs(_UserService.Users) do
+				if v.ProfileCode == to then
+					name = string.format("(귓속말) %s[%s]",userInfo.Nickname,_UserService.Users[ppsn].ProfileCode)
+					self:OnGetMessage(_HttpService:JSONEncode({data}),v.UserId)
+					return
+				end		
+			end
+			self:AddSystemMessage("대상 유저가 접속해있지 않습니다",ppsn)
+			return
+			
+			
+		elseif type == self.TYPE_MEGAPHONE then
+			self:SendMegaphone(data)
+			return
+		end
+		
+		table.insert(self.chatQueue[type],{
+			name = name,
+			stageRank = stageRank,
+			ppsn = ppsn,
+			msg = msg,
+			type = type,
+			ts = ts,
+			index = self.currentCachedDefaultMessageCount + 1,
+			profileCode = profileCodeReceived
+		})
+		
+		
+		if type == self.TYPE_DEFAULT then
+			local cachedIndex = self.currentCachedDefaultMessageCount%self.cachedDefaultMessageCount + 1
+			self.chatQueue[self.TYPE_CACHED][cachedIndex] ={
+				name = name,
+				stageRank = stageRank,
+				ppsn = ppsn,
+				msg = msg,
+				type = type,
+				ts = ts,
+				profileCode = profileCodeReceived, 
+				index = self.currentCachedDefaultMessageCount + 1
+			}
+			
+			self:AddToChatData(ppsn, userInfo.Nickname,_UserService.Users[ppsn].ProfileCode, msg, self.currentCachedDefaultMessageCount + 1)
+		end
+		
+		self.currentCachedDefaultMessageCount += 1
+	end
+
+	@ExecSpace("Client")
+	method void OnGetMessage(string data)
+		-- 서버로부터 받은 채팅 메시지 데이터를 파싱하여 이벤트로 전송
+		local chatQueue = _HttpService:JSONDecode(data)
+		
+		table.sort(chatQueue,function(a,b) 
+			return a.ts < b.ts
+		end)
+		
+		for k,v in pairs(chatQueue) do
+			local index = 0
+			if v.index ~= nil then
+				index = v.index
+			end
+			
+			local e = OnGetChatMessage()
+			e:Init(v.msg,v.stageRank,v.name,v.ppsn,v.type,v, index, v.profileCode)
+			self:SendEvent(e)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ReplaceNonSpaceWithAsterisk(string input)
+		-- 금지어를 별표(*)로 치환하여 반환 (공백은 유지)
+		local result,error = string.gsub(input, "[^ ]", "*")
+		return result
+	end
+
+	@ExecSpace("Client")
+	method void AddSystemMessage(string msg)
+		-- 클라이언트에서 시스템 메시지를 생성하여 채팅창에 표시
+		local ppsn = ""
+		local ts = _UtilLogic.ServerElapsedSeconds
+		local e = OnGetChatMessage()
+		e:Init(msg,0,"",ppsn,self.TYPE_SYSTEM,{
+			name = "",
+			stageRank = 0,
+			ppsn = ppsn,
+			msg = msg,
+			ts = ts,
+			to = "",
+		},nil,nil)
+		
+		self:SendEvent(e)
+	end
+
+	method integer GetTypeByMessage(string msg)
+		-- 메시지 내용을 분석하여 채팅 타입을 결정 (일반, 귓속말, 파티, 확성기)
+		if self.usingCommand == false then
+			return self.TYPE_DEFAULT
+		end
+		if self:StartsWith(msg,"\\w") then
+			return self.TYPE_WHISPER
+		end
+		if self:StartsWith(msg,"\\p") then
+			return self.TYPE_PARTY
+		end
+		if self:StartsWith(msg,"\\m") then
+			return self.TYPE_MEGAPHONE
+		end
+		return self.TYPE_DEFAULT
+	end
+
+	method boolean StartsWith(string str, string prefix)
+		-- 문자열이 특정 접두사로 시작하는지 확인
+		return str:sub(1, #prefix) == prefix
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SendMegaphone(table data)
+		-- 확성기 메시지를 모든 월드 인스턴스에 브로드캐스트
+		local e = OnGetChatMessage()
+		e:Init(data.msg,data.stageRank,data.name,data.ppsn,data.type,{}, nil, nil)
+		
+		_WorldInstanceService:RequestSendEventToAllWorldInstancesAsync(
+			e,
+			function(code,eventType) 
+				if code == SendEventRequestResultCode.OK then
+				
+				else
+					self:AddSystemMessage("메시지 전달에 실패했습니다.",data.ppsn)
+				end
+			end
+		)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshMsg(OnGetChatMessage event, Entity entity)
+		-- 채팅 메시지를 UI 엔터티에 표시하기 위해 텍스트와 아이콘을 업데이트
+		local colorInfo = {}
+		colorInfo[_CustomChatLogic.TYPE_SYSTEM] = self.colorSysMsg
+		colorInfo[_CustomChatLogic.TYPE_WHISPER] = self.colorWhisperMsg
+		colorInfo[_CustomChatLogic.TYPE_MEGAPHONE] = self.colorMegaphoneMsg
+		
+		local myPPSN = _UserService.LocalPlayer.PlayerComponent.UserId
+		
+		local fontColor = colorInfo[event.type] ~= nil and _ColorCodeEnum:GetColor(colorInfo[event.type]) or _ColorCodeEnum:GetColor(self.colorDefaultMsg)
+		local nicknameColor = event.ppsn == myPPSN and self.colorMyNickname or self.colorDefaultMsg
+		
+		local iconEntity = entity:GetChildByName("icon")
+		local textEntity = entity:GetChildByName("text")
+		
+		local stageData = _StageDataSetLogic:GetStageData(event.stageRank)
+		
+		local textComp = textEntity.TextComponent
+		local textSprite = textComp.Entity.SpriteGUIRendererComponent
+		local text = ""
+		if event.type == _CustomChatLogic.TYPE_SYSTEM then
+			text = string.format("%s", event.msg)
+			textSprite.Enable = false
+			iconEntity.Enable = false
+		elseif event.type == _CustomChatLogic.TYPE_MEGAPHONE then
+			textSprite.Enable = true
+			text = string.format("<color=%s>[전체]%s</color> : %s",nicknameColor, event.name,event.msg)
+			iconEntity.Enable = true
+			if isvalid(stageData) then
+				iconEntity.SpriteGUIRendererComponent.ImageRUID = stageData.ChustarChatIconRUID
+			end
+		else
+			textSprite.Enable = true
+			text = string.format("<color=%s>%s</color> : %s",nicknameColor, event.name,event.msg)
+			iconEntity.Enable = true
+			if isvalid(stageData) then
+				iconEntity.SpriteGUIRendererComponent.ImageRUID = stageData.ChustarChatIconRUID
+			end
+		end
+		if textComp.Text ~= text then
+			textComp.Text = text
+		end	
+		textComp.FontColor = fontColor
+		
+		entity.ChatMessageComponent:InitChatInfo(event.index, event.profileCode)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 서버 종료 시 채팅 타이머를 정리
+		_TimerService:ClearTimer(self._T.chatTimer)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddToChatData(string userId, string nickname, string profileCode, string msg, integer index)
+		-- 신고용 채팅 데이터를 저장하고 최대 개수를 유지
+		local data = ReportChatType()
+		data:Init(userId, nickname, profileCode, msg, index)
+		
+		if #self.ChatDatas + 1 > self.MaxChatCount then
+			table.remove(self.ChatDatas, 1)
+		end
+		
+		table.insert(self.ChatDatas, data)
+	end
+
+	@ExecSpace("Server")
+	method void ReportChatMessage(integer index)
+		-- 특정 인덱스의 채팅 메시지를 신고 처리
+		local datas = self.ChatDatas
+		
+		for i, data in pairs(datas) do
+			---@type ReportChatType
+			local chatData = data
+			if data.index == index then
+				self:ReportChatToClient(chatData.UserId, chatData.NickName, chatData.ProfileCode, chatData.Message, {chatData.Message}, index, senderUserId)
+				return	
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ReportChatToClient(string userId, string nickName, string profileCode, string reportChat, table userChats, integer index)
+		-- 클라이언트에서 신고된 채팅 메시지를 처리 (자기 자신은 제외)
+		if _UserService.LocalPlayer.PlayerComponent.UserId == userId then
+			return
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void RefreshChatBannedStatusClient(boolean isChatBanned)
+		-- 채팅 금지 상태에 따라 입력 필드의 활성화 상태를 변경
+		self.uiCustomChat.inputText.TextInputComponent.Enable = not isChatBanned
+		self.uiCustomChat.inputText_banned.Enable = isChatBanned
+	end
+
+	@EventSender("Service", "UserService")
+	handler HandleUserEnterEvent(UserEnterEvent event)
+		-- 유저가 입장할 때 캐시된 채팅 메시지를 전송
+		
+		local UserId = event.UserId
+		local player = _UserService:GetUserEntityByUserId(UserId)
+		if self.currentCachedDefaultMessageCount > 0 then
+			self:OnGetMessage(_HttpService:JSONEncode(self.chatQueue[self.TYPE_CACHED]),UserId)
+		end
+		
+	end
+
+	@EventSender("Service", "WorldInstanceService")
+	handler HandleOnGetChatMessage(OnGetChatMessage event)
+		-- 다른 월드 인스턴스에서 받은 채팅 메시지를 큐에 추가
+		local msg = event.msg
+		local stageRank = event.stageRank
+		local name = event.name
+		local ppsn = event.ppsn
+		local type = event.type
+		local index = event.index
+		local profileCodeReceived = event.profileCode
+		
+		table.insert(self.chatQueue[type],{
+			name = name,
+			stageRank = stageRank,
+			msg = msg,
+			type = type,
+			ts = _UtilLogic.ServerElapsedSeconds,
+			index = index,
+			profileCode = profileCodeReceived
+		})
+		
+	end
+
+end

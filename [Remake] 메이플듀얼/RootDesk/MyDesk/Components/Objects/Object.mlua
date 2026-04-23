@@ -1,0 +1,349 @@
+@Component
+script Object extends Component
+
+	property EntryManager entryManager = "d5bcaacc-8a12-4d74-89f2-29401277620a"
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property Duel duel = nil
+
+	property History history = nil
+
+	property Layout layout = nil
+
+	property ActionManager actionManager = nil
+
+	property AuraManager auraManager = nil
+
+	property CommandManager commandManager = nil
+
+	property EnchantmentManager enchantmentManager = nil
+
+	property ScoreManager scoreManager = nil
+
+	property TargetManager targetManager = nil
+
+	property TaskManager taskManager = nil
+
+	property TriggerManager triggerManager = nil
+
+	property number id = 0
+
+	property string name = ""
+
+	property table entry = {}
+
+	property table triggerNameArray = nil
+
+	property table auraNameArray = nil
+
+	property table temp = nil
+
+	property table enchantmentArray = {}
+
+	property table auraEnchantmentArray = {}
+
+	property table dependentVariableTable = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 듀얼 관련 매니저들을 참조 설정
+		local duel = self.Entity.CurrentMap.Map.duel
+		if isvalid(duel) then
+			self.duel = duel
+			self.history = duel.history
+			self.layout = duel.layout
+			self.actionManager = duel.actionManager
+			self.auraManager = duel.auraManager
+			self.commandManager = duel.commandManager
+			self.enchantmentManager = duel.enchantmentManager
+			self.scoreManager = duel.scoreManager
+			self.targetManager = duel.targetManager
+			self.taskManager = duel.taskManager
+			self.triggerManager = duel.triggerManager
+		end
+	end
+
+	method boolean IsUnit()
+		-- 이 객체가 유닛인지 확인
+		return isvalid(self.Entity.Unit)
+	end
+
+	method boolean IsMinion()
+		-- 이 객체가 미니언인지 확인
+		return isvalid(self.Entity.Minion)
+	end
+
+	method boolean IsPlayer()
+		-- 이 객체가 플레이어인지 확인
+		return isvalid(self.Entity.Player)
+	end
+
+	method boolean IsCard()
+		-- 이 객체가 카드인지 확인
+		return isvalid(self.Entity.Card)
+	end
+
+	method table GetProperties()
+		-- 객체의 모든 속성을 테이블로 반환
+		local propertyTable = {
+			id = self.id,
+			name = self.name,
+			enchantmentArray = self.enchantmentArray,
+			auraEnchantmentArray = self.auraEnchantmentArray
+		}
+		
+		_Table:Assign(self:GetIndependentVariables(), propertyTable)
+		
+		return propertyTable
+	end
+
+	method void SetProperties(table propertyTable)
+		-- 속성 테이블을 받아 객체 속성들을 설정
+		for propertyName, propertyValue in pairs(propertyTable) do
+			self[propertyName] = propertyValue
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetPropertiesInClient(table propertyTable)
+		-- 클라이언트에서 속성을 설정
+		self:SetProperties(propertyTable)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SyncProperties(string userId)
+		-- 서버에서 클라이언트로 속성 동기화
+		self:SetPropertiesInClient(self:GetProperties(), userId)
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		-- 속성 동기화 후 블루프린트 재설정
+		if not _UtilLogic:IsNilorEmptyString(self.name) then
+			local blueprint = self:GetBlueprint()
+			self:ClearBlueprint()
+			self:SetBlueprint(blueprint)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsTargetable(Player player)
+		-- 플레이어가 이 객체를 타겟으로 할 수 있는지 확인
+		return true
+	end
+
+	method void SetName(string name)
+		-- 객체의 이름과 엔트리를 설정
+		if not _UtilLogic:IsNilorEmptyString(self.name) then
+			return
+		end
+		
+		self.name = name
+		self.entry = self.entryManager:GetEntry(self.name)
+		self.resourceManager:LoadResource(self.name, nil)
+	end
+
+	method void ClearName()
+		-- 객체의 이름과 엔트리를 초기화
+		self.name = ""
+		self.entry = {}
+	end
+
+	method void SetEnchantments(table enchantmentArray)
+		-- 인챈트먼트 배열을 설정하고 적용
+		self.enchantmentArray = _Table:DeepCopy(enchantmentArray)
+		self:ApplyEnchantments()
+	end
+
+	method void ClearEnchantments()
+		-- 모든 인챈트먼트를 초기화
+		self.enchantmentArray = {}
+		self.dependentVariableTable = {}
+	end
+
+	method void SetVariables(table variableTable)
+		-- 변수 테이블로부터 트리거와 오라 이름들을 설정
+		local triggerNameArray = variableTable.triggerNameArray
+		if triggerNameArray then
+			self:SetTriggerNames(triggerNameArray)
+		end
+		
+		local auraNameArray = variableTable.auraNameArray
+		if auraNameArray then
+			self:SetAuraNames(auraNameArray)
+		end
+	end
+
+	method void ClearVariables()
+		-- 모든 변수들을 초기화
+		self.triggerNameArray = nil
+		self.auraNameArray = nil
+		self.temp = nil
+	end
+
+	method table GetIndependentVariables()
+		-- 독립적인 변수들을 테이블로 반환
+		return {
+			temp = self.temp
+		}
+	end
+
+	method void InsertEnchantment(table enchantment)
+		-- 새로운 인챈트먼트를 추가하고 적용
+		table.insert(self.enchantmentArray, enchantment)
+		self:ApplyEnchantments()
+	end
+
+	method void ApplyEnchantments()
+		-- 모든 인챈트먼트와 오라를 적용하여 변수 업데이트
+		self.dependentVariableTable = _Table:ShallowCopy(self.entry)
+		for _, enchantment in ipairs(self.enchantmentArray) do
+			_Util:Call(self, enchantment.methodName, enchantment.args)
+		end
+		for _, auraEnchantment in ipairs(self.auraEnchantmentArray) do
+			_Util:Call(self, auraEnchantment.methodName, auraEnchantment.args)
+		end
+		self:SetVariables(self.dependentVariableTable)
+	end
+
+	method void Initialize()
+		-- 객체를 초기화하고 인챈트먼트 적용
+		self.temp = {}
+		
+		self:ApplyEnchantments()
+	end
+
+	method void Clear()
+		-- 객체의 모든 데이터를 초기화
+		self:ClearAuraEnchantments()
+		self:ClearEnchantments()
+		self:ClearVariables()
+		self:ClearName()
+	end
+
+	method void SetTriggerNames(table triggerNameArray)
+		-- 트리거 이름 배열을 설정
+		if self.triggerNameArray == triggerNameArray then
+			return
+		end
+		
+		self.triggerNameArray = triggerNameArray
+	end
+
+	method void AddTriggerNameEnchantment(string triggerName)
+		-- 인챈트먼트로 트리거 이름을 추가
+		local triggerNameArray = self.dependentVariableTable.triggerNameArray or {}
+		if triggerNameArray == self.entry.triggerNameArray then
+			triggerNameArray = _Table:ShallowCopy(self.entry.triggerNameArray)
+		end
+		table.insert(triggerNameArray, triggerName)
+		self.dependentVariableTable.triggerNameArray = triggerNameArray
+	end
+
+	method void InsertAddTriggerNameEnchantment(string triggerName, table remover)
+		-- 트리거 이름 추가 인챈트먼트를 삽입
+		self:InsertEnchantment({methodName = "AddTriggerNameEnchantment", args = {triggerName}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void SetAuraNames(table auraNameArray)
+		-- 오라 이름 배열을 설정
+		if self.auraNameArray == auraNameArray then
+			return
+		end
+		
+		self.auraNameArray = auraNameArray
+	end
+
+	method void AddAuraNameEnchantment(string auraName)
+		-- 인챈트먼트로 오라 이름을 추가
+		local auraNameArray = self.dependentVariableTable.auraNameArray or {}
+		if auraNameArray == self.entry.auraNameArray then
+			auraNameArray = _Table:ShallowCopy(self.entry.auraNameArray)
+		end
+		table.insert(auraNameArray, auraName)
+		self.dependentVariableTable.auraNameArray = auraNameArray
+	end
+
+	method void InsertAddAuraNameEnchantment(string auraName, table remover)
+		-- 오라 이름 추가 인챈트먼트를 삽입
+		self:InsertEnchantment({methodName = "AddAuraNameEnchantment", args = {auraName}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void InsertAuraEnchantments(table auraEnchantmentArray)
+		-- 오라 인챈트먼트들을 배열에 추가
+		for _, auraEnchantment in ipairs(auraEnchantmentArray) do
+			table.insert(self.auraEnchantmentArray, auraEnchantment)
+		end
+	end
+
+	method void ClearAuraEnchantments()
+		-- 모든 오라 인챈트먼트를 초기화
+		table.clear(self.auraEnchantmentArray)
+	end
+
+	method table GetBlueprint()
+		-- 객체의 블루프린트 정보를 반환
+		return {
+			name = self.name,
+			enchantmentArray = _Table:DeepCopy(self.enchantmentArray),
+			independentVariableTable = self:GetIndependentVariables()
+		}
+	end
+
+	method void SetBlueprint(table blueprint)
+		-- 블루프린트로부터 객체 정보를 설정
+		if not _UtilLogic:IsNilorEmptyString(self.name) then
+			return
+		end
+		
+		self:SetName(blueprint.name)
+		self:SetEnchantments(blueprint.enchantmentArray)
+		self:SetVariables(blueprint.independentVariableTable)
+	end
+
+	method void ClearBlueprint()
+		-- 블루프린트 관련 모든 데이터를 초기화
+		self:ClearName()
+		self:ClearEnchantments()
+		self:ClearVariables()
+	end
+
+	method void TryRemoveEnchantments(table objectArray, string taskName, table args, table eachArgs)
+		-- 조건에 맞는 인챈트먼트들을 제거 시도
+		if _Table:IsEmpty(self.enchantmentArray) then
+			return
+		end
+		
+		local indexArray = {}
+		for i, enchantment in ipairs(self.enchantmentArray) do
+			local remover = enchantment.remover
+			if not remover then
+				continue
+			end
+			if _Util:Call(self.enchantmentManager, remover.checkerName, {self, remover, objectArray, taskName, args, eachArgs}) then
+				table.insert(indexArray, i)
+			end
+		end
+		
+		if not _Table:IsEmpty(indexArray) then
+			for i = #indexArray, 1, -1 do
+				table.remove(self.enchantmentArray, indexArray[i])
+			end
+			self:ApplyEnchantments()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetInputState(Character character)
+		-- 캐릭터의 입력 상태를 반환 (서브클래스에서 오버라이드)
+		return nil
+	end
+
+	method void SetInputState(table inputState)
+		-- 입력 상태를 설정 (서브클래스에서 오버라이드)
+		
+	end
+
+end

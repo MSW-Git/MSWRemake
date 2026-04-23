@@ -1,0 +1,735 @@
+@Component
+script PlayerManagement extends Component
+
+	@TargetUserSync
+	property integer ManagementLevel = 0
+
+	@TargetUserSync
+	property SyncTable<integer, boolean> CurrentGoals
+
+	property boolean IsServerProcessing = false
+
+	property string RankingAnnounceDate = "12/10"
+
+	@TargetUserSync
+	property integer StoreRanking = 0
+
+	@TargetUserSync
+	property integer LastStoreRanking = 0
+
+	@TargetUserSync
+	property SyncTable<integer, string> Surroundings
+
+	@TargetUserSync
+	property SyncTable<integer, string> LastSurroundings
+
+	property string RankingExplainDate = "1/10/10"
+
+	@TargetUserSync
+	property string RankingSpeech = ""
+
+	property SyncTable<string, boolean> GoalsAchieved
+
+	property integer tempRankingScore = 0
+
+	@TargetUserSync
+	property integer IsEndingEventSeen = 0
+
+	@TargetUserSync
+	property number YearlyIncome = 0
+
+	property table ReputationLogs = {}
+
+	property table ReputationDailyLogs = {}
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 매니지먼트 데이터를 데이터베이스에 저장하는 함수
+		local dataTotal = {}
+		
+		dataTotal["ManagementLevel"] = self.ManagementLevel
+		dataTotal["StoreRanking"] = self.StoreRanking
+		dataTotal["LastStoreRanking"] = self.LastStoreRanking
+		
+		dataTotal["Surroundings"] = _UtilLogic:TableToString(self.Surroundings)
+		dataTotal["LastSurroundings"] = _UtilLogic:TableToString(self.LastSurroundings)
+		dataTotal["RankingSpeech"] = self.RankingSpeech
+		
+		dataTotal["YearlyIncome"] = self.YearlyIncome
+		
+		dataTotal["GoalsAchieved"] = _UtilLogic:TableToString(self.GoalsAchieved)
+		
+		dataTotal["IsEndingEventSeen"] = self.IsEndingEventSeen
+		
+		dataTotal["ReputationLogs"] = _HttpService:JSONEncode(self.ReputationLogs)
+		dataTotal["ReputationDailyLogs"] = _HttpService:JSONEncode(self.ReputationDailyLogs)
+		
+		saveData["ManagementData"] = dataTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 매니지먼트 데이터를 로드하는 함수
+		local dataTable = loadedData["ManagementData"]
+		if dataTable == nil then
+			dataTable = {}
+		end
+		
+		if #table.keys(dataTable) > 0 then	
+			self.ManagementLevel = tonumber(dataTable["ManagementLevel"])
+			self:SetCurrentGoalsProgress()
+			
+			self.StoreRanking = tonumber(dataTable["StoreRanking"])
+			self.LastStoreRanking = tonumber(dataTable["LastStoreRanking"])
+			self.RankingSpeech = dataTable["RankingSpeech"]
+			
+			self.YearlyIncome = tonumber(dataTable["YearlyIncome"])
+			if self.YearlyIncome == nil then
+				self.YearlyIncome = 0
+			end
+			
+			self.IsEndingEventSeen = dataTable["IsEndingEventSeen"]
+			
+			if dataTable["GoalsAchieved"] then
+				table.initialize(self.GoalsAchieved, _UtilLogic:StringToTable(dataTable["GoalsAchieved"]))
+			end
+			
+			if dataTable["Surroundings"] then
+				table.initialize(self.Surroundings, _UtilLogic:StringToTable(dataTable["Surroundings"]))
+			end
+			
+			if dataTable["LastSurroundings"] then
+				table.initialize(self.LastSurroundings, _UtilLogic:StringToTable(dataTable["LastSurroundings"]))
+			end
+			
+			if _UtilLogic:IsNilorEmptyString(dataTable["ReputationLogs"]) == false then
+				table.initialize(self.ReputationLogs, _HttpService:JSONDecode(dataTable["ReputationLogs"]))
+			end
+			
+			if _UtilLogic:IsNilorEmptyString(dataTable["ReputationDailyLogs"]) == false then
+				table.initialize(self.ReputationDailyLogs, _HttpService:JSONDecode(dataTable["ReputationDailyLogs"]))
+			end
+			
+			if dataTable["BoosterPack1Purchase"] then
+				self.Entity.PlayerOutgameManager:SetBoosterPack1Purchased(self.Entity.PlayerStage.NowStage, dataTable["BoosterPack1Purchase"])
+			end
+		
+			
+		else
+			self:SetCurrentGoalsProgress()
+			
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 매니지먼트 컴포넌트를 초기화하는 함수
+		self.ManagementLevel = 0
+		self.RankingSpeech = ""
+		self.tempRankingScore = 0
+		
+		table.clear(self.GoalsAchieved)
+		table.clear(self.ReputationLogs)
+		table.clear(self.ReputationDailyLogs)
+		
+		table.clear(self.CurrentGoals)
+		
+		self.StoreRanking = 0
+		self.LastStoreRanking = 0
+		
+		table.clear(self.Surroundings)
+		table.clear(self.LastSurroundings)
+		
+		
+		self.IsEndingEventSeen = 0
+		
+		self.YearlyIncome = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCurrentGoalsProgress()
+		-- 현재 목표의 진행도를 설정하는 함수
+		
+		
+		
+		local nextLevel = self.ManagementLevel + 1
+		local levelData = _ManagementDataSetLogic:GetManagementGoalData(self.Entity.PlayerStage.NowStage, nextLevel)
+		if levelData == nil then
+			return
+		end
+		
+		local stageData = _StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage)
+		
+		local indexDatas = levelData.IndexData
+		for k, v in pairs(indexDatas) do
+			---@type ManagementGoalIndexData
+			local indexData = v
+			
+			local achiType = indexData.AchievementType
+			local achiCurrValue = self.Entity.PlayerAchievement:ReturnAchievementProgress(achiType)
+			
+			if achiType == _AchievementTypeEnum.MonthlyEarnings then
+				local stageELData = stageData:GetStageEarningLevelData(indexData.TypeValue)
+				if stageELData == nil then
+					_TimerService:SetTimerOnce(function()
+						self:SetCurrentGoalsProgress()
+					end, 0.5)
+					return
+				end
+			end
+			
+			local achiGoalValue = _AchievementLogic:GetFixedTypeValue(self.Entity, achiType, indexData.TypeValue)
+			
+			if achiCurrValue >= achiGoalValue then
+				self.CurrentGoals[k] = true
+			else
+				self.CurrentGoals[k] = false
+			end
+		end
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.ManagementLevelUp)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ManagementLevelUp()
+		-- 매니지먼트 레벨을 상승시키는 함수
+		local currentLevel = self.ManagementLevel
+		local nextLevel = self.ManagementLevel + 1
+		local managementMaxLevel = self.Entity.PlayerStage.NowStage == 1 and 2 or _ManagementDataSetLogic.ManagementMaxLevel
+		if nextLevel > managementMaxLevel then
+			self:ChangeConnectingStatus(false)
+			return
+		end
+		
+		self:SetCurrentGoalsProgress()
+		for k, v in pairs(self.CurrentGoals) do
+			if v == false then
+				self:ChangeConnectingStatus(false)
+				return
+			end
+		end
+		
+		self:SetManagementLevel(nextLevel)
+		
+		
+		
+		_ManagementDataSetLogic:RequestStartMLevelUpRewardRender(self.ManagementLevel, self.Entity.PlayerComponent.UserId)
+		
+		
+		local utc = self.Entity.TimeManager.Utc
+		local playerLevel = self.Entity.PlayerStage:GetPlayerLastStageProgress()
+		local storeName = self.Entity.PlayerOutgameManager.StoreName
+		local profileCode = self.Entity.PlayerComponent.ProfileCode
+		local playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+		
+		local logSuccess, value = pcall(function()
+			_LogStorageLogic:LogValue(self.Entity.PlayerComponent.UserId,_LogEnumType.ManageLevel,
+				tostring(self.ManagementLevel),
+				{
+					year = tostring(utc.Year),
+					month = tostring(utc.Month),
+					day = tostring(utc.Day),
+					manageLevel = tostring(self.ManagementLevel),
+					playerLevel = playerLevel,
+					storeName = storeName,
+					playerStageId = playerStageId,
+					levelBefore = tostring(currentLevel),
+					utc = _DateTimeLogic:GetUtcNowText(),
+					profileCode = profileCode
+				}
+			)
+		end)
+		
+		if not logSuccess then  end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성 변경 시 UI 업데이트를 처리하는 함수
+		if name == "ManagementLevel" or name == "CurrentGoals" then
+			local managementChangedEvent = PlayerManagementChangedEvent()
+			self.Entity:SendEvent(managementChangedEvent)
+			
+		elseif name == "RankingSpeech" then
+			if _UIGroupManager.StoreRankingGroup.Enable then
+				_StoreRankingDataSetLogic.UIStoreRanking.UIStoreRanking:RefreshRank1Data()
+			end
+			
+		elseif name == "StoreRanking" then
+			_StoreRankingDataSetLogic:RefreshRankingRedDot()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestManagementLevelUp()
+		-- 매니지먼트 레벨 업 요청을 처리하는 함수
+		self:ManagementLevelUp()
+	end
+
+	@ExecSpace("Client")
+	method void ChangeConnectingStatus(boolean status)
+		-- 연결 상태를 변경하는 함수
+		self.IsServerProcessing = status
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetStoreRanking()
+		-- 상점 랭킹을 설정하고 보상을 지급하는 함수
+		local result = self:ExamStoreRanking()
+		local newRanking = result[1]
+		local newScore = result[2]
+		
+		local eventGroupId
+		local lastRanking = 0
+		if newRanking == 1 then
+			eventGroupId = "Y0004"
+		else
+			lastRanking = self.LastStoreRanking
+			if self.LastStoreRanking == 0 then
+				lastRanking = _StoreRankingDataSetLogic.MaxIdx
+			end
+		
+			if newRanking < lastRanking then
+				eventGroupId = "Y0001"
+			elseif newRanking == lastRanking then
+				eventGroupId = "Y0003"
+			else
+				eventGroupId = "Y0002"
+			end
+		end
+		
+		local rewardData = _StoreRankingDataSetLogic:ReturnRewardDataByRanking(self.StoreRanking, self.Entity)
+		local rewardTable = rewardData:GetAdjustedReward(self.StoreRanking, self.Entity.PlayerStage.NowStage)
+		self.Entity.PlayerInventory:AddItems(rewardTable,"Rank reward","Rank reward popup")
+		
+		self.Entity.PlayerLog:RankFlow(newRanking,newScore,_StoreRankingDataSetLogic:GetRankFlowType(newRanking, lastRanking), rewardTable)
+		
+		_EventManager:SetEventReferKeyData(eventGroupId, _StringUtilLogic:ReturnThousandsSeparatedString(newRanking), self.Entity.PlayerComponent.UserId)
+		self.Entity.PlayerEvent:RequestCallEvent(eventGroupId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetStoreRanking()
+		-- 상점 랭킹 설정을 요청하는 함수
+		self:SetStoreRanking()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckRankingAnnounceDay(any utc)
+		-- 랭킹 발표일을 확인하는 함수
+		if self.Entity.PlayerStage.NowStage <= 1 then
+			return
+		end
+		
+		local dateInfo = _UtilLogic:Split(self.RankingAnnounceDate, "/")
+		local occurMonth = tonumber(dateInfo[1])
+		local occurDay = tonumber(dateInfo[2])
+		
+		if utc.Month == occurMonth then
+			if utc.Day == occurDay then		
+				self:SetStoreRanking()
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ReturnSurroundingsData(integer userRanking, integer userScore)
+		-- 주변 랭킹 데이터를 반환하는 함수
+		local rankingData = _StoreRankingDataSetLogic:ReturnRewardDataByRanking(userRanking, self.Entity)
+		local index = rankingData.Index
+		
+		local scoreGap = 10+5^(7-index)
+		
+		local resultTable = {}
+		local scoreIndex = 1
+		
+		local storeNames = {}
+		for i = -4, 4 do
+			local srRank = userRanking - i
+			if srRank < 1 or srRank > 10000 then
+				continue
+			end
+			
+			local storeName
+			local score
+			
+			
+			if srRank == userRanking then
+				storeName = self.Entity.PlayerOutgameManager.StoreName
+				score = userScore
+			else
+				if (userRanking == 1 and srRank == 2) or (userRanking > 1 and srRank == 1) then
+					storeName = "RivalStoreName"
+				else
+					storeName = _StoreRankingDataSetLogic:ReturnRandomStoreNameOfGrade(index, storeNames, self.Entity)
+					table.insert(storeNames, storeName)
+				end
+				score = _StoreRankingDataSetLogic:ReturnScoreByRanking(srRank, self.Entity)
+		
+			end
+			
+			resultTable[srRank] = storeName..","..score
+			scoreIndex = scoreIndex + 1
+		end
+		
+		return resultTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckRankingExplainDay(any utc)
+		-- 랭킹 설명일을 확인하는 함수
+		if self.Entity.PlayerStage.NowStage <= 1 then
+			return
+		end
+		
+		local dateInfo = _UtilLogic:Split(self.RankingExplainDate, "/")
+		local occurYear = tonumber(dateInfo[1])
+		local occurMonth = tonumber(dateInfo[2])
+		local occurDay = tonumber(dateInfo[3])
+		
+		if utc.Year == occurYear then
+			if utc.Month == occurMonth then
+				if utc.Day == occurDay then
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetRankingSpeech(string rankingSpeech)
+		-- 랭킹 연설 설정을 요청하는 함수
+		self:SetRankingSpeech(rankingSpeech)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetRankingSpeech(string rankingSpeech)
+		-- 랭킹 연설을 설정하는 함수
+		if _CheckProhibitedWordLogic:IsProhibitedWordUsingAPI(rankingSpeech, true) == true then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("UserInputErrorMessage", nil, false, self.Entity.PlayerComponent.UserId)
+			_StoreRankingDataSetLogic:ResetRankingSpeechText(self.Entity, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self.RankingSpeech = rankingSpeech
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetGoalCount()
+		-- 달성된 목표 수를 반환하는 함수
+		local goalCount = 0
+		for k, v in pairs(self.CurrentGoals) do
+			if v then
+				goalCount = goalCount + 1
+			end
+		end
+		
+		return string.format("%d",goalCount)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckGoalsAchieved()
+		-- 목표 달성 여부를 확인하고 처리하는 함수
+		for i = 1, _ManagementDataSetLogic.ManagementMaxLevel do
+			local levelData = _ManagementDataSetLogic:GetManagementGoalData(self.Entity.PlayerStage.NowStage, i)
+			local indexDatas = levelData.IndexData
+			local compIndexCount = 0
+			for k, v in pairs(indexDatas) do
+				---@type ManagementGoalIndexData
+				local indexData = v
+				
+				local saveId = i.."-"..k
+				
+				if self.GoalsAchieved[saveId] == true then
+					compIndexCount += 1
+					continue
+				end
+				
+				local achiType = indexData.AchievementType
+				local achiCurrValue = self.Entity.PlayerAchievement:ReturnAchievementProgress(achiType)
+				local achiGoalValue = _AchievementLogic:GetFixedTypeValue(self.Entity, achiType, indexData.TypeValue)
+			
+				if achiCurrValue >= achiGoalValue then
+					self.GoalsAchieved[saveId] = true
+					compIndexCount += 1
+								
+					local isManagementOpened = _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.MainMenuManagement, self.Entity)			
+					if isManagementOpened then
+						if i == self.ManagementLevel+1 then
+							_ManagementDataSetLogic:MakeGoalCompleteReport(achiType, achiGoalValue, self.Entity.PlayerComponent.UserId)
+						end			
+					end		
+					
+					
+					local utc = self.Entity.TimeManager.Utc
+					local nickname = self.Entity.PlayerComponent.Nickname
+					local data = _UtilLogic:Split(saveId, "-")
+					local level = data[1]
+					local index = data[2]
+					
+					local logSuccess, value = pcall(function()
+						_LogStorageLogic:LogValue(self.Entity.PlayerComponent.UserId,_LogEnumType.ManageIndex,self:GetGoalCount(),
+						{
+							nickname = nickname,
+							manageLevel = level,
+							playerManageLevel = tostring(self.ManagementLevel),
+							year =  tostring(utc.Year),
+							month = tostring(utc.Month),
+							day = tostring(utc.Day),
+							playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+						})
+					end)
+			
+					if not logSuccess then  end
+				end
+			end
+			
+			if self.Entity.PlayerStage.NowStage == 1 and i == 1 and compIndexCount >= 4 then
+				if self.Entity.PlayerEvent:IsEventOccured("T1402") == false then
+					self.Entity.PlayerEvent:AddToDayEventQueue("T1402")
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetIsEndingEventSeen(boolean isSeen)
+		-- 엔딩 이벤트 시청 여부를 설정하는 함수
+		self.IsEndingEventSeen = isSeen == true and 1 or 0
+	end
+
+	method boolean GetIsEndingEventSeen()
+		-- 엔딩 이벤트 시청 여부를 반환하는 함수
+		if self.IsEndingEventSeen == nil then
+			self.IsEndingEventSeen = 0
+		end
+		
+		return self.IsEndingEventSeen == 1 and true or false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddReputationLog(table logInfo, boolean isDaily)
+		-- 평판 로그를 추가하는 함수
+		table.insert(self.ReputationLogs, logInfo)
+		
+		if isDaily then
+			table.insert(self.ReputationDailyLogs, logInfo)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateReputationLogOnDayChanged()
+		-- 날짜 변경 시 평판 로그를 업데이트하는 함수
+		self:UpdateReputationDailyLogs()
+		
+		local nowElapsed = self.Entity.TimeManager.Utc.Elapsed
+		
+		for i = #self.ReputationLogs, 1, -1 do
+			local logInfo = self.ReputationLogs[i]
+			local endElapsed = logInfo[5]
+			
+			if endElapsed <= nowElapsed then
+				table.remove(self.ReputationLogs, i)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSyncReputationLogs()
+		-- 평판 로그 동기화를 요청하는 함수
+		self:SyncReputationLogs(self.ReputationLogs)
+	end
+
+	@ExecSpace("Client")
+	method void SyncReputationLogs(table reputationLogs)
+		-- 평판 로그를 동기화하는 함수
+		
+		table.initialize(self.ReputationLogs, reputationLogs)
+		
+		if _UIGroupManager.StoreInfoGroup.Enable then
+			if _StoreInfoDataSetLogic.UIStoreInfo.Entity.Enable then
+				_StoreInfoDataSetLogic.UIStoreInfo.UIReputationReview.UIReputationReview:RefreshRecentLogList()
+				_StoreInfoDataSetLogic.UIStoreInfo.UIReputationReview.UIReputationReview:RefreshFeedbackList()
+				_StoreInfoDataSetLogic.UIStoreInfo.UIReputationReview.UIReputationReview:RefreshReputationStats()
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetManagementLevel(integer managementLevel)
+		-- 매니지먼트 레벨을 설정하는 함수
+		self.ManagementLevel = managementLevel
+		self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.ManagementLevel, self.ManagementLevel)
+		self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.ManagementLevel, self.ManagementLevel)
+		
+		self:SetCurrentGoalsProgress()
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.ManagementLevelUp)
+		
+		self.Entity.CustomerManager:RefreshSpawnTable()
+		self.Entity.CustomerManager:SetCustomerSpawnDelay(nil)
+		
+		if self.Entity.PlayerStage.StageProgress[self.Entity.PlayerStage.NowStage] < managementLevel then
+			self.Entity.PlayerStage:SetStageProgress(self.Entity.PlayerStage.NowStage, managementLevel)
+		end
+		
+		if 0 < managementLevel and managementLevel < 6 then
+			local diamondReward = _GetConfigDataLogic:GetConfigNumDataByKey("DiamondRewardManagementLevel"..managementLevel)
+			self.Entity.PlayerOutgameManager:ModifyDiamond(diamondReward, false, "Management Level Up", "Management Level Up")
+		end
+		
+		if managementLevel >= 1 and self.Entity.PlayerStage.NowStage > 1 then
+			if _UtilLogic:IsNilorEmptyString(self.Entity.PlayerVIPOrder.NowSeasonMainTag) == true then
+				self.Entity.PlayerVIPOrder:StartNewSeason(false)
+			end	
+		end
+		self:ChangeConnectingStatus(false)
+		
+		if self.Entity.PlayerEvent:IsEventOccured("T1402") == false then
+			self.Entity.PlayerTutorialEvent:SetEventOccured("T1402")
+			self.Entity.PlayerEvent:RemoveFromDayEventQueue("T1402")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateReputationDailyLogs()
+		-- 일일 평판 로그를 업데이트하는 함수
+		local totalAmount = 0
+		for i, log in pairs(self.ReputationDailyLogs) do
+			if log == nil or log == {} then
+				continue
+			end
+			
+			local changeAmount = log[1]
+			totalAmount += changeAmount
+		end
+		
+		if totalAmount ~= 0 then
+			self.Entity.PlayerInventory:ModifyReputation(totalAmount)
+			_ReputationDataSetLogic:PlayReputationChangeEffectHUD(totalAmount >= 0, self.Entity.PlayerComponent.UserId)
+		end
+		table.clear(self.ReputationDailyLogs)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitBoosterPackPurchase(integer num)
+		-- 부스터 팩 구매 정보를 초기화하는 함수
+		local nowStage = self.Entity.PlayerStage.NowStage
+		
+		if num == 1 then
+			self.Entity.PlayerOutgameManager:SetBoosterPack1Purchased(nowStage, false)
+		elseif num == 2 then 
+			---@type BoosterPackData
+			local boosterPackProductData = _BoosterPackDataLogic.BoosterPackData[nowStage]
+			local packageItemId = boosterPackProductData.BoosterPackItemIdPricePair[2][1]
+			self.Entity.PlayerOutgameManager:ResetPurchseCount(packageItemId) 
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean OnBoosterPackPurchased(integer slotNum, integer stage, Entity player)
+		-- 부스터 팩 구매 시 처리하는 함수
+		if slotNum == 1 then
+			if self.Entity.PlayerOutgameManager.BoosterPack1PurchaseTable[stage] == true then
+				_SpecialShopDataLogic:AbnormalLog()
+				return false
+			end
+		elseif slotNum == 2 then
+			if self:IsPreminumBoosterPackPurchased(stage) then
+				_SpecialShopDataLogic:AbnormalLog()
+				return false
+			end
+		end
+		
+		if slotNum == 1 then
+			self.Entity.PlayerOutgameManager:SetBoosterPack1Purchased(stage, true)
+		elseif slotNum == 2 then
+		end
+		
+		return true
+	end
+
+	method boolean IsPreminumBoosterPackPurchased(integer stage)
+		-- 프리미엄 부스터 팩 구매 여부를 확인하는 함수
+		---@type BoosterPackData
+		local boosterPackProductData = _BoosterPackDataLogic.BoosterPackData[stage]
+		local packageItemId = boosterPackProductData.BoosterPackItemIdPricePair[2][1]
+		return self.Entity.PlayerOutgameManager:GetPurchaseCount(packageItemId) > 0
+	end
+
+	@ExecSpace("Server")
+	method void RequestReexamRanking()
+		-- 랭킹 재심사를 요청하는 함수
+		if self.StoreRanking == 0 or self.StoreRanking == nil then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RankingReexamErrorToast1", nil, false, self.Entity.PlayerComponent.UserId) 
+			return
+		end
+		
+		if self.StoreRanking == 1 then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RankingReexamErrorToast2", nil, false, self.Entity.PlayerComponent.UserId) 
+			return
+		end
+		
+		local cost = _StoreRankingDataSetLogic:GetRankingReexamCost(self.Entity)
+		local result = self.Entity.PlayerInventory:ModifyMoney(-cost, "Ranking Reexam", "Reexam Popup")
+		if result == false then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("NoMoneyToastMsg", nil, false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self:ReexamRanking()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReexamRanking()
+		-- 랭킹을 재심사하는 함수
+		local examResult = self:ExamStoreRanking()
+		local newRanking = examResult[1]
+		local newScore = examResult[2]
+		
+		self.Entity.PlayerLog:RankFlow(newRanking,newScore,_StoreRankingDataSetLogic:GetRankFlowType(self.StoreRanking, self.LastStoreRanking),{})
+		self.Entity.PlayerEvent:RequestCallEvent("Y1001")
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ExamStoreRanking()
+		-- 상점 랭킹을 검사하고 새로운 랭킹을 계산하는 함수
+		table.clear(self.LastSurroundings)
+		for k, v in pairs(self.Surroundings) do
+			self.LastSurroundings[k] = v
+		end
+		self.LastStoreRanking = self.StoreRanking
+		if self.LastStoreRanking == nil then
+			self.LastStoreRanking = 0
+		end
+		
+		local newScore = _StoreRankingDataSetLogic:ReturnPlayerUserRankingScore(self.Entity)
+		if self.tempRankingScore > 0 then 
+			newScore = self.tempRankingScore
+		end
+		local newRanking = _StoreRankingDataSetLogic:ReturnPlayerUserRankingByScore(newScore, self.Entity)
+		
+		local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.Ranking)
+		local achiRanking = _StoreRankingDataSetLogic.MaxIdx - achiProgress
+		if achiRanking > newRanking then
+		    self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.Ranking, _StoreRankingDataSetLogic.MaxIdx - newRanking)
+		end
+		
+		self.StoreRanking = newRanking
+		self.tempRankingScore = 0
+		
+		if self.StoreRanking == 1 then
+			self.Entity.PlayerStage:SetStageProgress(self.Entity.PlayerStage.NowStage, 6)
+		end
+		
+		table.clear(self.Surroundings)
+		local newSurroundings = self:ReturnSurroundingsData(newRanking, newScore)
+		for k, v in pairs(newSurroundings) do
+			self.Surroundings[k] = v
+		end
+		
+		return {newRanking, newScore}
+	end
+
+end

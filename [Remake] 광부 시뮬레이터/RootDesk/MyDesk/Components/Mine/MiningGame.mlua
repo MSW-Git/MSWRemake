@@ -1,0 +1,722 @@
+@Component
+script MiningGame extends Component
+
+	property Entity timingArrow = "9eed61fb-bf0e-4bd2-b1d2-49fe26f0b57c"
+
+	property boolean gameStarted = false
+
+	property number moveDir = 1
+
+	property number speed = 1
+
+	property number totalTime = 0
+
+	property Entity TargetEntity = nil
+
+	property number HP = 0
+
+	property number HPMax = 0
+
+	property number hitCount = 0
+
+	property boolean bonusActivation = false
+
+	property boolean isBonusGame = false
+
+	property boolean bonusGameSuccess = false
+
+	property number level = 0
+
+	property boolean onMining = false
+
+	property boolean IsKeyBoxGame = false
+
+	property number failStack = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 채광 미니게임 컴포넌트 초기화
+		self:InitMinningGame(1, false, false)
+		self.onMining = false
+		self.failStack = 0
+		
+		local miningGameMessage = _EntityService:GetEntityByPath("/ui/MiningGameGroup/Mining/Message")
+		local miningGameBonusMessage = _EntityService:GetEntityByPath("/ui/MiningGameGroup/Mining/BonusText")
+		local startButton = _EntityService:GetEntityByPath("/ui/MiningGameGroup/Mining/Button_Start")
+		local miningButton = _EntityService:GetEntityByPath("/ui/MiningGameGroup/Mining/Button_Stop")
+		
+		miningGameMessage.TextComponent.Text = _LocalizationService:GetText("/ui/MiningGameGroup/Mining/Message")
+		miningGameBonusMessage.TextComponent.Text = _LocalizationService:GetText("/ui/MiningGameGroup/Mining/BonusText")
+		startButton.TextComponent.Text = _LocalizationService:GetText("StartMiningGame")
+		miningButton.TextComponent.Text = _LocalizationService:GetText("DoMining")
+	end
+
+	@ExecSpace("Client")
+	method void InitMinningGame(number level, boolean isKeyBoxGame, boolean containBonusGame)
+		-- 채광 미니게임의 초기 설정 및 UI 구성
+		self.IsKeyBoxGame = isKeyBoxGame
+		---------------------------------------
+		self.timingArrow = _EntityService:GetEntity("9eed61fb-bf0e-4bd2-b1d2-49fe26f0b57c")
+		self.timingArrow:SetEnable(false)
+		
+		local effectUI = _EntityService:GetEntity("7a127988-db31-4804-84a7-978e5e9e5ebb")
+		effectUI:SetEnable(false)
+		
+		local HitOnTargetEffectUI = _EntityService:GetEntity("6462e33c-c5d8-4f08-984e-f6071d0eda4e")
+		HitOnTargetEffectUI:SetEnable(false)
+		
+		local targetSprite = _EntityService:GetEntity("8ae9ae2e-55fc-4705-aafa-e806fad01fe7")
+		if isKeyBoxGame == true then
+			targetSprite.SpriteGUIRendererComponent.ImageRUID = "742fbe0660e644a1a33816ce687b7e79"
+		else 
+			targetSprite.SpriteGUIRendererComponent.ImageRUID = "643eeebaef7c44f8a66ab379427d33b6"
+		end
+		
+		-- stop 버튼 비활성화
+		local stopButton = _EntityService:GetEntity("439a2638-61b5-4222-948c-f11b567d1515")
+		stopButton:SetEnable(false)
+		
+		-- start 버튼 활성화
+		local startButton = _EntityService:GetEntity("2b0c99e8-808d-474b-ad4b-dc85413c7fa5")
+		startButton:SetEnable(true)
+		
+		-- 결과 텍스트 끄기
+		local resultText = _EntityService:GetEntity("a72b70f0-9bb4-455c-b665-af8090eadc2b")
+		for i=1, #resultText.Children do
+			resultText.Children[i]:SetEnable(false)
+		end
+		
+		-- 화살표 위치 초기화
+		local timingArrow = _EntityService:GetEntity("9eed61fb-bf0e-4bd2-b1d2-49fe26f0b57c")
+		timingArrow.UITransformComponent.anchoredPosition = Vector2(0, 0)
+		
+		-- 타이밍바 위치 랜덤
+		self:SetTimingBarToRandomPos()
+		--------------------------------------------------------
+		-- 레벨 정보 기록
+		self.level = level
+		
+		-- 광맥 내구도 세팅
+		if isKeyBoxGame == true then
+			local keyBoxHPTable = _DataService:GetTable("KeyBoxHP")
+			self.HP = tonumber(keyBoxHPTable:GetCell(level, 2))
+			self.HPMax = self.HP
+		else 
+			if string.sub(_UserService.LocalPlayer.CurrentMapName, 1, 6) == "Temple" then
+				self.HP	= 700000000 + (_UserService.LocalPlayer.PlayerIngameData.TempleFloor_Current - 1) * 420000000
+				self.HPMax = self.HP
+			else
+				local miningTargetHPTable = _DataService:GetTable("MiningTarget")
+				self.HP = tonumber(miningTargetHPTable:GetCell(level, 2))
+				self.HPMax = self.HP
+			end
+		end 
+		
+		
+		local HPBarUI = _EntityService:GetEntity("b82a80a2-7e16-4611-8077-41b55f9fb8e4")
+		HPBarUI:GetChildByName("Fill").SpriteGUIRendererComponent.FillAmount = 1
+		HPBarUI:GetChildByName("Fill_back").SpriteGUIRendererComponent.FillAmount = 1
+		local hpText = _ThousandsSeparator:Separate(math.floor(self.HP))
+		HPBarUI:GetChildByName("NumText").TextComponent.Text = hpText.." / "..hpText
+		
+		--------------------------------------------------------
+		-- 타격회수 리셋
+		local leftHitCount5UI = _EntityService:GetEntity("5ae1a9f9-fc27-4413-b018-81e35e7cd953")
+		local leftHitCount10UI = _EntityService:GetEntity("ce76f418-723a-473b-b652-db0279b094c5")
+		if isKeyBoxGame == true then
+			self.hitCount = 10
+			leftHitCount5UI.Enable = false
+			leftHitCount10UI.Enable = true
+			
+			for i=1, 10 do
+				local iconPickUI = leftHitCount10UI:GetChildByName("icon_pick_"..tostring(i))
+				iconPickUI.SpriteGUIRendererComponent.ImageRUID = "4815dc63db3b46d19cf93ae64d5c3bd0"
+			end
+		else 
+			self.hitCount = 5
+			leftHitCount5UI.Enable = true
+			leftHitCount10UI.Enable = false
+			
+			for i=1, 5 do
+				local iconPickUI = leftHitCount5UI:GetChildByName("icon_pick_"..tostring(i))
+				iconPickUI.SpriteGUIRendererComponent.ImageRUID = "4815dc63db3b46d19cf93ae64d5c3bd0"
+			end
+		end 
+		--------------------------------------------------------
+		
+		-- 보너스게임 관련 변수 리셋
+		self.bonusActivation = false
+		self.bonusGameSuccess = false
+		self.isBonusGame = false
+		
+		-- 보너스게임 활성화 여부 체크
+		if containBonusGame == true and isKeyBoxGame == false then
+			self.bonusActivation = true
+			_EntityService:GetEntity("4355f5dc-8914-4b4d-8a67-0d7f48c72dbd").Enable = true
+			_EntityService:GetEntity("28d53d37-b89a-4946-b788-68a8c3452787").Enable = true
+		
+		else 
+			self.bonusActivation = false
+			_EntityService:GetEntity("4355f5dc-8914-4b4d-8a67-0d7f48c72dbd").Enable = false
+			_EntityService:GetEntity("28d53d37-b89a-4946-b788-68a8c3452787").Enable = false
+		end
+		--------------------------------------------------------
+		-- 스피드 조절
+		self.speed = 1
+	end
+
+	@ExecSpace("Client")
+	method void StartMinningGame()
+		-- 채광 미니게임 시작 처리
+		self.totalTime = 0
+		
+		-- 타이밍바 활성화
+		self.timingArrow:SetEnable(true)
+		self.gameStarted = true
+		
+		-- start 버튼 비활성화
+		local startButton = _EntityService:GetEntity("2b0c99e8-808d-474b-ad4b-dc85413c7fa5")
+		startButton:SetEnable(false)
+		
+		-- stop 버튼 활성화
+		local stopButton = _EntityService:GetEntity("439a2638-61b5-4222-948c-f11b567d1515")
+		stopButton:SetEnable(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 채광 미니게임 타이밍 화살표 이동 처리
+		if self.gameStarted == false then
+			return
+		end
+		
+		self.totalTime = self.totalTime + delta * self.speed
+		
+		if self.totalTime >= 1.2 then
+			self.totalTime = self.totalTime - 1.2
+		end
+		
+		local posX = 0
+		
+		if self.totalTime >= 0.6 then
+			posX = - 2761 *self.totalTime + 3314
+		else 
+			posX = 2761*self.totalTime
+		end
+		
+		
+		self.timingArrow.UITransformComponent.anchoredPosition = Vector2(posX, -60)
+	end
+
+	@ExecSpace("Client")
+	method void Hit()
+		-- 채광 타이밍 결과 처리 및 데미지 계산
+		-- 게임 결과
+		local resultPos = self.timingArrow.UITransformComponent.anchoredPosition.x
+		
+		if self.isBonusGame == false then
+			
+			-- 결과 비교를 위한
+			local orangeBar = _EntityService:GetEntity("acc65ec2-3181-4598-ac94-0ef69f5ae7d2")
+			local standardPos = orangeBar.UITransformComponent.anchoredPosition.x
+			
+			-- 결과 텍스트 켜기
+			local resultText = _EntityService:GetEntity("a72b70f0-9bb4-455c-b665-af8090eadc2b")
+			for i=1, #resultText.Children do
+				resultText.Children[i]:SetEnable(false)
+			end
+			
+			-- 채광력 가져오기
+			local attackDamage = _UserService.LocalPlayer.PlayerIngameData.MiningPower
+			
+			-- 결과에 따라 공격력 비율 결정
+			local hitRate = 1
+			
+			if _UserService.LocalPlayer.CurrentMapName == "Mine1_1" then
+				if (resultPos >=standardPos and resultPos < standardPos+330) 
+					or (resultPos>standardPos+990 and resultPos<=standardPos+1320) then
+					resultText:GetChildByName("not_bad"):SetEnable(true)
+					resultText.TextComponent.OutlineColor = Color.black
+					resultText.TextComponent.FontColor = Color.white
+					hitRate = 0.5
+				elseif (resultPos >=standardPos+330 and resultPos < standardPos+594) 
+					or (resultPos>standardPos+726 and resultPos<=standardPos+990) then
+					resultText:GetChildByName("good"):SetEnable(true)
+					resultText.TextComponent.OutlineColor = Color.green
+					resultText.TextComponent.FontColor = Color.white
+					hitRate = 1
+				elseif (resultPos >=standardPos+594 and resultPos <= standardPos+726) then
+					resultText:GetChildByName("perfect"):SetEnable(true)
+					resultText.TextComponent.OutlineColor = Color.magenta	
+					resultText.TextComponent.FontColor = Color.white
+					hitRate = 1.5
+					
+					-- 공허 아이템 17 : 퍼펙트시 낮은 확률로 젬 획득
+					local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[17]
+					local voidItemTable = _DataService:GetTable("VoidItems")
+					if voidItemLv > 0 then
+						local initAbility = voidItemTable:GetCell(17, "InitAbility")
+						local levelAbility = voidItemTable:GetCell(17, "AbilityPerLevel")
+						local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+						
+						local randValue = _UtilLogic:RandomIntegerRange(1, 10000) / 100
+						if randValue <= currentAbility then
+							_UserService.LocalPlayer.PlayerStorage:AddCurrencyItems(2, 1, true)
+							
+							_UIGetLog:PrintVoidItemLog(17)
+						end
+						
+					end
+				else 	
+					resultText:GetChildByName("bad"):SetEnable(true)
+					resultText.TextComponent.OutlineColor = Color.black
+					resultText.TextComponent.FontColor = Color.gray
+					hitRate = 0
+				end
+				
+			else
+				if (resultPos >=standardPos and resultPos < standardPos+250) 
+					or (resultPos>standardPos+750 and resultPos<=standardPos+1000) then
+					resultText:GetChildByName("not_bad"):SetEnable(true)
+					resultText.TextComponent.OutlineColor = Color.black
+					resultText.TextComponent.FontColor = Color.white
+					hitRate = 0.5
+				elseif (resultPos >=standardPos+250 and resultPos < standardPos+450) 
+					or (resultPos>standardPos+550 and resultPos<=standardPos+750) then
+					resultText:GetChildByName("good"):SetEnable(true)
+					resultText.TextComponent.OutlineColor = Color.green
+					resultText.TextComponent.FontColor = Color.white
+					hitRate = 1
+				elseif (resultPos >=standardPos+450 and resultPos <= standardPos+550) then
+					resultText:GetChildByName("perfect"):SetEnable(true)
+					resultText.TextComponent.OutlineColor = Color.magenta	
+					resultText.TextComponent.FontColor = Color.white
+					hitRate = 1.5
+					
+					-- 공허 아이템 17 : 퍼펙트시 낮은 확률로 젬 획득
+					local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[17]
+					local voidItemTable = _DataService:GetTable("VoidItems")
+					if voidItemLv > 0 then
+						local initAbility = voidItemTable:GetCell(17, "InitAbility")
+						local levelAbility = voidItemTable:GetCell(17, "AbilityPerLevel")
+						local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+						
+						local randValue = _UtilLogic:RandomIntegerRange(1, 10000) / 100
+						if randValue <= currentAbility then
+							_UserService.LocalPlayer.PlayerStorage:AddCurrencyItems(2, 1, true)
+							
+							_UIGetLog:PrintVoidItemLog(17)
+						end
+						
+					end
+				else 	
+					resultText:GetChildByName("bad"):SetEnable(true)
+					resultText.TextComponent.OutlineColor = Color.black
+					resultText.TextComponent.FontColor = Color.gray
+					hitRate = 0
+				end
+				
+			end
+			
+			
+			--------------------------------------------------------
+			-- 크리티컬 적용여부 판단
+			local criticalDamageRate = 1.0
+			local criticalProb = _UserService.LocalPlayer.PlayerIngameData.CriticalProb
+			local criticalRandomValue = _UtilLogic:RandomDouble()
+			
+			if criticalRandomValue < criticalProb then
+				criticalDamageRate = _UserService.LocalPlayer.PlayerIngameData.CriticalDamageRate
+				-- 크리티컬 이펙트 및 사운드
+				local effectUI = _EntityService:GetEntity("baaaa556-b783-4aea-b4ed-1ed776b7e9c2")
+				local effectCrit = effectUI:Clone("HitEffectCrit_clone")
+				effectCrit.UITransformComponent.anchoredPosition = Vector2(resultPos, effectUI.UITransformComponent.anchoredPosition.y)
+				effectCrit:Destroy(1)
+				
+				--_SoundService:PlaySound("d259db1dd17d44d687827f4da8f07c43")
+				
+				local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[5] 
+				local voidItemTable = _DataService:GetTable("VoidItems")
+				if voidItemLv > 0 then
+					local initAbility = tonumber(voidItemTable:GetCell(5, "InitAbility"))
+					local levelAbility = tonumber(voidItemTable:GetCell(5, "AbilityPerLevel"))
+					local currentAbility = initAbility + levelAbility * voidItemLv
+					
+					_UserService.LocalPlayer.PlayerIngameData:RecoverHP(currentAbility)
+					
+					_UIGetLog:PrintVoidItemLog(5)
+				end
+			else
+				
+				-- 기본 이펙트
+				criticalDamageRate = 1.0
+				local effectUI = _EntityService:GetEntity("7a127988-db31-4804-84a7-978e5e9e5ebb")
+				local effect = effectUI:Clone("HitEffect_clone")
+				effect.UITransformComponent.anchoredPosition = Vector2(resultPos, effectUI.UITransformComponent.anchoredPosition.y)
+				effect:Destroy(1)
+			end
+			--------------------------------------------------------
+			-- 내구도에 타격 적용
+			local finalDamage = attackDamage * hitRate * criticalDamageRate
+			self.HP = self.HP - finalDamage
+			local hpTick = finalDamage / 45
+			
+			local hp = math.floor(self.HP*10)/10
+			local hpText = _ThousandsSeparator:Separate(math.ceil(hp))
+			if self.HP <= 0 then
+				hpText = "0"
+			end
+			local hpMaxText = _ThousandsSeparator:Separate(math.floor(self.HPMax))
+			
+			-- UI 반영
+			local HPBarUI = _EntityService:GetEntity("b82a80a2-7e16-4611-8077-41b55f9fb8e4")
+			HPBarUI:GetChildByName("NumText").TextComponent.Text = hpText.." / "..hpMaxText
+			HPBarUI:GetChildByName("Fill").SpriteGUIRendererComponent.FillAmount = self.HP / self.HPMax
+			
+			-- 내구도 감소 연출
+			local fillBackDir = function()
+				local normalizedDamageTick = hpTick / self.HPMax
+		
+				HPBarUI:GetChildByName("Fill_back").SpriteGUIRendererComponent.FillAmount = 
+					HPBarUI:GetChildByName("Fill_back").SpriteGUIRendererComponent.FillAmount - normalizedDamageTick
+			end
+			
+			for i=1, 45 do
+				_TimerService:SetTimerOnce(fillBackDir, i/45)
+			end
+			
+			-- 반복퀘스트에 적용
+			_UserService.LocalPlayer.PlayerInfiniteQuest:GetScore(finalDamage)
+			--------------------------------------------------------
+			-- 타격회수 카운트
+			self.hitCount = self.hitCount - 1
+			
+			
+			if self.IsKeyBoxGame == true then
+				local leftHitCountUI = _EntityService:GetEntity("ce76f418-723a-473b-b652-db0279b094c5")
+				for i=1, self.hitCount do
+					local iconPickUI = leftHitCountUI:GetChildByName("icon_pick_"..tostring(i))
+					iconPickUI.SpriteGUIRendererComponent.ImageRUID = "4815dc63db3b46d19cf93ae64d5c3bd0"
+				end
+				
+				for i=self.hitCount+1, 10 do
+					local iconPickUI = leftHitCountUI:GetChildByName("icon_pick_"..tostring(math.floor(i)))
+					if iconPickUI ~= nil then
+						iconPickUI.SpriteGUIRendererComponent.ImageRUID = "6af63581597842c69e34e11ff1a47957"
+					end
+				end
+			else 
+				local leftHitCountUI = _EntityService:GetEntity("5ae1a9f9-fc27-4413-b018-81e35e7cd953")
+				for i=1, self.hitCount do
+					local iconPickUI = leftHitCountUI:GetChildByName("icon_pick_"..tostring(i))
+					iconPickUI.SpriteGUIRendererComponent.ImageRUID = "4815dc63db3b46d19cf93ae64d5c3bd0"
+				end
+				
+				for i=self.hitCount+1, 5 do
+					local iconPickUI = leftHitCountUI:GetChildByName("icon_pick_"..tostring(math.floor(i)))
+					if iconPickUI ~= nil then
+						iconPickUI.SpriteGUIRendererComponent.ImageRUID = "6af63581597842c69e34e11ff1a47957"
+					end
+				end
+			end
+		--------------------------------------------------------
+		-- 보너스 게임의 타격
+		else 
+			-- hit effect 재생
+			local effectUI = _EntityService:GetEntity("7a127988-db31-4804-84a7-978e5e9e5ebb")
+			local effect = effectUI:Clone("HitEffect_clone")
+			effect.UITransformComponent.anchoredPosition = Vector2(resultPos, effectUI.UITransformComponent.anchoredPosition.y)
+			effect:Destroy(1)
+			
+			-- 결과 비교를 위한
+			local pinkBar = _EntityService:GetEntity("a008b1f8-cb3d-4724-89fa-e20d4c627851")
+			local standardPos = pinkBar.UITransformComponent.anchoredPosition.x
+			
+			-- 결과 텍스트 리셋
+			local resultText = _EntityService:GetEntity("a72b70f0-9bb4-455c-b665-af8090eadc2b")
+			for i=1, #resultText.Children do
+				resultText.Children[i]:SetEnable(false)
+			end
+			
+			-- 판정 영역
+			local hitRectSize = pinkBar.UITransformComponent.RectSize.x
+			
+			if resultPos >= standardPos and resultPos < standardPos+hitRectSize then
+				resultText:GetChildByName("success"):SetEnable(true)
+				resultText.TextComponent.OutlineColor = Color.magenta
+				resultText.TextComponent.FontColor = Color.white
+				self.bonusGameSuccess = true
+			else 
+				resultText:GetChildByName("fail"):SetEnable(true)
+				resultText.TextComponent.OutlineColor = Color.gray
+				resultText.TextComponent.FontColor = Color.black
+				self.bonusGameSuccess = false
+			end
+			
+			-- 보너스 게임 종료
+			self.isBonusGame = false
+			self.bonusActivation = false
+		end
+		
+		-- 사운드 재생
+		_SoundService:PlaySound("44e9c1bd622c4939b4361eb5d05ed35a", 1)
+		
+		
+		
+		-- 광물에 타격 이펙트 재생
+		local HitOnTargetEffectUI = _EntityService:GetEntity("6462e33c-c5d8-4f08-984e-f6071d0eda4e")
+		local hitOnTargetEffect = HitOnTargetEffectUI:Clone("HitOnTargetEffect_clone")
+		hitOnTargetEffect:Destroy(1)
+		
+		
+		if self.HP > 0 then
+			self:SetTimingBarToRandomPos()
+		elseif (self.HP <= 0 and self.bonusActivation) then
+			self:SetBonusGame()
+			self.isBonusGame = true
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetTimingBarToRandomPos()
+		-- 채광 게임의 타이밍바 위치를 랜덤 설정
+		local bonusBackBar = _EntityService:GetEntity("3a26cf5b-f079-440d-88a2-375355a69519")
+		local orangeBar = _EntityService:GetEntity("acc65ec2-3181-4598-ac94-0ef69f5ae7d2")
+		local yellowBar = _EntityService:GetEntity("c7a02476-522d-45ad-a964-6ae7d114683c")
+		local greenBar = _EntityService:GetEntity("a0134df7-6de0-4944-9f51-6407aba8d5ff")
+		local pinkBar = _EntityService:GetEntity("a008b1f8-cb3d-4724-89fa-e20d4c627851")
+		
+		if _UserService.LocalPlayer.CurrentMapName == "Mine1_1" then
+			local randomPos = _UtilLogic:RandomDouble()*337
+		
+			orangeBar.UITransformComponent.RectSize.x = 1320
+			yellowBar.UITransformComponent.RectSize.x = 660
+			greenBar.UITransformComponent.RectSize.x = 132
+			
+			orangeBar.UITransformComponent.anchoredPosition.x = randomPos
+			yellowBar.UITransformComponent.anchoredPosition.x = randomPos+330
+			greenBar.UITransformComponent.anchoredPosition.x = randomPos+594
+		else 
+			local randomPos = _UtilLogic:RandomDouble()*600
+			
+			orangeBar.UITransformComponent.RectSize.x = 1000
+			yellowBar.UITransformComponent.RectSize.x = 500
+			greenBar.UITransformComponent.RectSize.x = 100
+			
+			orangeBar.UITransformComponent.anchoredPosition.x = randomPos
+			yellowBar.UITransformComponent.anchoredPosition.x = randomPos+250
+			greenBar.UITransformComponent.anchoredPosition.x = randomPos+450
+		end
+		
+		
+		orangeBar.Enable = true
+		yellowBar.Enable = true
+		greenBar.Enable = true
+		bonusBackBar.Enable = false
+		pinkBar.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void FinishGame()
+		-- 채광 미니게임 종료 및 보상 지급 처리
+		self.gameStarted = false
+		
+		-- stop 버튼 비활성화
+		local stopButton = _EntityService:GetEntity("439a2638-61b5-4222-948c-f11b567d1515")
+		stopButton:SetEnable(false)
+		
+		-- 타겟 엔티티 비활성화
+		self.TargetEntity.Enable = false
+		
+		-- 게임 종료, 플레이어 움직임 제한 해제, 광물 드롭
+		local ExitMinningGame = function()
+			self.Entity:SetEnable(false)
+			_UserService.LocalPlayer.MovementComponent.Enable = true
+			
+			-- 공격 애니메이션 재생
+			_UserService.LocalPlayer.PlayerBackpack:PlayAttackMotion(self.TargetEntity.TransformComponent.WorldPosition, nil)
+			
+			self.onMining = false
+			if self.HP <=0 then
+				self:GiveReward()
+				
+				-- 공격 애니메이션 + 이펙트 재생
+				_UserService.LocalPlayer.PlayerBackpack:PlayAttackMotion(self.TargetEntity.TransformComponent.WorldPosition, true)
+			else 
+				-- 공격 애니메이션만 재생
+				_UserService.LocalPlayer.PlayerBackpack:PlayAttackMotion(self.TargetEntity.TransformComponent.WorldPosition, false)
+			end
+			_UserService.LocalPlayer.PlayerStateAtStage.ColdStack = 0 -- 채광 시 동상 스택 초기화
+		end
+		
+		_TimerService:SetTimerOnce(ExitMinningGame, 0.75)
+	end
+
+	@ExecSpace("Client")
+	method void GiveReward()
+		-- 채광 성공 시 보상 지급 요청
+		if self.IsKeyBoxGame == true then
+			self.TargetEntity.MiningTargetObject:GiveReward("key", _UserService.LocalPlayer)
+			return
+		end
+		
+		if self.bonusGameSuccess == true then
+			self.TargetEntity.MiningTargetObject:GiveReward("bonus", _UserService.LocalPlayer)
+		else 
+			self.TargetEntity.MiningTargetObject:GiveReward("normal", _UserService.LocalPlayer)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void ExitGame()
+		-- 채광 미니게임 강제 종료 처리
+		self.gameStarted = false
+		self.onMining = false
+		-- stop 버튼 비활성화
+		local stopButton = _EntityService:GetEntity("439a2638-61b5-4222-948c-f11b567d1515")
+		stopButton:SetEnable(false)
+		
+		-- 채광게임 비활성화
+		self.Entity:SetEnable(false)
+		
+		-- 플레이어 움직임 재 활성화
+		_UserService.LocalPlayer.MovementComponent.Enable = true
+		
+		-- 타겟 채광시도 가능하도록
+		if self.TargetEntity ~= nil then
+			self.TargetEntity.MiningTargetObject.Enable = true
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetBonusGame()
+		-- 보너스 게임 모드 설정 및 UI 구성
+		local bonusBackBar = _EntityService:GetEntity("3a26cf5b-f079-440d-88a2-375355a69519")
+		local orangeBar = _EntityService:GetEntity("acc65ec2-3181-4598-ac94-0ef69f5ae7d2")
+		local yellowBar = _EntityService:GetEntity("c7a02476-522d-45ad-a964-6ae7d114683c")
+		local greenBar = _EntityService:GetEntity("a0134df7-6de0-4944-9f51-6407aba8d5ff")
+		local pinkBar = _EntityService:GetEntity("a008b1f8-cb3d-4724-89fa-e20d4c627851")
+		
+		-- 레벨차에 따라 판정 영역 너비 결정 
+		local userPower = _UserService.LocalPlayer.PlayerIngameData.MiningPower
+		local powerRate = self.HPMax / userPower -- (내구도 / 채광력) 비율 ==> Good 기준 타격 횟수
+		
+		local rectWidth = 50
+		if powerRate < 2.5 then
+			rectWidth = 50*(2.5-powerRate) + 50
+		end
+		
+		
+		-- 공허 아이템 효과 적용
+		local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[8] 
+		local voidItemTable = _DataService:GetTable("VoidItems")
+		if voidItemLv > 0 then
+			local initAbility = tonumber(voidItemTable:GetCell(8, "InitAbility"))
+			local levelAbility = tonumber(voidItemTable:GetCell(8, "AbilityPerLevel"))
+			local currentAbility = initAbility + levelAbility * voidItemLv
+			
+			rectWidth = rectWidth * (1+currentAbility/100)
+		end
+		
+		-- 영역 너비 확정
+		pinkBar.UITransformComponent.RectSize = Vector2(rectWidth, pinkBar.UITransformComponent.RectSize.y)
+		
+		-- 랜덤 포지션 
+		local randomPos = _UtilLogic:RandomDouble()*600
+		pinkBar.UITransformComponent.anchoredPosition.x = randomPos+425
+		
+		orangeBar.Enable = false
+		yellowBar.Enable = false
+		greenBar.Enable = false
+		bonusBackBar.Enable = true
+		pinkBar.Enable = true
+		
+		self.speed = 0.5
+	end
+
+	@EventSender("Entity", "2b0c99e8-808d-474b-ad4b-dc85413c7fa5")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 채광 미니게임 시작 버튼 클릭 이벤트
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		-- 게임 시작
+		self:StartMinningGame()
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- E키 입력으로 채광 게임 시작/타이밍 이벤트
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if key ~= KeyboardKey.E then	return	end
+		if self.Entity.Enable == false then return end
+		--------------------------------------------------------
+		local startButton = _EntityService:GetEntity("2b0c99e8-808d-474b-ad4b-dc85413c7fa5")
+		local stopButton = _EntityService:GetEntity("439a2638-61b5-4222-948c-f11b567d1515")
+		
+		if startButton.Enable then
+			self:StartMinningGame()
+		elseif stopButton.Enable then
+			self:Hit()
+		
+			if self.HP <= 0 then
+				
+				if self.bonusActivation and self.isBonusGame then
+					
+				else 
+					self:FinishGame()
+				end
+				
+				return
+			end
+			
+			if self.hitCount <= 0 then
+				if self.IsKeyBoxGame then
+					_UIToast:ShowMessageDuration(_LocalizationService:GetText("Message_FailToOpenKeyBox"), 4)
+				else 
+					_UIToast:ShowMessageDuration(_LocalizationService:GetText("Message_FailToMining"), 3)
+					self.failStack = self.failStack + 1
+					if self.failStack >= 3 then
+						local showMessage = function()
+							_UIToast:ShowMessageDuration(_LocalizationService:GetText("Message_Tip_Mining"), 4)
+						end
+						_TimerService:SetTimerOnce(showMessage, 2)
+					end
+				end
+				
+				self:FinishGame()
+			end
+		
+		end
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent2(KeyDownEvent event)
+		-- ESC키 입력으로 채광 게임 취소 이벤트
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if key ~= KeyboardKey.Escape then 
+			return 
+		end
+		--------------------------------------------------------
+		local miningGameUI = _EntityService:GetEntity("cf7e8298-08f2-4352-b1bc-6a21d7d3992f")
+		if miningGameUI.Enable == false then
+			return
+		end
+		--------------------------------------------------------
+		
+		
+		local startButton = _EntityService:GetEntity("2b0c99e8-808d-474b-ad4b-dc85413c7fa5")
+		local stopButton = _EntityService:GetEntity("439a2638-61b5-4222-948c-f11b567d1515")
+		
+		if stopButton.Enable or startButton.Enable then
+			self:ExitGame()
+			self.TargetEntity.Enable = false
+		end
+	end
+
+end

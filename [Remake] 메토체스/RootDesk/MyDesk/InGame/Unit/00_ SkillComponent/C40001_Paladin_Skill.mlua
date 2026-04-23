@@ -1,0 +1,87 @@
+@Component
+script C40001_Paladin_Skill extends Component
+
+	property number skillAnimLength = 0.4
+
+	property string skillEffectRUID = "75084f7983a9407f951e5db0a815880e"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		local function GetBuff()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetBuff()
+			end
+		end
+		
+		_TimerService:SetTimerOnce(GetBuff, 0.1 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0117",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBuff()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local shieldAmount = _S01_SkillDescLogic.C40001_Active_Shield_Int[unitInfo.level] +
+							unitStatus.MaxHP * _S01_SkillDescLogic.C40001_Active_Shield_MaxHPPer[unitInfo.level]
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		---@type table<Entity>
+		local myTeams = {}
+		if unitInfo.TeamType == "User" then
+			myTeams = teamManager.OwnUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			myTeams = teamManager.EnemyUnits
+		end
+		
+		local checkMyTeams = _BTLogic_New:getEntities(myTeams, "Alive")
+		
+		local setTeams = _BTLogic_New:getTargets(unitInfo.setTile, checkMyTeams, "HP_Low_3")
+		
+		local shieldCount = 0
+		for _, myTeamUnit in pairs(setTeams) do
+			if myTeamUnit ~= myUnit then
+				shieldCount += 1
+				if _BTLogic_New:CheckAttackAble(myUnit, myTeamUnit, "Skill") then
+					_StatusChangeLogic:SetShield(myUnit, myTeamUnit, shieldAmount, -1, "Skill")
+				end
+				if shieldCount >= 2 then
+					break
+				end
+			end
+		end
+		
+		if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+			_StatusChangeLogic:SetShield(myUnit, myUnit, shieldAmount, -1, "MySkill")
+			_GeneralDirectorLogic:BattleBuffEffect(myUnit,_RuneCardDirectEnum.DealingDamageRate,unitInfo.OwnerId)
+		end
+	end
+
+end

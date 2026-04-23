@@ -1,0 +1,619 @@
+@Component
+script PlayerPrivateShop extends Component
+
+	@Sync
+	property SyncTable<string, integer> shopReset
+
+	@Sync
+	property SyncTable<string, integer> productPurchaseCount
+
+	@Sync
+	property SyncTable<string, integer> lastSystemShopUpdatedTime
+
+	property string currentOpenedShopGroup = ""
+
+	property boolean IsSaveDB = false
+
+	property string failMessage = ""
+
+	@ExecSpace("ClientOnly")
+	method void OpenShopGroup(string shopGroup)
+		-- 상점 그룹을 열고 필요시 시스템 리셋 요청
+		if self.currentOpenedShopGroup:len() > 0 then
+		end
+		
+		local shopIds = _ShopDataLogic:GetShopIdsByShopGroup(shopGroup)
+		if shopIds == nil then
+		end
+		
+		for i,shopId in ipairs(shopIds) do
+			if self:IsNeccesarySystemReset(shopId) == false then
+				continue
+			end
+			self:RequestSystemResetShop(shopId)
+		end
+		
+		self.currentOpenedShopGroup = shopGroup
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseShopGroup()
+		-- 열려있는 상점 그룹을 닫기
+		self.currentOpenedShopGroup = ""
+	end
+
+	method boolean IsNeccesarySystemReset(string shopId)
+		-- 상점에 시스템 리셋이 필요한지 시간 기준으로 확인
+		local currentTime = _DateTimeLogic:GetUtcNowElapsed()
+		local nextResetTime = self:GetNextSystemResetTime(shopId)
+		if nextResetTime == nil then
+			return false
+		end
+		
+		if currentTime >= nextResetTime then
+			return true
+		end
+		
+		return false
+	end
+
+	@ExecSpace("Server")
+	method void RequestSystemResetShop(string shopId)
+		-- 시스템 상점 리셋 요청 처리
+		if self:IsNeccesarySystemReset(shopId) == false then
+			return
+		end
+		
+		self:UpdateShop(shopId, true)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateShop(string shopId, boolean isSystemReset)
+		-- 상점 상품 목록을 업데이트하고 리셋 시간 설정
+		local currentTime = _DateTimeLogic:GetUtcNowElapsed()
+		
+		local allProductByShopId = _ShopDataLogic:GetProductIdsByShopId(shopId)
+		if allProductByShopId == nil then
+			return
+		end
+		for i,productId in ipairs(allProductByShopId) do
+			self.productPurchaseCount[productId] = nil
+		end
+		
+		
+		local newProducts = _ShopDataLogic:PickProductsByShopId(shopId)
+		local bufferActivedProducts = {}
+		
+		for i,productId in ipairs(newProducts) do
+			self.productPurchaseCount[productId] = 0	
+		end
+		if isSystemReset == true then
+			self.shopReset[shopId] = nil
+			self.lastSystemShopUpdatedTime[shopId] = currentTime
+		end
+		
+		self.IsSaveDB = true
+	end
+
+	@ExecSpace("Server")
+	method void RequestResetShopByMoney(string shopId)
+		-- 돈으로 상점 리셋 요청 처리
+		if self:IsNeccesarySystemReset(shopId) == true then
+			self:UpdateShop(shopId, true)
+			return
+		end
+		
+		local shopData = _ShopDataLogic:GetShopData(shopId)
+		if shopData == nil then
+			return
+		end
+		
+		if shopData.CustomResetCost < 0 then
+			return
+		end
+		
+		local resetCount = 0
+		if self.shopReset ~= nil then
+			resetCount = self.shopReset[shopId]
+			if resetCount == nil then
+				resetCount = 0
+			end
+		end
+		
+		local totalCost = shopData.CustomResetCost + (shopData.CustomResetCostAdd * resetCount)
+		local currentMoney = self.Entity.PlayerInventory.Money
+		
+		if totalCost > currentMoney then
+			return	
+		end
+		
+		local source = shopData.ShopId
+		
+		self.Entity.PlayerInventory:SubMoney(totalCost,source.."reset fee",source.." popup")
+		self.shopReset[shopId] = resetCount + 1
+		self:UpdateShop(shopId, false)
+	end
+
+	@ExecSpace("Server")
+	method boolean BuyProduct(string productId, integer count)
+		-- 상품 구매 처리 및 유효성 검사
+		local productData = _ShopDataLogic:GetShopProductData(productId)
+		if productData == nil then
+			local messege = "productData is nil"
+			self:CancelBuyProductLog(messege,"0",productId,count,0,"empty","empty",nil)
+			return false
+		end
+		
+		
+		local source = "shopEmpty"
+		local assetId = "assetEmpty" 
+		
+		local shopData = _ShopDataLogic:GetShopData(productData.LinkedShopId)
+		if shopData == nil then return false end
+		
+		if self:CanBuyFromCondition(productId) == false then	
+			return false
+		end
+		
+		source = shopData.CategoryNameKey
+		assetId = shopData.CurrencyType	
+		
+		if self:IsNeccesarySystemReset(productData.LinkedShopId) == true then
+			self:UpdateShop(productData.LinkedShopId, true)
+			local messege = "IsNeccesarySystemReset"
+			self:CancelBuyProductLog(messege,"0",productId,count,0,source,assetId,nil)
+			return false
+		end
+		
+		local subsMaxMonthLimit = _GetConfigDataLogic:GetConfigNumDataByKey("SubscriptionMaxMonthLimit")
+		local productItem = productData.ItemId
+		if string.sub(productItem, 1, 1) == "S" then
+			local itemData = _ItemDataSetLogic:GetItemData(productItem)
+			local subsData = _UpgradeDataSetLogic:GetSubscriptionData(itemData.funcUseItemParam[1])
+			local subsPeriod = subsData.Expiration
+			local targetItem = subsData.TargetItem
+			
+			
+			local leftCount = self.Entity.PlayerUpgrade.Subscriptions[targetItem]
+			if leftCount == nil then
+				leftCount = 0
+			end
+			
+			if leftCount + count*subsPeriod > subsMaxMonthLimit then
+				_GetLocalizationTextLogic:CallToastByLocalizationKey("ShopConditionToastSubs", {subsMaxMonthLimit}, false, self.Entity.PlayerComponent.UserId)
+				return
+			end
+		end
+		
+		if productItem == "G0002" then
+			local playerLunchbox = self.Entity.PlayerInventory.LunchBox
+			local playerLunchboxMax = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.LunchBoxCapacity)
+			
+			if count + playerLunchbox > playerLunchboxMax then
+				_GetLocalizationTextLogic:CallToastByLocalizationKey("ShopConditionToastLunchBox", nil, false, self.Entity.PlayerComponent.UserId)
+				return
+			end
+		end
+		
+		if self:CanBuyProduct(productId, count) == false then
+		    self:CancelBuyProductLog(self.failMessage,"0",productId,count,0,source,assetId,nil)
+			return false
+		end
+		
+		local totalPrice = productData.Price * count
+		local assetBefore = 0
+		local assetAfter = 0
+		if shopData.CurrencyType == "Meso" then
+			assetBefore = self.Entity.PlayerInventory.Money
+			assetAfter = assetBefore - totalPrice
+			if assetAfter < 0 then
+				
+				local messege = "lack Money"
+				self:CancelBuyProductLog(messege,"0",productId,count,totalPrice,source,assetId,nil)
+				
+				return false
+			end
+			
+			local result = self.Entity.PlayerInventory:SubMoney(totalPrice,"Buy product from "..source,source.." popup")
+		
+			if result then 
+				_GetLocalizationTextLogic:CallToastByLocalizationKey("ShopSuccessMessage1", nil, false, self.Entity.PlayerComponent.UserId)
+			end
+			
+		elseif shopData.CurrencyType == "Clover" then
+			assetBefore = self.Entity.PlayerInventory.ArcaneSymbol
+			assetAfter = assetBefore - totalPrice
+			if assetAfter < 0 then
+				
+				local messege = "lack Clover"
+				self:CancelBuyProductLog(messege,"0",productId,count,totalPrice,source,assetId,nil)
+				
+				return false
+			end
+			local result = self.Entity.PlayerInventory:SubArcaneSymbol(totalPrice,"Buy product from "..source,source.." popup")
+		
+			if result then 
+				_GetLocalizationTextLogic:CallToastByLocalizationKey("ShopSuccessMessage1", nil, false, self.Entity.PlayerComponent.UserId)
+			end
+			
+		elseif shopData.CurrencyType == "Heart" then
+			assetBefore = self.Entity.PlayerInventory.Heart
+			
+			assetAfter = assetBefore - totalPrice
+			if assetAfter < 0 then
+				
+				local messege = "lack Heart"
+				self:CancelBuyProductLog(messege,"0",productId,count,totalPrice,source,assetId,nil)
+				
+				
+				return false
+			end
+			local result = self.Entity.PlayerInventory:SubHeart(totalPrice,"Buy product from "..source,source.." popup")
+			
+			if result then 
+				_GetLocalizationTextLogic:CallToastByLocalizationKey("ShopSuccessMessage1", nil, false, self.Entity.PlayerComponent.UserId)
+			end
+			
+		elseif shopData.CurrencyType == "Diamond" then
+			assetBefore = self.Entity.PlayerOutgameManager:GetDiamondCount()
+			
+			assetAfter = assetBefore - totalPrice
+			if assetAfter < 0 then
+				local message = "lack Diamond"
+				self:CancelBuyProductLog(message, "0", productId, count, totalPrice, source, assetId,nil)
+				return false
+			end
+			local result = self.Entity.PlayerOutgameManager:ModifyDiamond(-totalPrice, false, "Buy product - "..productData.ItemId.." from "..source, source.." popup")
+			
+			if result then 
+				_GetLocalizationTextLogic:CallToastByLocalizationKey("ShopSuccessMessage1", nil, false, self.Entity.PlayerComponent.UserId)
+			end
+			
+		else
+				local messege = "shopData currency type is nil"
+				self:CancelBuyProductLog(messege,"0",productId,count,totalPrice,source,assetId,nil)
+			
+			return false
+		end
+		
+		
+		local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.ShopBuyCount)
+		self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.ShopBuyCount, tutProgress+1)
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["GetItem"], 1, self.Entity.PlayerComponent.UserId)
+		
+		
+		local reward = {}
+		local itemName = _ItemDataSetLogic:GetItemData(productData.ItemId).NameKey
+		reward[productData.ItemId] = productData.ItemCount
+		
+		self:BuyProductLog("0", productId, totalPrice, tostring(productData.LinkedShopId), assetId, nil, itemName, assetBefore, assetAfter, count, nil, reward)
+		local result = self.Entity.PlayerInventory:AddItem(productData.ItemId, productData.ItemCount * count,"Buy product from "..source,source.." popup")
+		
+		self.productPurchaseCount[productId] = self.productPurchaseCount[productId] + count
+		
+		if string.sub(productData.ItemId, 1, 1) == "S" then
+			
+			if result == 0 then
+				self.Entity.PlayerInventory:UseItem(productData.ItemId, count, "Buy product from "..source, source.." popup", nil)
+			end
+		end
+		
+		self.IsSaveDB = true
+		return true
+	end
+
+	method boolean CanBuyProduct(string productId, integer count)
+		-- 상품 구매 가능 여부를 다양한 조건으로 검사
+		local productBoughtCount = self.productPurchaseCount[productId] 
+		if productBoughtCount == nil then
+			self.failMessage = "productBoughtCount is nil"
+			return false
+		end
+		
+		local productData = _ShopDataLogic:GetShopProductData(productId)
+		if productData == nil then
+			self.failMessage = "productData is nil"
+			return false
+		end
+		
+		if self:IsNeccesarySystemReset(productData.LinkedShopId) == true then
+			self.failMessage = "IsNecessarySystemReset"
+			return false
+		end
+		
+		if productData.MaxQuantity > 0 and productBoughtCount + count > productData.MaxQuantity then
+			self.failMessage = "MaxQuantity"
+			return false
+		end
+		
+		local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+		local playerItemCount = self.Entity.PlayerInventory:GetItemCount(productData.ItemId)
+		if playerItemCount == nil then
+			playerItemCount = 0
+		end
+		
+		if isvalid(itemData.MaxStackCount) then
+			if itemData.MaxStackCount < playerItemCount + count then
+				self.failMessage = "item max stack count"
+				return false
+			end
+		end
+		
+		
+		local shopData = _ShopDataLogic:GetShopData(productData.LinkedShopId)
+		if shopData == nil then return end
+		
+		local totalPrice = productData.Price * count
+		if shopData.CurrencyType == "Meso" then
+			local myMoney = self.Entity.PlayerInventory.Money
+			if totalPrice > myMoney then
+				self.failMessage = "lack Meso"
+				return false
+			end
+			
+			return true	
+		elseif shopData.CurrencyType == "Clover" then
+			local myArcaneSymbol = self.Entity.PlayerInventory.ArcaneSymbol
+			if totalPrice > myArcaneSymbol then
+				self.failMessage = "lack Clover"
+				return false
+			end
+			return true
+			
+		elseif shopData.CurrencyType == "Heart" then
+			local myHeart = self.Entity.PlayerInventory.Heart
+			if totalPrice > myHeart then
+				self.failMessage = "lack Heart"
+				return false
+			end
+			return true
+			
+		elseif shopData.CurrencyType == "Diamond" then
+			local myDiamond = self.Entity.PlayerOutgameManager:GetDiamondCount()
+			if totalPrice > myDiamond then
+				self.failMessage = "lack Diamond"
+				_UIGroupManager.DiaInfoGroup.UIDiaInfo:OpenUI()
+				return false
+			end
+			return true
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화 속성 변경 시 UI 새로고침 처리
+		if name == "productPurchaseCount" then
+			local UIShop = _EntityService:GetEntityByPath("/ui/UIShopGroup/UIShop").UIShop
+			UIShop:OnResetedShop()
+		elseif name =="shopReset" then
+			local UIShop = _EntityService:GetEntityByPath("/ui/UIShopGroup/UIShop").UIShop
+		    UIShop:OnResetedShop() 
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 개인 상점 데이터를 DB에 저장
+		if self.IsSaveDB == false then
+			 return
+		end
+		
+		local privateShopTotal = {}
+		
+		privateShopTotal["ShopReset"] = _UtilLogic:TableToString(self.shopReset)
+		privateShopTotal["SystemShopUpdate"] = _UtilLogic:TableToString(self.lastSystemShopUpdatedTime)
+		privateShopTotal["productCount"] = _UtilLogic:TableToString(self.productPurchaseCount)
+		
+		local dbString = _HttpService:JSONEncode(privateShopTotal)
+		saveData["PrivateShop"] = dbString
+		
+		self.IsSaveDB = false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadFromDB(table loadKeys)
+		-- DB에서 로드할 키 목록에 개인 상점 추가
+		table.insert(loadKeys, "PrivateShop")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- DB에서 로드된 개인 상점 데이터를 파싱하여 적용
+		---@type DataStorageItem
+		local privateShopData = loadedData["PrivateShop"]
+		if privateShopData ~= nil and (_UtilLogic:IsNilorEmptyString(privateShopData.Value) == false) then
+			local privateShopTable = _HttpService:JSONDecode(privateShopData.Value)
+			
+			table.initialize(self.shopReset, _UtilLogic:StringToTable(privateShopTable["ShopReset"]))
+			table.initialize(self.lastSystemShopUpdatedTime, _UtilLogic:StringToTable(privateShopTable["SystemShopUpdate"]))
+			table.initialize(self.productPurchaseCount, _UtilLogic:StringToTable(privateShopTable["productCount"]))
+		else
+			table.clear(self.shopReset)
+			table.clear(self.lastSystemShopUpdatedTime)
+			table.clear(self.productPurchaseCount)
+		end
+	end
+
+	method integer GetBuyMaxCountFromQuantity(string productId)
+		-- 상품의 최대 구매 가능 수량을 계산하여 반환
+		local productData = _ShopDataLogic:GetShopProductData(productId)
+		if productData == nil then
+			return 0
+		end
+		
+		local boughtCount = self.productPurchaseCount[productId]
+		if boughtCount == nil then
+			return 0			
+		end
+		
+		if productData.MaxQuantity <= 0 then
+			return 999		
+		else
+			return productData.MaxQuantity - boughtCount
+		end
+	end
+
+	method integer GetNextSystemResetTime(string shopId)
+		-- 다음 시스템 리셋 시간을 계산하여 반환
+		if self.lastSystemShopUpdatedTime[shopId] == nil then
+			return 0		
+		end
+		
+		local lastUpdate = self.lastSystemShopUpdatedTime[shopId]
+		
+		local lastUpdateDate = DateTime(lastUpdate)
+		local shopData = _ShopDataLogic:GetShopData(shopId)
+		
+		if shopData.SystemResetType == "None" then
+			return nil
+		
+		elseif shopData.SystemResetType == "Daily" then
+			local hour = shopData.SystemResetValue		
+			if lastUpdateDate.Hour < hour then			
+				local nextResetDate = DateTime(lastUpdateDate.Year, lastUpdateDate.Month, lastUpdateDate.Day, hour, 0, 0)
+				return nextResetDate.Elapsed
+			else
+				local oneDayElapsed = 24 * 60 * 60 * 1000	
+				local nextDayElpased = lastUpdate + oneDayElapsed
+				local nextDayDate = DateTime(nextDayElpased)
+				local nextResetDate = DateTime(nextDayDate.Year, nextDayDate.Month, nextDayDate.Day, hour, 0, 0)
+				return nextResetDate.Elapsed
+			end
+		elseif shopData.SystemResetType == "Week" then
+			return 0
+		elseif shopData.SystemResetType == "Month" then 
+			local day = shopData.SystemResetValue
+			local hour = 0	
+			if day >= 29 then
+				return 0 		
+			end
+			
+			if lastUpdateDate.Day < day then
+				local nextResetDate = DateTime(lastUpdateDate.Year, lastUpdateDate.Month, day, hour, 0, 0)
+				return nextResetDate.Elapsed
+			else
+				local nextMonth = lastUpdateDate.Month + 1
+				local nextYear = lastUpdateDate.Year
+				if nextMonth >= 13 then
+					nextMonth = 1
+					nextYear += 1
+				end
+				local nextResetDate = DateTime(nextYear, nextMonth, day, hour, 0, 0)
+				return nextResetDate.Elapsed
+			end
+		end
+		
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuyProductLog(string category, string productId, integer price, string source, string assetId, string purchaseId, string productName, integer assetBefore, integer assetAfter, integer productCount, string canBuyCount, SyncTable<string, integer> reward)
+		-- 상품 구매 성공 로그를 기록
+		local logName = _LogEnumType.PurchaseSuccess 
+		
+		local logFail,value = pcall(	
+			
+		function()
+						
+		local userId = self.Entity.PlayerComponent.UserId
+		local nickname = self.Entity.PlayerComponent.Nickname
+		local profileCode = self.Entity.PlayerComponent.ProfileCode
+		local playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+		if _UtilLogic:IsNilorEmptyString(canBuyCount) then
+			canBuyCount = "empty"
+		end
+		if _UtilLogic:IsNilorEmptyString(purchaseId) then
+			purchaseId = "empty"
+		end		
+				
+				
+				
+		_LogStorageLogic:LogValue(userId,logName, 
+			_HttpService:JSONEncode({
+				productName = productName,
+				canBuyCount = canBuyCount
+			}),
+			{
+				nickname = nickname,
+				category = category,
+				productId = productId,
+				price = tostring(price),
+				source = source,
+				assetId = assetId,
+				purchaseId = purchaseId,
+				playerStageId = playerStageId,
+				utc = _DateTimeLogic:GetUtcNowText(),
+				profileCode = profileCode,
+				assetBefore = tostring(assetBefore),
+				assetAfter = tostring(assetAfter),
+				productCount = tostring(productCount),
+				reward = self.Entity.PlayerLog:GetArrayStr(reward)
+			})
+		end)
+		
+		if not logFail then  end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CancelBuyProductLog(string failMessage, string category, string productId, integer count, integer price, string source, string assetId, string purchaseId)
+		-- 상품 구매 실패 로그를 기록
+		local logName = _LogEnumType.PurchaseFail 
+		local logFail,value = pcall(
+			
+		function()
+		
+		local userId = self.Entity.PlayerComponent.UserId
+		local nickname = self.Entity.PlayerComponent.Nickname
+		local playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+		if _UtilLogic:IsNilorEmptyString(purchaseId) then
+			purchaseId = "empty"		
+		end
+			
+		_LogStorageLogic:LogValue(userId,logName,failMessage,
+			{
+				nickname = nickname,
+				category = category,
+				productId = productId,
+				price = tostring(price),
+				source = source,
+				assetId = assetId,
+				purchaseId  = purchaseId,
+				playerStageId = playerStageId
+				
+			})	
+		end)
+		
+		
+		if not logFail then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CanBuyFromCondition(string productId)
+		-- 상품 구매 조건을 만족하는지 확인
+		local productData = _ShopDataLogic:GetShopProductData(productId)
+		if _UtilLogic:IsNilorEmptyString(productData.PurchaseCondition) then
+			return true
+		end
+		
+		if productData.PurchaseCondition == "ManagementLevel" then
+			local conditionValue = productData.PurchaseConditionValue
+			local userValue = self.Entity.PlayerManagement.ManagementLevel
+			if userValue < conditionValue then
+				return false
+			end
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void FailMessageToServer(string productId, integer count, string source, string assetId)
+		-- 실패 메시지를 서버로 전송하여 로그 기록
+		self:CancelBuyProductLog(self.failMessage,"0",productId,count,0,source,assetId,nil)
+	end
+
+end

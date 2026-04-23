@@ -1,0 +1,284 @@
+@Component
+script ResultUIComponent extends Component
+
+	property Entity resultPanel = "925dc9f4-7cc5-4d1a-98bb-c17c99b8d319"
+
+	property Entity goodsPanel = "3065ff41-d977-46d6-a24f-0d4b29d0b8bf"
+
+	property Entity itemPanel = "5bf6da83-eb22-42ed-aeab-74132874107d"
+
+	property Entity goHomeButton = "6fd3ecdb-ddd3-4a39-bd64-03cda663b119"
+
+	property Entity originalSlot = "0c336f33-6902-49ae-9a0a-e90bb463eca0"
+
+	property boolean isClear = false
+
+	property number requestedGoHomeTime = 0
+
+	property Entity mesoSlotText = "590bac35-73c5-43d9-ba78-a3e24944fb82"
+
+	property Entity scrollSlotText = "4a0250ef-fe91-40a1-97c4-1821849866ac"
+
+	property Entity essenceSlotText = "f2046609-0877-452e-8975-47a3a268c222"
+
+	@ExecSpace("ClientOnly")
+	method void Show(boolean isClear)
+		-- 결과 UI를 표시하고 클리어 여부에 따른 내용 설정
+		self.isClear = isClear
+		local playLog = ""
+		
+		self.mesoSlotText.Parent.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+		self.scrollSlotText.Parent.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+		self.essenceSlotText.Parent.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+			
+		self.mesoSlotText.Parent.Enable = true
+		self.scrollSlotText.Parent.Enable = true
+		self.essenceSlotText.Parent.Enable = true
+		
+		if isClear then
+			self.resultPanel:GetChildByName("ResultTitle", true).TextComponent.Text = _LocalizeLogic:GetText("resultStr1")
+			self.resultPanel:GetChildByName("ResultTitle", true).SpriteGUIRendererComponent.Color = Color.FromHexCode("#0064B8")
+			 
+			if Environment:IsPublishedPlay() then
+				playLog = string.format(_LocalizeLogic:GetText("etcStr194"), _UserService.LocalPlayer.CurrentMap.BattleMap.chapter)
+			end
+		else
+			self.resultPanel:GetChildByName("ResultTitle", true).TextComponent.Text = _LocalizeLogic:GetText("resultStr2")
+			self.resultPanel:GetChildByName("ResultTitle", true).SpriteGUIRendererComponent.Color = Color.FromHexCode("#3A3A3A")
+			
+			if Environment:IsPublishedPlay() then
+				playLog = string.format(_LocalizeLogic:GetText("etcStr193"), _UserService.LocalPlayer.CurrentMap.BattleMap.chapter, _UserService.LocalPlayer.CurrentMap.BattleMap.wave)
+			end
+		end
+		
+		self:SetReward(isClear)
+		
+		self.Entity.Enable = true
+		_SuddenMissionLogic:CheckMissionClear()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 결과 UI를 닫기
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 홈 버튼 이벤트 연결
+		self.goHomeButton:ConnectEvent(ButtonClickEvent, function()
+				if self.requestedGoHomeTime + 3 > _UtilLogic.ServerElapsedSeconds then return end
+				self.requestedGoHomeTime = _UtilLogic.ServerElapsedSeconds
+			
+				self:Close()
+				local player = _UserService.LocalPlayer
+				local battlePlayer = player.BattlePlayer
+				local isDead = battlePlayer.isDead
+				local hitCount = battlePlayer.hitCountForLog
+			
+				_ResultUILogic:CloseDescription()
+				_BattleUIManager:OffBattleUI()
+				_TimerLogic:Resume()
+				battlePlayer:SetSuperMode(false)
+				local flowType = ""
+				if self.isClear then
+					flowType = _WorldLog.FlowType_PlayFlow_Success
+				else
+					if isDead then
+						flowType = _WorldLog.FlowType_PlayFlow_Fail
+					else
+						flowType = _WorldLog.FlowType_PlayFlow_Drop
+					end
+				end
+			
+				table.clear(_BuffLogic.selectedCard)
+			
+				_BattleUIManager.loadingUI:Show()
+				_UserService.LocalPlayer.BattlePlayer:MoveTown(flowType, "")
+			
+				if _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_BASIC then
+				end
+				_StageLogic:SendEvent(StageEndEvent())
+			
+				_WorldLog:LogIngameFlowExit(_HttpService:JSONEncode(_BuffLogic.selectedCard), _HttpService:JSONEncode(_BuffLogic:GetStats()), player.BattlePlayer.hitInfo, 
+					player.MyPlayer.deviceType, tostring(player.CurrentMap.BattleMap.chapter), _GameConfig:GetConfig().GAMEMODE_BASIC, player, flowType, 
+				tostring(_TimerLogic.ElapsedSeconds - _StageLogic.startTime),_BossBalanceLogic:GetResult())
+			end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetReward(boolean isClear)
+		-- 결과에 따른 보상 아이템 및 화폐 설정
+		local itemLayout = self.itemPanel:GetChildByName("ItemResultLayout", true)
+		local extraScroll = 0
+		
+		for _, entity in pairs(itemLayout.Children) do
+			if entity ~= self.originalSlot and entity ~= self.mesoSlotText.Parent and entity ~= self.scrollSlotText.Parent and entity ~= self.essenceSlotText.Parent then
+				entity:Destroy()
+			end
+		end
+		
+		if _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_BASIC then
+			self.mesoSlotText.TextComponent.Text = "0"
+			self.scrollSlotText.TextComponent.Text = "0"
+			self.essenceSlotText.TextComponent.Text = "0"
+		elseif _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_RANDOMBOSS then
+			self.mesoSlotText.Parent.Enable = false
+			self.scrollSlotText.Parent.Enable = false
+			self.essenceSlotText.Parent.Enable = false
+		end
+		
+		local items = {}
+		
+		for key, value in pairs(_UserService.LocalPlayer.PlayerTempStorageComponent.tempItemRewards) do
+			local splitedId = _UtilLogic:Split(value, "_")
+			if splitedId[1] == _GameConfig:GetConfig().ITEMTYPE_CURRENCY then 
+				if splitedId[2] == "000001" then
+					extraScroll = extraScroll + 1
+				end
+			else
+				local itemData = _WeaponSpecLogic.weaponData[value]
+				if not isvalid(itemData) then
+					itemData = _ItemDataLogic.itemData[value]
+				end
+				
+				if not isvalid(items[value]) then
+					items[value] = 1
+					
+					local slot = self.originalSlot:Clone("slot")
+					local sprite = slot:GetChildByName("sprite")
+					sprite.SpriteGUIRendererComponent.ImageRUID = itemData.ruid
+					sprite.SpriteGUIRendererComponent.LocalPosition = Vector2(itemData.offsetX, itemData.offsetY)
+					sprite.ResultButtonComponent.itemId = value
+					sprite.ResultButtonComponent:SetText(items[value])
+					slot.Enable = true
+				else
+					items[value] += 1
+					
+					for _, entity in pairs(self.originalSlot.Parent.Children) do
+						local sprite = entity:GetChildByName("sprite").ResultButtonComponent
+						
+						if sprite.itemId == value then
+							sprite:SetText(items[value])
+							
+							break
+						end
+					end
+				end
+				
+			end
+		end
+		
+		local clearTime = self.resultPanel:GetChildByName("ClearTimeText", true)
+		local killCount = self.resultPanel:GetChildByName("KillCountText", true)
+		local level = self.resultPanel:GetChildByName("LevelText", true)
+		
+		clearTime.TextComponent.Text = string.format(_LocalizeLogic:GetText("etcStr192"), _TimerLogic.ElapsedSeconds - _StageLogic.startTime)
+		killCount.TextComponent.Text = string.format("%d", _StageLogic.killCount)
+		level.TextComponent.Text = string.format("%d", _UserService.LocalPlayer.BattlePlayer.lv)
+		
+		local goodsPanel = self.goodsPanel:GetChildByName("GoodsPanel")
+		local goldCount = goodsPanel:GetChildByName("GoldCount", true)
+		local scrollCount = goodsPanel:GetChildByName("WeaponScrollCount", true)
+		local essenceCount = goodsPanel:GetChildByName("EssenceCount", true)
+		
+		
+		if _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_RANDOMBOSS then
+			self.goodsPanel.Enable = false
+		else
+			local player = _UserService.LocalPlayer
+			local clearedWave = player.CurrentMap.BattleMap.wave - 1
+			local chapter = player.CurrentMap.BattleMap.chapter
+			local petRatio = 1
+			
+			if _PetLogic:GetTotalGoodsBonus(player.PlayerComponent.UserId) ~= 0 then
+				petRatio = 1 + _PetLogic:GetTotalGoodsBonus(player.PlayerComponent.UserId) / 100
+			end
+			
+			if isvalid(player.PlayerCharacteristicData.charStorage["RelicType"]) and player.PlayerCharacteristicData.charStorage["RelicType"].level >= 2 then
+				petRatio = petRatio + 0.05
+			end
+			
+			local stageData =_StageLogic.stageData[tostring(chapter)] 
+			local tempGold = stageData.goldReward
+			local tempEssence = stageData.essenceReward
+			local tempScroll = stageData.scrollReward
+			local accTable = _AccessoryLogic:GetStatusTable(player.PlayerComponent.UserId)
+			local accessoryBonus = (accTable["wealthBonus"] / 100) + (accTable["28"] / 100)
+			local totalRatio = petRatio + accessoryBonus
+			
+			if chapter < 0 then
+				return
+			end
+			local waveRatio = clearedWave / _WaveLogic:GetLastWave(chapter)
+			
+			if clearedWave == 1 then 
+				waveRatio = 0.1
+			end
+			
+			if isClear then
+				self.mesoSlotText.TextComponent.Text = tostring(math.floor(tempGold * totalRatio)) 
+				self.scrollSlotText.TextComponent.Text = tostring(math.floor(tempScroll * totalRatio) + extraScroll) 
+				self.essenceSlotText.TextComponent.Text = tostring(math.floor(tempEssence * totalRatio)) 
+			else
+				if waveRatio <= 0 then
+					goldCount.TextComponent.Text = "0"
+					scrollCount.TextComponent.Text = "0"
+					essenceCount.TextComponent.Text = "0"
+				else
+					tempGold = tempGold * waveRatio * _RewardLogic.lossRatio
+					tempScroll = tempScroll * waveRatio * _RewardLogic.lossRatio
+					tempEssence = tempEssence * waveRatio * _RewardLogic.lossRatio
+					
+					if clearedWave > 0 then 
+						if tempEssence < 1 then
+							local rand = _UtilLogic:RandomDouble() * 100
+							
+							if waveRatio >= 0.5 then 
+								if rand >= 60 then
+									tempEssence = 1
+								end
+							elseif waveRatio >= 0.3 then 
+								if rand >= 80 then
+									tempEssence = 1
+								end
+							else
+								if rand >= 95 then
+									tempEssence = 1
+								end
+							end
+						end
+						
+						if tempScroll < 1 then
+							local rand = _UtilLogic:RandomDouble() * 100
+							
+							if waveRatio >= 0.5 then 
+								if rand >= 10 then
+									tempScroll = 1
+								end
+							elseif waveRatio >= 0.3 then 
+								if rand >= 40 then
+									tempScroll = 1
+								end
+							else
+								if rand >= 80 then
+									tempScroll = 1
+								end
+							end
+						end
+					end
+					self.mesoSlotText.TextComponent.Text = string.format("%d", tostring(tempGold * totalRatio))
+					self.scrollSlotText.TextComponent.Text = string.format("%d", tostring(tempScroll * totalRatio) + extraScroll)
+					self.essenceSlotText.TextComponent.Text = string.format("%d", tostring(tempEssence * totalRatio))
+				end
+			end
+			
+			self.mesoSlotText.Parent.Enable = true
+			self.scrollSlotText.Parent.Enable = true
+			self.essenceSlotText.Parent.Enable = true
+			self.goodsPanel.Enable = false
+		end
+		self.itemPanel:GetChildByName("ItemTitle", true).TextComponent.Text = _LocalizeLogic:GetText("resultStr3")
+	end
+
+end

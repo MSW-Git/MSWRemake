@@ -1,0 +1,410 @@
+@Logic
+script FieldDropItemLogic extends Logic
+
+	property table dropTable = {}
+
+	property table penaltiesTable = {}
+
+	property integer PlayerHigherThanMonsterMaxLevel = 0
+
+	property integer PlayerLowerThanMonsterMaxLevel = 0
+
+	property integer penaltyRange = 31
+
+	method void OnBeginPlay()
+		-- 필드 드롭 아이템 로직 시작 시 드롭 테이블과 패널티 데이터 초기화
+		local data = _DataService:GetTable("FieldItemDropTable")
+		for i = 1, data:GetRowCount() do
+			local dropData = {}
+			dropData.id = data:GetCell(i, "dropId")
+			dropData.type = data:GetCell(i, "dropId")
+			dropData.itemId = {}
+			dropData.itemId = _UtilLogic:Split(data:GetCell(i, "itemId"), "/")
+			dropData.itemCount = {}
+			dropData.itemCount = _UtilLogic:Split(data:GetCell(i, "itemCount"), "/")
+			dropData.itemPercent = {}
+			dropData.itemPercent = _UtilLogic:Split(data:GetCell(i, "itemPercent"), "/")
+		
+			
+			self.dropTable[dropData.id] = dropData
+		end
+		
+		
+		data = _DataService:GetTable("DropPenaltiesData")
+		
+		for i = 1, data:GetRowCount() do
+			local penalties = {}
+			penalties.levelDiff = data:GetCell(i, "LevelDiff") 
+			penalties.expRate = tonumber(data:GetCell(i, "expRate"))
+			penalties.dropRate = tonumber(data:GetCell(i, "dropRate"))
+			penalties.damageRate = tonumber(data:GetCell(i, "damageRate"))
+			
+			self.penaltiesTable[penalties.levelDiff] = penalties 
+		
+			if i == 1 then
+				self.PlayerHigherThanMonsterMaxLevel = tonumber(penalties.levelDiff)
+			end
+			if i == data:GetRowCount() then
+				self.PlayerLowerThanMonsterMaxLevel = tonumber(penalties.levelDiff)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table DropFieldItemByMonsterDead(table data, string mapEssenceId, table contribution, boolean isCheat)
+		-- 몬스터 사망 시 드롭 아이템 결정 및 드롭 보너스 적용
+		local mapEssenceDropRate = _UtilLogic:RandomDouble() * 100000 
+		local dropId = data.dropId
+		local drop = {}
+		
+		local rewardId = {} 
+		local rewardCount = {}
+		
+		local totalWeight = 0
+		local ratio = {} 
+		
+		local dropBonus = 0
+		local personCount = 0
+		
+		for key, weight in pairs(contribution) do
+			totalWeight += weight 
+		end
+		
+		for key, weight in pairs(contribution) do 
+			ratio[key] = weight / totalWeight
+		end
+		
+		for key, percent in pairs(ratio) do
+			local user = _UserService:GetUserEntityByUserId(key)
+			
+			if isvalid(user) then
+				local individualBonus = user.PlayerAbilityComponent.dropBonus * percent 
+				dropBonus += individualBonus
+				personCount += 1
+			else
+				if isCheat == true then
+					dropBonus += 1 * percent
+				end
+			end
+		end
+		
+		
+		if dropBonus == 0 then
+			dropBonus = 1
+		end
+		
+		for i = 1 , #self.dropTable[dropId].itemId do 
+			local dropRate = _UtilLogic:RandomDouble() * 100000
+		
+			if dropRate <= (tonumber(self.dropTable[dropId].itemPercent[i]) * 100000) * dropBonus then 
+				local itemId = self.dropTable[dropId].itemId[i]
+			
+				if itemId == "999_999999" then 
+					for j = 1 , tonumber(self.dropTable[dropId].itemCount[i]) do
+						itemId = _FieldDropItemLogic:GetMagicStoneIngredientByRandom()
+						if drop[itemId] == nil then 
+							drop[itemId] = 1
+						else
+							drop[itemId] += 1
+						end
+		
+					end
+				elseif itemId == "999_999998" then 
+					for j = 1 , tonumber(self.dropTable[dropId].itemCount[i]) do
+						itemId = _FieldDropItemLogic:GetMagicStoneByRandom() 
+						if drop[itemId] == nil then 
+							drop[itemId] = 1
+						else
+							drop[itemId] += 1
+						end
+					end	
+				else
+						drop[itemId] = tonumber(self.dropTable[dropId].itemCount[i])
+				end
+			end
+		end
+		
+		
+		if mapEssenceDropRate <= 20000 then
+			drop[mapEssenceId] = 1
+		end
+		
+		return drop
+	end
+
+	@ExecSpace("ServerOnly")
+	method table DistributeItems(table items, table contribution)
+		-- 드롭된 아이템을 기여도에 따라 플레이어들에게 분배
+		    local num_players = #contribution
+		
+		    local total_weight = 0
+		
+			local ppsn = {}
+		    for k, weight in pairs(contribution) do
+		        total_weight = total_weight + weight
+				table.insert(ppsn,k)
+		    end
+		
+			local getPenalties = {}
+			local totalWeightPenalty = 0
+		
+		 	for k, weight in pairs(contribution) do	
+				if weight < total_weight * 0.05 then
+					getPenalties[k] = 0
+				else
+					getPenalties[k] = 1
+					totalWeightPenalty += weight   
+				end
+				
+		    end
+			
+		
+			local allPenalty = false
+			if totalWeightPenalty > 0 then
+				total_weight = totalWeightPenalty		
+			else
+				allPenalty = true
+			end
+		
+		    local probabilities = {}
+		    for k, weight in pairs(contribution) do
+		       table.insert(probabilities, weight / total_weight * (allPenalty and 1 or getPenalties[k]))
+		    end
+			
+		
+		    local cumulative_probabilities = {}
+		    local cumulative_probability = 0
+		    for _, probability in ipairs(probabilities) do
+		        cumulative_probability = cumulative_probability + probability
+		        table.insert(cumulative_probabilities, cumulative_probability)
+		    end
+		
+		
+		    local items_assigned = {}
+			for k,v in pairs(items) do
+				local id = k
+				local quantity = v
+		
+		        for i = 1, quantity do
+		            local random_number = math.random()  
+		            for j, cumulative_probability in ipairs(cumulative_probabilities) do
+		                if random_number <= cumulative_probability then
+		                    if not items_assigned[ppsn[j]] then
+		                        items_assigned[ppsn[j]] = {}
+		                    end
+		                    items_assigned[ppsn[j]][id] = (items_assigned[ppsn[j]][id] or 0) + 1
+		                    break
+		                end
+		            end
+		        end
+		    end
+		
+		    return items_assigned
+	end
+
+	method table GetPenalties(integer monsterLevel, string userId)
+		-- 몬스터와 플레이어 레벨 차이에 따른 패널티 계산
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local abilityCompo = user.PlayerAbilityComponent
+		local fieldLevel = abilityCompo.ability["lvData"].lv
+		local levelDiff = fieldLevel - monsterLevel
+		
+		if self:IsClient() then
+			if math.abs(levelDiff) >= self.penaltyRange and abilityCompo.alertTime + 5 <= _UtilLogic.ServerElapsedSeconds then
+				self:AlertLevelDiff()
+				abilityCompo.alertTime = _UtilLogic.ServerElapsedSeconds
+			end
+		end
+		
+		local resultTable = {}
+		
+		if levelDiff >= self.PlayerHigherThanMonsterMaxLevel then 
+			resultTable = _GameUtil:DeepCopyTable(self.penaltiesTable[string.format("%d", self.PlayerHigherThanMonsterMaxLevel)])
+		elseif levelDiff <= self.PlayerLowerThanMonsterMaxLevel then 
+			resultTable = _GameUtil:DeepCopyTable(self.penaltiesTable[string.format("%d", self.PlayerLowerThanMonsterMaxLevel)])
+		else
+			resultTable = _GameUtil:DeepCopyTable(self.penaltiesTable[string.format("%d", levelDiff)] )
+		end
+		
+		local weakMonsterPenaltyRate = self:GetEasyMonsterPenaltyRate(monsterLevel, fieldLevel, userId)
+		
+		resultTable.expRate = resultTable.expRate * weakMonsterPenaltyRate
+		resultTable.dropRate = resultTable.dropRate * weakMonsterPenaltyRate
+		
+		return resultTable
+	end
+
+	method boolean CheckApplyLevelDiffPenaltyByItemId(string dropItemId)
+		-- 특정 아이템 ID가 레벨 차이 패널티 적용 대상인지 확인
+		if _UtilLogic:IsNilorEmptyString(dropItemId) == true then
+			return false
+		end
+		
+		local items = {
+			"100_000001", "100_000003", "100_000005", "100_000007", "100_000009", "100_000011", "100_000013",
+			"100_000015", "100_000017", "100_000019", "100_000021", "100_000023", "100_000025", "100_000027",
+			"100_000029", "100_000031", "100_000033", "100_000035", "100_000037", "100_000039", "100_000041",
+			"100_000043", "100_000045", "100_000047", "100_000049", "100_000051", "100_000053", "100_000055",
+			
+			"100_000002", "100_000004", "100_000006", "100_000008", "100_000010", "100_000012", "100_000014",
+			"100_000016", "100_000018", "100_000020", "100_000022", "100_000024", "100_000026", "100_000028",
+			"100_000030", "100_000032", "100_000034", "100_000036", "100_000038", "100_000040", "100_000042",
+			"100_000044", "100_000046", "100_000048", "100_000050", "100_000052", "100_000054", "100_000056",
+			
+			"100_000073", "105_000001"
+		}
+		
+		for i = 1 , #items do
+			if dropItemId == items[i] then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	method string GetMagicStoneIngredientByRandom()
+		-- 마법석 재료 아이템을 랜덤으로 선택하여 반환
+		local items = {
+			"100_000001", "100_000003", "100_000005", "100_000007", "100_000009", "100_000011", "100_000013",
+			"100_000015", "100_000017", "100_000019", "100_000021", "100_000023", "100_000025", "100_000027",
+			"100_000029", "100_000031", "100_000033", "100_000035", "100_000037", "100_000039", "100_000041",
+			"100_000043", "100_000045", "100_000047", "100_000049", "100_000051", "100_000053", "100_000055"
+		}
+		
+		local numItems = #items
+		local randomIndex = math.random(1, numItems)
+		
+		
+		return items[randomIndex]
+	end
+
+	method string GetMagicStoneByRandom()
+		-- 마법석 아이템을 랜덤으로 선택하여 반환
+		local items = {
+			"100_000002", "100_000004", "100_000006", "100_000008", "100_000010", "100_000012", "100_000014",
+			"100_000016", "100_000018", "100_000020", "100_000022", "100_000024", "100_000026", "100_000028",
+			"100_000030", "100_000032", "100_000034", "100_000036", "100_000038", "100_000040", "100_000042",
+			"100_000044", "100_000046", "100_000048", "100_000050", "100_000052", "100_000054", "100_000056"
+		}
+		
+		local numItems = #items
+		local randomIndex = math.random(1, numItems)
+		
+		
+		return items[randomIndex]
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AlertLevelDiff()
+		-- 레벨 차이로 인한 패널티 경고 메시지 표시
+		
+		_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage148"), "neg")
+		_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage155"), "neg")
+	end
+
+	method integer GetEasyMonsterPenaltyRate(integer monsterLevel, integer playerLevel)
+		-- 약한 몬스터에 대한 패널티 비율 계산
+		
+		local penaltyRate = 1
+		
+		if monsterLevel <= 50 then
+			if monsterLevel <= playerLevel then
+				if playerLevel - monsterLevel >= 10 then
+					penaltyRate = 0.1
+				end
+			end
+		end
+		return penaltyRate
+		
+	end
+
+	@ExecSpace("Client")
+	method void NotiDropItemAndEXP(table data, number partyBonusRate)
+		-- 드롭 아이템과 경험치 알림 메시지 표시 및 이팩트 재생
+		local convertPartyBonus = math.floor((partyBonusRate - 1) * 100 + 0.5)
+		
+		if data.dropGem >= 1 then
+			if partyBonusRate > 1 then
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage149"), data.dropGem, convertPartyBonus), "pos")
+			else
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage153"), data.dropGem), "pos")
+			end
+		end
+		
+		if data.exp >= 1 then
+			if partyBonusRate > 1 then
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage152"), data.exp, convertPartyBonus), "pos")
+			else
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage151"), data.exp), "pos")
+			end
+		end
+		
+		
+		local drop = data.items
+		if drop ~= nil then
+			for k,v in pairs(drop) do
+				if v >= 1 then
+					local itemId = k
+					local itemName = _ItemDataLogic.itemData[k].name
+					local ruid = _ItemDataLogic.itemData[k].ruid
+					local str = _LocalizationService:GetTextFormat("systemMessage150", _LocalizeLogic:GetItemName(itemId), tostring(v))
+					_SystemMessageLogic:ShowMessage(str, "pos")
+					self:StartTweenDropItem(data.pos,ruid)
+				end
+			end
+		
+		end
+		if data.dropGem > 0 then
+			self:StartTweenDropItem(data.pos,"c65ac390fbfd4e97963c711c05ebaac5")
+		end
+		
+		if data.pen then
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage154"), "neg")
+			_SystemMessageLogic.lastPenaltyMessagedTime = _UtilLogic.ServerElapsedSeconds
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartTweenDropItem(Vector3 from, string ruid)
+		-- 드롭 아이템이 플레이어에게 날아가는 애니메이션 실행
+		
+		local currentMap = _UserService.LocalPlayer.CurrentMap
+		if currentMap.MultiBattleMap == nil then
+			return
+		end
+		
+		_PoolingLogic:SpawnModelAsync("model://13cce5ea-3670-4a15-8a53-404874bb41ad",from,currentMap,function(e) 
+		
+			---@type Entity
+			local entity = e	
+			local playerTransform = _UserService.LocalPlayer.TransformComponent
+			
+			local duration = _UtilLogic:RandomDouble() * 0.5 + 1
+			local transform = entity.TransformComponent
+			local color = entity.SpriteRendererComponent.Color
+			local dir = playerTransform.Position - from
+			local rand = (_UtilLogic:RandomDouble() * 2 - 1) * 1.5
+			local normal = Vector3(-dir.y,dir.x,0):Normalize() * rand
+			
+			entity.SpriteRendererComponent.SpriteRUID = ruid
+			
+			local tween = _TweenLogic:PlayTween(0,1, duration,EaseType.SineEaseIn,function(value) 
+				local to = playerTransform.Position	
+				local pos = from * (1-value) + to * value
+				pos = pos +  math.sin(value*math.pi) * normal
+				transform.Position = pos
+				color.a = math.min(1, 4 - value * 4)
+			end)
+			
+			tween:SetOnEndCallback(
+				function() 		
+					_SoundService:PlaySound("0cae201e10d5468ead5e6ecd1cd747e9", 1)
+					_PoolingLogic:DestroyEntity(entity)
+				end
+			)	
+		end)
+	end
+
+end

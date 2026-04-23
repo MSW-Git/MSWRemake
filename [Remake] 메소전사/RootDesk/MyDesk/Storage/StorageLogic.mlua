@@ -1,0 +1,478 @@
+@Logic
+script StorageLogic extends Logic
+
+	@HideFromInspector
+	property StorageNPCComponentRef storageNPC = "514f2cf9-6953-4b53-ad4c-b94d03cb3ef0"
+
+	property EntityRef townStorage = "08e455ce-0c1d-4066-8540-f904a253cc1e"
+
+	property table storageItems = {}
+
+	@HideFromInspector
+	property table filterData = {}
+
+	@HideFromInspector
+	property Entity beanChick = nil
+
+	@HideFromInspector
+	property table eggTable = {}
+
+	property table eggIdTable = {}
+
+	@HideFromInspector
+	property boolean isStorageControlMode = false
+
+	@HideFromInspector
+	property Vector2 touchedPos = Vector2(0,0)
+
+	@HideFromInspector
+	property CameraComponentRef storageCamera = "4e37f090-67f6-4927-a803-4fb5647af28b"
+
+	@HideFromInspector
+	property boolean isScrolling = false
+
+	@HideFromInspector
+	property boolean canScroll = true
+
+	property Entity beanChickUI = "3f383e39-bd8f-4732-802d-0d416beeddde"
+
+	@ExecSpace("Client")
+	method void RefreshNameTag()
+		-- 인벤토리 아이템들의 이름 태그 새로고침
+		if not isvalid(self.townStorage) then return end
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		
+		for key, value in pairs(self.storageItems) do
+			for _, storageItem in pairs(value) do
+				if isvalid(storageItem) then
+					local uniqueKey = storageItem.StorageItemComponent.uniqueKey
+					local data = _ItemDataLogic.equipmentData[storageItem.StorageItemComponent.itemId]
+					if not isvalid(data) then
+						data = _ItemDataLogic.itemData[storageItem.StorageItemComponent.itemId]
+					end
+					
+					if isvalid(storage.storage[uniqueKey]) and storageItem.StorageItemComponent.needRefreshNameTag then
+						local equippedSlotNum = storage.storage[uniqueKey].equippedSlotNum
+						local str = ""
+						storageItem.StorageItemComponent.starNameTag.Enable = false
+						
+						for i = 1, tonumber(data.star) do
+							str = str .. "★"
+						end
+						
+						storageItem.StorageItemComponent.starNameTag.Name = str
+						if equippedSlotNum == 0 then
+							storageItem.StorageItemComponent.levelNameTag.Name = "Level." .. storage.storage[uniqueKey].level
+						else
+							storageItem.StorageItemComponent.levelNameTag.Name = "[E] Level." .. storage.storage[uniqueKey].level
+						end
+						
+						storageItem.StorageItemComponent.needRefreshNameTag = false
+						
+						break
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void AutoMerge(Entity item1, Entity item2)
+		-- 두 아이템을 자동으로 합성 슬롯으로 이동
+		if not isvalid(item1) or not isvalid(item2) then return end
+		
+		local item1Compo, item2Compo = item1.StorageItemComponent, item2.StorageItemComponent
+		
+		item1Compo.canControl = false
+		item2Compo.canControl = false
+		
+		item1.KinematicbodyComponent.Enable = false
+		item2.KinematicbodyComponent.Enable = false
+		
+		local beanChick = self.beanChickUI.BeanChickUIComponent
+		local slot1, slot2 = beanChick.slot1, beanChick.slot2
+		
+		
+		item1Compo:Attract(slot1)
+		item2Compo:Attract(slot2)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InsertNewItemToStorageItemTable(Entity newItem)
+		-- 새 아이템을 인벤토리 테이블에 추가
+		local itemId = newItem.StorageItemComponent.itemId
+		
+		if _StorageLogic.storageItems[itemId] == nil then
+			_StorageLogic.storageItems[itemId] = {}
+		end
+		table.insert(_StorageLogic.storageItems[itemId], newItem)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 필터 데이터 초기화
+		local data = _DataService:GetTable("FilterData")
+		
+		for i = 1, data:GetRowCount() do
+			local filterData = {}
+			
+			filterData.itemType = data:GetCell(i, "itemType")
+			filterData.name = data:GetCell(i, "name")
+			
+			self.filterData[i] = filterData
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DestroyItemEntity(string uniqueKey)
+		-- 지정된 고유 키의 아이템 엔티티 삭제
+		for key, value in pairs(self.storageItems) do
+			for _, storageItem in pairs(value) do
+				if isvalid(storageItem) and storageItem.StorageItemComponent.uniqueKey == uniqueKey then
+					storageItem:Destroy()
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnEgg(string uniqueKey)
+		-- 인벤토리에서 알 아이템 스폰
+		--[[
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		
+		
+		local egg = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Model_StorageEgg"), "SpawnedEgg", 
+			_UILogic:ScreenToWorldPosition(_StorageUIManager.eggSpawnButton.TransformComponent.WorldPosition:ToVector2()):ToVector3(), _UserService.LocalPlayer.CurrentMap)
+		egg:AttachTo(self.townStorage)
+		
+		self:InsertNewItemToStorageItemTable(egg)
+		egg.StorageItemComponent:Init(storage.storage[uniqueKey].originalId, uniqueKey)
+		egg.EggComponent:Init(uniqueKey, storage.storage[uniqueKey].originalId)
+		
+		local randX, randY = _UtilLogic:RandomIntegerRange(-25, -15), _UtilLogic:RandomIntegerRange(10, 20)
+		egg.KinematicbodyComponent.MoveVelocity = Vector2(randX, randY)
+		
+		_StorageUIManager:RefreshEggButton()]]--
+	end
+
+	@ExecSpace("Client")
+	method void RefreshEggTable()
+		-- 알 테이블 새로고침 및 정렬
+		if not isvalid(self.townStorage) then return end
+		
+		table.clear(self.eggTable)
+		table.clear(self.eggIdTable)
+		
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		
+		for key, value in pairs(storage.storage) do
+			local id = value.originalId
+			
+			if value.count > 0 and _UtilLogic:Split(id, "_")[1] == _GameConfig:GetConfig().ITEMTYPE_EGG and key == id then
+				if not isvalid(self.eggTable[value.originalId]) then
+					self.eggTable[value.originalId] = {}
+				end
+				table.insert(self.eggTable[value.originalId], value.count)
+			end
+		
+			if isvalid(self.eggTable[value.originalId]) then
+				for _, entity in pairs(self.townStorage.Children) do
+					local egg = entity.EggComponent
+					
+					if isvalid(egg) then
+						if egg.uniqueKey == value.uniqueKey then
+							self.eggTable[value.originalId][1] = self.eggTable[value.originalId][1] - 1
+							if self.eggTable[value.originalId][1] <= 0 then
+								self.eggTable[value.originalId] = nil
+							end
+						end
+					end
+				end
+			end
+		end
+		
+		local tempTable = {}
+		
+		for key, value in pairs(self.eggTable) do
+			table.insert(tempTable, key)
+		end
+		
+		table.sort(tempTable, function(a, b)
+				return a > b
+			end)
+		
+		self.eggIdTable = tempTable
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetEmptySlotNum()
+		-- 빈 합성 슬롯 번호 반환
+		local beanChick = self.beanChickUI.BeanChickUIComponent
+		
+		if isvalid(beanChick.item1) then
+			return 2
+		else
+			return 1
+		end
+	end
+
+	method table GetItemListByCategory(string category, string sortOption)
+		-- 카테고리별 아이템 목록 가져오기 및 정렬
+		local results = {}
+		local item = _ItemDataLogic.itemData
+		local pet = _PetLogic.petData
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage
+		local petInventory = _UserService.LocalPlayer.PlayerPetStorageComponent.petInventory
+		
+		if category == "pet" then
+			for key, value in pairs(petInventory) do
+				if isvalid(pet[value.originalId]) then
+					table.insert(results, key)
+				end
+			end
+		else
+			for key, value in pairs(storage) do
+				if isvalid(item[value.originalId]) then
+					if _ItemDataLogic:GetItemCategory(value.originalId) == category and _CheckLogic:IsFieldItem(value.originalId) == false then
+						table.insert(results, key)
+					end
+				end
+			end
+		end
+		
+		if #table.keys(results) < 1 then return nil end
+		
+		if sortOption == "grade" then
+			local getGradeNum = function(key)
+				local originalId = ""
+				
+				if category ~= "pet" and isvalid(storage[key]) then
+					originalId = storage[key].originalId
+				elseif isvalid(petInventory[key]) then
+					originalId = petInventory[key].originalId
+				end
+				
+				local data = nil
+				
+				if category ~= "pet" then
+					data = _ItemDataLogic.itemData[originalId]
+					
+					if not isvalid(data) then
+						data = _ItemDataLogic.equipmentData[originalId]
+					end
+				else
+					data = _PetLogic.petData[originalId]
+				end
+				
+				local grade = ""
+				
+				if isvalid(data) then
+					grade = data.grade
+				end
+				
+				if grade == "normal" or grade == "B" then
+					return 1
+				elseif grade == "rare" then
+					return 2
+				elseif grade == "epic" or grade == "A" then
+					return 3
+				elseif grade == "unique" then
+					return 4
+				elseif grade == "legendary" or grade == "S" then
+					return 5
+				end
+			end
+			
+			table.sort(results, function(key1, key2) return getGradeNum(key1) > getGradeNum(key2) end)
+		elseif sortOption == "level" then
+			local getLevel = function(key)
+				local level = 0
+				
+				if category ~= "pet" and isvalid(storage[key]) then
+					level = storage[key].level
+				elseif isvalid(petInventory[key]) then
+					level = petInventory[key].level
+				end
+				
+				return level
+			end
+			
+			table.sort(results, function(key1, key2) return getLevel(key1) > getLevel(key2) end)
+		elseif sortOption == "id" then
+			local getId = function(key)
+				local id = 0
+				
+				if category ~= "pet" and isvalid(storage[key]) then
+					id = storage[key].originalId
+				elseif isvalid(petInventory[key]) then
+					id = petInventory[key].originalId
+				end
+				
+				return id
+			end
+			
+			table.sort(results, function(key1, key2) 
+				if category == "pet" then
+					return getId(key1) < getId(key2) 
+				else
+					return getId(key1) > getId(key2) 
+				end
+			end)
+		end
+		
+		return results
+	end
+
+	method integer GetItemCountByCategory(string category)
+		-- 카테고리별 아이템 개수 반환
+		local count = 0
+		local item = _ItemDataLogic.itemData
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage
+		
+		for key, value in pairs(storage) do
+			if isvalid(item[value.originalId]) then
+				if _ItemDataLogic:GetItemCategory(value.originalId) == category and not _CheckLogic:IsFieldItem(value.originalId) then
+					count = count + 1
+				end
+			end
+		end
+		
+		return count
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEnterStorageEvent(EnterStorageEvent event)
+		-- 인벤토리 입장 이벤트 처리
+		table.clear(self.storageItems)
+		
+		local randX = _UtilLogic:RandomIntegerRange(-10, 10)
+		
+		for _, storageItem in pairs(self.townStorage.Children) do
+			self:InsertNewItemToStorageItemTable(storageItem)
+		end
+		
+		self.isStorageControlMode = true
+		
+		self.storageCamera.CameraOffset.y = -5
+		_UserService.LocalPlayer.PlayerControllerComponent.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "ItemReinforceLogic")
+	handler HandleItemLevelUpEvent(ItemLevelUpEvent event)
+		-- 아이템 레벨업 이벤트 처리
+		local level = event.level
+		local uniqueKey = event.uniqueKey
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent
+		
+		for key, value in pairs(self.storageItems) do
+			for _, storageItem in pairs(value) do
+				if isvalid(storageItem) and isvalid(storage.storage[uniqueKey]) and storageItem.StorageItemComponent.uniqueKey == uniqueKey then
+					storageItem.StorageItemComponent.needRefreshNameTag = true
+				end
+			end
+		end
+		self:RefreshNameTag()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleExitStorageEvent(ExitStorageEvent event)
+		-- 인벤토리 퇴장 이벤트 처리
+		if isvalid(self.beanChick) then
+			self.beanChick:Destroy()
+		end
+		
+		_CameraService:SwitchCameraTo(_UserService.LocalPlayer.CameraComponent)
+		self.isStorageControlMode = false
+		
+		_UserService.LocalPlayer.PlayerControllerComponent.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchHoldEvent(ScreenTouchHoldEvent event)
+		-- 화면 터치 홀드 이벤트로 카메라 스크롤 처리
+		
+		local TouchPoint = event.TouchPoint
+		if not self.isStorageControlMode then return end
+		if not self.canScroll then return end
+		if isvalid(_ItemReinforceLogic.draggedItem) then return end
+		
+		self.isScrolling = true
+		
+		local sensitivity = 50
+		local diff = self.touchedPos.y - TouchPoint.y
+		
+		self.storageCamera.CameraOffset.y = self._T.originOffsetY + diff / sensitivity
+		
+		if self.storageCamera.CameraOffset.y < -5 then
+			self.storageCamera.CameraOffset.y = -5
+		elseif self.storageCamera.CameraOffset.y > 12.5 then
+			self.storageCamera.CameraOffset.y = 12.5
+		end
+		
+		sensitivity = 100
+		diff = self.touchedPos.x - TouchPoint.x
+		
+		self.storageCamera.CameraOffset.x = self._T.originOffsetX + diff / sensitivity
+		
+		if self.storageCamera.CameraOffset.x < -3.95 then
+			self.storageCamera.CameraOffset.x = -3.95
+		elseif self.storageCamera.CameraOffset.x > 3.95then
+			self.storageCamera.CameraOffset.x = 3.95
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchEvent(ScreenTouchEvent event)
+		-- 화면 터치 시작 이벤트 처리
+		
+		local TouchPoint = event.TouchPoint
+		if not self.isStorageControlMode then return end
+		if not self.canScroll then return end
+		
+		if not isvalid(self._T.originOffsetY) then
+			self._T.originOffsetY = self.storageCamera.CameraOffset.y
+		end
+		
+		if not isvalid(self._T.originOffsetX) then
+			self._T.originOffsetX = self.storageCamera.CameraOffset.x
+		end
+		
+		self.touchedPos = TouchPoint
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchReleaseEvent(ScreenTouchReleaseEvent event)
+		-- 화면 터치 릴리스 이벤트 처리
+		
+		local TouchPoint = event.TouchPoint
+		if not self.isStorageControlMode then return end
+		
+		self.canScroll = true
+		self.isScrolling = false
+		
+		self._T.originOffsetY = self.storageCamera.CameraOffset.y
+		self._T.originOffsetX = self.storageCamera.CameraOffset.x
+		
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleMouseScrollEvent(MouseScrollEvent event)
+		-- 마우스 스크롤 이벤트로 카메라 줄 처리
+		
+		local ScrollDelta = event.ScrollDelta
+		if not self.isStorageControlMode then return end
+		if not self.canScroll then return end
+		
+		self.isScrolling = true
+		
+		self.storageCamera.ZoomRatio = self.storageCamera.ZoomRatio + ScrollDelta * 100
+	end
+
+end

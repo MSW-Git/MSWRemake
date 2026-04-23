@@ -1,0 +1,125 @@
+@Component
+script C40006_JuniorBarlog_Skill extends Component
+
+	property number skillAnimLength = 1.92
+
+	property string hitEffectRUID = "e0f8588bbf8447a18bf0d51829323e5b"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local function hitSkill()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetSkillDamage()
+			end
+		end
+		
+		_TimerService:SetTimerOnce(hitSkill, 1 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0121",self.Entity.UnitInfo.OwnerId)
+		
+		--연출
+		self:PlaySkillEffect(1 / skillRate, unitInfo.setTile, unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		local enemies = {}
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		local attackEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+		attackEnemies = _BTLogic_New:getTargets(unitInfo.setTile, attackEnemies, "Around_1_2")
+		
+		local skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C40006_Active_SDamage_Physic[unitInfo.level]
+		
+		for _, enemy in pairs(attackEnemies) do
+			if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+				
+				local enemyStatus = enemy.UnitStatus
+				local shieldAmount = 0 
+				
+				-- 데미지 넣기 전에 방어막 부터 깎기
+				for i = 1, #enemyStatus.Shields do
+					shieldAmount += enemyStatus.Shields[i]["Amount"]
+					enemyStatus.Shields[i]["Amount"] = 0
+				end
+				_StatusChangeLogic:ShieldCheck(myUnit, enemy)
+				
+				self:HitEffect(enemy, unitInfo.OwnerId)
+				
+				local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, enemy, 0, "Physical")
+				_StatusChangeLogic:HitDamage(myUnit, enemy, damageInfo[1], 0, damageInfo[2], "skill")
+				
+				_StatusChangeLogic:SetStatus(myUnit, enemy, "SE0004", tonumber(_S01_SkillDescLogic.C40006_Active_WeakTime_Int[unitInfo.level]))
+				
+				-- 주니어발록 도전과제
+				_AchievementService:UpdateProgress_CharEffect("Shield",unitInfo.charID,enemy,shieldAmount,user.OwnerId)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void PlaySkillEffect(number time, Entity Tile)
+		--범위 표시
+		local tiles = {}
+		if self.Entity.UnitInfo.TeamType == "User" then
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("User_Skill", 2, Tile)
+		else
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("Enemy_Skill", 2, Tile)
+		end
+		
+		local removetile = function()
+			for i = 1, #tiles do
+				tiles[i].Enable = false
+				_GeneralDirectorLogic:InsertRangeEntity(tiles[i])
+			end
+		end
+		
+		_TimerService:SetTimerOnce(removetile, time)
+	end
+
+end

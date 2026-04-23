@@ -1,0 +1,119 @@
+@Component
+script UIStageInfoIngredient extends Component
+
+	property Entity IngreSlotSample = nil
+
+	property ScrollLayoutGroupComponent PromotedList = nil
+
+	property Entity SpecialList = nil
+
+	property TextComponent SpecialTitle = nil
+
+	property Entity PromotedListEmpty = nil
+
+	method void Init()
+		-- UI 컴포넌트들을 초기화하는 함수
+		local info = self.Entity:GetChildByName("Panel"):GetChildByName("Text")
+		local tasteScoreBonus = _GetConfigDataLogic:GetConfigNumDataByKey("IngredientTastePointVariationUnit") * 2
+		local goldBonus = _GetConfigDataLogic:GetConfigNumDataByKey("IngredientCostVariationUnit") * 2
+		info.TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("StageInfoIngredientInfoText", tasteScoreBonus, goldBonus)
+		
+		self.IngreSlotSample = self.Entity:GetChildByName("IngreSlotSample")
+		self.PromotedList = self.Entity:GetChildByName("PromotedList").ScrollLayoutGroupComponent
+		self.SpecialList = self.Entity:GetChildByName("SpecialList")
+		self.SpecialTitle = self.Entity:GetChildByName("SpecialTitle").TextComponent
+		self.PromotedListEmpty = self.Entity:GetChildByName("PromotedListEmpty")
+		
+		self.IngreSlotSample.Enable = false
+	end
+
+	method void Refresh(integer stageId, boolean isStageSetting)
+		-- 재료 정보를 새로고침하는 함수
+		if self.IngreSlotSample == nil then
+			self:Init()
+		end
+		
+		for i, child in pairs(self.PromotedList.Entity.Children) do
+			child.Enable = false
+		end
+		for i, child in pairs(self.SpecialList.Children) do
+			child.Enable = false
+		end
+		
+		local player = _UserService.LocalPlayer
+		local stageData = _StageDataSetLogic:GetStageData(stageId)
+		local specialIngres = _StageDataSetLogic:GetStageOnlyIngredient(stageId)
+		table.sort(specialIngres, function(a, b)
+			local aGrade = _IngredientDataSetLogic:GetIngredientData(a).Grade
+			local bGrade = _IngredientDataSetLogic:GetIngredientData(b).Grade
+			return aGrade < bGrade
+		end)
+		
+		local promoIngres = {}
+		if stageId == player.PlayerStage.NowStage then
+			promoIngres = player.PlayerIngameManager.StageIngredient
+			
+		else
+			if _UtilLogic:IsNilorEmptyString(player.PlayerStage.StageSettingData[stageId]) == false then
+				local stageSettingData = _HttpService:JSONDecode(player.PlayerStage.StageSettingData[stageId])
+				if _UtilLogic:IsNilorEmptyString(stageSettingData[_StageSettingEnum.Ingredient]) == false then
+					promoIngres = _UtilLogic:StringToTable(stageSettingData[_StageSettingEnum.Ingredient])
+				end
+			end	
+		end
+		
+		if isStageSetting == true then
+			local uiStageSetting = _StageDataSetLogic.UIStageSetting
+			local settingPage = uiStageSetting.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Ingredient)].UIStageSettingIngredient
+			promoIngres = table.values(settingPage.PromotedIngres)	
+		end
+		
+		if #promoIngres > 0 then
+			table.sort(promoIngres, function(a, b)
+				local aGrade = _IngredientDataSetLogic:GetIngredientData(a).Grade
+				local bGrade = _IngredientDataSetLogic:GetIngredientData(b).Grade
+				return aGrade < bGrade
+			end)
+		end
+		
+		
+		local isStageOpened = player.PlayerStage:IsStageOpened(stageId)
+		local isListOff = isStageSetting == false and (isStageOpened == false or #promoIngres <= 0)
+		
+		
+		if isListOff == false then
+			for i, ingreId in pairs(promoIngres) do
+				local slot = _UIEntityService:GetOrCreateClonedEntityByName(self.PromotedList.Entity, "IngreSlot"..i, self.IngreSlotSample)
+				slot.UIItemRewardSlot:SetItem(string.format("%d:False", ingreId), 0)
+				slot:GetChildByName("Check").Enable = false
+				slot:GetChildByName("Lock").Enable = false
+			end
+		end
+		self.PromotedList.Entity.Enable = not isListOff
+		self.PromotedListEmpty.Enable = isListOff
+		self.PromotedListEmpty.TextComponent.Text = _GetLocalizationTextLogic:GetText("StageInfoListEmptyText1") 
+		
+		local specialCount = 0
+		for i, ingreId in pairs(specialIngres) do
+			local slot = _UIEntityService:GetOrCreateClonedEntityByName(self.SpecialList, "IngreSlot"..i, self.IngreSlotSample)
+			slot.UIItemRewardSlot:SetItem(string.format("%d:False", ingreId), 0)
+			
+			local haveIngre = player.PlayerCollection.IngredientCollection[ingreId]
+			if haveIngre == nil then
+				haveIngre = false
+			end
+			
+			slot:GetChildByName("Lock").Enable = not haveIngre
+			slot:GetChildByName("Check").Enable = haveIngre
+			if haveIngre == true then
+				specialCount += 1
+			end
+			
+			local materialId = haveIngre and _IconRuidEnum.EmptyMaterial or _IconRuidEnum.GrayScaleMaterial
+			slot.UIItemRewardSlot.IconSprite:ChangeMaterial(materialId)
+		end
+		
+		self.SpecialTitle.Text = string.format("%s ( %d / %d )", _GetLocalizationTextLogic:GetText("SpecialIngredient"), specialCount, #specialIngres)
+	end
+
+end

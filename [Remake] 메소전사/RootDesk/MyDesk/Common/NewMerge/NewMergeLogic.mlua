@@ -1,0 +1,824 @@
+@Logic
+script NewMergeLogic extends Logic
+
+	property EntityRef parent = "f26481be-58f2-41ac-8649-674e4fef0632"
+
+	property table mergeItems = {}
+
+	property boolean inited = false
+
+	property Entity selectedItem = nil
+
+	property Vector2 previousCursorPosition = Vector2(0,0)
+
+	property table eggItems = {}
+
+	property table selectedMergeEff = {}
+
+	property Entity mergeToItem = nil
+
+	property EntityRef dragTip = "bec65c57-5f05-45c3-94ec-8c84de31046d"
+
+	property table itemGrid = {}
+
+	property number gridWidth = 11
+
+	property number gridHeight = 5
+
+	property EntityRef camera = "1c2941b9-d878-4361-bc55-06511c55f9a6"
+
+	property Vector2 dragDelta = Vector2(0,0)
+
+	property boolean sendSelectedEvent = false
+
+	property number pressedTime = 0
+
+	method void Init()
+		-- 머지 로직 초기화 및 맵 상태 확인
+		if _UserService.LocalPlayer.CurrentMap ~= self.parent.CurrentMap then
+			return
+		end
+		
+		if self.inited then
+			return
+		end
+		
+		self.inited = true
+	end
+
+	method void SelectWeaponItem(Entity item)
+		-- 무기 아이템 선택 처리 및 드래그 상태 초기화
+		self.mergeToItem = nil
+		self.sendSelectedEvent = false
+		self.dragDelta = Vector2.zero
+		self.pressedTime = 0
+		if isvalid(item) == false then
+			return
+		end
+		self.selectedItem = item
+		self.previousCursorPosition = self:GetMouseWorldPosition()
+		self.dragTip.Enable = true
+		if self.selectedItem.NewMergeWeaponItem.isEgg then
+			self.selectedItem.NewMergeWeaponItem.itemEntity.SpriteRendererComponent.Color.a = 0.8
+			return
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 클라이언트 업데이트 루프 (현재 비어있음)
+		
+	end
+
+	method Vector2 GetMouseWorldPosition()
+		-- 마우스 화면 좌표를 월드 좌표로 변환
+		return _UILogic:ScreenToWorldPosition(_InputService:GetCursorPosition())
+	end
+
+	method void MergeItem(string itemLeft, string itemRight, Vector2 pos)
+		-- 두 아이템을 머지하고 UI 입력 비활성화
+		_UIGroupManager.uiMergePopup:SetUIInputEnable(false)
+		
+		self:Merge(itemLeft,itemRight,_UserService.LocalPlayer,false,pos)
+	end
+
+	method Entity SetMergeWeaponItem(string uniqueKey, table storageData)
+		-- 저장된 데이터를 기반으로 무기 또는 알 아이템 생성/제거
+		self.dragDelta = Vector2.zero
+		local weaponItem = nil
+		if isvalid(storageData) == false then
+			weaponItem = self.mergeItems[uniqueKey]
+			if isvalid(weaponItem) then
+				weaponItem:Destroy()
+				return weaponItem
+			end
+			weaponItem = self.eggItems[uniqueKey]
+			if isvalid(weaponItem) then
+				weaponItem:Destroy()
+				return weaponItem
+			end
+			
+			return weaponItem
+		end
+		local itemData = _ItemDataLogic.equipmentData[storageData.originalId] 
+		if itemData ~= nil then
+			if itemData.category ~= "weapon" then
+				return nil
+			end
+			weaponItem = self:GetOrCreateWeaponItem(uniqueKey)
+			weaponItem.NewMergeWeaponItem:SetWeaponID(storageData)	
+			
+		elseif _ItemDataLogic.itemData[storageData.originalId] ~= nil then
+			local grade = _ItemDataLogic.itemData[storageData.originalId].grade
+			weaponItem = self:GetOrCreateEgg(uniqueKey)
+			weaponItem.NewMergeWeaponItem:SetEggItem(storageData)	
+			
+		else
+		end
+		return weaponItem
+	end
+
+	method Entity GetOrCreateWeaponItem(string uniqueKey)
+		-- 무기 아이템 엔티티를 가져오거나 새로 생성
+		local item = self.mergeItems[uniqueKey]
+		if isvalid(item) == false then
+			item =  _SpawnService:SpawnByModelId("model://4c7c555b-ec87-4191-b550-d3b7eaf5bd02","weapon",Vector3.zero,self.parent)
+			self.mergeItems[uniqueKey] = item
+		end
+		return item
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 시작 시 초기화 (현재 비어있음)
+	end
+
+	method Entity GetOrCreateEgg(string id)
+		-- 알 아이템 엔티티를 가져오거나 새로 생성
+		local item = self.eggItems[id]
+		if isvalid(item) == false then
+			item =  _SpawnService:SpawnByModelId("model://baa891ef-e4d8-47d7-81ed-8197b10fa860","egg",Vector3.zero,self.parent)
+			self.eggItems[id] = item
+		end
+		return item
+	end
+
+	@ExecSpace("Server")
+	method void HatchEgg(string uniqueKey, Vector3 pos, Entity player)
+		-- 알을 부화시켜 새로운 무기 아이템 생성
+		local playerStorage = player.PlayerStorageComponent
+		local storage = playerStorage.storage[uniqueKey]
+		
+		if storage == nil then
+			return
+		end
+		local originalId = storage.originalId
+		
+		if playerStorage.storage[originalId].count == 0 then
+			return
+		end
+		
+		local hatchResult = self:PickEggHatchResult(originalId)
+		if hatchResult == nil then
+			return
+		end
+		
+		local fixedLevel = hatchResult.level
+		local id = hatchResult.itemId
+		
+		local newUniqueKey = _GameUtil:CreateGUID()
+		
+		local exp = _ItemDataLogic:GetWeaponMaxExp(fixedLevel)
+		
+		local success = playerStorage:AddItem(newUniqueKey,1,id,fixedLevel,pos.x,pos.y,exp,false,false,0,true,"FromEgg",uniqueKey)
+		if success == false then
+			return
+		end
+		playerStorage:RequestRemoveItemFromServer(originalId, uniqueKey, player.PlayerComponent.UserId,true,"Hatch")
+		
+		self:HatchSuccess(newUniqueKey,pos,player.PlayerComponent.UserId)
+		
+		player:SendEvent(DailyMissionUpdateEvent("hatchSoulEgg", originalId, 1))
+	end
+
+	@ExecSpace("ServerOnly")
+	method table PickEggHatchResult(string originalId)
+		-- 알 부화 결과로 나올 무기와 레벨 결정
+		
+		local data = _ItemDataLogic.itemData[originalId]
+		
+		local tempTable = {}
+		local star = data.star
+		local playerEntity = _UserService.LocalPlayer
+		local category = "weapon"
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, 100)
+		
+		
+		local fixedLevel = _EggGatchaLogic:RequestEggLevel(data.id)
+		if fixedLevel < 0 then
+			return nil
+		end
+		local grade = _EggGatchaLogic:EggLevelToGrade(fixedLevel)
+		
+		
+		for key, value in pairs(_ItemDataLogic.equipmentData) do
+			if value.grade == grade and _UtilLogic:Contains(value.category, category) then
+				table.insert(tempTable, value)
+			end
+		end
+		
+		rand = _UtilLogic:RandomIntegerRange(1, #tempTable)
+		
+		local id = tempTable[rand].id
+		
+		
+		if _UtilLogic:IsNilorEmptyString(data.fixedItem) == false then
+			id = data.fixedItem
+		end
+		
+		return { itemId = id, level = fixedLevel }
+	end
+
+	@ExecSpace("Server")
+	method string Merge(string itemKey1, string itemKey2, Entity playerEntity, boolean autoMerge, Vector2 pos)
+		-- 두 아이템을 머지하여 새로운 아이템 생성
+		local playerStorage = playerEntity.PlayerStorageComponent
+		local userId = playerEntity.PlayerComponent.UserId 
+		local storageItem1 = playerStorage.storage[itemKey1]
+		local storageItem2 = playerStorage.storage[itemKey2]
+		
+		if storageItem1 == nil then return end
+		if storageItem2 == nil then return end
+			
+		local itemId1, itemId2 = storageItem1.originalId, storageItem2.originalId
+		
+		local itemData1, itemData2 = _ItemDataLogic.equipmentData[itemId1], _ItemDataLogic.equipmentData[itemId2] 
+		
+		local posX = playerStorage.storage[itemKey2].posX
+		local posY = playerStorage.storage[itemKey2].posY
+		
+		if itemData2.mergeLevel > itemData1.mergeLevel then
+			itemData1 = _ItemDataLogic.equipmentData[itemId2]
+			itemData2 = _ItemDataLogic.equipmentData[itemId1] 
+		end
+		
+		if itemData1.mergeId ~= itemData2.mergeId then
+			self:MergeFail("invalid",userId)
+			return ""
+		end
+		
+		local mergeExp1 = playerStorage.storage[itemKey1].mergeExp
+		local mergeExp2 = playerStorage.storage[itemKey2].mergeExp
+		
+		local mergeLv1 = playerStorage.storage[itemKey1].level
+		local mergeLv2 = playerStorage.storage[itemKey2].level
+		
+		local equipped1 = playerStorage.storage[itemKey1].equippedSlotNum 
+		local equipped2 = playerStorage.storage[itemKey2].equippedSlotNum
+		
+		if mergeExp1 == nil or mergeExp1 == 0 then
+			mergeExp1 = _ItemDataLogic:GetWeaponMaxExp(mergeLv1 -1)
+		end
+		if mergeExp2 == nil or mergeExp2 == 0 then
+			mergeExp2 = _ItemDataLogic:GetWeaponMaxExp(mergeLv2 - 1)
+		end
+		
+		local totalMergeExp = mergeExp1 + mergeExp2
+		
+		
+		local nextEquipment = itemData1.nextEquipment
+		
+		local nextMergeSuccuess = false
+		
+		local level = math.max(playerStorage.storage[itemKey1].level,playerStorage.storage[itemKey2].level)
+		local baseLevel = level
+		local maxLevel = _GameConfig:GetConfig().MAX_ITEM_LEVEL
+		
+		if level >= maxLevel then
+			self:MergeFail("maxlv",userId)
+			return
+		end 
+		
+		
+		while(true) do
+			if totalMergeExp == _ItemDataLogic:GetWeaponMaxExp(level) then
+				break
+			elseif totalMergeExp > _ItemDataLogic:GetWeaponMaxExp(level) then
+				if level >= maxLevel then			
+					level = maxLevel
+					totalMergeExp = _ItemDataLogic:GetWeaponMaxExp(maxLevel - 1) + 1
+					break
+				end 
+			else
+				level -= 1		
+				break
+			end
+			
+			level = level + 1
+		end
+		
+		if level < baseLevel then
+			self:MergeFail("invalid",userId)
+			return ""
+		end
+		
+		if level >= itemData1.maxLevel + 1 then
+			nextMergeSuccuess = true	
+			nextEquipment = itemData1.nextEquipment
+			playerEntity:SendEvent(NewbieMissionUpdateEvent("weaponGradeUp", _ItemDataLogic.equipmentData[nextEquipment].grade, 1))
+			
+			if equipped1 > 0 or equipped2 > 0 then
+				playerEntity:SendEvent(NewbieMissionUpdateEvent("equipWeapon", _ItemDataLogic.equipmentData[nextEquipment].grade, 1))
+			end
+		else
+			nextEquipment = itemData1.id
+		end
+		
+		local equipNum = playerStorage.storage[itemKey1].equippedSlotNum 
+		if equipNum == 0 then
+			equipNum = playerStorage.storage[itemKey2].equippedSlotNum 
+		end
+		
+		local lock = false
+		if playerStorage.storage[itemKey1].lock or playerStorage.storage[itemKey2].lock then
+			lock = true
+		end 
+		
+		if autoMerge == false then
+			playerStorage:UnEquip(itemKey1) 
+			playerStorage:UnEquip(itemKey2)
+		end
+		local guid = _GameUtil:CreateGUID()	
+		playerStorage:RequestRemoveItemFromServer(itemId1,itemKey1,userId,not autoMerge,"Merge")
+		playerStorage:RequestRemoveItemFromServer(itemId2,itemKey2,userId,not autoMerge,"Merge")
+		
+		playerStorage:AddItem(guid, 1, nextEquipment, level, posX, posY, totalMergeExp, true,lock,equipNum,not autoMerge,"FromMerge",itemKey1)
+		
+		if autoMerge == false then
+			self:MergeSuccess(guid, nextMergeSuccuess, nextEquipment,pos, userId)
+		end
+		playerEntity:SendEvent(NewbieMissionUpdateEvent("mergeWeapon", "0", 1))
+		playerEntity:SendEvent(DailyMissionUpdateEvent("mergeWeapon", "0", 1))
+		
+		return guid
+	end
+
+	@ExecSpace("Client")
+	method void MergeSuccess(string uniqueKey, boolean nextMerge, string originalId, Vector2 pos)
+		-- 머지 성공 시 이팩트와 사운드 재생
+		_UIGroupManager.uiMergePopup:SetUIInputEnable(true)
+		
+		if nextMerge then
+			_UIGroupManager.uiMergePopup.resultPopup:Open(uniqueKey,nil)
+		end
+		
+		local item = _ItemDataLogic:GetItemData(originalId)
+		
+		if item ~= nil then
+			local effect = _WeaponSpecLogic:GetMergeEffect(item.grade)	
+			_UIEffectLogic:PlayEffect(effect,pos:ToVector3(),Vector3.one)	
+			_SoundService:PlaySound("246bd3394158471d861ddabbe12ba291",1)
+		else
+		end
+		
+		
+		_NewMergeLogic:SendEvent(OnSelectedNewMergeItem("weapon",uniqueKey,true,originalId,false))
+		_NewMergeLogic:SendEvent(OnSelectedNewMergeItem("","",false,"",false))
+	end
+
+	@ExecSpace("Client")
+	method void HatchSuccess(string uniqueKey, Vector3 pos)
+		-- 알 부화 성공 이벤트 발송
+		self:SendEvent(OnHatchSuccess(uniqueKey)) 
+		_UserService.LocalPlayer:SendEvent(OnHatchSuccess(uniqueKey))
+		
+		
+		
+	end
+
+	method Vector3 ApplyPosition(Entity player, string uniqueKey, Vector3 pos, boolean sync)
+		-- 아이템 위치를 그리드에 맞춰 조정하고 동기화
+		local item = player.PlayerStorageComponent.storage[uniqueKey]
+		if item == nil then
+			return
+		end
+		
+		local itemData = _ItemDataLogic.equipmentData[item.originalId]
+		if itemData == nil then
+			itemData = _ItemDataLogic.itemData[item.originalId]
+		end
+		
+		
+		local snapPos = self:ConvertSnapPosition(pos)
+		player.PlayerStorageComponent:SetPos(uniqueKey,snapPos,sync)
+		return snapPos
+	end
+
+	@ExecSpace("Server")
+	method void SetMergeItemPosition(Entity player, string uniqueKey, Vector3 pos)
+		-- 서버에서 아이템 위치 설정
+		self:ApplyPosition(player,uniqueKey,pos,true)
+	end
+
+	method Vector3 ConvertSnapPosition(Vector3 pos)
+		-- 좌표를 그리드에 맞춰 스냅 조정
+		local x = math.min(self.gridWidth, math.max(0,math.floor(pos.x + 0.5)))
+		local y = math.min(self.gridHeight, math.max(0,math.floor(pos.y + 0.5)))
+		return Vector3(x,y,0)
+	end
+
+	method void SetGridPosition(string uniqueKey, integer x, integer y, boolean apply, boolean setPos)
+		-- 아이템을 그리드 상의 지정된 위치에 배치
+		---@type Entity
+		local item = self.mergeItems[uniqueKey]
+		
+		if isvalid(item) == false then
+			item = self.eggItems[uniqueKey]
+		end
+		
+		if isvalid(item) == false then
+			return
+		end
+		if item.NewMergeWeaponItem.x == x and item.NewMergeWeaponItem.y == y then
+			item.TransformComponent.Position = Vector3(x,y,0)
+			return
+		end	
+		
+		local key = self:GetGridKey(x,y)
+		if apply == false then
+			self.itemGrid[key] = item
+			item.NewMergeWeaponItem.x = x	
+			item.NewMergeWeaponItem.y = y
+			item.TransformComponent.Position = self:ConvertSnapPosition(Vector3(x,y,0))
+			return
+		end
+		
+		
+		local originPos = self:ConvertSnapPosition(Vector3(item.NewMergeWeaponItem.x,item.NewMergeWeaponItem.y,0))
+		local originKey = self:GetGridKey(originPos.x,originPos.y) 
+		local originItem = self.itemGrid[key]
+		self.itemGrid[originKey] = nil
+		
+		self.itemGrid[key] = item
+		
+		local pos = Vector3(x,y,0)
+		self.itemGrid[key].TransformComponent.Position = pos 
+		item.NewMergeWeaponItem.x = x	
+		item.NewMergeWeaponItem.y = y
+		
+		self:ApplyPosition(_UserService.LocalPlayer,uniqueKey,pos,apply)
+	end
+
+	method string GetGridKey(integer x, integer y)
+		-- 그리드 좌표를 문자열 키로 변환
+		x = math.min(self.gridWidth, math.max(0,x))
+		y = math.min(self.gridHeight, math.max(0,y))
+		return string.format("%d,%d",x,y)
+	end
+
+	method Vector3 GetEnableWeaponSlot(string category, boolean unEquip)
+		-- 사용 가능한 무기 슬롯 위치 찾기
+		if unEquip then
+			for y = 0, self.gridHeight do
+					for x = 0, 5 do
+						if y == 0 and x < _UserService.LocalPlayer.PlayerCharacteristicData.canEquipCount then
+							
+						else
+							if self.itemGrid[self:GetGridKey(x,y)] == nil then
+								return Vector3(x,y,0)
+							end
+						end
+					end
+			end
+		end
+		
+		for i = 0, _UserService.LocalPlayer.PlayerCharacteristicData.canEquipCount - 1 do
+				local key = self:GetGridKey(i,0)
+				if self.itemGrid[key] == nil then
+					return Vector3(i,0,0)
+				end
+			end
+		return Vector3(-1,-1,0)
+	end
+
+	@ExecSpace("Server")
+	method void AutoMerge(string uniqueKey, Vector2 pos)
+		-- 자동 머지 요청 처리
+		self:AutoMergeBySenderID(senderUserId,uniqueKey,pos,false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestAutoMerge(string uniqueKey)
+		-- 클라이언트에서 자동 머지 요청 및 애니메이션
+		local player = _UserService.LocalPlayer
+		
+		local storage = player.PlayerStorageComponent.storage[uniqueKey]
+		if storage == nil then
+			return
+		end
+		
+		local itemData = _ItemDataLogic.equipmentData[storage.originalId]
+		if itemData == nil then
+			return
+		end
+		if _UtilLogic:IsNilorEmptyString(itemData.nextEquipment) then
+			return
+		end
+			
+		---@type Entity
+		local target = self.mergeItems[uniqueKey]
+		
+		if isvalid(target) == false then
+			return
+		end
+		
+		
+		local to = target.TransformComponent.Position:ToVector2()
+		local merge = {}
+		for k,v in pairs(self.mergeItems) do
+			---@type Entity
+			local entity = v
+			if isvalid(entity) then
+				if uniqueKey ~= k then
+					local data = entity.NewMergeWeaponItem.itemData
+					if data ~= nil then
+						if data.mergeId == itemData.mergeId and _UtilLogic:IsNilorEmptyString(data.nextEquipment) == false then
+							table.insert(merge,v)					
+						end
+					end
+				end
+			end
+		end
+		for k,v in pairs(merge) do
+			---@type Entity
+			local entity = v
+			local pos = entity.TransformComponent.Position:Clone()	
+			v.InteractionComponent.Enable = false
+			local tween = _TweenLogic:MoveTo(entity,to,0.1,EaseType.SineEaseIn)
+			tween:SetOnEndCallback(function()
+					if isvalid(entity) then
+						entity.TransformComponent.Position = pos
+					end 
+			end)
+		end
+		_UserService.LocalPlayer.CameraComponent:ShakeCamera(0.2,0.2)
+	end
+
+	method void ToggleCamera()
+		-- 카메라 전환 (머지 카메라와 플레이어 카메라 간)
+		if self._T.cameraSwitch == nil then
+			self._T.cameraSwitch = false
+		end
+		self._T.cameraSwitch = not self._T.cameraSwitch
+		
+		if self._T.cameraSwitch then
+			_CameraService:SwitchCameraTo(_NewMergeLogic.camera.CameraComponent)
+		else
+			_CameraService:SwitchCameraTo(_UserService.LocalPlayer.CameraComponent)	
+		end 
+		
+	end
+
+	@ExecSpace("Client")
+	method void OnEndAutoMerge(boolean success, string uniqueKey, boolean nextMergeSuccuess, string nextEquipment)
+		-- 자동 머지 완료 후 처리
+		_TimerService:SetTimerOnce(function() 
+			self:SendEvent(SuccessAutoMergeEvent(success,uniqueKey))
+		self:MergeSuccess(uniqueKey, nextMergeSuccuess, nextEquipment,Vector2.zero)
+		end,0.2)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsAutoMergeEnable(string uniqueKey)
+		-- 자동 머지 가능 여부 확인
+		local player = _UserService.LocalPlayer
+		
+		if isvalid(player) == false then
+			return false
+		end
+		local storage = player.PlayerStorageComponent.storage[uniqueKey]
+		if storage == nil then
+			return false
+		end
+		
+		local itemData = _ItemDataLogic.equipmentData[storage.originalId]
+		if itemData == nil then
+			return false
+		end
+		
+		local originalId = storage.originalId
+		
+		local merge = {}
+		for k,v in pairs(player.PlayerStorageComponent.storage) do
+			if uniqueKey ~= k then
+				local data = _ItemDataLogic.equipmentData[v.originalId]
+				if data ~= nil then
+					if data.mergeId == itemData.mergeId then
+						if v.lock == nil or v.lock == false then
+							if v.level < _GameConfig:GetConfig().MAX_ITEM_LEVEL then 
+								table.insert(merge,k)
+							end
+						end
+					end
+				end
+			end
+		end
+		return #merge > 0
+	end
+
+	@ExecSpace("Client")
+	method void MergeFail(string reason)
+		-- 머지 실패 시 에러 메시지 표시
+		_UIGroupManager.uiMergePopup:SetUIInputEnable(true)
+		if reason == "maxlv" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast56"))
+			return
+		end
+		if reason == "invalid" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast55"))
+			return
+		end
+	end
+
+	method boolean IsEnableAutoMerge(string uniqueKey)
+		-- 자동 머지 가능성 검사 (단순 버전)
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage
+		
+		if storage[uniqueKey] == nil then
+			return false
+		end
+		local itemData = _ItemDataLogic.equipmentData[storage[uniqueKey].originalId]
+		if itemData == nil then	
+			return false
+		end
+		
+		local originalId = storage.originalId
+		
+		local merge = {}
+		for k,v in pairs(storage) do
+			if uniqueKey ~= k then
+				local data = _ItemDataLogic.equipmentData[v.originalId]
+				if data ~= nil then
+					if data.mergeId == itemData.mergeId then
+						if v.lock == nil or v.lock == false then
+							return true
+						end
+					end
+				end
+			end
+		end
+		return false
+	end
+
+	@ExecSpace("Server")
+	method void AllAutoMerge()
+		-- 모든 가능한 무기들을 자동으로 머지
+		local ppsn = senderUserId
+		
+		local player = _UserService:GetUserEntityByUserId(ppsn)
+		if isvalid(player) == false then
+			self:OnResultAllAutoMerge(false,nil,ppsn)
+			return
+		end
+		local storage = player.PlayerStorageComponent
+		local allWeapon = storage:GetAllWeapon()
+		local weapon = {}
+		
+		for k,v in pairs(allWeapon) do
+			if v.level < _GameConfig:GetConfig().MAX_ITEM_LEVEL then 
+				table.insert(weapon,v)
+			end
+		end
+		
+		table.sort(weapon,function(a,b) 
+			if a.level == b.level then
+				if a.mergeExp == b.mergeExp then
+					return a.uniqueKey > b.uniqueKey
+				end
+				return a.mergeExp > b.mergeExp
+			end
+			return a.level > b.level
+		 end)
+		
+		local unlockWeapon  = {}
+		for k,v in pairs(weapon) do
+			if v.lock == false then
+				local itemData = _ItemDataLogic:GetItemData(v.originalId)
+				if itemData ~= nil then
+					if unlockWeapon[itemData.mergeGroup] == nil then
+						unlockWeapon[itemData.mergeGroup] = v.uniqueKey
+					end
+				end
+			end
+		end
+		
+		local bulk = {}
+		local mergeResult = {}
+		
+		for k,v in pairs(unlockWeapon) do
+			local result = self:AutoMergeBySenderID(senderUserId,v,Vector2.zero,true)
+			for k,v in pairs(result.merge) do
+				table.insert(bulk,v)
+			end
+			if result.nextMergeSuccess then
+				table.insert(mergeResult,bulk[#bulk])
+			end
+		end
+		
+		
+		if #bulk == 0 then
+			self:OnResultAllAutoMerge(false,mergeResult,ppsn)
+			return
+		end
+		player.PlayerStorageComponent:SyncBulk(bulk)
+		self:OnResultAllAutoMerge(true,mergeResult,ppsn)
+	end
+
+	@ExecSpace("Client")
+	method void OnResultAllAutoMerge(boolean success, table result)
+		-- 전체 자동 머지 결과 처리 및 UI 업데이트
+		_UIGroupManager.uiMergePopup:SetUIInputEnable(true)
+		_UIGroupManager.uiMergePopup.requestSyncAll = false
+		if success then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast54"))
+		else
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast53"))
+			return
+		end
+		
+		if result ~= nil then
+			local resultCount = #result
+			if resultCount > 0 then
+			
+				local resultPopup = nil
+				resultPopup = function(index)
+					
+					 _UIGroupManager.uiMergePopup.resultPopup:Open(result[index],function() 
+						
+						if index < resultCount then
+							resultPopup(index + 1)
+						else
+							
+						end
+					end)
+				end
+				resultPopup(1)
+				
+			end
+		end
+		
+		_UIGroupManager.uiMergePopup:RefreshEquipSlot()
+	end
+
+	@ExecSpace("ServerOnly")
+	method table AutoMergeBySenderID(string ppsn, string uniqueKey, Vector2 pos, boolean all)
+		-- 지정된 사용자의 아이템을 자동 머지 수행
+		
+		local player = _UserService:GetUserEntityByUserId(ppsn)
+		if isvalid(player) == false then
+			self:OnEndAutoMerge(false,"",false,"",ppsn)
+			return nil
+		end
+		
+		local storage = player.PlayerStorageComponent.storage[uniqueKey]
+		if storage == nil then
+			self:OnEndAutoMerge(false,"",false,"",ppsn)
+			return nil
+		end
+		
+		local itemData = _ItemDataLogic.equipmentData[storage.originalId]
+		if itemData == nil then
+			self:OnEndAutoMerge(false,"",false,"",ppsn)
+			return nil
+		end
+		
+		local originalId = storage.originalId
+		
+		local merge = {}
+		for k,v in pairs(player.PlayerStorageComponent.storage) do
+			if uniqueKey ~= k then
+				local data = _ItemDataLogic.equipmentData[v.originalId]
+				if data ~= nil then
+					if data.mergeId == itemData.mergeId then
+						if v.lock == nil or v.lock == false then
+							if v.level < _GameConfig:GetConfig().MAX_ITEM_LEVEL then
+								table.insert(merge,k)
+							end
+						end
+					end
+				end
+			end
+		end
+		local currentUniqueKey = uniqueKey
+		local autoMergeSuccess = false
+		for k,v in pairs(merge) do	
+			local newKey = self:Merge(v,currentUniqueKey,player,true,pos)
+			if _UtilLogic:IsNilorEmptyString(newKey) == false then
+				currentUniqueKey = newKey
+				autoMergeSuccess = true
+			end
+		end
+		local nextMergeSuccess = false
+		local nextEquipment = ""
+		if autoMergeSuccess then
+			nextMergeSuccess = originalId ~= player.PlayerStorageComponent.storage[currentUniqueKey].originalId
+			if nextMergeSuccess then
+				nextEquipment = player.PlayerStorageComponent.storage[currentUniqueKey].originalId
+			end
+			
+			
+			table.insert(merge,uniqueKey)
+			table.insert(merge,currentUniqueKey)
+			if all == false and #merge > 0 then
+				player.PlayerStorageComponent:SyncBulk(merge)
+			end
+		end
+		if all == false then
+			self:OnEndAutoMerge(autoMergeSuccess,currentUniqueKey,nextMergeSuccess,nextEquipment,player.PlayerComponent.UserId)
+		end
+		return {merge = merge,nextMergeSuccess = nextMergeSuccess}
+	end
+
+end

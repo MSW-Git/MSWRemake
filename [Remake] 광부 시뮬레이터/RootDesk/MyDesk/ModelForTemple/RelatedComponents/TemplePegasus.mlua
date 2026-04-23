@@ -1,0 +1,128 @@
+@Component
+script TemplePegasus extends InteractionComponent
+
+	@Sync
+	property Entity guideImage = nil
+
+	@Sync
+	property number coolDown = 0
+
+	method void OnBeginPlay()
+		-- 서버 시작 시 상호작용 가능한 가이드 이미지를 초기화
+		if self:IsServer() then
+			local guideImage = self.Entity:GetChildByName("GuideImage")
+			self.guideImage = guideImage
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnInteractionEvent()
+		-- 페가수스 상호작용 시 인벤토리 아이템 체크및 서버 로직 처리
+		-- 보유한 아이템이 없다면 예외처리
+		local havingItemCount = 0
+		for i=1, #_UserService.LocalPlayer.PlayerBackpack.storageList do
+			havingItemCount = havingItemCount + _UserService.LocalPlayer.PlayerBackpack.storageList[i]
+		end
+		if havingItemCount < 1 then
+			_UIToast:ShowMessage(_LocalizationService:GetText("/ui/ShopGroup/Shop/Panel/HaveNoItemMessage"))
+			return
+		end
+		
+		
+		-- 건설9 : 신전 내에서 페가수스를 만날 수 있게 됩니다. 이용시 인벤토리를 비우고 보유했던 가치만큼의 골드를 얻습니다. (탐험당 한 번만 이용 가능)
+		local constuctionLv = _UserService.LocalPlayer.PlayerConstruction.haveItems[8] 
+		if constuctionLv > 1 then
+			self:OnInteractionEventOnServer(_UserService.LocalPlayer)
+		end
+		
+		
+		-- 사운드
+		_SoundService:PlaySound("fd695662293742c19112c7ef79eff0f2", 0.7)
+		
+		-- 엔티티 제거
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("Server")
+	method void OnInteractionEventOnServer(Entity player)
+		-- 서버에서 페가수스 상호작용 처리: 쿨다운 및 사용 횟수 체크후 아이템 판매
+		-- 검증
+		if self.coolDown > 0 then
+			return
+		end
+		------------------------------------------------------------
+		self.coolDown = 3
+		local setDownCool = function()
+			self.coolDown = 0
+		end
+		_TimerService:SetTimerOnce(setDownCool, 3)
+		
+		local constuctionLv = player.PlayerConstruction.haveItems[8] 
+		if constuctionLv >= 2 and player.PlayerIngameData.Construct_UsedPegasus < 1 then
+			log("조건 통과")
+			player.PlayerData:SellAllItems()
+			player.PlayerIngameData.Construct_UsedPegasus = player.PlayerIngameData.Construct_UsedPegasus + 1
+			
+			-- _CustomLocalizationLogic:SendLocalizedToastMessageFromServer("페가수스를 이용해 인벤토리의 아이템을 팔아 골드를 얻었습니다!", player.OwnerId)
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_UsePegasus", player.PlayerComponent.UserId) 
+		else 
+			-- _CustomLocalizationLogic:SendLocalizedToastMessageFromServer("페가수스를 이용할 수 없는 상태입니다!", player.OwnerId)
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_UsedPegasus", player.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 엔티티 상호작용 이벤트 핸들러: OnInteractionEvent 메소드 호출
+		self:OnInteractionEvent()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 상호작용 영역 진입 시 E키 가이드 UI를 생성하고 표시
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			local spawnPos = Vector3(0, 0.5, 0)
+			local guideUI = _SpawnService:SpawnByModelId("model://85ad2718-739a-4bf9-aee4-f439cda53303", "Guide_Key", spawnPos, self.Entity)
+			guideUI:GetChildByName("UIText").TextComponent.Text = _LocalizationService:GetText("Use")
+			
+			guideUI:GetChildByName("icon_key_E").UITransformComponent.WorldPosition.x = guideUI:GetChildByName("icon_key_E").UITransformComponent.WorldPosition.x + 0.2
+			guideUI:GetChildByName("UIText").UITransformComponent.RectSize = Vector2(420, 100)
+		
+			if InteractionEntity ~= _UserService.LocalPlayer then
+				guideUI.Enable = false
+			else 
+				guideUI.Enable = true
+			end
+		else
+			guideKeyWorldUI.Enable = true
+		end
+		
+		self.guideImage.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 상호작용 영역 떠날 때 E키 가이드 UI를 비활성화하고 기본 가이드 이미지 표시
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			log("가이드 키가 없습니다.")
+			return
+		end
+		
+		guideKeyWorldUI.Enable = false
+		self.guideImage.Enable = true
+	end
+
+end

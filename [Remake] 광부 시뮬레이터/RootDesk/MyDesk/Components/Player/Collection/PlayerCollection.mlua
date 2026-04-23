@@ -1,0 +1,115 @@
+@Component
+script PlayerCollection extends Component
+
+	property SyncTable<number> dropItems
+
+	method void OnBeginPlay()
+		-- 컴렉션 컴포넌트 초기화 및 드롭 아이템 초기 설정
+		self._T.tableList = {dropItems = self.dropItems}
+		self._T.tableType = {dropItems = "number"}
+		
+		local dropItemTable = _DataService:GetTable("DropItem")
+		for i=1, dropItemTable:GetRowCount() do
+			self.dropItems[i] = 0
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RecordData(number idx, number amount)
+		-- 드롭 아이템 획득 데이터 기록 및 클라이언트 동기화
+		self.dropItems[idx] = self.dropItems[idx] + amount
+		self:SetTableElementClient("dropItems", idx, tostring(self.dropItems[idx]), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 전송된 테이블 데이터를 클라이언트에 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 전송된 특정 테이블 요소를 클라이언트에 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트의 테이블을 초기화하여 모든 값을 기본값으로 설정
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string tableName)
+		-- 테이블 변경 시 관련 UI 갱신 처리
+		if tableName == "dropItems" then
+			local collectionUI = _EntityService:GetEntity("ca878eef-354f-475d-8f7e-62ebb4b2e661")
+			collectionUI.CollectionUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllProperty()
+		-- 모든 드롭 아이템 컴렉션 데이터 초기화
+		local dropItemTable = _DataService:GetTable("DropItem")
+		local count = dropItemTable:GetRowCount()
+		for i=1, count do
+			self.dropItems[i] = 0
+		end
+		
+		self:ClearTableClient("dropItems", "0", count, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadedUserData(string dataString)
+		-- 저장된 유저 데이터를 로드하여 컴렉션 상태 복원
+		local itemKindNum = _DataService:GetRowCount("DropItem")
+		
+		if isvalid(dataString) == false then
+			for i=1, itemKindNum do
+				self.dropItems[i] = 0
+			end
+			return
+		end
+		
+		
+		local data = _UtilLogic:StringToTable(dataString)
+		for i=1, itemKindNum do
+			if data[i] == nil or data[i] == "" then
+				self.dropItems[i] = 0
+			else
+				self.dropItems[i] = tonumber(data[i])
+			end
+		end
+		
+		self:SetTableClient("dropItems", _UtilLogic:TableToString(self.dropItems), self.Entity.OwnerId)
+	end
+
+end

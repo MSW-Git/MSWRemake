@@ -1,0 +1,104 @@
+@Component
+script C10001_Slime_Skill extends Component
+
+	property number skillAnimLength = 0.8
+
+	property Entity projectile = nil
+
+	property string attackProjectileRUID = "ef4a4ae4c7af46f6a2d2df3df65881c3"
+
+	property string hitEffectRUID = "762dc7807430472ebfa9cb87f291edcb"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength  * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		
+		
+		-- projectile Spwan
+		local function ProjectileSpawn()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self.projectile = _UnitSetLogic_New:GetProjectileEntity(unitInfo.OwnerId, "Skill")
+				self.projectile:AddComponent(C10001_Slime_SkillprojectileInfo)
+				
+				self.projectile.SpriteRendererComponent.SpriteRUID = self.attackProjectileRUID
+				self.projectile.TransformComponent.Scale = unitInfo.spriteRenderer.TransformComponent.Scale
+				self.projectile.SpriteRendererComponent.FlipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+				self.projectile.C10001_Slime_SkillprojectileInfo:SetProjectile(self.Entity, targetUnit, 0.8, 2, 0)
+				_GeneralDirectorLogic:SetEffectAlpha(self.projectile, unitInfo.OwnerId)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(ProjectileSpawn, 0.3 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0052", self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C10001_Active_SDamage_Magic[unitInfo.level]
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+			
+			-- 기절 추가 해야댐
+			local stunTime = tonumber(_S01_SkillDescLogic.C10001_Active_StunTime_Int[unitInfo.level])
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0004", stunTime)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+end

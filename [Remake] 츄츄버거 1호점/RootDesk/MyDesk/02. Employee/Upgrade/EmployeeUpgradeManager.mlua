@@ -1,0 +1,400 @@
+@Component
+script EmployeeUpgradeManager extends Component
+
+	property table EmployeesWorkTimer = {}
+
+	property table EmployeeWorkStatus = {}
+
+	property integer TickForGainPlaceExp = 0
+
+	property string ClickUpgradeEmployeeID = ""
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 직원 업그레이드 관리자를 초기화하는 함수
+		self.TickForGainPlaceExp = tonumber(_DataService:GetTable("GameConfigData"):FindRow("ConfigType","TickForGainPlaceExp"):GetItem("ConfigValue"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapLeave(Entity leftMap)
+		-- 맵을 떠날 때 업그레이드 관련 데이터를 정리하는 함수
+		if _UtilLogic:Contains(leftMap.Name, "Lobby") then 
+		
+			for _,timerID in pairs(self.EmployeesWorkTimer) do
+				_TimerService:ClearTimer(timerID)
+			end 
+			
+			
+			table.clear(self.EmployeeWorkStatus)
+			table.clear(self.EmployeesWorkTimer)
+				
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SelectEmployee(string employeeId)
+		-- 업그레이드할 직원을 선택하는 함수
+		self.ClickUpgradeEmployeeID = employeeId
+	end
+
+	@ExecSpace("Server")
+	method void RequestUpgrade(string statType, integer exp, integer potionCount)
+		-- 직원 업그레이드를 요청하는 함수
+		self:Upgrade(statType,exp*potionCount,"EmployeeUpgrade",self.ClickUpgradeEmployeeID)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Upgrade(string statType, integer potionExp, string source, string targetEmployeeID)
+		-- 직원의 능력을 업그레이드하는 함수
+		local player = self.Entity
+		
+		local data = _EmployeeService:GetData(targetEmployeeID) 
+		local dataTable = data:ConvertToTable()
+		
+		local detail = player.EmployeeManager:GetEmployeeDetail(targetEmployeeID)
+		local detailTable = detail:ConvertToTable()
+		local curLevel = detailTable[statType.."Level"]
+		local maxLevel = detailTable["MaxLevel"]
+		
+		local locationData =player.EmployeeManager:GetEmployeeLocation(targetEmployeeID)
+		
+		if potionExp <= 0 then
+			return 
+		end
+		
+		
+		if curLevel >= maxLevel then 
+			if source ~= "Work" then
+				self:ToastMsg("EmployeeUpgradeMsg_MaxLevel", player.PlayerComponent.UserId)
+			end
+			return 
+		end 
+		
+		local expTable = _EmployeeUpgradeService:CalcNextUpgradeData(statType,targetEmployeeID,potionExp,player)
+		local changeExp = expTable[1]
+		local nextLevel = expTable[2]
+		local changeLevel = expTable[3]
+		
+		if changeLevel ~= curLevel then 
+			
+			if changeLevel == maxLevel then
+				
+				if source ~= "Work" then
+					local refundTb = self:RefundExtraExp(data.Type, changeExp)
+					self:SendTutorialEventTriggerAfterUpgrade(#table.keys(refundTb) > 0, player.PlayerComponent.UserId) 
+				end
+				
+				changeExp = 0		
+			end
+			player.EmployeeManager:UpdateDetailData(targetEmployeeID,statType.."Level",tostring(changeLevel))
+			player.EmployeeManager:UpdateDetailData(targetEmployeeID,statType.."Exp",changeExp)
+			self:UpgradeClient(targetEmployeeID,statType,tostring(changeLevel),player.PlayerComponent.UserId)
+			
+			local chuchuLevel = detail:ReturnChuchuTotalLevel()
+			if data.Type == _EmployeeTypeEnum.Cook then
+				local bestLevel = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.CookEmployeeBestLevel)
+				if bestLevel < chuchuLevel then
+					player.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.CookEmployeeBestLevel, chuchuLevel)
+				end
+			elseif data.Type == _EmployeeTypeEnum.Serving then
+				local bestLevel = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.ServingEmployeeBestLevel)
+				if bestLevel < chuchuLevel then
+					player.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.ServingEmployeeBestLevel, chuchuLevel)
+				end
+			end
+			
+			local tutProgress = player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmployeeBestLevel)
+			if tutProgress < chuchuLevel then
+				player.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.EmployeeBestLevel, chuchuLevel)
+			end
+			
+			
+			local chuchuLevelSum = 0
+			local targetLevelSum = 0
+			for idx, detail in pairs(player.EmployeeManager.EmployeeDetailTable) do
+				---@type EmployeeDetailData
+				local detailData = detail
+				local empData = _EmployeeService:GetData(detailData.Id)
+				local detailChuchuLevel = detailData:ReturnChuchuTotalLevel()
+				chuchuLevelSum = chuchuLevelSum + detailChuchuLevel
+				if detailChuchuLevel >= _GetConfigDataLogic:GetConfigNumDataByKey("AchievementEmployeeTargetLevel") then
+					targetLevelSum += 1
+				end
+			end
+			player.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.HaveEmployeeLevelSum, chuchuLevelSum)
+			player.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.EmployeeTargetLevelCount, targetLevelSum)
+			
+			player.PlayerLog:EmployeeUpgradeFlow(detail,source,locationData.Location,data)
+		
+		
+			if source == "EmployeeUpgrade" then 
+				self:UpgradeEffectProduction("levelUp",player.PlayerComponent.UserId)
+			end
+		
+		else 
+			player.EmployeeManager:UpdateDetailData(targetEmployeeID,statType.."Exp",changeExp)
+		
+			if source == "EmployeeUpgrade" then 
+				self:UpgradeEffectProduction("ExpUp",player.PlayerComponent.UserId)
+			end
+			
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpgradeClient(string employeeId, string statType, string changeLevel)
+		-- 클라이언트에서 직원 업그레이드 결과를 처리하는 함수
+		
+		local data = _EmployeeService:GetData(employeeId):ConvertToTable()
+		local name = _GetLocalizationTextLogic:GetText(data["NameKey"]) 
+		local statName = _GetLocalizationTextLogic:GetText(statType)
+		
+		_ReportMessageMaker:RequestAddToReportQueue(2001,name,statName,changeLevel)
+		
+		
+		if _UtilLogic:IsNilorEmptyString(employeeId) then 
+			return 
+		end
+		local chuchu = _UserService.LocalPlayer.CurrentMap:GetChildByName(employeeId)
+		if isvalid(chuchu) then 
+			if _UIGroupManager:IsOnLobby(true) == true then
+				_EmployeeService:UpdateAnim("levelUp",chuchu)
+			end	
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangeWorkExpStatus(string employeeId, boolean status)
+		-- 직원의 작업 경험치 상태를 변경하는 함수
+		self.EmployeeWorkStatus[employeeId] = status
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetTimerForEmployeeWorkExp(string employeeId, string location)
+		-- 직원 작업 경험치 타이머를 설정하는 함수
+		if not isvalid(self.EmployeesWorkTimer[employeeId]) then 
+			self.EmployeesWorkTimer[employeeId] = 0 
+			self.EmployeeWorkStatus[employeeId] = false
+		else
+			self.EmployeeWorkStatus[employeeId] = true
+		end
+		
+		self.EmployeesWorkTimer[employeeId] =  _TimerService:SetTimerRepeat(
+			function() 		
+					if self.Entity.TimeManager:CheckCanTimeFlows() == true and self.EmployeeWorkStatus[employeeId] then 
+						local managementLevel = self.Entity.PlayerManagement.ManagementLevel
+						local exp = _GetConfigDataLogic:GetConfigNumDataByKey("PlaceExpPerTickManagementLevel"..tostring(managementLevel))
+						self:Upgrade(location,tonumber(exp),"Work",employeeId)
+				end				
+			end
+			,self.TickForGainPlaceExp
+		)	
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveTimerOfEmployeeWorkExp(string employeeId)
+		-- 직원 작업 경험치 타이머를 제거하는 함수
+		_TimerService:ClearTimer(self.EmployeesWorkTimer[employeeId])
+		self.EmployeesWorkTimer[employeeId] = 0 
+		self.EmployeeWorkStatus[employeeId] = false
+	end
+
+	@ExecSpace("Client")
+	method void UpgradeEffectProduction(string type)
+		-- 업그레이드 효과를 생성하는 함수
+		if type == "levelUp" then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_ChuchuLevelUp_v2"], 1)
+			_UIGroupManager.EmployeeUpgradeGroup:GetChildByName("Main").UIEmployeeUpgrade:PlayLevelUpEffect()
+		elseif type == "ExpUp" then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_ChuchuExpUp"], 1)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void CheckCanOverLimit(string targetEmployeeID)
+		-- 한계돌파 가능 여부를 확인하는 함수
+		local player = self.Entity
+		local detail = player.EmployeeManager:GetEmployeeDetail(targetEmployeeID)
+		local canOverLimit
+		
+		if detail.OverLimitLevel >= _EmployeeService.MaxOverLimitLevel then
+			canOverLimit = 3
+			self:SendTryOverLimitResultToClient(canOverLimit, self.Entity.PlayerComponent.UserId)
+			self.Entity.PlayerLog:EmployeeOvelimitFlow(targetEmployeeID, tostring(detail.OverLimitLevel), "3")
+			return
+		end
+		
+		local level = _EmployeeService:ReturnChuchuLevel(targetEmployeeID, self.Entity, self.Entity.PlayerComponent.UserId)
+		local maxLevel = _EmployeeService:ReturnMaxLevelByOverLimitLevel(detail.OverLimitLevel, self.Entity.PlayerComponent.UserId)
+		if level < maxLevel then
+			canOverLimit = 1
+			self:SendTryOverLimitResultToClient(canOverLimit, self.Entity.PlayerComponent.UserId)
+			self.Entity.PlayerLog:EmployeeOvelimitFlow(targetEmployeeID, tostring(detail.OverLimitLevel), "1")
+			return
+		end
+		
+		if self:CheckOverLimitCost(detail.OverLimitLevel, targetEmployeeID) == false then
+			canOverLimit = 2
+			self:SendTryOverLimitResultToClient(canOverLimit, self.Entity.PlayerComponent.UserId)
+			self.Entity.PlayerLog:EmployeeOvelimitFlow(targetEmployeeID, tostring(detail.OverLimitLevel), "2")
+			return
+		else
+			canOverLimit = 0
+		end
+		
+		if canOverLimit == 0 then
+			self:OverLimit(targetEmployeeID)
+		end
+	end
+
+	@ExecSpace("Server")
+	method boolean CheckOverLimitCost(integer overLimitLevel, string empId)
+		-- 한계돌파 비용을 확인하는 함수
+		local costTable =  _EmployeeUpgradeService:ReturnOverLimitCost(overLimitLevel, self.Entity)
+		local jemItemId = _EmployeeUpgradeService:ReturnOverLimitJemItemId(empId) 
+		
+		local mesoCost = _StringUtilLogic:StringToInt(costTable[1])
+		local heartCost = _StringUtilLogic:StringToInt(costTable[2])
+		local jemCost = _StringUtilLogic:StringToInt(costTable[3])
+		
+		local inven = self.Entity.PlayerInventory
+		local myMeso = inven.Money
+		local myHeart = inven.Heart
+		local hasMeso, hasHeart, hasJem
+		local canUseJem = inven:CanUseItem(jemItemId, jemCost)
+		
+		if myMeso < mesoCost then
+			hasMeso = false
+		else
+			hasMeso = true
+		end
+		
+		if myHeart < heartCost then
+			hasHeart = false
+		else
+			hasHeart = true
+		end
+		
+		if canUseJem == 0 then 
+			hasJem = true
+		else
+			hasJem = false
+		end
+		
+		self:SendClientOverLimitCostCheck(hasMeso, hasHeart, hasJem, self.Entity.PlayerComponent.UserId)
+		
+		if hasMeso and hasHeart and hasJem then
+			return true
+		else
+			return false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SendClientOverLimitCostCheck(boolean meso, boolean clover, boolean jem)
+		-- 클라이언트에 한계돌파 비용 확인 결과를 전송하는 함수
+		_UIGroupManager.EmployeeUpgradeGroup:GetChildByName("Main").UIEmployeeUpgrade:UpdateOverLimitCostFontColor(meso, clover, jem)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OverLimit(string targetEmployeeID)
+		-- 직원의 한계돌파를 실행하는 함수
+		local player = self.Entity
+		local detail = player.EmployeeManager:GetEmployeeDetail(targetEmployeeID)
+		local costTable =  _EmployeeUpgradeService:ReturnOverLimitCost(detail.OverLimitLevel, player)
+		local jemItemId = _EmployeeUpgradeService:ReturnOverLimitJemItemId(targetEmployeeID) 
+		
+		local mesoCost = _StringUtilLogic:StringToInt(costTable[1])
+		local heartCost = _StringUtilLogic:StringToInt(costTable[2])
+		local jemCost = _StringUtilLogic:StringToInt(costTable[3])
+		
+		player.PlayerInventory:ModifyMoney(-mesoCost, "Overlimit","OverlimitUI")
+		player.PlayerInventory:ModifyHeart(-heartCost, "Overlimit","OverlimitUI")
+		player.PlayerInventory:UseItem(jemItemId, jemCost, "OverLimit", "Lobby", targetEmployeeID) 
+		
+		local lastOverLimitLevel = detail.OverLimitLevel
+		detail.OverLimitLevel = lastOverLimitLevel + 1
+		player.EmployeeManager:UpdateDetailData(targetEmployeeID, "OverLimitLevel", tostring(detail.OverLimitLevel)) 
+		
+		self.Entity.PlayerLog:EmployeeOvelimitFlow(targetEmployeeID, tostring(lastOverLimitLevel),  "0")
+		
+		self:SendTryOverLimitResultToClient(0, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SendTryOverLimitResultToClient(integer canOverLimit)
+		-- 한계돌파 시도 결과를 클라이언트에 전송하는 함수
+		
+		_UIGroupManager.EmployeeUpgradeGroup:GetChildByName("Main").UIEmployeeUpgrade:OverLimit(canOverLimit)
+	end
+
+	@ExecSpace("Server")
+	method table RefundExtraExp(string type, integer value)
+		-- 초과 경험치를 환불하는 함수
+		if value <= 0 then
+			return {}
+		end
+		
+		local potionTable = _EmployeeUpgradeService:RetrunExpItemCountTable(type, value)
+		local rewardBoxes = {}
+		for expId, expCount in pairs(potionTable) do
+			if isvalid(rewardBoxes[expId]) then
+				rewardBoxes[expId] += expCount
+			else
+				rewardBoxes[expId] = expCount
+			end
+		end
+		
+		local rewardKeys = table.keys(rewardBoxes)
+		if #rewardKeys > 0 then
+			for i = 1, #rewardKeys do
+				local rewardId = rewardKeys[i]
+				local rewardCount = rewardBoxes[rewardId]
+				self.Entity.PlayerInventory:RequestAddItem(rewardId, rewardCount,"EmployeeUpgrade RefundExtraExp","EmployeeUpgrade UI") 
+			end
+			_UIItemRewardService:SetItemRewardUI(rewardBoxes, "EmployeeUpgradeRefund", self.Entity.PlayerComponent.UserId)
+		end
+		
+		return rewardBoxes
+	end
+
+	@ExecSpace("Client")
+	method void SendTutorialEventTriggerAfterUpgrade(boolean isRewardOpened)
+		-- 업그레이드 후 튜토리얼 이벤트를 트리거하는 함수
+		if isRewardOpened then
+			_UIItemRewardService:SetCloseUICallback(function()
+				_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.EmployeeMaxLevel)
+			end)
+		else
+			_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.EmployeeMaxLevel)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ToastMsg(string key)
+		-- 토스트 메시지를 표시하는 함수
+		_UIToast:ShowMessage(_LocalizationService:GetText(key))
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandlePlayerMoneyChangedEvent(PlayerMoneyChangedEvent event)
+		-- 플레이어 돈 변경 이벤트를 처리하는 핸들러
+		if _EmployeeUpgradeUIServcie.EmployeeUpgrade.Enable then 
+			 _EmployeeUpgradeUIServcie.EmployeeUpgrade.UIEmployeeUpgrade:DisplayOverLimitCost(nil)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandlePlayerArcaneSymbolChangedEvent(PlayerArcaneSymbolChangedEvent event)
+		-- 플레이어 아케인 심볼 변경 이벤트를 처리하는 핸들러
+		if _EmployeeUpgradeUIServcie.EmployeeUpgrade.Enable then 
+			 _EmployeeUpgradeUIServcie.EmployeeUpgrade.UIEmployeeUpgrade:DisplayOverLimitCost(nil)
+		end
+	end
+
+end

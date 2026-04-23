@@ -1,0 +1,2081 @@
+@Component
+script PlayerTrainingManager extends Component
+
+	property string HotSpotKey = ""
+
+	property SyncTable<string, Entity> SpotEntities
+
+	property table HintCategoryList = {}
+
+	property table HintColorList = {}
+
+	property table SpotHintItemList = {}
+
+	property table PaperHintList = {}
+
+	property table PaperHintCountTable = {}
+
+	property table IngreBoxList = {}
+
+	property table IngreBoxCountTable = {}
+
+	property Entity SelectedTCharEntity = nil
+
+	property Entity LastPickSpot = nil
+
+	property string Turn = ""
+
+	@TargetUserSync
+	property integer MyBurgerPrice = 100
+
+	@TargetUserSync
+	property integer UpgradeBurgerPrice = 100
+
+	@TargetUserSync
+	property integer RequireTokenNum = 10
+
+	property integer HintCount = 0
+
+	property boolean CanClickSpot = false
+
+	@TargetUserSync
+	property SyncTable<string, integer> RewardBoxes
+
+	property SyncTable<Entity> CustomerEntities
+
+	@TargetUserSync
+	property SyncTable<string, integer> SpotCustomerCountList
+
+	@TargetUserSync
+	property integer MyLunchBoxNum = 10
+
+	@TargetUserSync
+	property integer MyStar = 0
+
+	property table ChuchuModels = {}
+
+	property integer FoodChoiceButtonNum = 0
+
+	property table ChuchuIds = {}
+
+	property boolean FindHotPlace = false
+
+	property table LunchBoxEntities = {}
+
+	property table LunchBoxEntities_Minigame = {}
+
+	property string HotPlaceName = ""
+
+	property integer UpgradeBurgerPriceLevelCount = 5
+
+	@TargetUserSync
+	property SyncTable<integer, integer> BurgerPriceBonusTable
+
+	property boolean IsSpinning = false
+
+	property table LunchBoxEntities_Map = {}
+
+	@ExecSpace("Server")
+	method void LoadConfigData()
+		-- 버거 가격 보너스 설정 데이터를 로드하는 함수
+		table.clear(self.BurgerPriceBonusTable)
+		for i = 1 , self.UpgradeBurgerPriceLevelCount do
+			local priceBonus = _GetConfigDataLogic:GetConfigNumDataByKey("TrainingUpgradeBurgerPriceLv"..tostring(i-1))
+			if priceBonus == nil then
+				self.BurgerPriceBonusTable[i] = self.UpgradeBurgerPrice
+			else
+				self.BurgerPriceBonusTable[i] = self.UpgradeBurgerPrice + self.UpgradeBurgerPrice * priceBonus
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnClickTrainingButton()
+		-- 훈련 시작 버튼 클릭 시 처리하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local selectedChuchuNum = _UIGroupManager.TrainingSettingGroup.UITrainingSetting:GetSelectedChuchuNum()
+		local selectedChuchuList = _UIGroupManager.TrainingSettingGroup.UITrainingSetting:GetSelectedChuchuList()
+		self:SetSelectedChuchuIdList(selectedChuchuList)
+		
+		for _, id in pairs(selectedChuchuList) do
+		
+			for i = 1, 3 do
+				---@type AutoTrainingSlotData
+				local slotData = player.PlayerAutoTrainingManager.AutoTrainingSlotInfoTable[i]
+				if isvalid(slotData.ChuchuId) and slotData.ChuchuId == id then
+					if slotData.State == _AutoTrainingUIStateEnum.OnProgress then
+						local data = _EmployeeService:GetData(slotData.ChuchuId)
+						local name = _GetLocalizationTextLogic:GetText(data.NameKey)
+						_UIToast:ShowMessage(_LocalizationService:GetTextFormat("TrainingSettingCantStartMsg", name))
+						return
+					end
+				end
+			end
+		end
+		
+		player.PlayerTrainingManager:RequestEnterTraining(selectedChuchuNum)
+	end
+
+	@ExecSpace("Server")
+	method boolean RequestEnterTraining(integer selectedChuchuNum)
+		-- 훈련 입장 요청을 처리하는 함수
+		local player = self.Entity
+		local playerInven = player.PlayerInventory
+		
+		if playerInven.TrainingTicket >= 1 then
+			if playerInven.LunchBox < self.RequireTokenNum then
+				self:EnterTrainingToast("NoTrainingTokenToastMsg", player.PlayerComponent.UserId)
+				return false
+			else
+				if selectedChuchuNum ~= 3 then
+					self:EnterTrainingToast("TrainingSettingChuchuMsg", player.PlayerComponent.UserId)
+					return false
+				else
+					self.Entity.PlayerLog:PlayflowLog(_LogSourceEnumType.Training,"0")
+					self:FadeInTraining(self.Entity.PlayerComponent.UserId) 
+					
+					_UIGroupManager:EnableBackToLobbyBtn(false, player.PlayerComponent.UserId)
+					return true
+				end
+			end
+		else
+			self:EnterTrainingToast("TrainingFeriodNotice", player.PlayerComponent.UserId)
+			return false
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void FadeInTraining()
+		-- 훈련 시작 시 페이드인 효과를 처리하는 함수
+		_EntityService:GetEntityByPath("/ui/TrainingSettingGroup").UITrainingSetting:CloseTrainingSettingUI()
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Car"], 1)
+		
+		if _UILobbyManager.MainMenuPanel.Enable then
+			_UILobbyManager.MainMenuPanel:SetEnable(false)
+		end
+		
+		_FadeService:ShowFade("TrainingEnter")
+	end
+
+	@ExecSpace("Client")
+	method void OnStartTraining()
+		-- 훈련을 시작할 때 초기화하는 함수
+		_UIGroupManager:EnableMoneyBarGroup(false)
+		
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)
+		
+		self:CreateCharModels()
+		self:CreateHotPlace()
+		
+		_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.TrainingEnter)
+		
+		self.FoodChoiceButtonNum = 0
+		
+		self:ResetValues()
+		_BGMService:ApplyBGM(_BGMService.TrainingBGM)
+	end
+
+	@ExecSpace("Server")
+	method void ResetValues()
+		-- 훈련 관련 값들을 초기화하는 함수
+		local upgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.TrainingUpgrade, self.Entity.PlayerComponent.UserId)
+		local dataRow = _DataService:GetTable("TrainingUpgradeDataSet"):FindRow("UpgradeLevel", tostring(upgradeLevel))
+		self.UpgradeBurgerPrice = _StringUtilLogic:StringToInt(dataRow:GetItem("TrainingBurgerPrice"))
+		self.MyBurgerPrice = self.UpgradeBurgerPrice
+		self:LoadConfigData()
+		self.MyLunchBoxNum = 10
+		self.MyStar = 0
+		self.FindHotPlace = false
+		table.clear(self.RewardBoxes)
+		table.clear(self.SpotEntities)
+		
+		self:ResetValuesClient(self.MyBurgerPrice, self.MyLunchBoxNum, self.MyStar, self.BurgerPriceBonusTable, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void ResetValuesClient(integer myBurgerPrice, integer myTokenNum, integer myStar, table burgerPriceBonusTable)
+		-- 클라이언트에서 훈련 관련 값들을 초기화하는 함수
+		self.MyBurgerPrice = myBurgerPrice
+		self.MyLunchBoxNum = myTokenNum
+		self.MyStar = myStar
+		self.FindHotPlace = false
+		for i = 1, 5 do
+			self.BurgerPriceBonusTable[i] = burgerPriceBonusTable[i]
+		end
+		table.clear(self.RewardBoxes)
+		table.clear(self.SpotEntities)
+		
+		for _, boxId in pairs(self.IngreBoxList) do
+			self:FindIngredientBox(boxId)
+		end
+		
+		self:InitUI()
+		
+		_FadeService:HideFade()
+	end
+
+	@ExecSpace("Client")
+	method void InitUI()
+		-- 훈련 UI를 초기화하는 함수
+		local tokenScroll = _EntityService:GetEntityByPath("/ui/TrainingGroup/Background/Token/TokenScroll")
+		local tokenScroll_Minigame = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/Token_Minigame/TokenScroll")
+		local tokenScroll_Map = _EntityService:GetEntityByPath("/ui/TrainingGroup/Map/Token_Map/TokenScroll")
+		tokenScroll.Enable = true
+		tokenScroll_Minigame.Enable = true
+		tokenScroll_Map.Enable = true
+		
+		table.clear(self.LunchBoxEntities)
+		table.clear(self.LunchBoxEntities_Minigame)
+		table.clear(self.LunchBoxEntities_Map)
+		
+		for i = 1, 10 do
+			local entity = tokenScroll:GetChildByName("TokenIcon".._StringUtilLogic:NumToString(i))
+			entity.Enable = true
+			table.insert(self.LunchBoxEntities, entity)
+			
+			local entity2 = tokenScroll_Minigame:GetChildByName("TokenIcon".._StringUtilLogic:NumToString(i))
+			entity2.Enable = true
+			table.insert(self.LunchBoxEntities_Minigame, entity2)
+			
+			local entity3 = tokenScroll_Map:GetChildByName("TokenIcon".._StringUtilLogic:NumToString(i))
+			entity3.Enable = true
+			table.insert(self.LunchBoxEntities_Map, entity3)
+		end
+		
+		local tokenNumText = _LocalizationService:GetTextFormat("Things_Format", "<color=#6b8911>"..tostring(self.MyLunchBoxNum).."</color>")
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/Background/Token/TokenNumBalloon/TokenNum").TextComponent.Text = tokenNumText
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/Token_Minigame/TokenNumBalloon/TokenNum").TextComponent.Text = tokenNumText
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/Token_Map/TokenNumBalloon/TokenNum").TextComponent.Text = tokenNumText
+		
+		self:ChangeBurgerPriceUI("Same", self.MyBurgerPrice, self.MyStar, 0)
+		
+		if isvalid(self.LastPickSpot) then
+			self.LastPickSpot:GetChildByName("BurgerSign"):Destroy()
+		end
+		self.LastPickSpot = nil
+		
+		for i = 1, 9 do
+			if i == 4 then
+				continue
+			end
+			local spot = _EntityService:GetEntityByPath("/ui/TrainingGroup/Map/Spot0"..tostring(math.floor(i)))
+			self.SpotEntities[spot.SpotComponent.SpotKey] = spot
+			spot.SpotComponent:ClearSpotHintScroll()
+		end
+		
+		self.Turn = "FirstMorning"
+		
+		local starTable =  _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/StarTable")
+		for i = 1, 5 do
+			local burgerPrice = self.BurgerPriceBonusTable[i]
+			local mesoText = starTable:GetChildByName("Meso"..tostring(math.tointeger(i)))
+			mesoText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(burgerPrice))
+		end
+		
+		local celebData = _DataService:GetTable("TrainingCelebDataSet")
+		local randIdx = _UtilLogic:RandomIntegerRange(1, celebData:GetRowCount())
+		local isTutorial = false
+		if _UserService.LocalPlayer.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.TrainingEndCount) <= 0 then
+			randIdx = 3
+			isTutorial = true
+		end
+		local celebId = celebData:GetCell(randIdx, 1)
+		
+		self._T.celebName = _LocalizationService:GetText(celebId)
+		local ruid = celebData:GetCell(randIdx, 3)
+		_UIGroupManager.TrainingGroup.UITraining:SetGuidePopup(self._T.celebName, ruid, isTutorial)
+		
+		local npcEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/Background/Truck/Npc")
+		npcEntity.SpriteGUIRendererComponent.ImageRUID = ruid
+		npcEntity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			_UIGroupManager.TrainingGroup.UITraining:EnableGuidePopup(true)
+		end)
+		
+		self:SetProgressBar(0)
+		self:ClearHintScroll()
+		
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/Box").Enable = false
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/Hint").Enable = false
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/HintScrollBg/HintScroll/HintButton").Enable = false
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/StarTable/Result").Enable = false
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/HintPopup").Enable = false
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/GuidePopup").Enable = false
+		
+		
+		self:SwitchPanel(_TrainingUIStateEnum.Default)
+		_UIGroupManager.TrainingGroup.Enable = true
+	end
+
+	@ExecSpace("Server")
+	method void ChangeBurgerPrice(string type)
+		-- 버거 가격을 변경하는 함수
+		
+		
+		local lastPrice = self.MyBurgerPrice
+		
+		if type == "-2" then
+			self.MyStar -= 2
+			
+		elseif type == "+3" then
+			self.MyStar += 3
+			
+		elseif type == "+1" then
+			self.MyStar += 1
+			
+		elseif type == "+2" then
+			self.MyStar += 2
+		end
+		
+		
+		if self.MyStar < 1 then
+			self.MyStar = 0
+			
+		elseif self.MyStar >= 25 then
+			self.MyStar = 25
+		end
+		
+		local starLevel
+		if self.MyStar < 3 then
+			starLevel = 1
+		elseif 3 <= self.MyStar and self.MyStar < 5 then
+			starLevel = 2
+		elseif 5 <= self.MyStar and self.MyStar < 7 then
+			starLevel = 3
+		elseif 7 <= self.MyStar and self.MyStar < 10 then
+			starLevel = 4
+		elseif 10 <= self.MyStar then
+			starLevel = 5
+		end
+		self.MyBurgerPrice = self.BurgerPriceBonusTable[starLevel]
+		
+		local changeString = ""
+		if lastPrice < self.MyBurgerPrice then
+			changeString = "Up"
+			
+		elseif  lastPrice > self.MyBurgerPrice then
+			changeString = "Down"
+		else
+			changeString = "Same"
+		end
+		
+		self:ChangeBurgerPriceUI(changeString, self.MyBurgerPrice, self.MyStar, starLevel, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void CreateCharModels()
+		-- 훈련에 참여할 캐릭터 모델들을 생성하는 함수
+		table.clear(self.ChuchuModels)
+		
+		for i = 1, 3 do
+			self.ChuchuModels[i] = _EntityService:GetEntityByPath("/ui/TrainingGroup/Background/Truck/Char00"..tostring(math.floor(i)))
+		end
+		
+		local selectedChuchuList = _UIGroupManager.TrainingSettingGroup.UITrainingSetting.SelectedEmpList
+		
+		for i=1, #self.ChuchuModels do
+			---@type Entity
+			local char = self.ChuchuModels[i]
+			local empId = selectedChuchuList[i]
+			char.TrainingChar:SetCharId(empId)
+			char.Enable = true
+		end
+		
+		self:SetSelectedChuchuIdList(selectedChuchuList)
+		
+		self.SelectedTCharEntity = self.ChuchuModels[1]
+		local nowCharEnttiy =_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/NowTChar") 
+		local empId = self.SelectedTCharEntity.TrainingChar.TCharId
+		
+		
+		
+		_TrialLogic:PlayUIEmployeeAnim(nowCharEnttiy, empId, "Stand", true, _UserService.LocalPlayer)
+		
+	end
+
+	@ExecSpace("Client")
+	method void CreateHints_Fix()
+		-- 고정된 형태로 힌트들을 생성하는 함수
+		local dataSet = _DataService:GetTable("HintItemTypeData")
+		
+		local allCategory = dataSet:GetColumn("CategoryKey")
+		local randomCategoryTable = _StringUtilLogic:ShuffleStringTable(allCategory)
+		table.clear(self.HintCategoryList)
+		table.clear(self.HintColorList)
+		
+		for i = 1, 6 do
+			self.HintCategoryList[i] = randomCategoryTable[i]
+		end
+		
+		local allColor = {}
+		for i = 1, 6 do
+			 table.insert(allColor, dataSet:GetCell(i, 2))
+		end
+		local randomColorTable = _StringUtilLogic:ShuffleStringTable(allColor)
+		for i = 1, 3 do
+			self.HintColorList[i] = randomColorTable[i]
+		end
+		
+		local placeHints = {}
+		placeHints[1] = {"HI0001", "HI0003", "HI0008"}
+		placeHints[2] = {"HI0013", "HI0014", "HI0021"}
+		placeHints[3] = {"HI0034", "HI0036", "HI0040"}
+		placeHints[4] = {"HI0041", "HI0043", "HI0037"}
+		placeHints[5] = {"HI0045", "HI0048", "HI0052"}
+		placeHints[6] = {"HI0051", "HI0055", "HI0054"}
+		placeHints[7] = {"HI0029", "HI0030", "HI0023"}
+		placeHints[8] = {"HI0015", "HI0019", "HI0018"}
+		placeHints[9] = {"HI0004", "HI0010", "HI0011"}
+		
+		local randSpotKey = _StringUtilLogic:ShuffleStringTable(self._T.AllSpotKeyTable)
+		for i = 1, #self._T.AllSpotKeyTable do
+			local spotKey = randSpotKey[i]
+			self.SpotHintItemList[spotKey] = placeHints[i] 
+		end
+		
+		self._T.noticeSpotKey = randSpotKey[1]
+		
+		
+		local paperHintDataSet = _DataService:GetTable("TrainingHintDataSet")
+		local types = paperHintDataSet:GetColumn("Type")
+		if _UtilLogic:RandomIntegerRange(1,2) == 1 then
+			self.PaperHintList = {types[1], types[2], types[3]}
+		else
+			self.PaperHintList = {types[2], types[1], types[3]}
+		end
+		
+		local celebData = _DataService:GetTable("TrainingCelebDataSet")
+		local randIdx = _UtilLogic:RandomIntegerRange(1, celebData:GetRowCount())
+		local celebId = celebData:GetCell(randIdx, 1) 
+		
+		self._T.celebName = _LocalizationService:GetText(celebId)
+		self.HintCount = 0
+		
+		
+		local randomNums1 = _UtilLogic:RandomIntegerRange(1, 3)
+		local randomNums2 = _UtilLogic:RandomIntegerRange(4, 6)
+		local randomNums3 = _UtilLogic:RandomIntegerRange(7, 10)
+		self.PaperHintCountTable = {randomNums1, randomNums2, randomNums3}
+		
+		self:CreateIngreBoxList()
+	end
+
+	@ExecSpace("Client")
+	method void CreateHints()
+		-- 랜덤하게 힌트들을 생성하는 함수
+		
+		local dataSet = _DataService:GetTable("HintItemTypeData")
+		
+		local allCategory = dataSet:GetColumn("CategoryKey")
+		local randomCategoryTable = _StringUtilLogic:ShuffleStringTable(allCategory)
+		table.clear(self.HintCategoryList)
+		table.clear(self.HintColorList)
+		
+		for i = 1, 6 do
+			self.HintCategoryList[i] = randomCategoryTable[i]
+		end
+		
+		local allColor = {}
+		for i = 1, 6 do
+			 table.insert(allColor, dataSet:GetCell(i, 2))
+		end
+		local randomColorTable = _StringUtilLogic:ShuffleStringTable(allColor)
+		for i = 1, 3 do
+			self.HintColorList[i] = randomColorTable[i]
+		end
+		
+		
+		
+		local hotPlaceItems= {}
+		for i = 1, 3 do
+			local hotPlaceItem = _HintItemDataSetLogic:ReturnItemIdByCategoryAndColor(self.HintCategoryList[i], self.HintColorList[1])
+			table.insert(hotPlaceItems, hotPlaceItem)
+		end
+		self.SpotHintItemList[self.HotSpotKey] = hotPlaceItems
+		
+		local placeHints = _HintItemDataSetLogic:ReturnRandomPlaceItems(self.HintCategoryList, self.HintColorList)
+		local randSpotKey = _StringUtilLogic:ShuffleStringTable(self._T.NormalSpotKeyTable)
+		for i = 1, #self._T.NormalSpotKeyTable do
+			local spotKey = randSpotKey[i]
+			self.SpotHintItemList[spotKey] = placeHints[i] 
+		end
+		
+		self._T.noticeSpotKey = randSpotKey[1]
+		
+		
+		local paperHintDataSet = _DataService:GetTable("TrainingHintDataSet")
+		local types = paperHintDataSet:GetColumn("Type")
+		if _UtilLogic:RandomIntegerRange(1,2) == 1 then
+			self.PaperHintList = {types[1], types[2], types[3]}
+		else
+			self.PaperHintList = {types[2], types[1], types[3]}
+		end
+		
+		self.HintCount = 0
+		
+		local randomNums1 = _UtilLogic:RandomIntegerRange(1, 4)
+		local randomNums2 = _UtilLogic:RandomIntegerRange(5, 7)
+		local randomNums3 = _UtilLogic:RandomIntegerRange(8, 10)
+		self.PaperHintCountTable = {randomNums1, randomNums2, randomNums3}
+		
+		local isTutorial = not self.Entity.PlayerAchievement:IsAchievementAchieved(90006001) 
+		if isTutorial then
+			self.PaperHintCountTable = {2, 6, 8}
+		end
+		
+		self:CreateIngreBoxList()
+		
+		local colorString = ""
+		for i = 1, 3 do
+			colorString = colorString..self.HintColorList[i]
+		end
+		local catString = "" 
+		for i = 1, 6 do
+			catString = catString..self.HintCategoryList[i]
+		end
+	end
+
+	@ExecSpace("Client")
+	method void CreateHotPlace()
+		-- 핫플레이스를 생성하고 고객 수를 설정하는 함수
+		local upgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.TrainingUpgrade)
+		local dataRow = _DataService:GetTable("TrainingUpgradeDataSet"):FindRow("UpgradeLevel", tostring(upgradeLevel))
+		local upgradeCustomerCount = _StringUtilLogic:StringToInt(dataRow:GetItem("TrainingCustomerCount"))
+		
+		local hotPlaceCustomerCount = upgradeCustomerCount 
+		local nomalPlacePanalty = _GetConfigDataLogic:GetConfigNumDataByKey("TrainingHotSpotCustomerBonusRate")
+		local normalPlaceCustomerCount = upgradeCustomerCount * nomalPlacePanalty
+		
+		local range =  _GetConfigDataLogic:GetConfigNumDataByKey("CustomerCountRandomRate")
+		local normalRange =  normalPlaceCustomerCount * range 
+		local normalRand = _UtilLogic:RandomIntegerRange(0, normalRange * 2) 
+		normalPlaceCustomerCount += normalRand - normalRange 
+		
+		local hotPlaceRange =  hotPlaceCustomerCount * range 
+		local hotPlaceRand = _UtilLogic:RandomIntegerRange(0, hotPlaceRange * 2) 
+		hotPlaceCustomerCount += hotPlaceRand - hotPlaceRange 
+		
+		self._T.AllSpotKeyTable = _DataService:GetTable("SpotDataSet"):GetColumn("SpotKey")
+		self._T.NormalSpotKeyTable = {}
+		
+		self.HotSpotKey = self._T.AllSpotKeyTable[_UtilLogic:RandomIntegerRange(1, #self._T.AllSpotKeyTable)]
+		self.HotPlaceName = self:GetSpotNameFromKey(self.HotSpotKey)
+		self:SetHotPlaceName(self.HotPlaceName)
+		
+		for i=1, #self._T.AllSpotKeyTable do
+			if self._T.AllSpotKeyTable[i] == self.HotSpotKey then
+				self.SpotCustomerCountList[self.HotSpotKey] = hotPlaceCustomerCount
+			else
+				local spotKey =  self._T.AllSpotKeyTable[i] 
+				self.SpotCustomerCountList[spotKey] = normalPlaceCustomerCount
+				table.insert(self._T.NormalSpotKeyTable, self._T.AllSpotKeyTable[i])
+			end
+		end
+		
+		self:CreateHints()
+	end
+
+	@ExecSpace("Client")
+	method void CreateIngreBoxList()
+		-- 재료 상자 목록을 생성하는 함수
+		local upgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.TrainingIngreBox)
+		local ingreBoxIds = {"B0001", "B0002", "B0003", "B0004"}
+		
+		local row = _DataService:GetTable("TrainingIngreBoxDataSet"):FindRow("Level", tostring(upgradeLevel))
+		local weightTable = {row:GetItem("Weight1"), row:GetItem("Weight2"), row:GetItem("Weight3")}
+		
+		local min = _StringUtilLogic:StringToInt(row:GetItem("DropBoxCountMin"))
+		local max = _StringUtilLogic:StringToInt(row:GetItem("DropBoxCountMax"))
+		local count = _UtilLogic:RandomIntegerRange(min, max)
+		
+		table.clear(self.IngreBoxList)
+		
+		for i = 1, count do
+			local boxId = _RandomLogic:ReturnRandomPickWeight(weightTable) 
+			table.insert(self.IngreBoxList, ingreBoxIds[boxId])
+		end
+		
+		local breadLevel =  _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.TrainingBreadBoxOpen)
+		local breadRow = _DataService:GetTable("TrainingIngreBoxDataSet"):FindRow("Level", tostring(breadLevel))
+		local breadProbTable = {row:GetItem("BreadProb1"), row:GetItem("BreadProb2"), row:GetItem("BreadProb3")}
+		for i = 1, 3 do
+			if _RandomLogic:ReturnIsDropProb100(breadProbTable[i]) == true then
+				table.insert(self.IngreBoxList, ingreBoxIds[4])
+			end
+		end
+		
+		local randomNums = _RandomLogic:RandomIntegersInRange(5)
+		for i = 1, #self.IngreBoxList do
+			table.insert(self.IngreBoxCountTable, randomNums[i])
+		end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method table ChoiceHint(string spotKey, integer num)
+		-- 특정 스팟에서 힌트를 선택하는 함수
+		local hintItemIds = {}
+		local spotHints = self.SpotHintItemList[spotKey]
+		
+		for i = 1, num do
+			if #table.keys(spotHints) < 1 then
+				return hintItemIds
+			end
+			local randIdx = _UtilLogic:RandomIntegerRange(1, #table.keys(spotHints))
+			local hintItemId = spotHints[randIdx]
+			table.insert(hintItemIds, hintItemId)
+			table.remove(self.SpotHintItemList[spotKey], randIdx)
+		end
+		
+		return hintItemIds
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenHintPopup(Entity hintEntity)
+		-- 힌트 팝업을 여는 함수
+		local type = hintEntity.PaperHintComponent.type
+		local category1 = _LocalizationService:GetText("CategoryKey_"..self.HintCategoryList[1])
+		local category2 = _LocalizationService:GetText("CategoryKey_"..self.HintCategoryList[2])
+		local category3 = _LocalizationService:GetText("CategoryKey_"..self.HintCategoryList[3])
+		
+		local dataSet = _DataService:GetTable("TrainingHintDataSet")
+		local row = dataSet:FindRow("Type", type)
+		local titleKey = row:GetItem("TitleKey")
+		local descKey = row:GetItem("DescKey")
+		local hintTextKey = row:GetItem("HintTextKey")
+		local iconRuid = row:GetItem("IconRuid")
+		
+		local hintPanel = _EntityService:GetEntityByPath("/ui/TrainingGroup/HintPopup/HintPanel")
+		local hintIcon = hintPanel:GetChildByName("HintIcon") 
+		local hintTitle = hintPanel:GetChildByName("HintTitle"):GetChildByName("Text") 
+		local hintTextbox = hintPanel:GetChildByName("HintText"):GetChildByName("Text") 
+		
+		hintIcon.SpriteGUIRendererComponent.ImageRUID = iconRuid
+		
+		local titleText, hintText = "", ""
+		local descText = _LocalizationService:GetText(descKey)
+		
+		if type == "Diary" then
+			titleText = _LocalizationService:GetTextFormat(titleKey, self._T.celebName)
+			hintText = _LocalizationService:GetTextFormat(hintTextKey, category1, category2, category3)
+			
+		elseif type ==  "Interview" then
+			titleText = _LocalizationService:GetTextFormat(titleKey, self._T.celebName)
+			local colorName = _LocalizationService:GetText("ColorKey_"..self.HintColorList[1])
+			hintText = _LocalizationService:GetTextFormat(hintTextKey, colorName)
+			
+		elseif type == "Notice" then
+			local spotName = _LocalizationService:GetText(self:GetSpotNameFromKey(self._T.noticeSpotKey))
+			titleText = _LocalizationService:GetText(titleKey)
+			descText = _LocalizationService:GetTextFormat(descKey, spotName)
+			hintText = _LocalizationService:GetText(hintTextKey)
+		end
+		
+		hintTitle.TextComponent.Text = titleText
+		hintTextbox.TextComponent.Text = descText..hintText
+		
+		hintPanel.Parent.Enable = true
+		
+		hintEntity.SpriteGUIRendererComponent.ImageRUID = iconRuid
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SelectLunchBoxButton(integer buttonNum)
+		-- 도시락 버튼을 선택하는 함수
+		self:ModifyLunchBoxNum(buttonNum)
+		self.CanClickSpot = true
+		self.FoodChoiceButtonNum = buttonNum
+		self:CheckTodoList(true, false)
+		self:SwitchPanel(_TrainingUIStateEnum.MapOpen)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SwitchSelectedTCharToNext()
+		-- 선택된 캐릭터를 다음 캐릭터로 전환하는 함수
+		
+		local chuchuNum = 3
+		
+		for i = 1, chuchuNum do
+			if self.SelectedTCharEntity == self.ChuchuModels[i] then
+				if i == chuchuNum then
+					self.SelectedTCharEntity = self.ChuchuModels[1]
+					
+					break
+				else
+					self.SelectedTCharEntity = self.ChuchuModels[i+1]
+					break
+				end
+			end
+		end
+		
+		local employeeId = self.SelectedTCharEntity.TrainingChar.TCharId
+		local nowTCharEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/Map/NowTChar")
+		local equipEntity = nowTCharEntity:GetChildByName("equip") 
+		
+		local userHasEquip = false
+		local employeeOutgameDetailData = self.Entity.EmployeeManager:GetEmployeeOutgameDetail(employeeId)
+		if employeeOutgameDetailData ~= nil then
+			if employeeOutgameDetailData.EquipLevel > -1 then
+				userHasEquip = true
+			end
+		end
+		
+		nowTCharEntity.SpriteGUIRendererComponent.ImageRUID = self.SelectedTCharEntity.SpriteGUIRendererComponent.ImageRUID
+		equipEntity.SpriteGUIRendererComponent.ImageRUID = self.SelectedTCharEntity:GetChildByName("equip").SpriteGUIRendererComponent.ImageRUID
+		
+		if userHasEquip then
+			equipEntity.Enable = true
+		else
+			equipEntity.Enable = false
+		end
+		
+		nowTCharEntity.Enable = true
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SwitchNextChuchu()
+		-- 다음 캐릭터로 전환하는 함수
+		self:SwitchSelectedTCharToNext()
+		self.CanClickSpot = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SendChuChu(Entity char, string spotKey)
+		-- 캐릭터를 특정 스팟에 보내는 함수
+		
+		if self:ModifyLunchBoxNum(1) == false then
+			_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("NoTrainingTokenToastMsg"))
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Btn_Find"], 0.5)
+		self.CanClickSpot = false
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/NowTChar").Enable = false
+		
+		local hintNum =  1
+		local weight = 10
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, 100)
+		if rand <= weight then
+			hintNum = 2
+		else
+			hintNum = 1
+		end
+		
+		self.HintCount += 1
+		
+		for i = 1, #self.PaperHintCountTable do
+			if self.PaperHintCountTable[i] == self.HintCount then
+				char.TrainingChar:FindPaperHint()
+				self:AddPaperHintInScroll(self.PaperHintList[i])
+				break
+			end
+		end
+		
+		local hintItemIds = self:ChoiceHint(spotKey, hintNum)
+		
+		if #hintItemIds > 0 then
+			char.TrainingChar:FindHint(hintItemIds)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void FindIngredientBox(string boxId)
+		-- 재료 상자를 찾았을 때 처리하는 함수
+		self:AddRewardBox(boxId, 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void NextTurn()
+		-- 다음 턴으로 넘어가는 함수
+		if _UserService.LocalPlayer ~= self.Entity then
+			return
+		end
+		
+		for i = 1, #self.ChuchuModels do
+			self.ChuchuModels[i].TrainingChar:OnEnterSpot(nil)
+		end
+		
+		self.SelectedTCharEntity = self.ChuchuModels[1]
+		
+		if self.Turn == "FirstMorning" then
+			self.Turn = "FirstAfternoon"
+			
+		elseif self.Turn == "FirstAfternoon" then
+			self.Turn = "FirstNight"
+			
+		elseif self.Turn == "FirstNight" then
+			self.Turn = "SecondMorning"
+			self:SwitchPanel(_TrainingUIStateEnum.MapOpenLast)
+			_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.TrainingSelectSpot)
+			
+		elseif self.Turn == "SecondMorning" then
+			self.Turn = "SecondAfternoon"
+			 _UserService.LocalPlayer.PlayerTrainingManager:OnGoToPlaceButton() 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSelectLastSpot(Entity spotEntity)
+		-- 마지막 스팟을 선택할 때 처리하는 함수
+		local entity = _EntityService:GetEntityByPath("/ui/TrainingGroup/BurgerSign_Origin")
+		
+		if isvalid(self.LastPickSpot) then
+			local burgerSign = self.LastPickSpot:GetChildByName("BurgerSign")
+			burgerSign:AttachTo(spotEntity)
+			burgerSign.UITransformComponent.Position = Vector3(125, -150, 0)
+		else
+			_SpawnService:SpawnByEntity(entity, "BurgerSign", Vector3(125, -150, 0), spotEntity)
+		end
+		
+		self.LastPickSpot = spotEntity
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnGoToPlaceButton()
+		-- 장소로 가기 버튼을 클릭할 때 처리하는 함수
+		self:SwitchPanel(_TrainingUIStateEnum.ShowAnswerSpot) 
+		
+		if self._T.IsActing == true then
+			return
+		end
+		self:CheckTodoList(true, false)
+		
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_GuessWhat"], 1)
+		self._T.IsActing = true
+		self.LastPickSpot.SpotComponent:GoLastSpot()
+		for _, spot in pairs(self.SpotEntities) do
+			spot.SpotComponent:BounceSpot()
+		end
+		wait(1.5)
+		
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_FindItemHint"], 1)
+		for _, spot in pairs(self.SpotEntities) do
+			local spotKey = spot.SpotComponent.SpotKey
+			if self.SpotHintItemList[spotKey] ~= nil then
+				for i = 1, #self.SpotHintItemList[spotKey] do
+					local ruid = self.SpotHintItemList[spotKey][i]
+					spot.SpotComponent:AddHintIcon(ruid)
+				end
+			end
+			
+		end
+		wait(1)
+		self.SpotEntities[self.HotSpotKey].SpotComponent:BigBounceSpot()
+		
+		
+		local origin = _EntityService:GetEntityByPath("/ui/TrainingGroup/Firework")
+		local firework = _SpawnService:SpawnByEntity(origin,"Firework", Vector3.zero, self.SpotEntities[self.HotSpotKey])
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Firework"], 1)
+		_TimerService:SetTimerOnce(function() firework:Destroy() end, 2)
+		
+		local selectedSpotKey = self.LastPickSpot.SpotComponent.SpotKey
+		if selectedSpotKey == self.HotSpotKey then
+			self.FindHotPlace = true
+		else
+			self.FindHotPlace = false
+		end
+		
+		
+		local gotoSpot = function ()
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Car"], 1)
+			_TimerService:SetTimerOnce(function()
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_TruckArrive_v2"], 1)
+			end, 1)
+			
+			self:SetPlaceBg(self.FindHotPlace) 
+			
+			_FadeService:ShowFade("SpotEnter")
+			self._T.IsActing = false
+		end
+		_TimerService:SetTimerOnce(gotoSpot, 2)
+	end
+
+	@ExecSpace("Client")
+	method void SwitchPanel(string state)
+		-- UI 패널을 상태에 따라 전환하는 함수
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		local titleText = _EntityService:GetEntityByPath("/ui/TrainingGroup/Title/TitleText")
+		local minigamePanel = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel")
+		local minigameNpc = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigameNpc")
+		local todoListIcon1 = _EntityService:GetEntityByPath("/ui/TrainingGroup/Title/TodoList/List1/Icon")
+		local todoListIcon2 = _EntityService:GetEntityByPath("/ui/TrainingGroup/Title/TodoList/List2/Icon")
+		local chuchuChat = _EntityService:GetEntityByPath("/ui/TrainingGroup/Background/Truck/ChuchuChat")
+		local placePanelSkipBtn = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/SkipButton")
+		
+		_UIGroupManager.TrainingGroup.UITraining:ChuchuChat(state)
+		_UIGroupManager.TrainingGroup.UITraining:UpdateTitleText(state) 
+		
+		if state == _TrainingUIStateEnum.Default then
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Background").Enable = true
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel").Enable = false
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/NowTChar").Enable = false
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/StartButton").Enable = false
+			chuchuChat.Enable = true
+			chuchuChat.CanvasGroupComponent.GroupAlpha = 1
+			chuchuChat.TextComponent.FontColor.a = 1
+			chuchuChat.TextComponent.OutlineColor.a = 1
+			
+			minigamePanel.Enable = false
+			self:CheckTodoList(false, false)
+			self:OpenMap(false)
+			self.CanClickSpot = false
+			
+			local duraion = 0.5
+			_TimerService:SetTimerOnce(function()
+				local aTween = _TweenLogic:PlayTween(1, 0, duraion, EaseType.Linear, function(t)
+					chuchuChat.CanvasGroupComponent.GroupAlpha = t
+					chuchuChat.TextComponent.FontColor.a = t
+					chuchuChat.TextComponent.OutlineColor.a = t
+				end)
+				_TimerService:SetTimerOnce(function()
+					chuchuChat.Enable = false
+					
+				end, duraion)
+			end, 3)
+			
+		elseif state == _TrainingUIStateEnum.MapOpen then
+			titleText.TextComponent.Text = _LocalizationService:GetText("TrainingTitleText_MapOpen")
+			self:OpenMap(true)
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/MapCloseButton").Enable = false 
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/NowTChar").Enable = true
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/StartButton").Enable = false
+			todoListIcon1.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+			todoListIcon2.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.BlinkMaterial)
+			self.CanClickSpot = true
+			_UIGroupManager.TrainingGroup.UITraining.HintSkipButton.Enable = true
+			
+		elseif state == _TrainingUIStateEnum.MapOpenLast then
+			minigamePanel.Enable = false
+			minigameNpc.Enable = false
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Background/Token").Enable = true
+			self:OpenMap(true)
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/MapCloseButton").Enable = false 
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/NowTChar").Enable = false
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/StartButton").Enable = true
+			todoListIcon1.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.BlinkMaterial)
+			self.CanClickSpot = true
+			_UIGroupManager.TrainingGroup.UITraining.HintSkipButton.Enable = false
+			
+		elseif state == _TrainingUIStateEnum.MeetNpc then
+		
+		
+		elseif state == _TrainingUIStateEnum.ShowAnswerSpot then
+			minigamePanel.Enable = false
+			minigameNpc.Enable = false
+			self:OpenMap(true)
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/MapCloseButton").Enable = false 
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/NowTChar").Enable = false
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/StartButton").Enable = false
+			todoListIcon1.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.BlinkMaterial)
+			self.CanClickSpot = false
+			
+			
+		elseif state == _TrainingUIStateEnum.MoveToPlace then
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel").Enable = true
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/ResultPopupDim").Enable = false
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/Background").Enable = false
+			_FadeService:HideFade()
+			placePanelSkipBtn.Enable = false
+			
+			local selectedSpotKey = self.LastPickSpot.SpotComponent.SpotKey
+			if selectedSpotKey == self.HotSpotKey then
+				self.FindHotPlace = true
+			else
+				self.FindHotPlace = false
+			end
+			
+			if self.FindHotPlace then
+				self:SwitchPanel(_TrainingUIStateEnum.Minigame)
+			else
+				self:SwitchPanel(_TrainingUIStateEnum.StartBurgerSales)
+			end
+			
+		elseif state == _TrainingUIStateEnum.Minigame then
+			
+			minigameNpc.SpriteGUIRendererComponent.Color.a = 1
+			minigameNpc.CanvasGroupComponent.GroupAlpha = 1
+			minigameNpc.UITransformComponent.anchoredPosition.x = 500
+			minigameNpc.Enable = true
+			_EntityService:GetEntityByPath(minigameNpc.Path.."/Rect/UIText").TextComponent.Text = _LocalizationService:GetText("Training_MinigameNpcMsg2") 
+			self:OpenMap(false)
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/MapButton").Enable = false 
+			todoListIcon1.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.BlinkMaterial)
+			todoListIcon2.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+			self.CanClickSpot = false
+			self.IsSpinning = false
+			
+			_TimerService:SetTimerOnce(function()
+				local duration = 2 
+				minigameNpc.UITweenPosition.duration = duration
+				minigameNpc.UITweenPosition:Play()
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_GhostMove"], 1)
+				 
+				_TimerService:SetTimerOnce( function() 
+					
+					if self.MyLunchBoxNum >= 1 then
+						minigamePanel.Enable = true
+						minigameNpc.Enable = true
+						_EntityService:GetEntityByPath(minigameNpc.Path.."/Rect/UIText").TextComponent.Text = _LocalizationService:GetText("Training_MinigameNpcMsg") 
+						_EntityService:GetEntityByPath("/ui/TrainingGroup/Background/Token").Enable = false	
+						
+					else
+						_EntityService:GetEntityByPath(minigameNpc.Path.."/Rect/UIText").TextComponent.Text = _LocalizationService:GetText("Training_MinigameNpcMsg3") 
+						_TimerService:SetTimerOnce(function() 
+							minigameNpc.UITweenAlpha:Play() 
+							_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_GhostMove"], 1)
+							_TimerService:SetTimerOnce(function()
+								minigameNpc.Enable = false
+								self:SwitchPanel(_TrainingUIStateEnum.StartBurgerSales)
+							end, duration)
+						end, 1)
+						
+					end
+					
+				end, duration)
+			end, 1.5)
+			
+		elseif state == _TrainingUIStateEnum.StartBurgerSales then
+			minigameNpc.Enable = false
+			minigamePanel.Enable = false
+			
+			_TimerService:SetTimerOnce(function() 
+				placePanelSkipBtn.Enable = true
+			end, 2)
+		
+			local selectedSpotKey = self.LastPickSpot.SpotComponent.SpotKey
+			local customerCount = self.SpotCustomerCountList[selectedSpotKey]
+			self:GiveReward(customerCount, self.FindHotPlace)
+			
+			if self.FindHotPlace then
+				self:ShowLastSpot_HotPlace()
+			else
+				self:ShowLastSpot()
+			end
+			
+		end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearHintScroll()
+		-- 힌트 스크롤을 지우는 함수
+		local hintBox = _EntityService:GetEntityByPath("/ui/TrainingGroup/Map/HintScrollBg/HintScroll")
+		local hintOriginEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/Map/HintScrollBg/HintScroll/HintButton")
+		
+		for _, child in pairs(hintBox.Children) do
+			if child.Name ~= "HintButton" then
+				child:Destroy()
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GiveReward(integer customerCount, boolean isHotPlace)
+		-- 훈련 완료 후 보상을 지급하는 함수
+		
+		
+		local player = self.Entity
+		self.FindHotPlace = isHotPlace
+		
+		local money = customerCount * self.MyBurgerPrice 
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(player.PlayerStage.NowStage)
+		local totalMoney = money * (1 + stageConfig.TrainingMoneyRate) 
+		
+		local level = player.PlayerManagement.ManagementLevel 
+		local rewardDataSet = _DataService:GetTable("TrainingRewardDataSet")
+		local arcane = rewardDataSet:FindRow("ManagementLevel", _StringUtilLogic:NumToString(level)):GetItem("ArcaneSymbolForTraining")
+		arcane = _StringUtilLogic:StringToInt(arcane)
+		local totalClover = arcane
+		
+		local stageId = self.Entity.PlayerStage.NowStage
+		local expData = _TrainingRewardLogic:GetData(stageId, level)
+		local expCount = expData.TrainingExpItemCount
+		local expCookItemId = expData.TrainingExpCookItemId
+		local expServingItemId = expData.TrainingExpServingItemId
+		
+		
+		self:AddExpReward(expCookItemId, expCount)
+		self:AddExpReward(expServingItemId, expCount)
+		
+		local skillTotalInfo = {}
+		
+		for i = 1, #self.ChuchuIds do
+			local empId = self.ChuchuIds[i]
+			local userId = self.Entity.PlayerComponent.UserId
+			local skillInfoTable = {}
+			local skillValueTable = {}
+			
+			local data = _EmployeeService:GetData(empId)
+			local skills = {data.Skill1Type, data.Skill2Type}
+			local canUseSkills = {}
+			
+			
+			for i = 1, #skills do
+				local skillData = _EmployeeSkillService:GetData(skills[i])
+				if skillData.Type == "Training" then
+					local canUseSkill = _EmployeeSkillService:CanUseSkill(empId, skills[i], self.Entity)
+					if canUseSkill then
+						table.insert(canUseSkills, skills[i])
+					end
+				end	
+			end
+			
+			if #canUseSkills > 0 then
+				
+				for i = 1, #canUseSkills do
+					local skillData = _EmployeeSkillService:GetData(canUseSkills[i])
+					local skillId = skillData.Id
+					local skillGrade = _EmployeeSkillService:ReturnSkillGrade(empId, skillId, self.Entity, userId)
+					local value = _EmployeeSkillService:ReturnSkillGradeValue(empId, skillId, self.Entity, userId)
+					skillInfoTable[i] = skillData
+					
+					if skillId == _SkillTypeEnum.TotalMoneyBonus then
+						skillValueTable[i] = money * value 
+						totalMoney += skillValueTable[i]
+						
+					elseif skillId ==  _SkillTypeEnum.ArcaneBonus then
+						skillValueTable[i] = arcane * value 
+						totalClover += skillValueTable[i]
+						
+					elseif skillId ==  _SkillTypeEnum.CookExpBonus then
+						local bonus = value
+						skillValueTable[i] = bonus
+						self:AddExpReward(expCookItemId, math.floor(bonus))
+						
+						
+					elseif skillId ==  _SkillTypeEnum.ServingExpBonus then
+						local bonus = value
+						skillValueTable[i] = bonus
+						self:AddExpReward(expServingItemId, math.floor(bonus))
+					end
+				end
+				skillTotalInfo[i] = {skillInfoTable, skillValueTable}
+			end
+			
+		end
+		
+		local playerInven = player.PlayerInventory
+		playerInven:ModifyLunchBox(-self.RequireTokenNum,"Enter training","Training popup")
+		playerInven:ModifyTrainingTicket(-1)
+		
+		
+		totalMoney = math.floor(totalMoney)
+		playerInven:ModifyMoney(totalMoney,"Training reward","Training result popup")
+		
+		local collectionBonus = player.ChuchuCollectionDB.ChuchuCollectionCloverBonus 
+		local collectionPercent = player.ChuchuCollectionDB.CollectionPercent
+		local strategyEffect = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.CloverRewardBonus, player.PlayerStage.NowStage) 
+		local originClover = math.floor(totalClover)
+		totalClover = math.floor(totalClover * (1 + (collectionBonus + strategyEffect)))
+		playerInven:ModifyArcaneSymbol(totalClover,"Training reward","Training popup")
+		
+		local cloverBonusList = {originClover, collectionBonus * 100, math.floor(originClover * collectionBonus), math.floor(strategyEffect  * 100), math.floor(originClover * strategyEffect)}
+		
+		local upgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, _UpgradeTypeEnum.TrainingUpgrade, player.PlayerComponent.UserId)
+		local reputation = tonumber(_DataService:GetTable("TrainingUpgradeDataSet"):FindRow("UpgradeLevel", tostring(upgradeLevel)):GetItem("TrainingReputationReward"))
+		local strategyReputation = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.ReputationRewardBonus, player.PlayerStage.NowStage) 
+		reputation = math.floor(reputation * (1 + stageConfig.TrainingReputationRewardRate) * (1 + strategyReputation))
+		playerInven:ModifyReputation(reputation)
+		
+		if self.Entity.PlayerCheatComponent:HasAuthority() then
+			self.Entity.PlayerDebugMonitor:UpdateDebugMonitorReputationChangeByContents(reputation,self.Entity.PlayerComponent.UserId)
+		end
+		
+		local achiProgress = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.TrainingIncome)
+		if totalMoney > achiProgress then
+			player.PlayerAchievement:RequestChangeProgress(_AchievementTypeEnum.TrainingIncome, totalMoney)
+		end
+		
+		local accumProgress = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.TrainingAccumIncome)
+		player.PlayerAchievement:RequestChangeProgress(_AchievementTypeEnum.TrainingAccumIncome, totalMoney + accumProgress)
+		
+		if self.FindHotPlace then
+			local hotPlaceProgress = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.TrainingSuccessCount)
+			player.PlayerAchievement:RequestChangeProgress(_AchievementTypeEnum.TrainingSuccessCount, hotPlaceProgress+1)
+		end
+		
+		local tutorialProgress = player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.TrainingEndCount)
+		player.PlayerAchievement:RequestChangeProgress(_TutorialAchievementTypeEnum.TrainingEndCount, tutorialProgress+1)
+		
+		local badgeProgress = player.PlayerBadge.BadgeProgress[_BadgeEnum.TrainingCount]
+		if badgeProgress == nil then
+			badgeProgress = 0
+		end
+		player.PlayerBadge:ChangeProgress(_BadgeEnum.TrainingCount, badgeProgress+1)
+		
+		local countAchi = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.TrainingCount)
+		player.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.TrainingCount, countAchi+1)
+		
+		player.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.P_Training, totalMoney)
+		
+		local rewardKeys = table.keys(self.RewardBoxes)
+		if #rewardKeys > 0 then
+			for i = 1, #rewardKeys do
+				local rewardId = rewardKeys[i]
+				local rewardCount = self.RewardBoxes[rewardId]
+				playerInven:RequestAddItem(rewardId, rewardCount,"Training reward","Training result popup") 
+			end
+		end
+		
+		self.RewardBoxes["G0006"] = 0 
+		self:SetResultUI(customerCount, self.MyBurgerPrice, totalMoney, totalClover, self.RewardBoxes, skillTotalInfo, cloverBonusList, player.PlayerComponent.UserId)
+		
+		self.RewardBoxes["G0001"] = totalMoney
+		self.RewardBoxes["G0004"] = totalClover
+		self.RewardBoxes["G0006"] = reputation
+	end
+
+	@ExecSpace("Client")
+	method void SetResultUI(integer customerCount, integer burgerPrice, integer totalMoney, integer totalClover, table rewardBoxes, table skillTotalInfo, table cloverBonusList)
+		-- 훈련 결과 UI를 설정하는 함수
+		
+		for i = 1, 3 do
+			local employeeId = self.ChuchuModels[i].TrainingChar.TCharId
+			local slot = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/ResultPopupDim/ResultPopup/ChuchuPanel/Chuchu_"..tostring(math.tointeger(i)))
+			local portrait = slot:GetChildByName("Frame"):GetChildByName("ChuChu")
+			local skillSlot = slot:GetChildByName("SkillSlot")
+			local skill1Entity = slot:GetChildByName("Skill1")
+			local skillNoText = slot:GetChildByName("NoSkillText")
+			
+			---@type EmployeeData
+			local data = _EmployeeService:GetData(employeeId)
+			portrait.UIImageAlign:UpdateCanvas(data.PortraitUIRUID)
+			portrait.Enable = true
+			
+			local hasTrainingSkill =  _EmployeeSkillService:HasSkillOfType(employeeId, "Training", _UserService.LocalPlayer)
+			if hasTrainingSkill then
+				local skillIcon = portrait.Parent:GetChildByName("SkillIcon")
+				skillIcon.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum:GetSkillTypeIcon("Training")
+				skillIcon.Enable = true
+			else
+				portrait.Parent:GetChildByName("SkillIcon").Enable = false
+			end
+			
+			
+			local skillId = data.Skill1Type
+			local skillGrade = _EmployeeSkillService:ReturnSkillGrade(employeeId, skillId, _UserService.LocalPlayer)
+			local skillData = _EmployeeSkillService:GetData(skillId)
+			skillSlot:GetChildByName("TypeIcon").SpriteGUIRendererComponent.ImageRUID =  _EmployeeSkillService:ReturnSkillIcon(skillId)
+			skillSlot.SpriteGUIRendererComponent.ImageRUID = _EmployeeSkillService:ReturnSkillSlotBg_Mini(skillGrade)
+			
+			local canUseSkill = _EmployeeSkillService:CanUseSkill(employeeId, skillId,_UserService.LocalPlayer)
+			skillSlot:GetChildByName("Disable").Enable = not canUseSkill
+			skillSlot:GetChildByName("Disable"):GetChildByName("ConditionText").Enable = false
+			
+			local chuchuSkillTable = skillTotalInfo[i]
+			skill1Entity:GetChildByName("Title").TextComponent.Text = _EmployeeSkillService:ReturnSkillName(skillId, skillGrade)
+			skill1Entity:GetChildByName("Title").TextComponent.OutlineColor =  _ColorCodeEnum:GetColor(_EmployeeSkillService:ReturnSkillGradeColor(skillGrade))
+				
+			if isvalid(chuchuSkillTable) then
+				local skillValueTable = chuchuSkillTable[2]
+				local skillValue = skillValueTable[1]
+				
+				local skillDesc = ""
+				
+				if skillId ==  _SkillTypeEnum.CookExpBonus then
+					skillDesc = "TrainingSkillDesc_Cook"
+				elseif skillId ==  _SkillTypeEnum.ServingExpBonus then
+					skillDesc = "TrainingSkillDesc_Serving"
+				elseif skillId == _SkillTypeEnum.TotalMoneyBonus then
+					skillDesc = "TrainingSkillDesc_Meso"
+					skillValue = _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(skillValue))
+				elseif skillId ==  _SkillTypeEnum.ArcaneBonus then
+					skillDesc = "TrainingSkillDesc_Arcane"
+					skillValue = _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(skillValue))
+				end
+				
+				skill1Entity:GetChildByName("Desc").TextComponent.Text =  _LocalizationService:GetTextFormat(skillDesc, skillValue)
+				skill1Entity.Enable = true
+				skillNoText.Enable = false
+			else
+				skillSlot:GetChildByName("Disable").Enable = false
+				skill1Entity.Enable = false
+				skillNoText.Enable = true
+				if hasTrainingSkill then
+					skillNoText.TextComponent.Text = _LocalizationService:GetText("TrainingSkillText_Locked") 
+					skillSlot:GetChildByName("Disable"):GetChildByName("UISprite").Enable = true 
+				else
+					skillNoText.TextComponent.Text = _LocalizationService:GetText("TrainingSkillText_NotTraining") 
+					skillSlot:GetChildByName("Disable"):GetChildByName("UISprite").Enable = false 
+				end
+				
+			end
+		end
+		
+		local burgerPriceEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/ResultPopupDim/ResultPopup/BurgerPanel/BurgerPriceTitle/BurgerPrice")
+		local customerNumEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/ResultPopupDim/ResultPopup/BurgerPanel/CustomerNumTitle/CustomerNum")
+		local moneyEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/ResultPopupDim/ResultPopup/BurgerPanel/TotalMoneyPanel/Money")
+		local cloverEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/ResultPopupDim/ResultPopup/BurgerPanel/TotalCloverPanel/Clover") 
+		
+		customerNumEntity.TextComponent.Text = _LocalizationService:GetTextFormat("People_Format", _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(customerCount)))
+		moneyEntity.TextComponent.Text =  _LocalizationService:GetTextFormat("Meso_Format", _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(totalMoney)))
+		burgerPriceEntity.TextComponent.Text = _LocalizationService:GetTextFormat("Meso_Format", _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(burgerPrice)))
+		cloverEntity.TextComponent.Text =  _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(totalClover))
+		
+		_UIGroupManager.TrainingGroup.UITraining:SetCloverInfo(cloverBonusList, _UIGroupManager.TrainingGroup.UITraining.CloverInfoBtn, nil)
+		
+		local rewardScroll = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/ResultPopupDim/ResultPopup/RewardPanel/Model_RewardScroll")
+		local rewardKeys = table.keys(rewardBoxes)
+		table.sort(rewardKeys, function(a, b) return a < b end)
+		
+		if #rewardKeys > 0 then
+			for i = 1, 10 do
+				local rewardId = rewardKeys[i]
+				local entity = rewardScroll:GetChildByName("Model_UIItemRewardSlot_"..tostring(math.tointeger(i)))
+				
+				if i > #rewardKeys then 
+					entity.UIItemRewardSlot:SetEmptySlot()
+				else
+					local rewardCount = rewardBoxes[rewardId]
+					entity.UIItemRewardSlot:SetItem(rewardId, rewardCount)
+					entity.UIItemRewardSlot.isShowDesc = false
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenResultUI()
+		-- 훈련 결과 UI를 여는 함수
+		local resultPopup = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/ResultPopupDim")
+		if resultPopup.Enable then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Whistle"], 1) 
+		if isvalid(self._T.cameraTimer) then
+			_TimerService:ClearTimer(self._T.cameraTimer)
+		end
+		
+		for _, entity in pairs(self.CustomerEntities) do
+			if entity.TrainingCustomerComponent ~= nil then
+				entity:Destroy()
+			end
+		end
+		resultPopup.Visible = false
+		resultPopup.Enable = true
+		
+		_TimerService:SetTimerOnce(function()
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Open_ResultPopup_v2"], 1) 
+			resultPopup.Visible = true
+			_UIGroupManager:EnableMoneyBarGroup(true)
+		end, 0.5)
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void OnEndTraining(boolean isClear)
+		-- 훈련이 끝났을 때 처리하는 함수
+		local player = self.Entity
+		_FadeService:HideFade(player.PlayerComponent.UserId)
+		
+		
+		if isClear == true then
+			if isvalid(self.RewardBoxes) then
+				_UIItemRewardService:SetItemRewardUI(self.RewardBoxes, "Training", player.PlayerComponent.UserId)
+			end
+			
+		end
+		
+		
+		self:LogEndTrainingServer(isClear)
+		player.TimeManager:RequestTimeFlowClient(player.PlayerComponent.UserId)
+		_UIGroupManager:EnableBackToLobbyBtn(false, player.PlayerComponent.UserId)
+		_BGMService:ApplyLobbyBGM(player.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogEndTrainingServer(boolean isClear)
+		-- 훈련 종료 로그를 서버에 기록하는 함수
+		local flowType = "1"
+		if not isClear then
+			flowType = "2"
+		end
+		local trainingData = {}
+		local customerNum = 0 
+		local reward = {} 
+		if isClear then 
+			customerNum = math.floor(self.RewardBoxes["G0001"] / self.MyBurgerPrice)
+			
+			table.clear(reward)
+			for k,v in pairs(self.RewardBoxes) do
+				table.insert(reward,{id=k,count=v})
+			end
+			
+			 trainingData = {
+				burgerPrice = self.MyBurgerPrice,
+				customerNum = customerNum,
+				trainingUpgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.TrainingUpgrade),
+				rouletteStar = self.MyStar,
+				reward = reward
+			}
+			
+		end
+		
+		local resultType = tostring(self.FindHotPlace)
+		local manageLevel = string.format("%d",self.Entity.PlayerManagement.ManagementLevel)
+		local manageIdx = self.Entity.PlayerManagement:GetGoalCount()
+		local playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+		local nickname = self.Entity.PlayerComponent.Nickname
+		
+		local logFail,value1 = pcall(
+			
+		function()
+		_LogStorageLogic:LogValue(
+			self.Entity.PlayerComponent.UserId,
+			_LogEnumType.TrainingFlow,
+			_HttpService:JSONEncode(trainingData),
+			{	
+				nickname = nickname,
+				flowType = flowType,
+				resultType = resultType,
+				employeeId1 = self.ChuchuIds[1],
+				employeeId2 = self.ChuchuIds[2],
+				employeeId3 = self.ChuchuIds[3],
+				manageLevel = manageLevel,
+				manageIndex = self.Entity.PlayerManagement:GetGoalCount(),
+				playerStageId = playerStageId
+			}
+		)
+		end)
+		
+		if not logFail then  end 
+		
+		self.Entity.PlayerLog:PlayflowLog(_LogSourceEnumType.Training,"1")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPlaceBg(boolean isHotPlace)
+		-- 선택된 장소에 따라 배경을 설정하는 함수
+		local selectedSpotKey = self.LastPickSpot.SpotComponent.SpotKey
+		local footholdRuid = self:GetSpotFoodholdFromKey(selectedSpotKey)
+		local bgRuid = self:GetSpotBgFromKey(selectedSpotKey)
+		local spotNameEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/SpotName/TitleText")
+		
+		if isHotPlace then
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold_HotPlace/Foot").SpriteGUIRendererComponent.ImageRUID = footholdRuid
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/PlaceBG").SpriteGUIRendererComponent.ImageRUID = bgRuid
+			local spotName = _LocalizationService:GetTextFormat("TrainingHotPlaceTitleText",self:GetSpotNameFromKey(selectedSpotKey))
+			spotNameEntity.TextComponent.Text = spotName
+		
+			spotNameEntity.Enable = true
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold_HotPlace").Enable = true
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold").Enable = false
+			
+			_BGMService:ApplyBGM(_BGMService.TrainingEDMBGM) 
+		else
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold/Foot").SpriteGUIRendererComponent.ImageRUID = footholdRuid
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/PlaceBG").SpriteGUIRendererComponent.ImageRUID = bgRuid
+			local spotName =  self:GetSpotNameFromKey(selectedSpotKey)
+			spotNameEntity.TextComponent.Text = spotName
+			spotNameEntity.Enable = true
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold").Enable = true
+			_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold_HotPlace").Enable = false
+			
+			_BGMService:ApplySpotBGM(self.LastPickSpot.SpotComponent.SpotKey) 
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void ChangeBurgerPriceUI(string isUpdatePrice, integer burgerPrice, integer myStar, integer starLevel)
+		-- 버거 가격 UI를 변경하는 함수
+		self.MyBurgerPrice = burgerPrice
+		self.MyStar = myStar
+		local maxStar = 10
+		
+		local burgerNumEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/BurgerIcon/BurgerNum")
+		
+		if isUpdatePrice  == "Up" then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["BurgerPriceUp"], 1) 
+			local origin = _EntityService:GetEntityByPath("/ui/TrainingGroup/Firework_1")
+			local firework = _SpawnService:SpawnByEntity(origin,"Firework", Vector3.zero, burgerNumEntity)
+			_TimerService:SetTimerOnce(function() firework:Destroy() end, 2)
+			
+		elseif isUpdatePrice == "Down" then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["BurgerPriceDown"], 1) 
+			local origin = _EntityService:GetEntityByPath("/ui/TrainingGroup/Firework_2")
+			local firework = _SpawnService:SpawnByEntity(origin,"Firework", Vector3.zero, burgerNumEntity)
+			_TimerService:SetTimerOnce(function() firework:Destroy() end, 2)
+			
+		end
+		burgerNumEntity.TextComponent.Text =  _LocalizationService:GetTextFormat("Meso_Format", tostring(self.MyBurgerPrice))
+		local gauge = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/StarTable/StarGauge/Gauge")
+		gauge.SpriteGUIRendererComponent.FillAmount = self.MyStar / maxStar
+		
+		for i = 1, 5 do
+			local starLevelPanel = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/StarTable/Star".._StringUtilLogic:NumToString(i))
+			local mesoLevelPanel =  _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/StarTable/Meso".._StringUtilLogic:NumToString(i))
+			if i == starLevel or (i == 1 and starLevel == 0) then 
+				starLevelPanel.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.TrainingRouletteOn
+				mesoLevelPanel.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.TrainingRouletteOn
+				starLevelPanel.TextComponent.FontColor = _ColorCodeEnum:GetColor("#ffffff")
+				starLevelPanel.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#dd9c00")
+				mesoLevelPanel.TextComponent.FontColor = _ColorCodeEnum:GetColor("#ffffff")
+				mesoLevelPanel.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#dd9c00")
+			else
+				starLevelPanel.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.TrainingRoulette
+				mesoLevelPanel.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.TrainingRoulette
+				starLevelPanel.TextComponent.FontColor = _ColorCodeEnum:GetColor("#72634b")
+				starLevelPanel.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#ffffff")
+				mesoLevelPanel.TextComponent.FontColor = _ColorCodeEnum:GetColor("#72634b")
+				mesoLevelPanel.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#ffffff")
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetSelectedChuchuIdList(table list)
+		-- 선택된 캐릭터 ID 목록을 설정하는 함수
+		if #list < 1 then
+			table.clear(self.ChuchuIds)	
+		end
+		
+		for i = 1, 3 do 
+			local empId = list[i]
+			if _UtilLogic:IsNilorEmptyString(empId) or self.Entity.EmployeeManager:CheckEmployeeAlreadyHave(empId) == false then 
+				self.ChuchuIds[i] = nil
+			else
+				self.ChuchuIds[i] = list[i]
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void CheatStateChange(string state)
+		-- 치트로 상태를 변경하는 함수
+		self.Turn = state
+		self:NextTurn()
+	end
+
+	@ExecSpace("Client")
+	method boolean ModifyLunchBoxNum(integer amount)
+		-- 도시락 개수를 수정하는 함수
+		if self.MyLunchBoxNum - amount < 0 then
+			_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("NoTrainingTokenToastMsg"))
+			return false
+		else
+			local lastLunchBoxNum = self.MyLunchBoxNum
+			self.MyLunchBoxNum -= amount
+			local nowTCharChat = _EntityService:GetEntityByPath("/ui/TrainingGroup/Map/NowTChar/Chatballoon/UIText").TextComponent
+			
+			if self.MyLunchBoxNum == 0 then
+				nowTCharChat.Text =  _LocalizationService:GetText("TrainingChuchuChatBalloonText2")
+			else
+				nowTCharChat.Text =  _LocalizationService:GetText("TrainingChuchuChatBalloonText1")
+			end
+			
+			local btn = _UIGroupManager.TrainingGroup.UITraining.HintSkipButton
+			if self.MyLunchBoxNum <= 3 then 
+				btn.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.ScorePreviewMaterial)
+			else
+				btn.SpriteGUIRendererComponent:ChangeMaterial(nil)
+			end
+			
+			
+			for i = 1, #self.LunchBoxEntities do
+				if i <= lastLunchBoxNum then 
+					self.LunchBoxEntities[i].Enable = true
+				else
+					self.LunchBoxEntities[i].Enable = false
+				end
+			end
+			
+			for i = 1, #self.LunchBoxEntities_Minigame do
+				if i <= lastLunchBoxNum  then
+					self.LunchBoxEntities_Minigame[i].Enable = true
+				else
+					self.LunchBoxEntities_Minigame[i].Enable = false
+				end
+			end
+			
+			for i = 1, #self.LunchBoxEntities_Map do
+				if i <= lastLunchBoxNum  then
+					self.LunchBoxEntities_Map[i].Enable = true
+				else
+					self.LunchBoxEntities_Map[i].Enable = false
+				end
+			end
+			
+			local efffect = function()
+				
+				local tokenNumText = _LocalizationService:GetTextFormat("Things_Format", "<color=#6b8911>"..tostring(self.MyLunchBoxNum).."</color>")
+				_EntityService:GetEntityByPath("/ui/TrainingGroup/Background/Token/TokenNumBalloon/TokenNum").TextComponent.Text = tokenNumText
+				_EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/Token_Minigame/TokenNumBalloon/TokenNum").TextComponent.Text = tokenNumText
+				_EntityService:GetEntityByPath("/ui/TrainingGroup/Map/Token_Map/TokenNumBalloon/TokenNum").TextComponent.Text = tokenNumText
+				
+				if self.MyLunchBoxNum == lastLunchBoxNum - 1 then
+				
+					local tween = function(entity)
+						entity.Enable = true 
+						entity.UITweenRotate:Play()
+						entity.UITweenAlpha:Play()
+						entity.UITweenScale:Play()
+						_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_ChuchuExpUp"], 0.5)
+						
+						_TimerService:SetTimerOnce(function() 
+							entity.Enable = false 
+							entity.UITweenRotate:Stop()
+							entity.UITweenAlpha:Stop()
+							entity.UITweenScale:Stop()
+							entity.UITransformComponent.ZRotation = 0
+							entity.UITransformComponent.RectSize = Vector2(130, 130)
+							entity.SpriteGUIRendererComponent.Color.a = 1
+						end, 1)
+					end
+					
+					---@type Entity
+					local entity = self.LunchBoxEntities[lastLunchBoxNum]
+					
+					if isvalid(entity) then
+						tween(entity)
+					end
+					entity = self.LunchBoxEntities_Minigame[lastLunchBoxNum]
+					if isvalid(entity) then
+						tween(entity)
+					end
+					entity = self.LunchBoxEntities_Map[lastLunchBoxNum]
+					if isvalid(entity) then
+						tween(entity)
+					end
+				end
+			end
+			
+			if amount ~= 0 then
+				_TimerService:SetTimerOnce(efffect, 0.5)
+			end
+			
+				
+			return true
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RouletteStart()
+		-- 룰렛을 시작하는 함수
+		local panel = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/BinglePanel/Panel")
+		local resultPanel = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/MinigamePanel/StarTable/Result")
+		local rewards = {"+1", "+3", "-2", "+2"}
+		local weight = {"25", "25", "25", "25"}
+		local startAngle = 0
+		local rotateAngle = 45
+		local rotateFriction = 0.98
+		
+		if self.IsSpinning == false then
+			local randomPick = _RandomLogic:ReturnRandomPickWeight(weight)
+			self._T.result = rewards[randomPick]
+			
+			if self._T.result == rewards[1] then
+				startAngle = -315
+				
+			elseif self._T.result == rewards[2] then
+				startAngle = -225
+				
+			elseif self._T.result == rewards[3] then
+				startAngle = -135
+				
+			elseif self._T.result == rewards[4] then
+				startAngle = -45
+			end	
+		end
+		
+		local function endSpin()
+			panel.UITransformComponent.ZRotation = self._T.goalAngle
+			_TimerService:ClearTimer(self._T.spinTimer)
+			if resultPanel.Enable then
+				return
+			end
+			_SoundService:StopSound(_ResourceManager.SFXTable["Eff_Spin_Loop"]) 
+			
+			if self._T.result == rewards[3] then
+				resultPanel.TextComponent.FontColor = _ColorCodeEnum:GetColor("#ff4855")
+				resultPanel.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#2d1410")
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_TrainingSpinFail"], 1) 
+			else
+				resultPanel.TextComponent.FontColor = _ColorCodeEnum:GetColor("#ffda33")
+				resultPanel.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#774c1a")
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_TrainingSpinSuccess"], 1) 
+			end
+			resultPanel.TextComponent.Text = self._T.result
+			resultPanel.Enable = true
+			
+			self:ChangeBurgerPrice(self._T.result)
+		
+			_TimerService:SetTimerOnce( function() 
+				panel.UITransformComponent.ZRotation = 0
+				self.IsSpinning = false
+				resultPanel.Enable = false 
+			end, 1.5)
+		end
+			
+		local function spin() 
+			if  0 <= self._T.goalAngle - panel.UITransformComponent.ZRotation then
+				endSpin()
+				
+			else
+				rotateAngle *= rotateFriction
+				panel.UITransformComponent:Rotate(-rotateAngle)
+				self._T.spinTimer = _TimerService:SetTimerOnce(spin, 0.03)
+			end
+		end
+		
+		
+		if self.IsSpinning == true then
+			endSpin()
+			
+		elseif self.IsSpinning == false then
+			if self:ModifyLunchBoxNum(1) == true then
+				
+				self.IsSpinning = true
+				
+				self._T.goalAngle = startAngle -360 * 5 
+				local plusAngle = _UtilLogic:RandomIntegerRange(2,5) * 15
+				self._T.goalAngle = self._T.goalAngle - plusAngle
+				self._T.spinTimer = _TimerService:SetTimerOnce(spin, 0.03)
+				_SoundService:PlayLoopSound(_ResourceManager.SFXTable["Eff_Spin_Loop"], 1) 
+			end
+		end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenMap(boolean open)
+		-- 지도를 열거나 닫는 함수
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/Map").Enable = open
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/MapButton").Enable = not open
+		_EntityService:GetEntityByPath("/ui/TrainingGroup/MapCloseButton").Enable = open
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AddPaperHintInScroll(string type)
+		-- 스크롤에 종이 힌트를 추가하는 함수
+		local hintBox = _EntityService:GetEntityByPath("/ui/TrainingGroup/Map/HintScrollBg/HintScroll")
+		local hintOriginEntity = _EntityService:GetEntityByPath("/ui/TrainingGroup/Map/HintScrollBg/HintScroll/HintButton")
+		local newHintIcon = _SpawnService:SpawnByEntity(hintOriginEntity, "PaperHint", Vector3.zero, hintBox)
+		newHintIcon.PaperHintComponent:SetPaperHint(type)
+		hintOriginEntity.Enable = false
+		
+		local result = _TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.TrainingGetHint)
+		
+		_TimerService:SetTimerOnce(function() 
+			self:OnClickPaperHintIcon(newHintIcon) 
+		end, 0.5)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickPaperHintIcon(Entity entity)
+		-- 종이 힌트 아이콘을 클릭할 때 처리하는 함수
+		self:OpenHintPopup(entity)
+	end
+
+	@ExecSpace("Server")
+	method void AddRewardBox(string rewardId, integer rewardCount)
+		-- 보상 상자를 추가하는 함수
+		local value = self.RewardBoxes[rewardId]
+		
+		if value == nil then
+			self.RewardBoxes[rewardId] = rewardCount
+		else
+			self.RewardBoxes[rewardId] = value + rewardCount
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetSpotNameFromKey(string spotKey)
+		-- 스팟 키로부터 스팟 이름을 가져오는 함수
+		local nameKey = _DataService:GetTable("SpotDataSet"):FindRow("SpotKey", spotKey):GetItem("NameKey")
+		return _LocalizationService:GetText(nameKey)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetSpotFoodholdFromKey(string spotKey)
+		-- 스팟 키로부터 지형 RUID를 가져오는 함수
+		if spotKey ~= self.HotSpotKey then
+			if Environment:IsMobilePlatform() then
+				spotKey = "Spot03"
+			end
+			local FootholdRuid =  _DataService:GetTable("SpotDataSet"):FindRow("SpotKey", spotKey):GetItem("FootholdRuid")
+			local Foothold = _ResourceLoadLogic:OptimizeMobileResource(FootholdRuid) 
+			return Foothold
+		else
+			local hotplaceFoothold = _ResourceLoadLogic:OptimizeMobileResource("ba85ce3cffc440719b61963fb66b2483")
+			return hotplaceFoothold 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetSpotBgFromKey(string spotKey)
+		-- 스팟 키로부터 배경 RUID를 가져오는 함수
+		if spotKey ~= self.HotSpotKey then
+			if Environment:IsMobilePlatform() then
+				spotKey = "Spot03"
+			end
+			local BgRuid =  _DataService:GetTable("SpotDataSet"):FindRow("SpotKey", spotKey):GetItem("BgRuid")
+			local Bg = _ResourceLoadLogic:OptimizeMobileResource(BgRuid) 
+			return Bg
+			
+		else
+			local hotplaceBG = _ResourceLoadLogic:OptimizeMobileResource("7cc57dab815f42e2a7ce7d27c277ed87")
+			
+			return hotplaceBG 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetProgressBar(integer value)
+		-- 진행 바를 설정하는 함수
+		local progressUnits = {}
+		
+		local progressScroll = _EntityService:GetEntityByPath("/ui/TrainingGroup/Title/ProcessScroll")
+		local progerssBar =  _EntityService:GetEntityByPath("/ui/TrainingGroup/Title/ProcessScroll/ProgressFrame/ProgressBar")
+		progerssBar.SliderComponent.Value = value
+		
+		for i = 1, 5 do
+			---@type Entity
+			local unit = progressScroll:GetChildByName("ProcessUnit_"..tostring(math.tointeger(i)))
+			
+			if value + 1 == i then 
+				unit.SpriteGUIRendererComponent.ImageRUID = "cceb56f1c3504723b1fd3f3c940eb667"
+				unit:GetChildByName("TurnName").Enable = true
+			else
+				unit.SpriteGUIRendererComponent.ImageRUID = "1ef407785ea346798669c5f5b3ab18d7"
+				unit:GetChildByName("TurnName").Enable = false
+			end
+		end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckTodoList(boolean list1, boolean list2)
+		-- 할 일 목록을 체크하는 함수
+		
+		local todoListIcon1 = _EntityService:GetEntityByPath("/ui/TrainingGroup/Title/TodoList/List1/Icon")
+		local todoListIcon2 = _EntityService:GetEntityByPath("/ui/TrainingGroup/Title/TodoList/List2/Icon")
+		
+		if list1 then
+			todoListIcon1.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.Check_Green
+		else
+			todoListIcon1.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.Check_Black
+		end
+		
+		if list2 then
+			todoListIcon2.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.Check_Green
+		else
+			todoListIcon2.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.Check_Black
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowLastSpot()
+		-- 마지막 스팟을 보여주는 함수
+		local panel = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel")
+		local rainbow = panel:GetChildByName("Rainbow")
+		rainbow.Enable = false
+		local particle = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold/Foot/Truck/BurgerParticle")
+		particle.Enable = true
+		
+		for i = 1, #self.ChuchuModels do
+			---@type Entity
+			local char = self.ChuchuModels[i]
+			char.TrainingChar:Emotion("Chat")
+		end
+		
+		local upgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.TrainingUpgrade)
+		local customerCount = upgradeLevel 
+		if customerCount < 3 then
+				customerCount = 3 
+			end
+		if Environment:IsMobilePlatform() then
+			customerCount = customerCount / 3
+		end
+		customerCount = math.tointeger(math.min(customerCount, 15))
+		
+		---@type Entity
+		local customer = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold/Foot/Customer")
+		local custoemrSpawn = function() 
+			if customerCount < 1 then
+				_TimerService:ClearTimer(self._T.customerSpawnTimer)
+				customer.Enable = false
+				return
+			end
+			local newCrowd = _SpawnService:SpawnByEntity(customer, "Customer"..tostring(customerCount), Vector3.zero, customer.Parent)
+			table.insert(self.CustomerEntities, newCrowd)
+			newCrowd.TrainingCustomerComponent:Set(false)
+			customerCount -= 1
+		end
+		
+		self._T.customerSpawnTimer = _TimerService:SetTimerRepeat(custoemrSpawn, 0.5, 0)
+		_TimerService:SetTimerOnce(function() 
+			_TimerService:ClearTimer(self._T.cameraTimer)
+			self:OpenResultUI()
+			particle.Enable = false
+		end, 10)
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowLastSpot_HotPlace()
+		-- 핫플레이스 마지막 스팟을 보여주는 함수
+		
+		local panel = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel")
+		local bg = panel:GetChildByName("PlaceBG")
+		local footHold = panel:GetChildByName("Foothold")
+		local footHoldHot = panel:GetChildByName("Foothold_HotPlace")
+		local rainbow = panel:GetChildByName("Rainbow")
+		local particle = footHoldHot:GetChildByName("BurgerParticle_HotPlace")
+		rainbow.Enable = true
+		particle.Enable = true
+		
+		local cameraCount = 0
+		local amount = 2.5
+		local originPos = panel.UITransformComponent.anchoredPosition.y
+		self._T.cameraTimer = _TimerService:SetTimerRepeat(function() 
+			
+			cameraCount += 1
+			if cameraCount <= 10 then
+				bg.UITransformComponent.anchoredPosition.y += amount
+				footHold.UITransformComponent.anchoredPosition.y += amount
+				footHoldHot.UITransformComponent.anchoredPosition.y += amount
+				
+			elseif cameraCount <= 20 then
+				bg.UITransformComponent.anchoredPosition.y -= amount
+				footHold.UITransformComponent.anchoredPosition.y -= amount
+				footHoldHot.UITransformComponent.anchoredPosition.y -= amount
+				
+			end
+			
+			if cameraCount == 20 then
+				cameraCount = 0
+			end
+		
+		end, 0.04, 0.5)
+		
+		
+		for i = 1, #self.ChuchuModels do
+			---@type Entity
+			local char = self.ChuchuModels[i]
+			char.TrainingChar:Emotion("Love")
+		end
+		
+		local upgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.TrainingUpgrade)
+		local customerCount = upgradeLevel + 2 
+		if customerCount < 3 then
+			customerCount = 3 
+		end
+		if Environment:IsMobilePlatform() then
+			customerCount = customerCount / 3
+		end
+		customerCount = math.tointeger(math.min(customerCount, 15))
+		
+		---@type Entity
+		local customer = _EntityService:GetEntityByPath("/ui/TrainingGroup/PlacePanel/Foothold_HotPlace/Foot/Customer")
+		
+		local custoemrSpawn = function() 
+			if customerCount < 1 then
+				_TimerService:ClearTimer(self._T.customerSpawnTimer)
+				customer.Enable = false
+				return
+			end
+			local newCrowd = _SpawnService:SpawnByEntity(customer, "Customer"..tostring(customerCount), Vector3.zero, customer.Parent)
+			table.insert(self.CustomerEntities, newCrowd)
+			newCrowd.TrainingCustomerComponent:Set(true)
+			customerCount -= 1
+		end
+		
+		self._T.customerSpawnTimer = _TimerService:SetTimerRepeat(custoemrSpawn, 0.5, 0)
+		_TimerService:SetTimerOnce(function() 
+			_TimerService:ClearTimer(self._T.cameraTimer)
+			self:OpenResultUI()
+			particle.Enable = false
+		end, 10)
+	end
+
+	@ExecSpace("Client")
+	method void EnterTrainingToast(string msg)
+		-- 훈련 입장 토스트 메시지를 보여주는 함수
+		_UIToast:ShowMessage(_LocalizationService:GetText(msg))
+	end
+
+	@ExecSpace("Server")
+	method void SetHotPlaceName(string hotPlaceName)
+		-- 핫플레이스 이름을 설정하는 함수
+		self.HotPlaceName = hotPlaceName
+	end
+
+	@ExecSpace("Server")
+	method void ChangeMonth_HalfYear(integer month)
+		-- 월에 따라 반기 정보를 변경하는 함수
+		local period = _GetConfigDataLogic:GetConfigNumDataByKey("FestivalPeriodForTraining", self.Entity.PlayerComponent.UserId)
+		local halfYear = 1
+		
+		if month > period then
+			halfYear = 2	
+		end
+		self:UpdateTrainingTicket(halfYear, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void AddExpReward(string expId, integer expCount)
+		-- 경험치 보상을 추가하는 함수
+		
+		if isvalid(self.RewardBoxes[expId]) then
+			self.RewardBoxes[expId] += expCount
+		else
+			self.RewardBoxes[expId] = expCount
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnLastSpotSelect()
+		-- 마지막 스팟을 선택할 때 처리하는 함수
+		if isvalid(self.LastPickSpot) == false then
+			_UIToast:ShowMessage(_LocalizationService:GetText("TrainingSelectPlaceMsg"))
+			return
+		end
+		
+		self:NextTurn()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickHintSkipButton()
+		-- 힌트 건너뛰기 버튼을 클릭할 때 처리하는 함수
+		local onOk = function()
+			_UIGroupManager.TrainingGroup.UITraining.HintSkipButton.Enable = false
+			_UserService.LocalPlayer.PlayerTrainingManager:CheatStateChange("FirstNight")
+		end
+		
+		local msg = _LocalizationService:GetText("TrainingFindHotPlacePopupMsg")
+		local title = _LocalizationService:GetText("TrainingFindHotPlacePopupTitle")
+		_UIPopup:Open(msg, onOk, function() end, title)
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateTrainingTicket(integer halfYear)
+		-- 훈련 티켓 UI를 업데이트하는 함수
+		_UIGroupManager.TrainingSettingGroup.UITrainingSetting.CheckHalfYear = halfYear
+		_UIGroupManager.TrainingSettingGroup.UITrainingSetting:UpdateTrainingTicketUI()
+	end
+
+	@ExecSpace("Client")
+	method void OnClickTruckArea()
+		-- 트럭 영역을 클릭할 때 처리하는 함수
+		_UIGroupManager.TrainingSettingGroup.UITrainingSetting:OnClickTruckArea()
+	end
+
+end

@@ -1,0 +1,283 @@
+@Component
+script GoldAppleAltarInteraction extends InteractionComponent
+
+	property string openRUID = "fb298f68254840dc82cee75bf4b9b1a6"
+
+	property string closeRUID = ""
+
+	property number rewardCount = 0
+
+	property table apple = {}
+
+	property number speed = 0
+
+	@Sync
+	property Entity guideImage = nil
+
+	property boolean cooltime = false
+
+	property Entity targetPlayer = nil
+
+	@ExecSpace("Server")
+	method void GiveReward(Entity player)
+		-- 확률에 따라 골드, 젬, 또는 장신구 중 하나의 보상을 플레이어에게 지급
+		local prob = _UtilLogic:RandomDouble()
+		local type = ""
+		if prob <= 0.9 then
+			local amount = 7000000000*(1+ 0.6*(player.PlayerIngameData.TempleFloor_Current - 1))
+			player.PlayerData:GetMoney(amount)
+			-- 골드
+			type = "gold"
+			_UIGetLog:AddLog(Color.white, "CurrencyItemName_1", amount, true, "CurrencyItemName_1", "6868a6e6809e422186a261f92c61b250", player.PlayerComponent.UserId)
+			
+		elseif prob <= 0.99 then
+			self:PlaySoundInClient("fc15ba902a28413c87acaf06b7953136", player.PlayerComponent.UserId)
+			local randAmount = _UtilLogic:RandomIntegerRange(10, 15)
+			player.PlayerStorage:AddCurrencyItems(2, randAmount, false)
+			type = "gem"
+			_UIGetLog:AddLog(Color.white, "CurrencyItemName_2", randAmount, true, "CurrencyItemName_2", "fb14328ed2164b5b972c8e8a98e82ed7", player.PlayerComponent.UserId)
+		else
+			-- 장신구 상자
+			self:PlaySoundInClient("92e6c54f61f343cbb8141a3ea32ee784", player.PlayerComponent.UserId)
+			local part = _UtilLogic:RandomIntegerRange(1, 3)
+			local grade = 1
+			local gradeProb = {90.0, 8.0, 1.5, 0.4, 0.1}
+				
+			-- 공허 아이템 10 : 장신구 획득 시 더 높은 등급을 얻을 확률 증가
+			-- 일반~전설등급 드롭률을 올리고, 흔함등급 드롭률을 낮춥니다.
+			local voidItemLv = player.PlayerVoidItem.haveItems[10]
+			local voidItemTable = _DataService:GetTable("VoidItems")
+			if voidItemLv > 0 then
+				local initAbility = voidItemTable:GetCell(10, "InitAbility")
+				local levelAbility = voidItemTable:GetCell(10, "AbilityPerLevel")
+				local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+					
+				local normalProbDelta = 0
+				for i=2, 5 do
+					local currentGradeProbDelta = gradeProb[i] * currentAbility/100 
+					normalProbDelta = normalProbDelta + currentGradeProbDelta
+						
+					gradeProb[i] = gradeProb[i] + currentGradeProbDelta
+				end
+				gradeProb[1] = gradeProb[1] - normalProbDelta
+				 -- _UIGetLog:PrintVoidItemLog(10, player.OwnerId)
+			end
+				
+				local gradeRandomVal = _UtilLogic:RandomIntegerRange(1, 10000)/100
+				local currentProb = 0
+				for i=1, 5 do
+					if gradeRandomVal > currentProb and gradeRandomVal <= currentProb + gradeProb[i] then
+						grade = i
+					end
+					
+					currentProb = currentProb + gradeProb[i]
+				end
+				if grade > 1 then -- 여기로
+					_UIGetLog:PrintVoidItemLog(10, player.OwnerId)
+				end
+				local set =_UtilLogic:RandomIntegerRange(1, 5) 
+				
+				local status = _AccessoryLogic:SetStatus(part, grade)
+				player.PlayerAccessory:GetItems(part, grade, set, status)
+				type = "accessory"
+		end
+		
+		self:SpawnReward(type, player.PlayerComponent.UserId)
+		
+		self._T.openFrame = false
+	end
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 서버에서는 가이드 이미지를 설정하고 클라이언트에서는 초기 상태를 설정
+		if self:IsServer() then
+			local guideImage = self.Entity:GetChildByName("GuideImage")
+			self.guideImage = guideImage
+		end
+		
+		if self:IsClient() then
+			self._T.originRUID = self.Entity.SpriteRendererComponent.SpriteRUID
+			self._T.openFrame = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SpawnReward(string type)
+		-- 보상 타입에 따라 해당하는 시각적 보상 박스를 소환
+		-- 골드 박스 : 6868a6e6809e422186a261f92c61b250 /model://51ec0c4b-77b2-4e2b-a645-283ba4cc0d51
+		-- 젬 박스 : fb14328ed2164b5b972c8e8a98e82ed7 /model://c1ffeedf-b9f4-4bb1-b2ea-4e736ea3546b
+		-- 장신구 : 180a8bd82b53413192ac0710a5c9ba02 / model://5f373074-5b93-4d2a-8a70-44d91cc1d26f
+		local modelId = ""
+		if type == "gold" then
+			modelId = "model://51ec0c4b-77b2-4e2b-a645-283ba4cc0d51" --
+		elseif type == "gem" then
+			modelId = "model://c1ffeedf-b9f4-4bb1-b2ea-4e736ea3546b"
+		elseif type == "accessory" then
+			modelId = "model://5f373074-5b93-4d2a-8a70-44d91cc1d26f"		
+		end
+		local randX = _UtilLogic:RandomIntegerRange(-5, 5) / 10
+		local reward = _SpawnService:SpawnByModelId(modelId, "rewardBox", Vector3(randX, 0, 0), self.Entity:GetChildByName("targetPos"))
+	end
+
+	@ExecSpace("Server")
+	method void CheckGoldAppleCountInServer(Entity target)
+		-- 서버에서 플레이어의 황금사과 보유량을 확인하고 처리
+		if target.PlayerStateAtStage.HavingMaterialNum >= 1 then
+			self:SetRewardCountInClient(target.PlayerStateAtStage.HavingMaterialNum, target, target.PlayerComponent.UserId)
+			target.PlayerStateAtStage:LoseMaterial(target.PlayerStateAtStage.HavingMaterialNum, true)
+		else
+			self:ShowMessage(target.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetRewardCountInClient(number amount, Entity target)
+		-- 클라이언트에서 보상 개수를 설정하고 제단 상태를 업데이트
+		if target.PlayerComponent.UserId ~= _UserService.LocalPlayer.PlayerComponent.UserId then
+			return
+		end
+		
+		self.rewardCount = amount
+		self.targetPlayer = target
+		self.cooltime = true
+		self.Entity:GetChildByName("Guide_Key").Enable = false
+		self.Entity.SpriteRendererComponent.SpriteRUID = self.openRUID
+	end
+
+	@ExecSpace("Client")
+	method void ShowMessage()
+		-- 황금사과가 없을 때 경고 메시지를 표시
+		_UIToast:ShowMessage(_LocalizationService:GetText("Message_NoGoldApple"))
+	end
+
+	@ExecSpace("Client")
+	method void PlaySoundInClient(string soundRUID)
+		-- 클라이언트에서 지정된 사운드를 재생
+		_SoundService:PlaySound(soundRUID, 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 플레이어가 제단 상호작용 범위에 들어왔을 때 가이드 키 UI를 표시
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		if isvalid(InteractionEntity.PlayerIngameData) then
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			local spawnPos = Vector3(0, 4, 0)
+			local guideUI = _SpawnService:SpawnByModelId("model://85ad2718-739a-4bf9-aee4-f439cda53303", "Guide_Key", spawnPos, self.Entity)
+			guideUI:GetChildByName("UIText").TextComponent.Text = _LocalizationService:GetText("Use")
+			
+			guideUI:GetChildByName("icon_key_E").UITransformComponent.WorldPosition.x = guideUI:GetChildByName("icon_key_E").UITransformComponent.WorldPosition.x + 0.2
+			guideUI:GetChildByName("UIText").UITransformComponent.RectSize = Vector2(420, 100)
+		
+			if InteractionEntity ~= _UserService.LocalPlayer then
+				guideUI.Enable = false
+			else 
+				guideUI.Enable = true
+			end
+		else
+			guideKeyWorldUI.Enable = true
+		end
+		self.guideImage.Enable = false
+			--[[
+			local guideUI = _SpawnService:SpawnByModelId("model://85ad2718-739a-4bf9-aee4-f439cda53303", "Guide_Key", Vector3(0, 3.2, 0), self.Entity)
+			self.Entity:GetChildByName("Chatballoon").Enable = true	
+			]]--	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 플레이어가 제단 상호작용 범위를 벗어났을 때 가이드 키 UI를 숨김
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		if isvalid(InteractionEntity.PlayerIngameData) then --and isvalid(self.Entity:GetChildByName("Guide_Key")) then
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			log("가이드 키가 없습니다.")
+			return
+		end
+		
+		guideKeyWorldUI.Enable = false
+		self.guideImage.Enable = true
+		
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 플레이어가 제단과 상호작용했을 때 황금사과 개수를 확인하고 제물 바치기 실행
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		if isvalid(InteractionEntity.PlayerIngameData) and not self.cooltime then
+			self:CheckGoldAppleCountInServer(InteractionEntity)
+			-- self:Sacrifice(InteractionEntity)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleSpriteAnimPlayerChangeFrameEvent(SpriteAnimPlayerChangeFrameEvent event)
+		-- 제단 애니메이션 프레임 변화를 처리하여 보상 사과를 소환하거나 제단을 닫음
+		-- Parameters
+		local FrameIndex = event.FrameIndex
+		local ReversePlaying = event.ReversePlaying
+		local TotalFrameCount = event.TotalFrameCount
+		local AnimPlayer = event.AnimPlayer
+		--------------------------------------------------------
+		if self.Entity.SpriteRendererComponent.SpriteRUID == self.openRUID then
+			if FrameIndex >= TotalFrameCount and not self._T.openFrame then
+				self._T.openFrame = true
+				_EffectService:PlayEffectAttached("25f9ec679de843fab43df8f85c8330e2", self.Entity:GetChildByName("targetPos"), Vector3.zero, 0, Vector3(4,4,4)) -- 이펙트
+				local spawnApple = function()
+					local randX = _UtilLogic:RandomIntegerRange(-5, 5) / 10
+					local randY = _UtilLogic:RandomIntegerRange(-5, 5) / 10
+					local targetPos = self.Entity:GetChildByName("targetPos").TransformComponent.WorldPosition
+					local apple = _SpawnService:SpawnByModelId("model://c3422a60-f0e2-48c9-b84f-391206c512b0", "apple", Vector3(targetPos.x + randX, targetPos.y - 1, 0), self.Entity.CurrentMap)
+					apple.SpriteRendererComponent.SortingLayer = "Foreground"
+					apple.SpriteRendererComponent.StartFrameIndex = FrameIndex
+				end
+				
+				for i = 1 , self.rewardCount do
+					_TimerService:SetTimerOnce(spawnApple, 1 * (i/self.rewardCount))
+				end
+			end
+		
+		elseif self.Entity.SpriteRendererComponent.SpriteRUID == self.closeRUID then
+			if FrameIndex == TotalFrameCount then
+				self.Entity.SpriteRendererComponent.SpriteRUID = self._T.originRUID
+				self._T.openFrame = false
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "bf5e3d4f-8ae2-4e81-9dae-a059f95b35ee")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 보상 사과가 트리거에 들어왔을 때 사과를 파괴하고 보상을 지급
+		-- Parameters
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		--------------------------------------------------------
+		if TriggerBodyEntity.Name == "apple" then
+			TriggerBodyEntity:Destroy()
+			self.rewardCount = self.rewardCount - 1
+			self:GiveReward(self.targetPlayer)
+			if self.rewardCount == 0 then
+				self.Entity.SpriteRendererComponent.SpriteRUID = self.closeRUID
+				self.cooltime = false
+				self.targetPlayer = nil
+				-- self.targetPlayer.MovementComponent.Enable = true
+			end
+		end
+	end
+
+end

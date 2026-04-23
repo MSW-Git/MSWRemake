@@ -1,0 +1,262 @@
+@Component
+script Deck extends Object
+
+	property Player player = nil
+
+	property table cardArray = {}
+
+	property boolean isOurs = false
+
+	property Entity propEntity = nil
+
+	property Entity slotEntity = nil
+
+	property Entity imageEntity = nil
+
+	property Integer integer = nil
+
+	property any imageTweener = nil
+
+	property any integerTweener = nil
+
+	property integer integerTimer = 0
+
+	method table GetProperties()
+		-- 덱의 속성들을 네트워크 동기화를 위해 테이블로 반환
+		local propertyTable = {
+			cardArray = self.cardArray
+		}
+		
+		_Table:Assign(__base:GetProperties(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		-- 클라이언트에서 속성 동기화 완료 시 카드들을 화면에 배치
+		__base:OnSyncProperties()
+		
+		self:PlaceCards()
+	end
+
+	method void Clear()
+		-- 덱의 모든 카드를 제거하고 덱 참조를 해제하여 초기화
+		for _, card in ipairs(self.cardArray) do
+			card.deck = nil
+		end
+		
+		self.cardArray = {}
+	end
+
+	method boolean IsOwner()
+		-- 현재 플레이어가 이 덱의 소유자인지 확인
+		return self.player:IsOwner()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSide(boolean isOurs)
+		-- 덱이 아군인지 적군인지 설정하고 화면 위치를 조정
+		self.isOurs = isOurs
+		
+		local transform = self.layout:GetTransform(isOurs and "OurDeck" or "EnemyDeck")
+		self.Entity.TransformComponent.WorldPosition = transform.WorldPosition:Clone()
+		self.Entity.TransformComponent.WorldZRotation = transform.WorldZRotation
+		self.Entity.TransformComponent.Scale = transform.Scale:Clone()
+	end
+
+	method void InsertCardsWithoutShuffle(table cardArray)
+		-- 카드 순서를 유지하며 덱에 삽입하고 화면에 쌓아 올리기
+		for i = #cardArray, 1, -1 do
+			local card = cardArray[i]
+			card.deck = self
+			table.insert(self.cardArray, card)
+			if self:IsClient() then
+				card.actor.Entity:AttachTo(self.slotEntity)
+			end
+		end
+		
+		self:PileUpCards()
+	end
+
+	method void InsertCards(table cardArray)
+		-- 카드들을 랜덤하게 섞어서 덱에 삽입
+		for _, card in pairs(cardArray) do
+			self:InsertCard(card)
+		end 
+		
+		self:PileUpCards()
+	end
+
+	method void InsertCard(Card card)
+		-- 단일 카드를 덱의 랜덤한 위치에 삽입하여 셔플 효과 구현
+		card.deck = self
+		
+		if self:IsServer() then
+			if _Table:IsEmpty(self.cardArray) then
+				self.cardArray[1] = card
+			else
+				local size = #self.cardArray
+				local randomIndex = _UtilLogic:RandomIntegerRange(1, size + 1)
+				if randomIndex <= size then
+					local victim = table.remove(self.cardArray, randomIndex)
+					card:Swap(victim)
+					table.insert(self.cardArray, randomIndex, card)
+					_Table:InsertToRandomIndex(self.cardArray, victim)
+				else
+					_Table:InsertToRandomIndex(self.cardArray, card)
+				end
+			end
+		else
+			table.insert(self.cardArray, card)
+			card.actor.Entity:AttachTo(self.slotEntity)
+		end
+	end
+
+	method void RemoveCards(table cardArray)
+		-- 여러 카드를 덱에서 제거하고 화면 정리
+		for _, card in ipairs(cardArray) do
+			self:RemoveCard(card)
+		end
+		
+		self:PileUpCards()
+	end
+
+	method void RemoveCard(Card card)
+		-- 단일 카드를 덱에서 제거하고 덱 참조 해제
+		card.deck = nil
+		_Table:Remove(self.cardArray, card)
+		
+		if self:IsClient() then
+			card.actor.Entity:Detach()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PileUpCards()
+		-- 덱의 카드들을 Z축으로 쌓아서 배치
+		local zPosition = -1
+		for _, card in ipairs(self.cardArray) do
+			local transform = card.actor.Entity.TransformComponent
+			transform.Position.z = zPosition
+			zPosition = zPosition - 1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceCards()
+		-- 덱의 모든 카드를 정위치에 배치하고 듀얼 중이면 UI 표시
+		local zPosition = -1
+		for _, card in ipairs(self.cardArray) do
+			card.actor.Entity:AttachTo(self.slotEntity)
+			local transform = card.actor.Entity.TransformComponent
+			transform.Position.x = 0
+			transform.Position.y = 0
+			transform.Position.z = zPosition
+			transform.ZRotation = 0
+			transform.Scale = Vector3.one
+			zPosition = zPosition - 1
+		end
+		
+		if self.duel.isDueling then
+			self.propEntity.Enable = true
+			self:SpawnAndSetImageEntity()
+			self:SetCardsCount(#self.cardArray)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCardsCount(integer count)
+		-- 덱의 카드 수를 UI에 표시하고 애니메이션 효과 적용
+		self.integer:SetInteger(count)
+		
+		if self.integerTweener then
+			self.integerTweener:Destroy()
+		end
+		self.integerTweener = _Tween:Damp(self.integer.Entity, Vector2.one, 1, 0.5)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AddCardsCount(integer delta)
+		-- 현재 카드 수에 변화량을 더해서 UI 업데이트
+		self:SetCardsCount(self.integer.integer + delta)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetImageEntity()
+		-- 플레이어의 카드 뒷면 스타일에 맞는 이미지 엔티티 생성
+		local backModelName = string.format("%sCardBack", self.player.cardBack)
+		local backModelId = _EntryService:GetModelIdByName(backModelName)
+		self.imageEntity = _SpawnService:SpawnByModelId(backModelId, backModelName, Vector3.zero, self.slotEntity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowDetails()
+		-- 덱의 상세 정보를 애니메이션과 함께 화면에 표시
+		self.propEntity.Enable = true
+		
+		self:SpawnAndSetImageEntity()
+		local transform = self.imageEntity.TransformComponent
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+		if self.imageTweener then
+			self.imageTweener:Destroy()
+		end
+		self.imageTweener = _Tween:ScaleTo(self.imageEntity, Vector2.one, 0.25, EaseType.CubicEaseIn)
+		
+		local cardsCount = #self.cardArray
+		self.integerTimer = _TimerService:SetTimerOnce(function()
+				self:SetCardsCount(cardsCount)
+			end, 0.25)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideDetails()
+		-- 덱의 상세 정보를 숨기고 관련 UI 정리
+		self.propEntity.Enable = false
+		
+		if self.imageTweener then
+			self.imageTweener:Destroy()
+		end
+		self.imageEntity:Destroy()
+		
+		_TimerService:ClearTimer(self.integerTimer)
+		if self.integerTweener then
+			self.integerTweener:Destroy()
+		end
+		self.integer:Clear()
+	end
+
+	method table GetCards(any selector)
+		-- 덱의 카드들을 복사하여 반환하며 선택자 함수로 필터링 가능
+		local cardArray = _Table:ShallowCopy(self.cardArray)
+		return selector and _Table:Select(cardArray, selector) or cardArray
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetTopCards(integer count, any selector)
+		-- 서버에서 덱의 맨 위 카드들을 지정된 개수만큼 가져오기
+		local cardArray = {}
+		local selectedCardArray = selector and _Table:Select(self.cardArray, selector) or self.cardArray
+		local size = #selectedCardArray
+		for i = 1, math.min(size, count) do
+			cardArray[i] = selectedCardArray[size - i + 1]
+		end
+		
+		return cardArray
+	end
+
+	method table ShareTopCards(integer count, any selector)
+		-- 서버-클라이언트 간 덱의 상위 카드들을 공유하여 동기화
+		local cardArray = nil
+		if self:IsServer() then
+			cardArray = self:GetTopCards(count, selector)
+			self.commandManager:PushPackage(cardArray)
+		else
+			cardArray = self.commandManager:PopPackage()
+		end
+		
+		return cardArray
+	end
+
+end

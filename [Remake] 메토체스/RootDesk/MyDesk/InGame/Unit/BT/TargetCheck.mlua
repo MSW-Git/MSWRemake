@@ -1,0 +1,189 @@
+@BTNode
+script TargetCheck extends BTNode
+
+	property boolean Use = false
+
+	property number targetFindCoolTime = 0.5
+
+	property number CoolTime = 0
+
+	method any OnBehave(number delta)
+		-- 공격 대상을 탐색하고 설정하는 BT 노드
+		local pAI = self.ParentAI
+		local myUnit = pAI.Entity
+		local unitInfo = myUnit.UnitInfo 
+		local unitStatus = myUnit.UnitStatus
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		
+		-- 유저가 없으면 BT Off
+		if not isvalid(user) then
+			myUnit.UnitAIWanderComponent.setBattle = false
+			return BehaviourTreeStatus.Failure
+		end
+		
+		-- 쿨타임 체크
+		if self.Use then
+			self.CoolTime += delta
+			
+			if self.CoolTime >= self.targetFindCoolTime then
+				self.CoolTime = 0
+				self.Use = false
+			end
+			
+			if isvalid(unitStatus.Target) then
+				return BehaviourTreeStatus.Success
+			else
+				return BehaviourTreeStatus.Failure
+			end
+		elseif pAI.stopUnit then	 	-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+			return BehaviourTreeStatus.Failure
+		end
+		
+		local teamManager = user.TeamManager
+		local synergyManager = user.SynergyManager_New
+		
+		
+		-- Battle 중이 아니면
+		if not myUnit.UnitAIWanderComponent.setBattle then
+			if unitStatus.state ~= "Idle" then
+				unitStatus:SetProperty("state", "Idle", "")
+				local animComponent = myUnit.UnitAnimationComponent
+				animComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+			end
+			
+			return BehaviourTreeStatus.Failure
+		end
+		
+		-- 현재 유닛
+		local tileVerticalNum = unitInfo.setTileVerticalNum
+		local tileHorizontalNum = unitInfo.setTileHorizontalNum
+		local tileHorizontalNode = tileHorizontalNum * 2 - (tileVerticalNum%2)
+		
+		-- 타겟이 있는 경우
+		if isvalid(unitStatus.Target) then
+			-- 타일 번호 가져오기
+			local target = unitStatus.Target
+			local targetStatus = target.UnitStatus
+			local targetSetTile = target.UnitInfo.setTile
+			
+			if isvalid(targetSetTile) then
+				local targetTileInfo = targetSetTile.TileComponent_New
+				local targetVerticalNum = targetTileInfo.verticalNum
+				local targetHorizontalNum = targetTileInfo.horizontalNum
+				local targetHorizontalNode = targetHorizontalNum * 2 - (targetVerticalNum%2)
+				
+				local targetTileNode = {targetHorizontalNode, targetVerticalNum}
+				local tileNode = {tileHorizontalNode, tileVerticalNum}
+				local distanceInfo = _BTLogic_New:getDistance(tileNode, targetTileNode)
+				
+				-- 1. 공격할 수 있는가
+				-- 도발에 걸려있는가
+				if unitStatus.StatusEffect["SE0020"] then
+				-- 무적 상태, 어그로 풀림, 타겟 사망, 사거리 밖
+				elseif not unitStatus.Target.UnitAIWanderComponent.Enable then
+					unitStatus.Target = nil
+				elseif targetStatus.HP <= 0.0 then
+					unitStatus.Target = nil
+				elseif targetStatus.StatusEffect["SE0002"] then
+					unitStatus.Target = nil
+				elseif self.ParentAI.Entity.UnitInfo:DoesHaveSynergy("S10008") == true and myUnit.UnitSynergy.SynergyStack["S10008_MoveSpeed"] ~= 0 then
+					-- 추격자가 한 번 체크한 타겟은 사거리에 따라 변경되지 않음
+				elseif unitStatus.AttackRange < distanceInfo[1] then
+					unitStatus.Target = nil
+				end
+			else
+				_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0020", 0)
+				unitStatus.Target = nil
+			end
+		end
+		
+		-- 타겟이 없는 경우
+		if not isvalid(unitStatus.Target) then
+			_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0020", 0)
+			-- 적군 타겟이 필요한 경우
+			if isvalid(unitInfo.AttackComponent.Attack) or isvalid(unitInfo.AttackComponent.Buff) then
+				-- 1. 공격 가능한 상대 팀이 존재하는가
+				local attackableEnemy = {}
+				
+				-- 룬카드 시너지 활성화 체크 변수 (추격자)
+				local runeS10008Checked = false
+				
+				
+				-- 생존, 무적 상태, 어그로 상태
+				if unitInfo.TeamType == "Enemy" then
+					attackableEnemy = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+					if synergyManager.Enemy_SynergyRuneOn["S10008"] then
+						runeS10008Checked = true
+					end
+				elseif unitInfo.TeamType == "User" then
+					attackableEnemy = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+					if synergyManager.SynergyRuneOn["S10008"] then
+						runeS10008Checked = true
+					end
+				end	
+				
+				-- 한번 경로가 없다고 체크된 유닛은 경로 재탐색 후 아직도 없으면 제거
+				for idx, unit in pairs(attackableEnemy) do
+					if unit == pAI.MoveCheckedTarget then		-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+						if #attackableEnemy > 1 then
+							table.remove(attackableEnemy, idx)
+						else
+							pAI.MoveCheckedTarget = nil			-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+						end	
+						
+						break
+					end
+				end
+				
+				-- 2-1. 추격자인 경우, 마법 저항력이 가장 낮은 적 대상
+				if self.ParentAI.Entity.UnitInfo:DoesHaveSynergy("S10008") == true and myUnit.UnitSynergy.SynergyStack["S10008_MoveSpeed"] ~= 0 then
+					if runeS10008Checked then
+						unitStatus.Target = _BTLogic_New:getTarget(unitInfo.setTile, attackableEnemy, "HP_Low")
+					else
+						unitStatus.Target = _BTLogic_New:getTarget(unitInfo.setTile, attackableEnemy, "MagicResistance_Low")
+						log(string.format("MR = %d", unitStatus.Target.UnitStatus.MagicalResistance))
+					end
+					
+					--연출
+					_SynergyBattleDirectorLogic:S10008TargetShow(unitStatus.Target,unitInfo.OwnerId)
+					
+				-- 2-2. [기본] 가장 사거리가 짧은 유닛은 누구인가
+				else
+					-- 타일 번호 가져오기 
+					unitStatus.Target = _BTLogic_New:getTarget(unitInfo.setTile, attackableEnemy, "Nearest")
+				end
+				
+			-- 아군 버프의 경우
+			else
+				-- ex) 시그너스 예외처리
+				log(unitInfo.charID)
+				unitStatus.Target = myUnit
+			end
+		-- 타겟이 있는 경우
+		else
+			--[[
+			if not isvalid(unitInfo.AttackComponent.Attack) then
+				-- ex) 시그너스 예외처리
+				unitStatus.Target = myUnit
+			end
+			]]--
+		end
+		
+		if isvalid(unitStatus.Target) then
+			self.Use = true
+			return BehaviourTreeStatus.Success
+		else
+			if unitStatus.state ~= "Idle" then
+				unitStatus:SetProperty("state", "Idle", "")
+				local animComponent = myUnit.UnitAnimationComponent
+				animComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+			end
+			self.Use = true
+			pAI.MoveCheckedTarget = nil		-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+			return BehaviourTreeStatus.Failure
+		end
+	end
+
+end

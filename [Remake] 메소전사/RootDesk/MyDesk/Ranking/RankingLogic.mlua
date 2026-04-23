@@ -1,0 +1,662 @@
+@Logic
+script RankingLogic extends Logic
+
+	property table limitLandRecord = {}
+
+	property LimitLandRankUIComponentRef limitLandLeaderBoard = "8e8dde7d-3ed5-4c7f-8483-8e8177181a78"
+
+	property EntityRef town = "bc376049-67b7-4819-8b18-abc871f66808"
+
+	@HideFromInspector
+	property integer limitLandRecordDBNum = 1
+
+	property string limitLandRecordDBName = "limitLandRecord1"
+
+	property table battlePowerRecord = {}
+
+	property BattlePowerRankUIComponentRef battlePowerLeaderBoard = "d51bc266-2920-4d4b-88e0-9079e3777554"
+
+	@HideFromInspector
+	property RankingUIComponent rankingUI = "04423e45-d09a-46dc-9d0b-98b02c7f962e"
+
+	property table previousWeekLimitLandRecord = {}
+
+	property any refreshedWeeklyLimitLandDate = nil
+
+	property table accountLevelRecord = {}
+
+	property AccountLevelRankUIComponent accountLevelLeaderBoard = "be25ce5a-d4b4-4bfa-a4ec-1c2023f19dbd"
+
+	property integer maxPageCount = 40
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 랭킹 시스템 초기화 및 주기적 데이터 새로고침 타이머 설정
+		local refreshLimitLandStorage = function()
+			self:LoadLimitLandRecord()
+		end
+		
+		_TimerService:SetTimerRepeat(refreshLimitLandStorage, 300)
+		
+		local refreshBattlePowerRank = function()
+			self:LoadBattlePowerRecord()
+		end
+		
+		_TimerService:SetTimerRepeat(refreshBattlePowerRank, 601)
+		
+		local refreshAccountLevelRank = function()
+			self:LoadAccountLevelRecord()
+		end
+		
+		
+		_TimerService:SetTimerRepeat(refreshAccountLevelRank, 602)
+		
+		
+		local refreshLimitRewardStorage = function()
+			self:TempLoadLimitLandRecord(nil)
+		end
+		
+		_TimerService:SetTimerRepeat(refreshLimitRewardStorage, 1139)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetLimitLandRecord(integer clearedWave, string senderId, string dateTime)
+		-- 리미트랜드 기록을 데이터베이스에 저장
+		local recordFunc = function(errorCode, key, value) 
+			local limitLandRecordDB = _DataStorageService:GetSortableDataStorage(self.limitLandRecordDBName) 
+			local playerEntity = _UserService:GetUserEntityByUserId(senderId)
+			
+			limitLandRecordDB:GetAsync(senderId, function(errorCode, key, value)
+					local version = "version1"
+					local tag = string.format("%s/%s", playerEntity.PlayerComponent.Nickname, dateTime) 
+					
+					if isvalid(value) then
+						if clearedWave >= value then
+							limitLandRecordDB:SetByInfoAsync(DataStorageKeyInfo(senderId, version, tag), clearedWave, nil)
+						end
+					else 
+						limitLandRecordDB:SetByInfoAsync(DataStorageKeyInfo(senderId, version, tag), clearedWave, nil)
+					end
+				end)
+		end
+		
+		self:RecordGlobalDBUsedDate(recordFunc) 
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadLimitLandRecord()
+		-- 리미트랜드 랭킹 데이터를 로드하여 정렬 및 처리
+		self.limitLandRecordDBNum = _LocalTimeLogic:GetCurrentSeasonWeek() % 2
+		self.limitLandRecordDBName = string.format("limitLandRecord%d", self.limitLandRecordDBNum)
+		
+		local rank = {}
+		local limitLandRecordDB = _DataStorageService:GetSortableDataStorage(self.limitLandRecordDBName)
+		
+		limitLandRecordDB:GetSortedAsync(SortDirection.Descending, 0, math.maxinteger, function(error, page)
+				---@type SortableDataStorageItemPages
+				local itemPage = page
+				local pageCount = 1
+			
+				while true do
+					for _, data in pairs(itemPage:GetCurrentPageDatas()) do
+		
+						local key = data.KeyInfo.Key
+						local value = data.Value
+						local tag = data.KeyInfo.Tag
+					
+						local splits = _UtilLogic:Split(tag, "/")
+						local nickname = splits[1]
+						local time = TimeSpan(splits[2])
+						local newTag = string.format("%02d:%02d.%03d", time.Minutes, time.Seconds, time.Milliseconds)
+						tag = string.format("%s/%s", nickname, newTag)
+		
+						local info = {["key"] = key, ["value"]= value, ["tag"] = tag}
+						
+						table.insert(rank, info)
+					end
+				
+					if itemPage.IsLastPage or pageCount >= self.maxPageCount then
+						self.limitLandRecord = self:SortLimitLandRecord(rank)
+						_WorldLog:LogRanking(_HttpService:JSONEncode(self:GetLoggingRank(self.limitLandRecord)), "LimitLand")
+						self:OnLoadLimitLandRecord(self.limitLandRecord)
+						self:RecordGlobalDBUsedDate(nil)
+					
+						break
+					end
+				
+					local loadResultCode = itemPage:LoadNextPageAndWait()
+				
+					if loadResultCode ~= 0 then
+						self.limitLandRecord = self:SortLimitLandRecord(rank)
+						_WorldLog:LogRanking(_HttpService:JSONEncode(self:GetLoggingRank(self.limitLandRecord)), "LimitLand")
+						self:OnLoadLimitLandRecord(self.limitLandRecord)
+						self:RecordGlobalDBUsedDate(nil)
+					
+						break
+					else
+						itemPage:MoveToNextPageAndWait()
+					end
+					
+					pageCount += 1
+				end
+		
+				for userId, entity in pairs(_UserService.UserEntities) do
+					if isvalid(entity) then
+						entity.PlayerInfoComponent:CheckEnteredDate()
+					end
+				end
+			end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecordGlobalDBUsedDate(any callbackFunc)
+		-- 글로벌 DB 사용 날짜 기록 및 주간 전환 처리
+		local currentDate = _LocalTimeLogic:GetKST()
+		local globalDB = _DataStorageService:GetGlobalDataStorage("globalDB")
+		local dbKey = "lastRecorded"
+		local dbValue = string.format("%s,%d", tostring(currentDate), self.limitLandRecordDBNum)
+		
+		
+		globalDB:GetAsync(dbKey, function(errorCode, key, value)
+				if isvalid(value) then
+					local splits = _UtilLogic:Split(value, ",") 
+					local recordedDate = DateTime(splits[1])
+					local recordedDBNum = tonumber(splits[2])
+		
+					local recordedWeek = _LocalTimeLogic:GetSeasonWeek(recordedDate)
+					local currentWeek = _LocalTimeLogic:GetCurrentSeasonWeek()
+					
+					if recordedWeek ~= currentWeek then 
+						
+						self.limitLandRecordDBNum = _LocalTimeLogic:GetCurrentSeasonWeek() % 2
+						self.limitLandRecordDBName = string.format("limitLandRecord%d", self.limitLandRecordDBNum)
+						
+						local callback = function()
+							self:DeleteLimitLandStorage(dbKey, dbValue, globalDB, callbackFunc, currentDate) 
+						end
+						
+						self:RecordWeeklyLimitLandRewardInfo(callback) 
+						
+					else 
+						globalDB:SetAsync(dbKey, dbValue, function(errorCode, key)
+							end)
+						
+						if isvalid(callbackFunc) then
+							callbackFunc()
+						end
+					end
+				else 
+					globalDB:SetAsync(dbKey, dbValue, function(errorCode, key)
+						end)
+					
+					if isvalid(callbackFunc) then
+						callbackFunc()
+					end
+				end
+			end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RecordWeeklyLimitLandRewardInfo(any callback)
+		-- 주간 리미트랜드 보상 정보를 기록
+		
+		
+		local dbNum = math.abs(_LocalTimeLogic:GetCurrentSeasonWeek() % 2 - 1)
+		local dbName = string.format("limitLandRecord%d", dbNum)
+		local rank = {}
+		
+		_DataStorageService:GetSortableDataStorage(dbName):GetSortedAsync(SortDirection.Descending, 1, math.maxinteger, function(errorCode, page)
+				---@type SortableDataStorageItemPages
+				local itemPage = page
+				local pageCount = 1
+				
+				while true do
+					for _, data in pairs(itemPage:GetCurrentPageDatas()) do
+						local key = data.KeyInfo.Key
+						local value = data.Value
+						local tag = data.KeyInfo.Tag
+						local splits = _UtilLogic:Split(tag, "/")
+						local name = splits[1]
+						local seconds = DateTime(splits[2]).Second + DateTime(splits[2]).Minute * 60
+						local newTag = string.format("%s/%d", name, seconds)
+						
+						local info = {["key"] = key, ["value"]= value, ["tag"] = tag}
+						
+						table.insert(rank, info)
+					end
+				
+					if itemPage.IsLastPage or pageCount >= self.maxPageCount then
+						self.previousWeekLimitLandRecord = self:SortLimitLandRecord(rank)
+						self:OnLoadWeeklyLimitLandRewardInfo(self.previousWeekLimitLandRecord)
+					
+						_DataStorageService:GetGlobalDataStorage("globalDB"):SetAsync("weeklyLimitLandRewardInfo", _HttpService:JSONEncode(self.previousWeekLimitLandRecord), function(errorCode, key)
+								if isvalid(callback) then
+									callback()
+								end
+								
+							end)
+					
+						break
+					end
+				
+					local loadResultCode = itemPage:LoadNextPageAndWait()
+				
+					if loadResultCode ~= 0 then
+						self.previousWeekLimitLandRecord = self:SortLimitLandRecord(rank)
+						self:OnLoadWeeklyLimitLandRewardInfo(self.previousWeekLimitLandRecord)
+					
+						_DataStorageService:GetGlobalDataStorage("globalDB"):SetAsync("weeklyLimitLandRewardInfo", _HttpService:JSONEncode(self.previousWeekLimitLandRecord), function(errorCode, key)
+								if isvalid(callback) then
+									callback()
+								end
+								
+							end)
+					
+						break
+					else
+						itemPage:MoveToNextPageAndWait()
+					end
+				
+					pageCount += 1
+				end
+			end)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DeleteLimitLandStorage(string dbKey, string dbValue, any globalDB, any callbackFunc, any currentDate)
+		-- 이전 주차 리미트랜드 저장소 삭제
+		_DataStorageService:DeleteSortableDataStorageAsync(self.limitLandRecordDBName, function(errorCode, dbName) 
+				
+				globalDB:SetAsync(dbKey, dbValue, function(errorCode, key) 
+						self.limitLandRecordDBNum = _LocalTimeLogic:GetCurrentSeasonWeek() % 2
+						self.limitLandRecordDBName = string.format("limitLandRecord%d", self.limitLandRecordDBNum)
+						
+						if isvalid(callbackFunc) then
+							callbackFunc()
+						end
+						
+						
+						self:LoadLimitLandRecord()
+					end)
+			end)
+	end
+
+	@ExecSpace("Client")
+	method void OnLoadLimitLandRecord(table rank)
+		-- 리미트랜드 랭킹 데이터 로드 완료 후 UI 갱신
+		self.limitLandRecord = rank
+		
+		if isvalid(self.limitLandLeaderBoard.Entity) then
+			self.limitLandLeaderBoard:Refresh()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void LoadWeeklyLimitLandRewardInfo(any callbackFunc)
+		-- 주간 리미트랜드 보상 정보를 로드
+		local refreshFunc = function()
+			_DataStorageService:GetGlobalDataStorage("globalDB"):GetAsync("weeklyLimitLandRewardInfo", function(errorCode, key, value) 
+				if isvalid(value) and value ~= "" then
+		
+					self.previousWeekLimitLandRecord = _HttpService:JSONDecode(value)
+					self:OnLoadWeeklyLimitLandRewardInfo(self.previousWeekLimitLandRecord)
+					self.refreshedWeeklyLimitLandDate = _LocalTimeLogic:GetKST()
+						
+					if isvalid(callbackFunc) then
+						callbackFunc()
+					end
+				end
+			end)
+		end
+		
+		if isvalid(self.refreshedWeeklyLimitLandDate) then
+			local refreshedDate = DateTime(tostring(self.refreshedWeeklyLimitLandDate))
+			local currentDate = _LocalTimeLogic:GetKST()
+			
+			if refreshedDate.Day == currentDate.Day and refreshedDate.Month == currentDate.Month and refreshedDate.Year == currentDate.Year then 
+				if isvalid(callbackFunc) then
+					callbackFunc()
+				end
+			else
+				refreshFunc()
+			end
+		else 
+			refreshFunc()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnLoadWeeklyLimitLandRewardInfo(table infoTable)
+		-- 주간 리미트랜드 보상 정보 로드 완료
+		self.previousWeekLimitLandRecord = infoTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadBattlePowerRecord()
+		-- 전투력 랭킹 데이터를 로드하여 정렬 및 처리
+		local rank = {}
+		local battlePowerRecordDB = _DataStorageService:GetSortableDataStorage("battlePowerRecord")
+		
+		battlePowerRecordDB:GetSortedAsync(SortDirection.Descending, 0, math.maxinteger, function(error, page)
+				---@type SortableDataStorageItemPages
+				local itemPage = page
+				local pageCount = 1
+				
+				while true do
+					for _, data in pairs(itemPage:GetCurrentPageDatas()) do
+						local key = data.KeyInfo.Key
+						local value = data.Value
+						local tag = data.KeyInfo.Tag
+						
+						local info = {["key"] = key, ["value"]= value, ["tag"] = tag}
+						
+						table.insert(rank, info)
+					end
+		
+				
+					if itemPage.IsLastPage or pageCount >= self.maxPageCount then
+						self.battlePowerRecord = rank
+		
+					
+						_WorldLog:LogRanking(_HttpService:JSONEncode(self:GetLoggingRank(self.battlePowerRecord)), "BattlePower")
+						self:OnLoadBattlePowerRecord(rank)
+					
+						break
+					end
+				
+					local loadResultCode = itemPage:LoadNextPageAndWait()
+				
+					if loadResultCode ~= 0 then
+						self.battlePowerRecord = rank
+					
+						_WorldLog:LogRanking(_HttpService:JSONEncode(self:GetLoggingRank(self.battlePowerRecord)), "BattlePower")
+						self:OnLoadBattlePowerRecord(rank)
+					
+						break
+					else
+						itemPage:MoveToNextPageAndWait()
+					end
+				
+					pageCount += 1
+				end
+			end)
+	end
+
+	@ExecSpace("Client")
+	method void OnLoadBattlePowerRecord(table rank)
+		-- 전투력 랭킹 데이터 로드 완료 후 UI 갱신
+		self.battlePowerRecord = rank
+		
+		if isvalid(self.battlePowerLeaderBoard.Entity) then
+			self.battlePowerLeaderBoard:Refresh()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBattlePowerRecord(string userId)
+		-- 플레이어의 전투력 기록을 데이터베이스에 저장
+		local playerEntity = _UserService:GetUserEntityByUserId(userId)
+		local nickname = playerEntity.PlayerComponent.Nickname
+		local battlePower = math.floor(playerEntity.PlayerInfoComponent.playerInfo.bestBattlePower)
+		
+		local battlePowerRecordDB = _DataStorageService:GetSortableDataStorage("battlePowerRecord")
+		
+		battlePowerRecordDB:GetAsync(userId, function(errorCode, key, value)
+				local version = "version1"
+				local tag = nickname
+				
+				if isvalid(value) then
+					if battlePower > value then
+						battlePowerRecordDB:SetByInfoAsync(DataStorageKeyInfo(userId, version, tag), battlePower, nil)
+					end
+				else
+					battlePowerRecordDB:SetByInfoAsync(DataStorageKeyInfo(userId, version, tag), battlePower, nil)
+				end
+			end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method table SortLimitLandRecord(table rank)
+		-- 리미트랜드 랭킹을 웨이브와 시간에 따라 정렬
+		
+		local newRank = {} 
+		
+		for i = 1, #rank do
+			local info = {["rank"] = i, ["info"] = rank[i]}
+			newRank[i] = info
+		end
+		
+		table.sort(newRank, function(a, b)
+				if a.info.value == b.info.value then 
+					local splits_a = _UtilLogic:Split(a.info.tag, "/")
+					local splits_b = _UtilLogic:Split(b.info.tag, "/")
+				
+					if isvalid(splits_a[2]) and isvalid(splits_b[2]) then
+						local ms_a = self:GetMs(splits_a[2])
+						local ms_b = self:GetMs(splits_b[2])
+					
+						return ms_a < ms_b
+					else
+						return true
+					end
+				else
+					return a.rank < b.rank 
+				end
+				
+			end)
+		
+		local returnRank = {}
+		
+		for i = 1, #newRank do
+			returnRank[i] = newRank[i].info
+		end
+		
+		return returnRank
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadAccountLevelRecord()
+		-- 계정 레벨 랭킹 데이터를 로드하여 정렬 및 처리
+		local rank = {}
+		local accountLevelRecordDB = _DataStorageService:GetSortableDataStorage("accountLevelRecord")
+		
+		accountLevelRecordDB:GetSortedAsync(SortDirection.Descending, 0, math.maxinteger, function(error, page)
+				---@type SortableDataStorageItemPages
+				local itemPage = page
+				local pageCount = 1
+			
+				while true do
+					for _, data in pairs(itemPage:GetCurrentPageDatas()) do
+						local key = data.KeyInfo.Key
+						local value = data.Value
+						local tag = data.KeyInfo.Tag
+						
+						local info = {["key"] = key, ["value"]= value, ["tag"] = tag}
+						
+						table.insert(rank, info)
+					end
+				
+					if itemPage.IsLastPage or pageCount >= self.maxPageCount then
+						self.accountLevelRecord = rank
+					
+						_WorldLog:LogRanking(_HttpService:JSONEncode(self:GetLoggingRank(self.accountLevelRecord)), "AccountLevel")
+						self:OnLoadAccountLevelRecord(rank)
+					
+						break
+					end
+				
+					local loadResultCode = itemPage:LoadNextPageAndWait()
+				
+					if loadResultCode ~= 0 then
+						self.accountLevelRecord = rank
+					
+						_WorldLog:LogRanking(_HttpService:JSONEncode(self:GetLoggingRank(self.accountLevelRecord)), "AccountLevel")
+						self:OnLoadAccountLevelRecord(rank)
+					
+						break
+					else
+						itemPage:MoveToNextPageAndWait()
+					end
+				
+					pageCount += 1
+				end
+			end)
+	end
+
+	@ExecSpace("Client")
+	method void OnLoadAccountLevelRecord(table rank)
+		-- 계정 레벨 랭킹 데이터 로드 완료 후 UI 갱신
+		self.accountLevelRecord = rank
+		
+		if isvalid(self.accountLevelLeaderBoard.Entity) then
+			self.accountLevelLeaderBoard:Refresh()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetAccountLevelRecord(string userId)
+		-- 플레이어의 계정 레벨 기록을 데이터베이스에 저장
+		local playerEntity = _UserService:GetUserEntityByUserId(userId)
+		local nickname = playerEntity.PlayerComponent.Nickname
+		local level = math.floor(playerEntity.PlayerAccount.accountTable.level)
+		
+		local accountLevelRecordDB = _DataStorageService:GetSortableDataStorage("accountLevelRecord")
+		
+		accountLevelRecordDB:GetAsync(userId, function(errorCode, key, value)
+				local version = "version1"
+				local tag = nickname
+				
+				if isvalid(value) then
+					if level > value then
+						accountLevelRecordDB:SetByInfoAsync(DataStorageKeyInfo(userId, version, tag), level, nil)
+					end
+				else
+					accountLevelRecordDB:SetByInfoAsync(DataStorageKeyInfo(userId, version, tag), level, nil)
+				end
+			end)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TempLoadLimitLandRecord(any callbackFunc)
+		-- 이전 주차 리미트랜드 기록을 임시로 로드
+		local limitLandRecordDBNum = (_LocalTimeLogic:GetCurrentSeasonWeek() + 1) % 2
+		local limitLandRecordDBName = string.format("limitLandRecord%d", limitLandRecordDBNum)
+		
+		local rank = {}
+		local limitLandRecordDB = _DataStorageService:GetSortableDataStorage(limitLandRecordDBName)
+		
+		limitLandRecordDB:GetSortedAsync(SortDirection.Descending, 0, math.maxinteger, function(error, page)
+				---@type SortableDataStorageItemPages
+				local itemPage = page
+				local pageCount = 1
+			
+				while true do
+					for _, data in pairs(itemPage:GetCurrentPageDatas()) do
+		
+						local key = data.KeyInfo.Key
+						local value = data.Value
+						local tag = data.KeyInfo.Tag
+						
+						local info = {["key"] = key, ["value"]= value, ["tag"] = tag}
+					
+						table.insert(rank, info)
+					end
+				
+					if itemPage.IsLastPage or pageCount >= self.maxPageCount then
+						self.previousWeekLimitLandRecord = self:SortLimitLandRecord(rank)
+						self:OnLoadWeeklyLimitLandRewardInfo(self.previousWeekLimitLandRecord)
+						self.refreshedWeeklyLimitLandDate = _LocalTimeLogic:GetKST()
+							
+						if isvalid(callbackFunc) then
+							callbackFunc()
+						end
+					
+						break
+					end
+				
+					local loadResultCode = itemPage:LoadNextPageAndWait()
+				
+					if loadResultCode ~= 0 then
+						self.previousWeekLimitLandRecord = self:SortLimitLandRecord(rank)
+						self:OnLoadWeeklyLimitLandRewardInfo(self.previousWeekLimitLandRecord)
+					
+						break
+					else
+						itemPage:MoveToNextPageAndWait()
+					end
+					
+					pageCount += 1
+				end
+			end)
+	end
+
+	method table GetLoggingRank(table rankTable)
+		-- 랭킹 데이터를 로깅용 형식으로 변환
+		local temp = {}
+		local i = 1
+		
+		for key, value in pairs(rankTable) do
+			local newValue = {["key"] = string.format("%s_%d", value.tag, key), ["value"] = value.value}
+			temp[i] = newValue
+			
+			i += 1
+		end
+		
+		return temp
+	end
+
+	method number GetMs(string str)
+		-- 시간 문자열을 밀리초 단위로 변환
+		local splits = _UtilLogic:Split(str, ":")
+		
+		if #table.keys(splits) > 2 then
+			local minutes = tonumber(splits[2]) * 60 * 1000
+			
+			if _UtilLogic:Contains(splits[3], ".") then
+				splits = _UtilLogic:Split(splits[3], ".")
+				local seconds = tonumber(splits[1]) * 1000
+				local ms = tonumber(splits[2])
+				
+				return minutes + seconds + ms
+			else
+				local seconds = tonumber(splits[3]) * 1000
+				
+				return minutes + seconds
+			end
+		else
+			local minutes = tonumber(splits[1]) * 60 * 1000
+			
+			if _UtilLogic:Contains(splits[2], ".") then
+				splits = _UtilLogic:Split(splits[2], ".")
+				local seconds = tonumber(splits[1]) * 1000
+				local ms = tonumber(splits[2])
+				
+				return minutes + seconds + ms
+			else
+				local seconds = tonumber(splits[2]) * 1000
+				
+				return minutes + seconds
+			end
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserEnterEvent(UserEnterEvent event)
+		-- 사용자 입장 이벤트 처리 및 랭킹 데이터 전송
+		
+		local UserId = event.UserId
+		_TimerService:SetTimerOnce(function()
+				if isvalid(_UserService:GetUserEntityByUserId(UserId)) then
+					self:OnLoadLimitLandRecord(self.limitLandRecord, UserId)
+					self:OnLoadBattlePowerRecord(self.battlePowerRecord, UserId)
+					self:OnLoadAccountLevelRecord(self.accountLevelRecord, UserId)
+					self:OnLoadWeeklyLimitLandRewardInfo(self.previousWeekLimitLandRecord, UserId)
+				end
+			end, 5)
+	end
+
+end

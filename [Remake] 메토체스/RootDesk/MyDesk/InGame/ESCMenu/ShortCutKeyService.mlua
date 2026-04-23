@@ -1,0 +1,507 @@
+@Logic
+script ShortCutKeyService extends Logic
+
+	property SyncTable<string, string> ShortCutKey
+
+	property string CurrentChangingType = ""
+
+	property Entity UI_Button_BattleStart = "b1e05ffd-97bd-4d29-b731-3cfc8fe757e7"
+
+	property Entity UI_SettingPages = "267693dc-7108-4ca8-ab08-1e7167dfcada"
+
+	property Entity UI_ShortCutPopup = "a57dcc4d-3178-4622-aea0-6ea1374af6a0"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		self:InitKey()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_RefreshList()
+		local ui_list = self.UI_SettingPages:GetChildByName("List")
+		
+		local shortCutListTable = _DataService:GetTable("ShortCutList")
+		local keyboardKeyShorten = _DataService:GetTable("KeyboardKeyShorten")
+		
+		for i=1, #ui_list.Children do
+			local ui_slot = ui_list.Children[i]
+			
+			local ui_childrenComponents = ui_slot:GetChildComponentsByTypeName("UI_ShortCutKeyChangeButton")
+			for _, compo in pairs(ui_childrenComponents) do
+				local ui_button = compo.Entity
+				
+				---@type UI_ShortCutKeyChangeButton
+				local component = compo
+				
+				local action = component.Action
+				local key = self.ShortCutKey[action]
+				if key == "" then
+					ui_button.TextComponent.Text = ""
+				else
+					local shortenWord = keyboardKeyShorten:FindRow("KeyboardKey", key):GetItem("Shorten")
+					ui_button.TextComponent.Text = shortenWord
+				end
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ActivateChangingKeyMode(string action, boolean activate)
+		-- 단축키 변경 모드를 실행하거나 종료하는 함수입니다.
+		------------------------------------------------------------
+		if activate then
+			local localizedText_action = ""
+			local actionIndexText = ""
+			if tonumber(string.sub(action, -1, -1)) == nil then
+				localizedText_action = _LocalizationService:GetText("UserAct_"..action)
+			else
+				actionIndexText = string.sub(action, -1, -1)
+				localizedText_action = _LocalizationService:GetText("UserAct_"..string.sub(action, 1, -2))
+			end
+			
+			self.UI_ShortCutPopup:GetChildByName("Popup"):GetChildByName("Text_Desc").TextComponent.Text = localizedText_action..actionIndexText
+			
+			self.CurrentChangingType = action
+		else
+			self.CurrentChangingType = ""
+		end
+		
+		self.UI_ShortCutPopup:SetEnable(activate)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeKey(string key)
+		-- 중복된 키가 있는지 검사합니다.
+		for act, exKey in pairs(self.ShortCutKey) do
+			if exKey == key then
+				_UIToast:ShowMessageByLocalizingKey("IsAlreadyKey")
+				return
+			end
+		end
+		--------------------------------------------
+		
+		self.ShortCutKey[self.CurrentChangingType] = key
+		log(self.CurrentChangingType.."의 단축키가 "..key.."로 변경되었습니다.")
+		
+		
+		self:OnKeyChanged(self.CurrentChangingType)
+		self:ActivateChangingKeyMode(self.CurrentChangingType, false)
+		self:UI_RefreshList()
+		self.UI_ShortCutPopup:SetEnable(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitKey()
+		local shortCutListTable = _DataService:GetTable("ShortCutList")
+		local rowCount = shortCutListTable:GetRowCount()
+		for i=1, rowCount do
+			local row = shortCutListTable:GetRow(i)
+			local act = row:GetItem("Act")
+			local inputKey = row:GetItem("DefaultKey")
+			
+			self.ShortCutKey[act] = inputKey
+				
+			self:OnKeyChanged(act)
+		end
+		
+		self:UI_RefreshList()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnKeyChanged(string changedType)
+		if changedType == "LockCharShop" then
+			local ui_lockTooltipTitle = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/Tooltip_Lock/Text_Name")
+			if _UserService.LocalPlayer.CharacterShopManager_New.IsLocked == true then
+				ui_lockTooltipTitle.TextComponent.Text = _LocalizationService:GetTextFormat("LockInfo_Title_Locked", self.ShortCutKey[changedType])
+			else
+				ui_lockTooltipTitle.TextComponent.Text = _LocalizationService:GetTextFormat("LockInfo_Title_Unlocked", self.ShortCutKey[changedType])
+			end
+		--------------------------------------------------------	
+		elseif changedType == "RerollCharShop" then
+			local ui_rerollToolTipTitle = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/Tooltip_Reroll/Text_Name")
+			ui_rerollToolTipTitle.TextComponent.Text = _LocalizationService:GetTextFormat("RerollInfo_Title", self.ShortCutKey[changedType])
+		--------------------------------------------------------
+		elseif changedType == "BuyEXP" then
+			local ui_buyEXPTooltipTitle = _EntityService:GetEntityByPath("/ui/Arena_Default/TooltipUI_Exp/Text_Name")
+			ui_buyEXPTooltipTitle.TextComponent.Text = _LocalizationService:GetTextFormat("EXPInfo_Title", self.ShortCutKey[changedType])
+		--------------------------------------------------------
+		elseif changedType == "RerollRuneShop" then
+			local ui_runeRerollTooltipTitle = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/RuneCardShop/Tooltip_RerollRune/Text_Name")
+			ui_runeRerollTooltipTitle.TextComponent.Text = _LocalizationService:GetTextFormat("RerollRuneInfo_Title", self.ShortCutKey[changedType])
+		--------------------------------------------------------
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DeleteKey()
+		--지정한 단축키를 해제하는 함수입니다.
+		self.ShortCutKey[self.CurrentChangingType] = ""
+		log(self.CurrentChangingType.."의 단축키가 해제되었습니다.")
+		self.CurrentChangingType = ""
+		self.UI_ShortCutPopup:SetEnable(false)
+		
+		self:UI_RefreshList()
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- Arena 맵에서의 이벤트 핸들러
+		---------------------------------------------------------
+		-- Parameters
+		local key = event.key
+		---------------------------------------------------------
+		local user = _UserService.LocalPlayer
+		if isvalid(user) == false then return end
+		---------------------------------------------------------
+		-- 인게임에서 준비 단계가 아니라면 변경 불가
+		if _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == true and user.GameManager.PhaseType ~= "Ready" then
+			return
+		end
+		---------------------------------------------------------
+		-- 단축키 변경 모드 중이라면 함수 종료
+		if self.CurrentChangingType ~= "" then
+			if key == KeyboardKey.Escape or key == KeyboardKey.Mouse0 or key == KeyboardKey.Mouse1 or key == KeyboardKey.Mouse2 then
+				return
+			else
+				self:ChangeKey(tostring(key))
+				return
+			end
+		end
+		---------------------------------------------------------
+		-- 입력한 키에 따라, 명령 수행
+		local ui_dictionary = _EntityService:GetEntityByPath("/ui/Dictionary")
+		local ui_statistics = _EntityService:GetEntityByPath("/ui/BattleStatGroup")
+		local ui_statisticsButton = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/Button_Statistics")
+		if key == KeyboardKey.Escape then -- 열려 있는 UI를 닫습니다.
+			if ui_dictionary.Enable == true then
+				ui_dictionary.Enable = false
+				return
+			elseif ui_statistics.Enable == true then
+				ui_statistics:SetEnable(false)
+				_EntityService:GetEntity("c16717c5-a970-4c19-8489-5b1a3a169624"):SetEnable(false)
+				return
+			elseif _ESCMenuService.Open == true then
+				
+				if _ESCMenuService.UI_ConfirmPopup.Enable == true then
+					 _ESCMenuService.UI_ConfirmPopup.Enable = false
+					
+				elseif _ESCMenuService.UI_Setting.Enable == true then
+					_ESCMenuService.UI_Setting.Enable = false 
+					
+				else
+					_ESCMenuService:OpenESCMenu(false)
+				end
+		
+			else
+				if _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == true then
+					_ESCMenuService:OpenESCMenu(true)
+				end
+			end
+		end
+		-----------------
+		
+		--ESC 메뉴가 켜져있는 상태에서는 단축키 작동 안 하도록 막음
+		---------------------------------
+		if _ESCMenuService.Open == true then
+			return
+		end
+		
+		
+		local currentAct = ""
+		for act, sckey in pairs(self.ShortCutKey) do
+			if tostring(key) == sckey then
+				currentAct = act
+			end
+		end
+		
+		if user.GameManager.ModeType == "Tutorial" and currentAct ~= "" then
+			--튜토리얼에는 작동하지 않도록 처리
+			if key == KeyboardKey.Mouse0 or key == KeyboardKey.Mouse1 or key == KeyboardKey.Mouse2 or key == KeyboardKey.Escape then
+				
+			else
+				if currentAct == "RerollCharShop" then
+					if user.TutorialManager_New.AllowReroll == true then
+						
+					else 
+						_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+						return
+					end
+				elseif currentAct == "BuyEXP" then
+					if user.TutorialManager_New.AllowPurchaseEXP == true then
+						
+					else 
+						_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+						return
+					end
+				elseif currentAct == "RerollRuneShop" then
+					if user.TutorialManager_New.AllowRuneCardReroll == true then
+						
+					else 
+						_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+						return
+					end
+				elseif currentAct == "SellChar" then
+					if user.TutorialManager_New.AllowSellCharacter == true and user.TutorialManager_New.SellTargetCharID == _CursorPosManager.HoverEntity.UnitInfo.charID then
+						
+					elseif user.TutorialManager_New.AllowSellCharacter == true and user.TutorialManager_New.SellTargetCharID ~= _CursorPosManager.HoverEntity.UnitInfo.charID then
+						_UIToast:ShowMessageByLocalizingKey("Toast_SellCharError")
+						return
+					else 
+						_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+						return
+					end
+				elseif currentAct == "BattleStart" then
+					return
+				else
+					_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+					return
+				end
+		
+			end
+		end
+		
+		---------------------------------------------------------
+		if currentAct == "RerollCharShop" then
+			user.CharacterShopManager_New:Reroll_Check()
+			
+		elseif currentAct == "BuyEXP" then
+			user.CharacterShopManager_New:BuyEXP_Check()
+			
+		elseif currentAct == "RerollRuneShop" then
+			user.SpecialShopManager:CheckReroll_Runes()
+			
+		elseif currentAct == "SellChar" then
+			if isvalid(_CursorPosManager.HoverEntity) then
+				if isvalid(_CursorPosManager.HoverEntity.UnitInfo) then
+					_UnitSetLogic_New:SellUnit(_UserService.LocalPlayer.OwnerId, _CursorPosManager.HoverEntity)
+				end
+			end
+		elseif currentAct == "LockCharShop" then
+			user.CharacterShopManager_New:Lock_OnClient()
+		elseif currentAct == "BattleStart" then
+			self.UI_Button_BattleStart.ArenaUI_BattleStartButton:PressButton()
+		elseif currentAct == "BuyCharShop1" then
+			user.CharacterShopManager_New:BuyCharacter_Check(1)
+			_RuneCardDirector:RC20014Director(1,"index")
+		elseif currentAct == "BuyCharShop2" then
+			user.CharacterShopManager_New:BuyCharacter_Check(2)
+			_RuneCardDirector:RC20014Director(2,"index")
+		elseif currentAct == "BuyCharShop3" then
+			user.CharacterShopManager_New:BuyCharacter_Check(3)
+			_RuneCardDirector:RC20014Director(3,"index")
+		elseif currentAct == "BuyCharShop4" then
+			user.CharacterShopManager_New:BuyCharacter_Check(4)
+			_RuneCardDirector:RC20014Director(4,"index")
+		elseif currentAct == "BuyCharShop5" then
+			user.CharacterShopManager_New:BuyCharacter_Check(5)
+			_RuneCardDirector:RC20014Director(5,"index")
+			
+		elseif currentAct == "BuyItemShop1" then
+			user.SpecialShopManager:PurchaseItem_Check(1)
+		elseif currentAct == "BuyItemShop2" then
+			user.SpecialShopManager:PurchaseItem_Check(2)
+		elseif currentAct == "BuyRuneShop1" then
+			user.SpecialShopManager:PurchaseRunecard_Check(1)
+		elseif currentAct == "BuyRuneShop2" then
+			user.SpecialShopManager:PurchaseRunecard_Check(2)
+		elseif currentAct == "Dictionary" then
+			if ui_dictionary.Enable then
+				ui_dictionary.Enable = false
+			else
+				ui_dictionary.Enable = true
+			end
+		elseif currentAct == "Statistics" then
+			
+			if ui_statistics.Enable == false then
+				_UI_BattleStatistics:Initialize(0)
+			end
+			ui_statistics.Enable = not ui_statistics.Enable
+		end
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent2(KeyDownEvent event)
+		-- Lobby 맵에서의 이벤트 핸들러
+		---------------------------------------------------------
+		local key = event.key
+		---------------------------------------------------------
+		local user = _UserService.LocalPlayer
+		if isvalid(user) == false then return end
+		---------------------------------------------------------
+		if user.CurrentMapName ~= "Lobby" then
+			return
+		end
+		---------------------------------------------------------
+		-- ESC 버튼을 눌렀을 때 팝업을 닫습니다.
+		if key == KeyboardKey.Escape then
+			local ui_shop = _EntityService:GetEntityByPath("/ui/Lobby_Shop/Panel")
+			local ui_coachGachaResult = _EntityService:GetEntityByPath("/ui/Lobby_Shop/Panel_Gacha")
+			local ui_coachGachaShop = _EntityService:GetEntityByPath("/ui/Lobby_Shop/GachaShop_Dim")
+			local ui_coachList = _EntityService:GetEntityByPath("/ui/Lobby_CoachInventory")
+			local ui_achievements = _EntityService:GetEntityByPath("/ui/AchievementGroup")
+			local ui_dailyMission = _EntityService:GetEntityByPath("/ui/Lobby_DailyMission")
+			local ui_collection = _EntityService:GetEntityByPath("/ui/CollectionBook")
+			local ui_profile = _EntityService:GetEntityByPath("/ui/ProfileGroup")
+			local ui_levelSelect = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect")
+			local ui_title = _EntityService:GetEntityByPath("/ui/Lobby_TitleSetting/TitleSettingUI")
+			local ui_dictionary = _EntityService:GetEntityByPath("/ui/Dictionary")
+			
+			-- [코치 상점] 화면을 닫습니다.
+			if ui_shop.Enable then
+				local ui_shop_gacha = _EntityService:GetEntityByPath("/ui/Lobby_Shop/Panel_Gacha")
+				local ui_shop_checkPopup = _EntityService:GetEntityByPath("/ui/Lobby_Shop/Panel/PopupPanel")
+			
+				if ui_shop_checkPopup.Enable then
+					ui_shop_checkPopup.Enable = false
+				else
+					-- 가챠 화면이 열려있는 경우 작동 X
+					if ui_shop_gacha.Enable == false then
+						ui_shop.Enable = false
+					end
+				end
+				
+			-- [코치 뽑기 > 결과] 화면을 닫습니다.
+			elseif ui_coachGachaResult.Enable then
+				-- 가챠 결과의 '닫기' 버튼이 활성화 되어 있는 경우에만 적용
+				local ui_closeButton = _EntityService:GetEntityByPath("/ui/Lobby_Shop/Panel_Gacha/ScreenArea")
+				if ui_closeButton.Enable then
+					_UI_GachaResult:OnClick_ResultCloseBtn()
+				end
+				
+			-- [코치 뽑기] 화면을 닫습니다.
+			elseif ui_coachGachaShop.Enable then
+				-- 확률표가 열려 있다면 확률표만 닫기
+				local ui_probTable = _EntityService:GetEntityByPath("/ui/Lobby_Shop/Panel_GachaShop/Panel_ChanceTable")
+				if ui_probTable.Enable then
+					ui_probTable.Enable = false
+				else
+					_UI_GachaShopService:OnOffShopUI(false)
+				end
+				
+			-- [코치 보관함] 화면을 닫습니다.
+			elseif ui_coachList.Enable then
+				ui_coachList.Enable = false
+				
+			-- [업적] 화면을 닫습니다.
+			elseif ui_achievements.Enable then
+				local ui_achiStep = ui_achievements:GetChildByName("AchievementStep")
+				
+				if ui_achiStep.Enable then
+					ui_achiStep.Enable = false
+				else
+					ui_achievements.Enable = false
+				end
+				
+			-- [일일 미션] 화면을 닫습니다.
+			elseif ui_dailyMission.Enable then
+				local ui_refreshCheckPopup = _EntityService:GetEntityByPath("/ui/Lobby_DailyMission/Popup_RefreshCheck")
+				
+				if ui_refreshCheckPopup.Enable then
+					ui_refreshCheckPopup.Enable = false
+				else
+					ui_dailyMission.Enable = false
+				end
+		
+			-- [도감] 화면을 닫습니다.
+			elseif ui_collection.Enable then
+				_UI_CollectionManager:CloseUI()
+			
+			-- [프로필] 화면을 닫습니다.
+			elseif ui_profile.Enable then
+				
+				-- [칭호] 화면을 닫습니다.
+				if ui_title.Enable then
+					ui_title.Enable = false
+					_UI_CameraZoomLogic:Zoom()
+					ui_profile.Enable = true
+				else
+					ui_profile.Enable = false
+				end
+				
+				
+			-- [레벨 선택] 화면을 닫습니다.
+			elseif ui_levelSelect.Enable then
+				local ui_coachSelectPopup = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach")
+				local ui_resume = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Resume")
+				local ui_resume_check = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Popup_CheckRemoveData")
+				
+				-- [코치 선택] 화면을 닫습니다.
+				if ui_coachSelectPopup.Enable then
+					_UI_LobbyLevelSelect:Cancle_CoachSelectMode()
+				-- [이어하기] 패널을 닫습니다.
+				elseif ui_resume.Enable then
+					ui_resume.Parent.Enable = false
+				-- [이어하기] 확인 팝업을 닫습니다.
+				elseif ui_resume_check.Enable then
+					ui_resume.Enable = false
+					ui_resume_check.Parent.Enable = false
+				else
+					ui_levelSelect.Enable = false
+				end
+				
+				
+			-- [사전] 화면을 닫습니다.
+			elseif ui_dictionary.Enable then
+				ui_dictionary.Enable = false
+				
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "ddb8833f-fe99-450c-a6f7-dff7fd6d861f")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		self:InitKey()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "2fc665de-25b3-4f14-9c81-5a7458b2981b")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- Parameters
+		--[[local Entity = event.Entity
+		local user = _UserService.LocalPlayer
+		local gameManager = user.GameManager
+		local ui_escMenuGroup = _EntityService:GetEntityByPath("/ui/ESCMenu")
+		---------------------------------------------------------
+		if gameManager.PhaseType ~= "End" then
+			ui_escMenuGroup.Enable = false
+			gameManager:MoveToLobby("SaveAndExit")
+		else
+			_UIToast:ShowMessage("지금 저장할 수 없는 상태입니다.")
+		end]]
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "b1aa8ea2-318f-48e6-b6d2-e24afaacfdc4")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		self:DeleteKey()
+	end
+
+	@EventSender("Self")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		self:ActivateChangingKeyMode(self.CurrentChangingType, false)
+		self:UI_RefreshList()
+		self.UI_ShortCutPopup:SetEnable(false)
+	end
+
+end

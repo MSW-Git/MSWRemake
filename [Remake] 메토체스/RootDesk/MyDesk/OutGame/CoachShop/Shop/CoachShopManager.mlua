@@ -1,0 +1,277 @@
+@Component
+script CoachShopManager extends Component
+
+	property integer PickAdjustmentCount = 0
+
+	property integer PickAdjustmentMax = 10
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 월드코인 구매 결과 함수 연결 
+		 _WorldShopService:SetProcessPurchaseCallback(self.Purchase_WorldCoin)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Purchase_Gacha(string player, string GoodsID)
+		-----------------------------------------------------------------------
+		-- func: 가챠 구매 시 시럽 소모, 코치 선정 등의 처리를 하는 함수 
+		-----------------------------------------------------------------------
+		
+		-- param 
+		local coachManager = self.Entity.CoachManager
+		local PlayerEntity = _UserService:GetUserEntityByUserId(player)
+		
+		-- 로그 기록용 시럽 param
+		local syrupBefore = PlayerEntity.PlayerDataComponent.Syrup 
+		local syrupAfter 
+		
+		-- 시럽 보유 여부 판단 
+		local gachaData = _CoachShopDataLogic:Get_Gacha(GoodsID)
+		
+		local purchaseResult = self.Entity.PlayerDataComponent:SubtractSyrup("Syrup", gachaData.Price)
+		if not purchaseResult then 
+			--_UIToast:ShowMessage("시럽이 부족합니다.", PlayerEntity.PlayerComponent.UserId)
+			_UIToast:ShowMessageByLocalizingKey("Toast_SyrupError",PlayerEntity.PlayerComponent.UserId)
+			return	
+		end
+		
+		syrupAfter = PlayerEntity.PlayerDataComponent.Syrup
+		-----------------------------------------------------------------------
+		-- 코치 선정
+		local pickCoachID = {}
+		
+		-- 회차 보정 
+		--[[self.PickAdjustmentCount = math.max(0,self.PickAdjustmentCount-1) 
+		_PlayerDataLogic:SetPlayerPickAdjustmentCountData(self.Entity.OwnerId)
+		
+		if self.PickAdjustmentCount > 0 then 
+			pickCoachID = _GachaLogic:ProcessGacha(self.Entity,"Adjust")
+		
+		else
+			pickCoachID = _GachaLogic:ProcessGacha(self.Entity,"")
+		end]]--
+		
+		if GoodsID == "CG00001" then
+			table.insert(pickCoachID, _GachaLogic:ProcessGacha(self.Entity,""))
+		elseif GoodsID == "CG00002" then
+			for i = 1, 10 do
+				table.insert(pickCoachID, _GachaLogic:ProcessGacha(self.Entity,""))
+			end
+		end
+		
+		for i = 1, #pickCoachID do
+			if not isvalid(_CoachService:GetCoachInfo(pickCoachID[i])) then 
+				log_error("잘못된 코치 뽑기 결과입니다")
+			end
+		end
+		-----------------------------------------------------------------------
+		-- 중복 코치 검증 
+		local resultdata = {}
+		local bestdirectionGrade = {}
+		local bestisDuplicate = false
+		
+		
+		for i = 1, #pickCoachID do
+			local isDuplicate = true
+			local cost = _CoachService:GetCoachInfo(pickCoachID[i]).Cost
+			
+			local befSyrup = self.Entity.PlayerDataComponent.RoyalSyrup
+			local aftSyrup = 0
+			local duplicateReward = 0
+			local pickCoachType = coachManager:GetHasType(pickCoachID[i])
+			
+			if pickCoachType ~= 0 then 
+				if pickCoachType == 1 then -- 일반 코치를 보유한 상태에서 일반 코치를 뽑았다면 
+					
+					-- 10% 확률로 마스터 코치를 뽑는다. 
+					--[[local rand = _UtilLogic:RandomIntegerRange(1,100)
+					if rand <= 10 then -- 마스터 코치 뽑기를 성공함
+						pickCoachType = 2 
+						isDuplicate = false 
+					else -- 마스터 코치 뽑기를 실패한 경우 ]]--
+						-- 중복 보상 지급 
+						duplicateReward = _GachaLogic:GetCoachPrice(cost,1,true)
+						self.Entity.PlayerDataComponent:AddSyrup("RoyalSyrup", duplicateReward, "DuplicateCoach")
+						aftSyrup = self.Entity.PlayerDataComponent.RoyalSyrup
+						
+					--end			
+				
+				--[[elseif pickCoachType == 2 then -- 이미 마스터 코치를 보유한 경우 
+					-- 중복 보상 지급 
+					duplicateReward = _GachaLogic:GetCoachPrice(cost,pickCoachType,true)
+					self.Entity.PlayerDataComponent:AddSyrup("RoyalSyrup", duplicateReward)
+					aftSyrup = self.Entity.PlayerDataComponent.RoyalSyrup]]--
+				end
+			else
+				isDuplicate = false
+				pickCoachType = 1 
+			end
+			
+			-- 중복 뽑기가 아닌 경우만 코치 지급
+			if not isDuplicate then
+				self.Entity.CoachManager:ModifyPlayerOwnedCoachesID(pickCoachID[i],pickCoachType,"GachaCoach")
+			end
+			
+			-- 가챠 연출 등급 설정 : 테이블 순회 돌려서 가장 높은 코스트로 연출 보여짐
+			local directionGrade = _GachaLogic:Pick_DirectionGrade(cost,pickCoachType) -- 변동연출 포함하고 싶으면 이거 사용할 것
+			
+			if _UtilLogic:IsNilorEmptyString(bestdirectionGrade[2]) then -- 빈 값이면 현재 가챠 데이터를 가장 높은 등급으로
+				for i=1, 2 do
+					bestdirectionGrade[i] =  cost
+				end
+				bestisDuplicate = isDuplicate
+				
+			--[[elseif bestdirectionGrade[2] ~= "Rare" then -- 값이 있고 rare(가장 최고 등급)가 아니라면 현재 가챠 데이터와 비교 후, 재설정
+				if directionGrade[2] == "Rare" then
+					table.clear(bestdirectionGrade)
+					for i=1, 2 do
+						bestdirectionGrade[i] = directionGrade[i]
+					end
+					bestisDuplicate = isDuplicate
+					
+				end]]--
+				
+			elseif bestdirectionGrade[2] <  cost then
+				for i=1, 2 do
+					bestdirectionGrade[i] =  cost
+				end
+				bestisDuplicate = isDuplicate
+				
+			end
+			
+			resultdata[i] = {pickCoachID[i],pickCoachType, isDuplicate, befSyrup, aftSyrup, duplicateReward, directionGrade[2]}
+		end
+		-----------------------------------------------------------------------
+		
+		-----------------------------------------------------------------------
+		--가챠 연출 데이터 설정
+		_UI_GachaDirection:SetGachaGrade(bestdirectionGrade,bestisDuplicate,PlayerEntity.OwnerId)
+		
+		--연출 재생
+		_UI_GachaDirection:SetGoodsID(GoodsID,PlayerEntity.OwnerId)
+		_UI_GachaDirection:NextPlay(PlayerEntity.OwnerId)
+		-----------------------------------------------------------------------
+		-- 가챠 결과
+		if GoodsID == "CG00001" then 
+			for i = 1, #resultdata do
+				local data = resultdata[i]
+				_UI_GachaResult:SetButton(1, self.Entity.OwnerId)
+				_UI_GachaResult:SetGachaResult_1Times(data[1], data[2], data[3], data[4], data[5], data[6], data[7], self.Entity.OwnerId)
+			end
+			
+			-- 일일 미션
+			self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10001", 1, 1)
+		else
+			_UI_GachaResult:SetButton(10, self.Entity.OwnerId)
+			local resultdatas = _HttpService:JSONEncode(resultdata)
+			_UI_GachaResult:SetGachaResult_10Times(resultdatas, self.Entity.OwnerId)
+			--_UI_GachResult:ShowResultEntire_All(resultdatas, self.Entity.OwnerId)
+			
+			-- 일일 미션
+			self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10001", 1, 10)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Purchase_Coach(string itemID, string type)
+		-------------------------------------------------------------
+		-- func: 코치/마스터 코치를 로얄시럽으로 구매했을 때 처리 
+			--- 코치 획득, 가격만큼 로얄시럽 차감 
+		-------------------------------------------------------------
+		
+		-- 로그 기록용 param
+		local resultTable = {}
+		local royalSyrupBefore = self.Entity.PlayerDataComponent.RoyalSyrup 
+		local royalSyrupAfter 
+		
+		-- 유효성 체크: 구매한 코치 타입
+		if type ~= "MasterCoach" and type ~="Coach" then 
+			log_error("유효하지 않은 코치 type입니다: ",type)
+			return
+		end
+		
+		-- 유효성 체크: 구매한 코치 id 
+		local coachInfo = _CoachService:GetCoachInfo(itemID)
+		if not isvalid(coachInfo) then 
+			log_error("유효하지 않은 코치 id입니다: ",coachInfo)
+			return
+		end
+		
+		-- 유효성 체크: 이미 보유한 코치 
+		local hasType = self.Entity.CoachManager:GetHasType(itemID)
+		if (type == "MasterCoach" and hasType == 2 ) 
+			or (type == "Coach" and hasType ~= 0) then 
+			_UIToast:ShowMessageByLocalizingKey("CoachShop_HasCoach", self.Entity.PlayerComponent.UserId)	
+			return
+		end
+		-------------------------------------------------------------
+		local cost = coachInfo.Cost
+		local costData =  _CoachShopDataLogic:Get_CoachPrice(cost)
+		
+		local coachType 
+		local price 
+		if type == "MasterCoach" then 
+			coachType = 2 
+			price = costData.MasterPrice
+		else
+			coachType = 1
+			price =  costData.NormalPrice
+		end
+		
+		-------------------------------------------------------------
+		-- 시럽 보유 여부 판단(UI_Goods 클릭 시, 한 번 검증하지만 혹시모르니 이중 보안 걸어둠)
+		 
+		local purchaseResult =	self.Entity.PlayerDataComponent:SubtractSyrup("RoyalSyrup", price) 	
+		
+		if not purchaseResult then 
+			_UIToast:ShowMessageByLocalizingKey("CoachShop_NoRoyalSyrup",self.Entity.PlayerComponent.UserId)
+			return	
+		end
+		
+		royalSyrupAfter = self.Entity.PlayerDataComponent.RoyalSyrup
+		-------------------------------------------------------------
+		-- 코치 획득
+		local result = self.Entity.CoachManager:ModifyPlayerOwnedCoachesID(itemID,coachType,"CoachShop")
+		
+		-- 구매 완료 팝업
+		_UI_CoachShopPopUp:Popup_CompletePurchaseInitailize(itemID,self.Entity.PlayerComponent.UserId)
+		
+		--_UIToast:ShowMessage("구매 성공", self.Entity.PlayerComponent.UserId)	
+		
+		-- 상점 UI 갱신 
+		_UI_CoachShopService:RefreshShopUI(self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method boolean Purchase_WorldCoin(any purchaseInfo)
+		-------------------------------------------------------------
+		-- func: 월드코인으로 상품 구매 후 처리 
+		-------------------------------------------------------------
+		local userEntity = _UserService:GetUserEntityByUserId(purchaseInfo.UserId)
+		         
+		-- 유효성 검사 
+		if _EntityService:IsValid(userEntity) == false then
+			log_error("유효하지 않은 사용자! PurchaseId: " .. purchaseInfo.PurchaseId .. " / " ..
+						"UserId: " .. purchaseInfo.UserId .. " / " ..
+						"ProductId: " .. purchaseInfo.ProductId)
+			return false   
+		end
+		        
+		-------------------------------------------------------------
+		
+		if purchaseInfo.ProductId then 
+			-- 코치 획득  
+			self.Entity.CoachManager:ModifyPlayerOwnedCoachesID("COP50009",1,"CoachShop")
+			
+			-- 상점 UI 갱신
+			_UI_CoachShopService:RefreshShopUI(purchaseInfo.UserId)
+			
+			--토스트 메세지 출력
+			--_UIToast:ShowMessage("구매 성공", purchaseInfo.UserId)
+			_UIToast:ShowMessageByLocalizingKey("Toast_WCPurchaseSuccess", purchaseInfo.UserId)
+		end
+		
+		return true
+	end
+
+end

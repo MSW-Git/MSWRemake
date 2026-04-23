@@ -1,0 +1,146 @@
+@Component
+script C20008_Lioner_Attack extends Component
+
+	@Sync
+	property number playRate = 0
+
+	property string hitEffectRUID = "d95dfa1120d540519c02e56fa0f0848c"
+
+	property string skillHitEffectRUID = "fefd98eac2b34310b867f5a515241e15"
+
+	property boolean onSkill = false
+
+	property number AttackCount = 0
+
+	@ExecSpace("Server")
+	method void Attack(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local animComponent = myUnit.UnitAnimationComponent
+		
+		
+		-- ATTACK RUID
+		self.playRate = (unitStatus.AttackSpeed * 1.4) * _BTLogic_New.ASpeedValue
+		animComponent:PlayAnimation(self.playRate, "Attack", targetUnit, unitInfo.OwnerId)
+		
+		
+		-- Set Damage
+		local function damage()
+			if _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Attack") then
+				self:SetDamage(targetUnit)
+			end
+		end
+		_TimerService:SetTimerOnce(damage, 0.8 / self.playRate)
+		
+		unitStatus:SetProperty("state", "Attack", "")
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0067",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			local animComponent = myUnit.UnitAnimationComponent
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			
+			---@type Entity
+			local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+			local isMonster = (unitInfo.TeamType == "Enemy")
+			
+			local teamManager = user.TeamManager
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+				
+			local damageInfo = _StatusChangeLogic:CheckDamage(unitStatus.PhysicalAttack, myUnit, targetUnit, 0, "Physical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "defaultAttack")
+			
+			if self.onSkill then
+				self.AttackCount += 1
+				local enemies = {}
+				if isMonster then
+					enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+				else
+					enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+				end
+				
+				local attackEnemies = _BTLogic_New:getTargets(targetInfo.setTile, enemies, "Nearest_2")
+				table.insert(attackEnemies, targetUnit)
+				
+				local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C20008_Active_AttackSplashDamage_Magic[unitInfo.level]
+				
+				local targettable={targetUnit} -- 연출용 테이블
+				if isvalid(attackEnemies) then
+					for _, enemy in pairs(attackEnemies) do
+						if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+							local skillDamageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, enemy, 0, "Magical")
+							
+							if self.AttackCount <= 1 then
+								_StatusChangeLogic:HitDamage(myUnit, enemy, 0, skillDamageInfo[1], skillDamageInfo[2], "skill")
+							else
+								_StatusChangeLogic:HitDamage(myUnit, enemy, 0, skillDamageInfo[1], skillDamageInfo[2], string.format("skill_%d", self.AttackCount) )
+							end
+							
+							self:SkillHitEffect(enemy, unitInfo.OwnerId)
+							table.insert(targettable,enemy)
+						end
+					end
+					
+					--주변 적 타겟 연출
+					targettable=_UtilLogic:TableToString(targettable)
+					self:SkillLineEffect(targettable,unitInfo.OwnerId)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SkillHitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.skillHitEffectRUID, targetUnit, Vector3(0, 0, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SkillLineEffect(string targets)
+		--다수의 적이 피해를 받았을 때 대상과 가까운 적들을 공격
+		--1번 : 대상 2,3번 : 가까운 적
+		
+		targets=_UtilLogic:StringToTable(targets)
+		
+		local line1=_SpawnService:SpawnByModelId("model://c37fb349-52e3-4fc5-bb13-848ca95d5b4a","Line1",Vector3(0,0,0),self.Entity.Parent)
+		line1.LineEffectCompo.type="C20008"
+		line1.LineEffectCompo.StartEntity=targets[1]
+		line1.LineEffectCompo.TargetEntity_1=targets[2]
+		line1.LineEffectCompo.TargetEntity_2=targets[3]
+		
+		local destoryline=function()
+			line1:Destroy()
+		end
+		
+		_TimerService:SetTimerOnce(destoryline,0.5)
+		
+	end
+
+end

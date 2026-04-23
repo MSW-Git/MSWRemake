@@ -1,0 +1,212 @@
+@Logic
+script GameLogic extends Logic
+
+	@ExecSpace("Client")
+	method void TryEnterLimitLand(Entity playerEntity)
+		-- 리미트 랜드 입장 시도 및 조건 검사
+		if #playerEntity.PlayerStorageComponent:GetAllEquippedWeapon() < 1 then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast46"))
+			
+			return
+		end
+		
+		if not _CheckLogic:IsEnoughConsumeSlot(playerEntity.PlayerComponent.UserId, 14) then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast49"))
+		
+			return
+		end
+		
+		self:RequestEnterLimitLand(playerEntity)
+	end
+
+	@ExecSpace("Server")
+	method void RequestEnterLimitLand(Entity playerEntity)
+		-- 서버에서 리미트 랜드 입장 요청 처리
+		local currentDate = _LocalTimeLogic:GetKST()
+		local dayOfWeek = currentDate:ToFormattedString("dddd")
+		
+		if (dayOfWeek == "Sunday" and currentDate.Hour >= 23 and currentDate.Minute >= 30) or
+			(dayOfWeek == "Monday" and currentDate.Hour <= 00 and currentDate.Minute <= 30) then
+			
+			self:NoticeCantEnter(playerEntity.PlayerComponent.UserId)
+			
+			return
+		end
+		
+		local playerInfo = playerEntity.PlayerInfoComponent
+		local canEnter = playerInfo:SetEnteredLimitLandCount()
+		
+		if canEnter then
+			playerEntity.PlayerDailyMissionComponent:CheckEnteredDate()
+			self:EnterLimitLand(playerEntity.PlayerComponent.UserId)
+			playerEntity.MyPlayer:SetGameInfo(_GameConfig:GetConfig().GAMEMODE_LIMITLAND,"0")
+			_TeleportService:TeleportToEntity(playerEntity, _LimitLandWaveLogic.battleMap)
+			playerEntity.PlayerDropsComponent:RequestDropTable(senderUserId)
+			_WorldLog:LogPlayFlow(playerEntity.PlayerComponent.UserId, _WorldLog.FlowType_PlayFlow_Enter, "")
+			_WorldLog:LogIngameFlowEnter(playerEntity, _GameConfig:GetConfig().GAMEMODE_LIMITLAND, "LimitLand", playerEntity.MyPlayer.deviceType)
+			playerEntity:SendEvent(NewbieMissionUpdateEvent("tryLimitLand", "0", 1))
+			playerEntity:SendEvent(DailyMissionUpdateEvent("tryLimitLand", "", 1))
+		else
+			self:NoticeCantEnterLimitLand(playerEntity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void EnterLimitLand()
+		-- 클라이언트에서 리미트 랜드 입장 처리
+		_GameSettingLogic:SetMode(_GameConfig:GetConfig().GAMEMODE_LIMITLAND)
+		_BattleUIManager.loadingUI:Show()
+		
+		
+		_StageLogic.isInPlay = true
+		_StageLogic:SendEvent(StageStartEvent())
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantEnterLimitLand()
+		-- 리미트 랜드 입장 불가 알림 표시
+		local locale = _LocalizationService.CurrentLocaleId
+		
+		if locale == "ko" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast51"))
+		else
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast51") .. _LocalizeLogic:GetText("AdminTool_133"))
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ExitLimitLand(integer wave, string recordedTime)
+		-- 리미트 랜드 종료 및 기록 저장
+		local playerEntity  = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(playerEntity) then
+			return
+		end
+		
+		local currentRecord = TimeSpan(recordedTime)
+		local clearedTime = currentRecord.TotalSeconds
+		
+		if clearedTime < wave * 5 or playerEntity.PlayerInfoComponent.isInvalidRecord then
+			_UserService:GetUserEntityByUserId(senderUserId).PlayerInfoComponent.isInvalidRecord = true
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Clear Time (Limit Land)", _UserService:GetUserEntityByUserId(senderUserId).PlayerDropsComponent.enteredTime, _UtilLogic.ServerElapsedSeconds, clearedTime, wave)
+			
+			return
+		end
+		
+		playerEntity.PlayerInfoComponent:RecordLimitLandRecord(wave, recordedTime, senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void TryEnterRandomBossMap(Entity playerEntity)
+		-- 랜덤 보스 맵 입장 시도 및 조건 검사
+		if #playerEntity.PlayerStorageComponent:GetAllEquippedWeapon() < 1 then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast46"))
+			
+			return
+		end
+		
+		if not _RandomBossLogic:IsCanEnter(playerEntity) then
+			local locale = _LocalizationService.CurrentLocaleId
+			
+			if locale == "ko" then
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast45"))
+			else
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast45") .. _LocalizeLogic:GetText("AdminTool_133"))
+			end
+			
+		
+			return
+		end
+		if not _RandomBossLogic:IsCanEnterByMeso(playerEntity) then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast44"))
+		
+			return
+		end
+		
+		self:RequestEnterRandomBossMap(playerEntity)
+	end
+
+	@ExecSpace("Server")
+	method void RequestEnterRandomBossMap(Entity playerEntity)
+		-- 서버에서 랜덤 보스 맵 입장 요청 처리
+		if playerEntity.PlayerComponent.UserId ~= senderUserId then
+			
+			return
+		end
+		
+		
+		local playerInfo = playerEntity.PlayerInfoComponent
+		local canEnter = _RandomBossLogic:IsCanEnter(playerEntity) and _RandomBossLogic:IsCanEnterByMeso(playerEntity)
+		
+		if canEnter then
+			playerEntity.PlayerDailyMissionComponent:CheckEnteredDate()
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, _RandomBossLogic:GetEnterCost(playerEntity), senderUserId, "EnterRandomBoss")
+			playerInfo:SetEnteredRandomBossCount()
+			self:EnterRandomBossMap(senderUserId)
+			playerEntity.MyPlayer:SetGameInfo(_GameConfig:GetConfig().GAMEMODE_RANDOMBOSS,"0")
+			_TeleportService:TeleportToEntity(playerEntity, _RandomBossLogic.battleMap)
+			playerEntity.PlayerDropsComponent:RequestDropTable(senderUserId)
+			_WorldLog:LogPlayFlow(senderUserId, _WorldLog.FlowType_PlayFlow_Enter, _HttpService:JSONEncode(playerEntity.PlayerDropsComponent.fixedDropTable))
+			_WorldLog:LogIngameFlowEnter(playerEntity, _GameConfig:GetConfig().GAMEMODE_RANDOMBOSS, "RandomBoss", playerEntity.MyPlayer.deviceType)
+			playerEntity:SendEvent(DailyMissionUpdateEvent("tryRandomBoss", "", 1))
+		else
+			self:NoticeCantEnterRandomBossMap(senderUserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void EnterRandomBossMap()
+		-- 클라이언트에서 랜덤 보스 맵 입장 처리
+		_UIGroupManager.uiPlayerStatusPopup:Hide()
+		_GameSettingLogic:SetMode(_GameConfig:GetConfig().GAMEMODE_RANDOMBOSS)
+		_BattleUIManager.loadingUI:Show()
+		_RandomBossLogic.randomBossUI:Hide()
+		
+		_StageLogic.isInPlay = true
+		_StageLogic:SendEvent(StageStartEvent()) 
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantEnterRandomBossMap()
+		-- 랜덤 보스 맵 입장 불가 알림 표시
+		_UIToast:ShowMessage(_LocalizeLogic:GetText("toast50"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void TryEnterRandomBossMapByTicket(Entity playerEntity)
+		-- 티켓을 사용한 랜덤 보스 맵 입장 시도
+		if #playerEntity.PlayerStorageComponent:GetAllEquippedWeapon() < 1 then
+			_LocalizeLogic:ShowToast("toast52", playerEntity.PlayerComponent.UserId)
+			
+			return
+		end
+		
+		if not _RandomBossLogic:IsCanEnterByTicket(playerEntity) then
+			_LocalizeLogic:ShowToast("toast47", playerEntity.PlayerComponent.UserId)
+			_WorldLog:LogAbnormalFlow(playerEntity.PlayerComponent.UserId, "Invalid Try Use RandomBoss Ticket.", 0, 0, 0, 0)
+		
+			return
+		end
+		
+		
+		self:EnterRandomBossMap(playerEntity.PlayerComponent.UserId)
+		_TeleportService:TeleportToEntity(playerEntity, _RandomBossLogic.battleMap)
+		playerEntity.PlayerDropsComponent:RequestDropTable(playerEntity.PlayerComponent.UserId)
+		_WorldLog:LogPlayFlow(playerEntity.PlayerComponent.UserId, _WorldLog.FlowType_PlayFlow_Enter, 
+			_HttpService:JSONEncode(playerEntity.PlayerDropsComponent.fixedDropTable))
+		playerEntity:SendEvent(DailyMissionUpdateEvent("tryRandomBoss", "", 1))
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantEnter()
+		-- 입장 불가 일반 알림 표시
+		local locale = _LocalizationService.CurrentLocaleId
+		
+		if locale == "ko" then
+			_UIPopup:Open("", _LocalizeLogic:GetText("popup3"), nil, nil)
+		else
+			_UIPopup:Open("", _LocalizeLogic:GetText("popup3") .. _LocalizeLogic:GetText("AdminTool_133"), nil, nil) 
+		end
+	end
+
+end

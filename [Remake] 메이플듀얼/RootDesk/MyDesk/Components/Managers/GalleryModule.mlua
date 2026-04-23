@@ -1,0 +1,535 @@
+@Component
+script GalleryModule extends Component
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property Entity fadeEntity = "639e4186-747b-47f4-a842-bcd56ed73c4d"
+
+	property Entity variantEntity = nil
+
+	property TextComponent variantText = nil
+
+	property Entity rarityEntity = nil
+
+	property TextComponent rarityText = nil
+
+	property Entity descriptionEntity = "09aac1ff-3225-4977-88f1-2d434cd9bec2"
+
+	property TextComponent descriptionText = "eb0d599b-3b41-4fa1-9800-2e2c2dad0b5e"
+
+	property Entity tagEntity = "6b760bfc-f636-4020-97b9-15962a965a51"
+
+	property TextComponent tagText = "2aed6661-fa8d-44f7-b6f2-dbe74e752f75"
+
+	property Entity keywordEntity = "75c5c6b8-77e9-4e1e-87b4-59beb8756857"
+
+	property TextComponent keywordText = "65de3821-589b-4057-8bd1-ed0b7872a921"
+
+	property Entity selectButtonEntity = nil
+
+	property ButtonComponent selectButton = nil
+
+	property Entity flavorTextEntity = nil
+
+	property TextComponent flavorText = nil
+
+	property Entity buyButtonEntity = nil
+
+	property ButtonComponent buyButton = nil
+
+	property Entity sellButtonEntity = nil
+
+	property ButtonComponent sellButton = nil
+
+	property TextComponent sellButtonText = nil
+
+	property boolean isOpen = false
+
+	property table cardPool = {}
+
+	property table cardArray = {}
+
+	property integer index = nil
+
+	property table cardTweenerArray = {}
+
+	property any variantTweener = nil
+
+	property any rarityTweener = nil
+
+	property any descriptionTweener = nil
+
+	property any tagTweener = nil
+
+	property any keywordTweener = nil
+
+	property table keywordArray = {}
+
+	property any selectButtonTweener = nil
+
+	property any flavorTextTweener = nil
+
+	property any buyButtonTweener = nil
+
+	property any sellButtonTweener = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 갤러리 모듈 초기화 시 키워드 배열 설정 및 이벤트 연결
+		self.keywordArray = {
+			"Spawn",
+			"Exit",
+			"Barrier",
+			"Venom",
+			"Freeze",
+			"Stun",
+			"Fear",
+		}
+		
+		self.fadeEntity:ConnectEvent(TouchEvent, function()
+			self:Close()
+		end)
+		
+		local character = _UserService.LocalPlayer.Character
+		
+		self.selectButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickRawSound, 1)
+			
+			local card = self.cardArray[1]
+			if not isvalid(card) or not character.isLoaded then
+				return
+			end
+			
+			_Server:Request(character, "SetCardBack", {card.backName})
+			self:Close()
+		end)
+		
+		self.buyButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			local card = self.cardArray[1]
+			if not isvalid(card) or not character.isLoaded then
+				return
+			end
+			
+			self.uiManager.PopupModule:Open("DoubleCheckBuyCard", false, function() 
+				_Server:Request(character, "BuyCard", {card.info})
+			end, nil)
+		end)
+		
+		self.sellButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			local card = self.cardArray[1]
+			if not isvalid(card) or not character.isLoaded then
+				return
+			end
+			
+			self.uiManager.PopupModule:Open("DoubleCheckSellCard", false, function()
+				_Server:Request(character, "SellCard", {card.info})
+			end, nil)
+		end)
+		
+		character.Entity:ConnectEvent(BuyCard, function(event)
+			local info = event.info
+			
+			local card = self.cardArray[1]
+			if _Table:Compare(info, card.info) and character:GetCardCount(info) >= 2 then
+				local buyButtonTransform = self.buyButtonEntity.TransformComponent
+				buyButtonTransform.Scale.x = 0
+				buyButtonTransform.Scale.y = 0
+				if self.buyButtonTweener then
+					self.buyButtonTweener:Destroy()
+				end
+			end
+		end)
+		
+		character.Entity:ConnectEvent(SellCard, function(event)
+			local info = event.info
+			
+			local card = self.cardArray[1]
+			if _Table:Compare(info, card.info) and character:GetCardCount(info) <= 2 then
+				local sellButtonTransform = self.sellButtonEntity.TransformComponent
+				sellButtonTransform.Scale.x = 0
+				sellButtonTransform.Scale.y = 0
+				if self.sellButtonTweener then
+					self.sellButtonTweener:Destroy()
+				end
+			end
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method Card AcquireCard()
+		-- 카드 풀에서 카드를 획득하거나 새로 생성
+		local card
+		if _Table:IsEmpty(self.cardPool) then
+			card = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Card"), "Card", 
+				Vector3.zero, self.Entity).Card
+		else
+			card = table.remove(self.cardPool)
+		end	
+		card:SpawnAndSetActor()
+		
+		return card
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ReleaseCard(Card card)
+		-- 카드를 풀로 반환
+		card:DestroyActor()
+		table.insert(self.cardPool, card)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetCardSourceDescription(any object)
+		local translator = _LocalizationService:GetTranslatorForLocale("Source")
+		return translator:GetText(object.name .. "Description")
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetCardDescription(any object)
+		return _LocalizationService:GetText(object.name .. "Description")
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetKeywordDescription(string keyword)
+		return _LocalizationService:GetText(keyword .. "Description")
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetFlavorText(any object)
+		return _LocalizationService:GetText(object.name .. "FlavorText")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(any any)
+		-- 갤러리 모듈을 열고 카드 또는 카드백 정보를 표시
+		self.isOpen = true
+		self.uiManager:UpdateButtons()
+		self.uiManager:UpdateMobileUI()
+		
+		_SoundService:PlaySound(self.resourceManager:GetResource("GalleryModule").openSound, 1)
+		
+		self.fadeEntity.Enable = true
+		
+		for i, card in ipairs(self.cardArray) do
+			card:ClearBlueprint()
+			card:ClearBackName()
+			if self.cardTweenerArray[i] then
+				self.cardTweenerArray[i]:Destroy()
+			end
+			self:ReleaseCard(card)
+		end
+		table.clear(self.cardArray)
+		
+		if isvalid(any.Entity.Card) and not any.isFront then
+			local card = self:AcquireCard()
+			table.insert(self.cardArray, card)
+			card:SetBackName(any.backName)
+			
+			local transform = card.actor.Entity.TransformComponent
+			transform.WorldPosition = any.actor.Entity.TransformComponent.WorldPosition:Clone()
+			transform.WorldPosition.z = 101
+			transform.Scale.x = 0
+			transform.Scale.y = 0
+			
+			---@type table
+			local rendererArray = card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+			for _, renderer in ipairs(rendererArray) do
+				renderer.SortingLayer = "UI"
+				renderer.OrderInLayer = 5
+			end
+			
+			self.cardTweenerArray[1] = _Tween:TransformTo(card.actor.Entity, Vector2(0, 0.5), 0, Vector2.one, 0.125, EaseType.Linear, EaseType.Linear, EaseType.Linear, true)
+			
+			self.descriptionText.Text = string.format("%s %s", _LocalizationService:GetText(any.backName), _LocalizationService:GetText("CardBack"))
+			local descriptionTransform = self.descriptionEntity.TransformComponent
+			descriptionTransform.Scale.x = 0
+			descriptionTransform.Scale.y = 0
+			if self.descriptionTweener then
+				self.descriptionTweener:Destroy()
+			end
+			self.descriptionTweener = _Tween:ScaleTo(self.descriptionEntity, Vector2.one, 0.125, EaseType.Linear)
+			
+			local character = _UserService.LocalPlayer.Character
+			if isvalid(self.uiManager.CardModule) and self.uiManager.CardModule.isOpen and character:HasCardBack(any.backName) then
+				if self.selectButtonTweener then
+					self.selectButtonTweener:Destroy()
+				end
+				self.selectButtonTweener = _Tween:ScaleTo(self.selectButtonEntity, Vector2.one, 0.125, EaseType.Linear)
+			end
+		else
+			local linkArray = self.cardManager:GetLinks(any.name)
+			for i, link in ipairs(linkArray) do
+				local card = self:AcquireCard()
+				table.insert(self.cardArray, card)
+				card:SetBlueprint(any:GetBlueprintByName(link))
+				
+				local transform = card.actor.Entity.TransformComponent
+				if isvalid(any.Entity.Minion) or isvalid(any.Entity.Card) then
+					transform.WorldPosition = any.actor.Entity.TransformComponent.WorldPosition:Clone()
+				elseif isvalid(any.Entity.Thumbnail) then
+					transform.WorldPosition = any.Entity.TransformComponent.WorldPosition:Clone()
+				end
+				transform.WorldPosition.z = i + 100
+				transform.Scale.x = 0
+				transform.Scale.y = 0
+				
+				local rendererArray = _Table:Concat(card.actor.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true), 
+					card.actor.Entity:GetChildComponentsByTypeName("AvatarRendererComponent", true))
+				for _, renderer in ipairs(rendererArray) do
+					renderer.SortingLayer = "UI"
+					renderer.OrderInLayer = 5
+				end
+			end
+			
+			self:Select(1)
+			
+			local tutorial = self.Entity.CurrentMap.Map.tutorial
+			if isvalid(tutorial) then
+				_Server:Request(tutorial, "Progress", {"OpenGallery"})
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 갤러리 모듈을 닫고 모든 UI 요소를 초기화
+		self.isOpen = false
+		self.uiManager:UpdateButtons()
+		self.uiManager:UpdateMobileUI()
+		
+		self.fadeEntity.Enable = false
+		
+		self.index = nil
+		
+		for i, card in ipairs(self.cardArray) do
+			card:ClearBlueprint()
+			card:ClearBackName()
+			if self.cardTweenerArray[i] then
+				self.cardTweenerArray[i]:Destroy()
+			end
+			self:ReleaseCard(card)
+		end
+		table.clear(self.cardArray)
+		
+		self.variantText.Text = ""
+		local variantTransform = self.variantEntity.TransformComponent
+		variantTransform.Scale.x = 0
+		variantTransform.Scale.y = 0
+		if self.variantTweener then
+			self.variantTweener:Destroy()
+		end
+		
+		self.rarityText.Text = ""
+		local rarityTransform = self.rarityEntity.TransformComponent
+		rarityTransform.Scale.x = 0
+		rarityTransform.Scale.y = 0
+		if self.rarityTweener then
+			self.rarityTweener:Destroy()
+		end
+		
+		self.descriptionText.Text = ""
+		local descriptionTransform = self.descriptionEntity.TransformComponent
+		descriptionTransform.Scale.x = 0
+		descriptionTransform.Scale.y = 0
+		if self.descriptionTweener then
+			self.descriptionTweener:Destroy()
+		end
+		
+		self.tagText.Text = ""
+		local tagTransform = self.tagEntity.TransformComponent
+		tagTransform.Scale.x = 0
+		tagTransform.Scale.y = 0
+		if self.tagTweener then
+			self.tagTweener:Destroy()
+		end
+		
+		self.keywordText.Text = ""
+		local keywordTransform = self.keywordEntity.TransformComponent
+		keywordTransform.Scale.x = 0
+		keywordTransform.Scale.y = 0
+		if self.keywordTweener then
+			self.keywordTweener:Destroy()
+		end
+		
+		local selectButtonTransform = self.selectButtonEntity.TransformComponent
+		selectButtonTransform.Scale.x = 0
+		selectButtonTransform.Scale.y = 0
+		if self.selectButtonTweener then
+			self.selectButtonTweener:Destroy()
+		end
+		
+		local flavorTextTransform = self.flavorTextEntity.TransformComponent
+		flavorTextTransform.Scale.x = 0
+		flavorTextTransform.Scale.y = 0
+		if self.flavorTextTweener then
+			self.flavorTextTweener:Destroy()
+		end
+		
+		local buyButtonTransform = self.buyButtonEntity.TransformComponent
+		buyButtonTransform.Scale.x = 0
+		buyButtonTransform.Scale.y = 0
+		if self.buyButtonTweener then
+			self.buyButtonTweener:Destroy()
+		end
+		
+		local sellButtonTransform = self.sellButtonEntity.TransformComponent
+		sellButtonTransform.Scale.x = 0
+		sellButtonTransform.Scale.y = 0
+		if self.sellButtonTweener then
+			self.sellButtonTweener:Destroy()
+		end
+		
+		local tutorial = self.Entity.CurrentMap.Map.tutorial
+		if isvalid(tutorial) then
+			_Server:Request(tutorial, "Progress", {"CloseGallery"})
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Select(integer index)
+		if self.index == index then
+			return
+		end
+		
+		self.index = index
+		
+		local card = self.cardArray[index]
+		
+		local size = #self.cardArray
+		local deltaX = 0.25 / math.sqrt(size)
+		local deltaY = 0.15 / math.sqrt(size)
+		local deltaZRotation = -10 / math.sqrt(size)
+		for i = 1, size do
+			local order = (i + size - index) % size + 1
+			local transform = self.cardArray[i].actor.Entity.TransformComponent
+			transform.WorldPosition.z = order + 100
+			
+			if self.cardTweenerArray[i] then
+				self.cardTweenerArray[i]:Destroy()
+			end
+			self.cardTweenerArray[i] = _Tween:TransformTo(self.cardArray[i].actor.Entity, Vector2(deltaX * (order - 1), deltaY * (order - 1) + 0.5), deltaZRotation * (order - 1), Vector2.one, 0.125, EaseType.Linear, EaseType.Linear, EaseType.Linear, true)
+		end
+		
+		local variant = card.variant
+		if variant ~= "Default" then
+			self.variantText.Text = string.format("%s %s", _LocalizationService:GetText(variant), _LocalizationService:GetText("Variant")) 
+			local variantTransform = self.variantEntity.TransformComponent
+			variantTransform.Scale.x = 0
+			variantTransform.Scale.y = 0
+			if self.variantTweener then
+				self.variantTweener:Destroy()
+			end
+			self.variantTweener = _Tween:ScaleTo(self.variantEntity, Vector2.one, 0.125, EaseType.Linear)
+		end
+		
+		self.rarityText.Text = string.format("%s", _LocalizationService:GetText(card.rarity))
+		local rarityTransform = self.rarityEntity.TransformComponent
+		rarityTransform.Scale.x = 0
+		rarityTransform.Scale.y = 0
+		if self.rarityTweener then
+			self.rarityTweener:Destroy()
+		end
+		self.rarityTweener = _Tween:ScaleTo(self.rarityEntity, Vector2.one, 0.125, EaseType.Linear)
+		
+		self.descriptionText.Text = self:GetCardDescription(card)
+		local descriptionTransform = self.descriptionEntity.TransformComponent
+		descriptionTransform.Scale.x = 0
+		descriptionTransform.Scale.y = 0
+		if self.descriptionTweener then
+			self.descriptionTweener:Destroy()
+		end
+		self.descriptionTweener = _Tween:ScaleTo(self.descriptionEntity, Vector2.one, 0.125, EaseType.Linear)
+		
+		local hashTagArray = {}
+		for _, tag in ipairs(card.tagArray) do
+			table.insert(hashTagArray, '#' .. _LocalizationService:GetText(tag))
+		end
+		self.tagText.Text = table.concat(hashTagArray, ' ')
+		local tagTransform = self.tagEntity.TransformComponent
+		tagTransform.Scale.x = 0
+		tagTransform.Scale.y = 0
+		if self.tagTweener then
+			self.tagTweener:Destroy()
+		end
+		self.tagTweener = _Tween:ScaleTo(self.tagEntity, Vector2.one, 0.125, EaseType.Linear)
+		
+		local source = self:GetCardSourceDescription(card)
+		local keywordDescriptionArray = {}
+		for _, keyword in ipairs(self.keywordArray) do
+			if _UtilLogic:Contains(source, string.format("<b>%s</b>", keyword)) then
+				table.insert(keywordDescriptionArray, self:GetKeywordDescription(keyword))
+			end
+		end
+		self.keywordText.Text = table.concat(keywordDescriptionArray, '\n')
+		local keywordTransform = self.keywordEntity.TransformComponent
+		keywordTransform.Scale.x = 0
+		keywordTransform.Scale.y = 0
+		if self.keywordTweener then
+			self.keywordTweener:Destroy()
+		end
+		self.keywordTweener = _Tween:ScaleTo(self.keywordEntity, Vector2.one, 0.125, EaseType.Linear)
+		
+		if ((isvalid(self.uiManager.CardModule) and self.uiManager.CardModule.isOpen) or (isvalid(self.uiManager.CardPackModule) and self.uiManager.CardPackModule.isOpen)) then
+			self.flavorText.Text = self:GetFlavorText(card)
+			local flavorTextTransform = self.flavorTextEntity.TransformComponent
+			flavorTextTransform.Scale.x = 0
+			flavorTextTransform.Scale.y = 0
+			if self.flavorTextTweener then
+				self.flavorTextTweener:Destroy()
+			end
+			self.flavorTextTweener = _Tween:ScaleTo(self.flavorTextEntity, Vector2.one, 0.125, EaseType.Linear)
+		end
+		
+		local buyButtonTransform = self.buyButtonEntity.TransformComponent
+		buyButtonTransform.Scale.x = 0
+		buyButtonTransform.Scale.y = 0
+		if self.buyButtonTweener then
+			self.buyButtonTweener:Destroy()
+		end
+		local sellButtonTransform = self.sellButtonEntity.TransformComponent
+		sellButtonTransform.Scale.x = 0
+		sellButtonTransform.Scale.y = 0
+		if self.sellButtonTweener then
+			self.sellButtonTweener:Destroy()
+		end
+		
+		local character = _UserService.LocalPlayer.Character
+		if index == 1 and isvalid(self.uiManager.CardModule) and self.uiManager.CardModule.isOpen then
+			if card.rarity == "Normal" and card.quality == "Gold" and character:GetCardCount(card.info) < 2 then
+				self.buyButtonTweener = _Tween:ScaleTo(self.buyButtonEntity, Vector2.one, 0.125, EaseType.Linear)
+			elseif character:GetCardCount(card.info) > 2 then
+				self.sellButtonText.Text = tostring(self.cardManager:GetSellPrice(card.rarity))
+				self.sellButtonTweener = _Tween:ScaleTo(self.sellButtonEntity, Vector2.one, 0.125, EaseType.Linear)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SelectNext()
+		self:Select(self.index % #self.cardArray + 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetButtonsEnable(boolean enable)
+		self.fadeEntity.TouchReceiveComponent.Enable = enable
+		self.selectButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.buyButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.sellButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+	end
+
+end

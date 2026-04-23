@@ -1,0 +1,190 @@
+@Component
+script InteractionTemplePortal extends InteractionComponent
+
+	property boolean TempleToTemple = false
+
+	property boolean used = false
+
+	property boolean init = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 포털 위치에 따른 설정과 초기화 타이머 설정
+		if self.Entity.CurrentMapName == "Town10" then
+			self._T.PortalInTown = true
+		else
+			self._T.PortalInTown = false
+		end
+		
+		local InitTemple = function()
+			if self._T.initFloor ~= _UserService.LocalPlayer.PlayerIngameData.TempleFloor_Current then 
+				-- 만약 동기화가 나중에 되었다면 초기화 한번 다시 해준다.
+				self:Init()
+				_TimerService:ClearTimer(self._T.timer)
+			end
+		end
+		
+		self.used = false
+		
+		local init = function()
+			self._T.initFloor = _UserService.LocalPlayer.PlayerIngameData.TempleFloor_Current
+			self:Init()
+			self.init = true
+			self._T.timer = _TimerService:SetTimerRepeat(InitTemple, 2.5)
+		end
+		
+		_TimerService:SetTimerOnce(init, 1.5)
+	end
+
+	@ExecSpace("Client")
+	method void UsePortal()
+		-- 플레이어가 포털을 사용하여 신전으로 이동하는 처리
+		
+		local player = _UserService.LocalPlayer
+		
+		local destination = ""
+		if isvalid(player.CurrentMap.TempleHadesManager) then
+			destination = player.PlayerIngameData.latestTempleName  
+			_UserService.LocalPlayer.PlayerIngameData:RecoverHP(_UserService.LocalPlayer.PlayerIngameData.HPMax/2)
+			_UserService.LocalPlayer.PlayerIngameData.MP = _UserService.LocalPlayer.PlayerIngameData.MPMax/2
+		else
+			if #player.PlayerIngameData.EntranceTempleTable >= 1 then 
+				destination = player.PlayerIngameData:GetTempleTable()
+			else 
+				destination = player.PlayerIngameData:InitTempleTable()
+			end
+		end
+		 
+		
+		-- 치트 전용
+		local cheatDest = {"Zeus_1", "Poseidon_2", "Apollon_3", "Athena_4", "Artemis_5", "Aphrodite_6", "Demeter_7", "Hades_8"}
+		if _CheatManager ~= nil then
+			if _CheatManager.TemplePortalCheatIdx > 0 and _CheatManager.TemplePortalCheatIdx < 9 then
+				destination = cheatDest[_CheatManager.TemplePortalCheatIdx]
+			end
+		end
+		
+		
+		
+		_TeleportService:TeleportToEntityPath(player, "/maps/Temple_"..destination.."/SpawnLocation")
+		if self._T.PortalInTown then
+			self:SetLoadingOn(true)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Init()
+		-- 신전 포털의 UI 정보를 플레이어 층수에 맞게 초기화
+		local startingFloor =  _UserService.LocalPlayer.PlayerConstruction.TempleStartingFloor
+		local mapTable = _DataService:GetTable("Map_Mine")
+		local spawnPos = Vector3(0, 2.15, 0)
+		local guideUI = self.Entity:GetChildByName("TownToMinePortalGuide")
+		if guideUI == nil then
+			guideUI = _SpawnService:SpawnByModelId("model://588a8382-990c-4d45-8cfc-6b00b646b02b", "TownToMinePortalGuide", spawnPos, self.Entity)
+		end
+		
+		local minPower = 0
+		local floorText = 0
+		
+		if string.sub(_UserService.LocalPlayer.CurrentMapName, 1, 4) == "Town" then -- 마을
+		 	minPower = (700000000 + (startingFloor - 1) * 420000000) * 1/5 -- 권장 채광력
+			floorText = startingFloor -- 입장할 신전의 층
+		elseif string.sub(_UserService.LocalPlayer.CurrentMapName, 1, 4) == "Temp" then -- 신전
+			minPower = (700000000 + _UserService.LocalPlayer.PlayerIngameData.TempleFloor_Current * 420000000) * 1/5
+			floorText = _UserService.LocalPlayer.PlayerIngameData.TempleFloor_Current + 1	
+		end
+		
+		local recommendInfo = ""
+		local userPower = _UserService.LocalPlayer.PlayerIngameData.MiningPower
+			
+		if minPower <= userPower then
+			recommendInfo = "[".._LocalizationService:GetText("Recommend").."]"
+		elseif tonumber(minPower) > userPower then
+			recommendInfo = "[".._LocalizationService:GetText("Hard").."]"
+		else
+			recommendInfo = "[".._LocalizationService:GetText("Easy").."]"
+		end
+		
+		guideUI:GetChildByName("WarningText").TextComponent.Text = 
+		_LocalizationService:GetText("RecommendedPower").."\n".._ThousandsSeparator:ConvertToMetricPrefixString(minPower, nil)..recommendInfo
+		
+		guideUI:GetChildByName("ModelEntrancePanelMine").TextComponent.Text = _LocalizationService:GetText("Temple").."("..
+		_LocalizationService:GetTextFormat("Floor", math.floor(floorText))..")"
+		--math.floor(floorText).._LocalizationService:GetText("Floor")..")" 
+	end
+
+	@ExecSpace("Client")
+	method void SetLoadingOn(boolean activate)
+		-- 마을에서 신전 이동 시 로딩 UI를 활성화하고 플레이어 움직임을 제한
+		local beginAdventureButton = _EntityService:GetEntity("94f38c08-7b86-4595-868f-1ffcf5279cef")
+		beginAdventureButton.Enable = false
+		
+		local loadingUI = _EntityService:GetEntity("645244c8-7418-48ef-849c-e659d312c6a0")
+		loadingUI:SetEnable(activate)
+		
+		_UserService.LocalPlayer.MovementComponent.Enable = not activate
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 플레이어가 포털 상호작용 범위에 들어왔을 때 입장 가이드 UI를 표시
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			local spawnPos = Vector3(0, 0.75, 0)
+			local guideUI = _SpawnService:SpawnByModelId("model://85ad2718-739a-4bf9-aee4-f439cda53303", "Guide_Key", spawnPos, self.Entity)
+			guideUI:GetChildByName("UIText").TextComponent.Text = _LocalizationService:GetText("Enter")
+		
+			if InteractionEntity ~= _UserService.LocalPlayer then
+				guideUI.Enable = false
+			else 
+				guideUI.Enable = true
+			end
+		else
+			guideKeyWorldUI.Enable = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 플레이어가 포털 상호작용 범위를 벗어났을 때 가이드 UI를 숨김
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			log("가이드 키가 없습니다.")
+			return
+		end
+		
+		guideKeyWorldUI.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 플레이어가 포털과 상호작용했을 때 신전으로 이동 실행
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		if not self.used and self.init then
+			self.used = true
+			self:UsePortal()
+		end
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleLocalPlayerChangedTempleStartingFloor(LocalPlayerChangedTempleStartingFloor event)
+		-- 플레이어의 신전 시작층이 변경되었을 때 포털 정보를 갱신
+		-- Parameters
+		---------------------------------------------------------
+		self:Init()
+	end
+
+end

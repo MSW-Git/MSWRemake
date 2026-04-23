@@ -1,0 +1,1383 @@
+@Component
+script PlayerRecipe extends Component
+
+	property boolean IsServerProcessing = false
+
+	property table Recipes = {}
+
+	@TargetUserSync
+	property integer SetBun = 1
+
+	@TargetUserSync
+	property SyncTable<integer, integer> SetRecipes
+
+	@TargetUserSync
+	property SyncTable<integer, string> NowTrend
+
+	property table YearlyPlan = {}
+
+	@TargetUserSync
+	property integer ActiveRecipeCombo = 0
+
+	property boolean IsRecipeSetComplete = false
+
+	property integer RecipeUniqueId = 0
+
+	property SyncTable<integer, integer> LastSetRecipesClientOnly
+
+	property SyncTable<integer> LastTrend
+
+	property table TempUsingCards = {}
+
+	property integer RecipesVersion = 1
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 레시피 관련 데이터를 데이터베이스에 저장
+		local recipeTotal = {}
+		recipeTotal["RecipeUniqueId"] = self.RecipeUniqueId
+		recipeTotal["Recipes"] = _HttpService:JSONEncode(self:ConvertRecipeDataToTable(self.Recipes))
+		recipeTotal["SetBun"] = self.SetBun
+		recipeTotal["SetRecipes"] = _UtilLogic:TableToString(self.SetRecipes)
+		recipeTotal["NowTrend"] = _UtilLogic:TableToString(self.NowTrend)
+		recipeTotal["LastTrend"] = _UtilLogic:TableToString(self.LastTrend)
+		recipeTotal["YearlyPlan"] = _HttpService:JSONEncode(self.YearlyPlan)
+		recipeTotal["SalesBurger"] = _UtilLogic:TableToString(self.Entity.MenuManager.SalesBurger)
+		
+		recipeTotal["RecipesVersion"] = self.RecipesVersion
+		
+		saveData["RecipeData"] = recipeTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 레시피 데이터를 로드하여 초기화
+		self.Entity.MenuManager:ClearLastRecipes(self.Entity.PlayerComponent.UserId)
+		
+		local recipeTable = loadedData["RecipeData"]
+		if recipeTable == nil then
+			recipeTable = {}
+		end
+		
+		if #table.keys(recipeTable) > 0 then
+			self.SetBun = tonumber(recipeTable["SetBun"])
+			self.RecipeUniqueId = tonumber(recipeTable["RecipeUniqueId"])
+			
+			if _UtilLogic:IsNilorEmptyString(recipeTable["Recipes"]) == false then
+				self:ConvertTableToRecipeData(_HttpService:JSONDecode(recipeTable["Recipes"]), recipeTable["RecipesVersion"])
+				self:RequestSyncAllRecipe(self.Recipes, self.Entity.PlayerComponent.UserId)
+			end
+			
+			if recipeTable["SetRecipes"] then
+				table.initialize(self.SetRecipes, _UtilLogic:StringToTable(recipeTable["SetRecipes"]))
+			end
+			
+			if recipeTable["NowTrend"] then
+				table.initialize(self.NowTrend, _UtilLogic:StringToTable(recipeTable["NowTrend"]))
+			end
+			
+			if recipeTable["LastTrend"] then
+				table.initialize(self.LastTrend, _UtilLogic:StringToTable(recipeTable["LastTrend"]))
+			end
+			
+			if recipeTable["SalesBurger"] then
+				table.initialize(self.Entity.MenuManager.SalesBurger, _UtilLogic:StringToTable(recipeTable["SalesBurger"]))
+			end
+			
+			if _UtilLogic:IsNilorEmptyString(recipeTable["YearlyPlan"]) == false then
+				table.initialize(self.YearlyPlan, _HttpService:JSONDecode(recipeTable["YearlyPlan"]))
+			end
+			
+			
+			if #table.keys(self.SetRecipes) == 0 then
+				self:SetRecipe(1, 1)
+			end	
+		else
+			self:SetInitialDatas()
+			self:SetYearlyPlan()
+		end
+		
+		self:CalculateActiveRecipeCombo()
+		
+		self:ChangeRecipeSetCompleteProgress(true, self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerEvent:RefreshAllToDoSecretaryInfo()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 레시피 컴포넌트의 모든 데이터를 초기화
+		table.clear(self.Recipes)
+		table.clear(self.SetRecipes)
+		table.clear(self.NowTrend)
+		table.clear(self.YearlyPlan)
+		table.clear(self.LastTrend)
+		table.clear(self.Entity.MenuManager.SalesBurger)
+		
+		self.SetBun = 1
+		self.RecipeUniqueId = 0
+	end
+
+	@ExecSpace("Server")
+	method void CheckCanStartRecipeMaking(table cards)
+		-- 레시피 제작 시작 가능 여부를 확인하고 필요한 재료를 소모
+		local countTable = {}
+		for i = 1, #cards do
+			local id = cards[i]
+			local count = 1
+			if isvalid(countTable[id]) then
+				count = countTable[id] + 1
+			end
+			
+			countTable[id] = count
+		end
+		
+		local canStart = 0
+		for k, v in pairs(countTable) do
+			local error = self.Entity.PlayerIngredient:CanUseIngredientCard(k, v)
+			if error ~= 0 then
+				canStart = error
+				break
+			end
+		end
+		
+		local bunError = self.Entity.PlayerIngredient:CanUseBun(self.SetBun, 1)
+		if bunError ~=0 then
+			canStart = bunError
+		end
+		
+		local recipeCount = #table.keys(self.Recipes)
+		
+		local recipeMaxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.RecipeBoxCount)
+		if recipeCount >= recipeMaxCount then
+			canStart = 4
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage2", nil, false, self.Entity.PlayerComponent.UserId)
+		end
+		
+		if canStart == 0 then
+			for k, v in pairs(countTable) do
+				self.Entity.PlayerIngredient:RemoveIngredientCard(k, v, "RecipeMaking")
+			end
+			self.Entity.PlayerIngredient:RemoveBun(self.SetBun, 1)
+			self.Entity.PlayerLog:PlayflowLog(_LogSourceEnumType.Recipe,"0")
+		
+			self:SetTempUsingCards(cards, self.Entity.PlayerComponent.UserId)
+			_FadeService:ShowFade("RecipeStart", self.Entity.PlayerComponent.UserId)
+		else
+		end
+		
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void StartRecipeMaking()
+		-- 클라이언트에서 레시피 제작 UI를 시작
+		_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting:Close(false)
+		
+		_UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking:Open()
+		_UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking:StartRecipeMaking(self.TempUsingCards)
+	end
+
+	@ExecSpace("Server")
+	method void EndRecipeMakingServer(table ingres, table burgerData)
+		-- 서버에서 레시피 제작을 완료하고 성과 및 보상을 처리
+		self:verificationBurgerData(burgerData)
+		
+		local recipe = self:AddNewRecipe(burgerData, true)
+			
+		local countProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.RecipeMakeCount)
+		self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.RecipeMakeCount, countProgress + 1)
+		
+		local tasteGrade = _TasteGradeDataSetLogic:ReturnGradeDataByScore(recipe.TasteScore)
+		
+		local typeEnum = 0
+		local eventTypeEnum = 0
+		if recipe.Tag == _RecipeTagEnum.Meat then
+			typeEnum = _AchievementTypeEnum.RecipeMakeCount_Meat
+			eventTypeEnum = _EventAchievementTypeEnum.RecipeMakeCount_Meat
+		elseif recipe.Tag == _RecipeTagEnum.Seafood then
+			typeEnum = _AchievementTypeEnum.RecipeMakeCount_Seafood
+			eventTypeEnum = _EventAchievementTypeEnum.RecipeMakeCount_Seafood
+		elseif recipe.Tag == _RecipeTagEnum.Chicken then
+			typeEnum = _AchievementTypeEnum.RecipeMakeCount_Chicken
+			eventTypeEnum = _EventAchievementTypeEnum.RecipeMakeCount_Chicken
+		elseif recipe.Tag == _RecipeTagEnum.Veggie then
+			typeEnum = _AchievementTypeEnum.RecipeMakeCount_Veggie
+			eventTypeEnum = _EventAchievementTypeEnum.RecipeMakeCount_Veggie
+		elseif recipe.Tag == _RecipeTagEnum.Spicy then
+			typeEnum = _AchievementTypeEnum.RecipeMakeCount_Spicy
+			eventTypeEnum = _EventAchievementTypeEnum.RecipeMakeCount_Spicy
+		end
+		
+		if typeEnum ~= 0 then
+			local typeProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(typeEnum)
+			local newProgress = typeProgress + 1
+			self.Entity.PlayerAchievement:ChangeProgress(typeEnum, newProgress)
+			if eventTypeEnum ~= 0 then
+				self.Entity.PlayerAchievement:ChangeProgress(eventTypeEnum, newProgress)
+			end
+			
+			_BadgeEnum:SetRecipeTagGradeProgress(self.Entity, recipe.Tag, tasteGrade.Index)
+		end
+		
+		local gradeProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.RecipeTasteGrade)
+		if gradeProgress < tasteGrade.Index then
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.RecipeTasteGrade, tasteGrade.Index)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.RecipeTasteGrade, tasteGrade.Index)
+		end
+		
+		local tutorialProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.RecipeMakeCount)
+		self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.RecipeMakeCount, tutorialProgress+1)
+		
+		local badgeProgress = self.Entity.PlayerBadge.BadgeProgress[_BadgeEnum.RecipeMakeCount]
+		if badgeProgress == nil then
+			badgeProgress = 0
+		end
+		self.Entity.PlayerBadge:ChangeProgress(_BadgeEnum.RecipeMakeCount, badgeProgress+1)
+		
+		self.Entity.PlayerLog:PlayflowLog(_LogSourceEnumType.Recipe,"1")
+		
+		_FadeService:ShowFade("RecipeEnd", self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void EndRecipeMakingClient()
+		-- 클라이언트에서 레시피 제작 완료 후 UI 정리 및 다음 화면 전환
+		local uiRecipeMaking = _UIEntityLogic_RecipeGroup.UIRecipeMaking.UIRecipeMaking
+		for i = #uiRecipeMaking.BurgerParent.Children, 1, -1 do
+			_EntityService:Destroy(uiRecipeMaking.BurgerParent.Children[i])
+		end
+		
+		local typeIconModel = _EntryService:GetModelIdByName("Model_UIRecipeTypeIcon")
+		local typeIcons = _EntityService:GetEntitiesSpawnedByModelId(typeIconModel)
+		for i = 1, #typeIcons do
+			_EntityService:Destroy(typeIcons[i])
+		end
+		
+		uiRecipeMaking:Close()
+		_BGMService:ApplyLobbyBGM()
+		
+		_IngreCardSetLogic:UnsetIngreCardAll(true)
+		
+		if _UIEntityLogic_RecipeGroup.NowPlayFlow == "VIPOrder" then	
+			local nowData = self.Entity.PlayerVIPOrder.VIPOrderSlotData[_VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot]
+			_UIGroupManager:EnableRecipeGroup(false)
+			_VIPOrderDataSetLogic.UIVIPOrderPanel:Open()
+			
+			if nowData ~= {} and nowData ~= nil then
+				if nowData["OrderType"] == _VIPOrderTypeEnum.Recipe then
+					_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:Open(#self.Recipes, "VIPOrder", {_VIPOrderDataSetLogic.UIVIPOrderPreviewNowSlot})
+				end
+			end
+			
+		else
+			_UIEntityLogic_RecipeGroup.UIRecipeBook.UIRecipeBook:Open()
+		end
+		
+		table.clear(self.TempUsingCards)
+		
+		_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.EndRecipeMaking)
+		_FadeService:HideFade()
+		
+		self:ChangeConnectingStatus(false)
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ConvertRecipeDataToTable(table structData)
+		-- 레시피 구조체 데이터를 테이블 형태로 변환하여 DB 저장용으로 준비
+		local result = {}
+		for id, data in pairs(structData) do
+			---@type RecipeData
+			local recipeData = data
+			result[id] = recipeData:ConvertToDBTable()
+		end
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ConvertTableToRecipeData(table convertData, integer version)
+		-- 테이블 데이터를 레시피 구조체로 변환하여 로드
+		for id, data in pairs(convertData) do
+			local info = RecipeData()
+			if self.RecipesVersion == version then
+				info:SerFromDBTable_Ver1(data)
+			else
+				info:SetFromTable(data)
+			end
+			if self.Recipes[id] ~= nil then
+				break
+			end
+			
+			self.Recipes[id] = info
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method RecipeData AddNewRecipe(table data, boolean isReport)
+		-- 새로운 레시피를 추가하고 관련 성과 및 로그를 처리
+		local canAdd = 0
+		
+		local recipeCount = #table.keys(self.Recipes)
+		local recipeMaxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.RecipeBoxCount)
+		if recipeCount >= recipeMaxCount then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage2", nil, false, self.Entity.PlayerComponent.UserId)
+			canAdd = 4
+		end
+		
+		if canAdd == 0 then
+			if self.RecipeUniqueId == nil then
+				self.RecipeUniqueId = 0
+			end
+			self.RecipeUniqueId = self.RecipeUniqueId + 1
+			
+			local result = {}
+		
+			result["UniqueId"] = self.RecipeUniqueId
+			result["Name"] = data[1]
+			result["IngreList"] = data[2]
+			result["TasteScore"] = data[3]
+			result["BalancePoint"] = data[4]
+			result["SpicyPoint"] = data[5]
+			result["Cost"] = data[6]
+			result["Tag"] = data[7]
+			result["TrialSkillBonus"] = data[8]
+			
+			local gradeIndex = _TasteGradeDataSetLogic:ReturnGradeDataByScore(result["TasteScore"]).Index
+			local gradeAchiTypeIds = 
+			{
+				_RecordAchievementTypeEnum.RecipeGrade95002, 
+				_RecordAchievementTypeEnum.RecipeGrade95007, 
+				_RecordAchievementTypeEnum.RecipeGrade95008, 
+				_RecordAchievementTypeEnum.RecipeGrade95009, 
+				_RecordAchievementTypeEnum.RecipeGrade95010, 
+				_RecordAchievementTypeEnum.RecipeGrade95011, 
+				_RecordAchievementTypeEnum.RecipeGrade95012,
+				_RecordAchievementTypeEnum.RecipeGrade95013, 
+				_RecordAchievementTypeEnum.RecipeGrade95014, 
+				_RecordAchievementTypeEnum.RecipeGrade95015, 
+				_RecordAchievementTypeEnum.RecipeGrade95016, 
+				_RecordAchievementTypeEnum.RecipeGrade95017, 
+				_RecordAchievementTypeEnum.RecipeGrade95018, 
+				_RecordAchievementTypeEnum.RecipeGrade95019, 
+				_RecordAchievementTypeEnum.RecipeGrade95020,
+				_RecordAchievementTypeEnum.RecipeGrade95021,
+				_RecordAchievementTypeEnum.RecipeGrade95022, 
+				_RecordAchievementTypeEnum.RecipeGrade95023,
+				_RecordAchievementTypeEnum.RecipeGrade95024,
+				_RecordAchievementTypeEnum.RecipeGrade95025,
+				_RecordAchievementTypeEnum.RecipeGrade95026,
+				_RecordAchievementTypeEnum.RecipeGrade95027,
+				
+			}
+			
+			for i = 1, #gradeAchiTypeIds do
+				local gradeAchiTypeId = gradeAchiTypeIds[i]
+				if gradeIndex >= _GetConfigDataLogic:GetConfigNumDataByKey("TastGradeIndexForAchievementType"..gradeAchiTypeId) then
+					local gradeAchiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(gradeAchiTypeId)
+					self.Entity.PlayerAchievement:ChangeProgress(gradeAchiTypeId, gradeAchiProgress+1)
+				end
+			end	
+			
+			local employeeId = "empty"
+			if isvalid(data[10]) then 
+				employeeId = data[10]
+			end
+			
+			if isReport == true then
+				_ReportMessageMaker:RequestAddToReportQueue(4002, result["Name"], _TasteGradeDataSetLogic:ReturnGradeDataByScore(result["TasteScore"]).Grade, 
+				_StringUtilLogic:ReturnThousandsSeparatedString(math.floor(result["Cost"])), self.Entity.PlayerComponent.UserId)
+			end
+			
+			
+			local flowType = "false"
+			if data[9] then
+				local usedSkillList = _UtilLogic:StringToTable(data[9]) 
+				local skillStr = tostring(table.values(usedSkillList)[1])
+				if _UtilLogic:IsNilorEmptyString(skillStr) or skillStr == "nil" then 
+					flowType = "false"
+				else
+					flowType = skillStr
+				end
+		
+			
+			end
+		
+			local empList = {}
+			for k,employee in pairs(self.Entity.EmployeeManager.EmployeeDetailTable) do 
+			
+				local hasRecipeSkill = _EmployeeSkillService:HasSkillOfType(employee.Id, "Recipe", _UserService.LocalPlayer)
+				
+				if hasRecipeSkill then
+					table.insert(empList, employee.Id)
+				end
+			end
+		
+			local empData = _EmployeeService:GetData(employeeId)
+			local skill1type = "empty"
+			local skill1Grade = ""
+		
+			if isvalid(empData) then 
+				skill1type = empData.Skill1Type
+				skill1Grade = tostring(_EmployeeSkillService:ReturnSkillGrade(empData.Id, skill1type, self.Entity))
+			end		
+			
+			local mangeIdx =  self.Entity.PlayerManagement:GetGoalCount()
+			
+			
+			
+			if isReport == true and employeeId ~= "empty" then
+				local logSuccess,value = pcall(function()
+					_LogStorageLogic:LogValue(self.Entity.PlayerComponent.UserId,
+						_LogEnumType.RecipeSkillFlow,
+						_HttpService:JSONEncode(empList),
+						{
+							employeeId = employeeId,
+							flowType = flowType,
+							employeeSkill1 = skill1type,
+							employeeSkill1Grade = skill1Grade,
+							manageLevel= tostring(self.Entity.PlayerManagement.ManagementLevel),
+							manageIndex= mangeIdx,
+							playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+						})
+				end)
+			
+				if not logSuccess then  end
+			end
+				
+			
+			local grade = _TasteGradeDataSetLogic:ReturnGradeDataByScore(result["TasteScore"]).Index
+			local burgerStack =  string.format("%d",#_HttpService:JSONDecode(result["IngreList"]))
+			---@type RecipeIngreDrawData
+			local bunData =  _RecipeIngreDrawEnum:DecodeIngreList(result["IngreList"])[1]
+			local bunSkinId = bunData.IsBunSkinned == true and tostring(bunData.BunSkinId) or "empty"
+		
+			local logValue = 
+			{	
+				recipeId = tostring(result["UniqueId"]),
+				recipeName = result["Name"],
+				recipeScore = tostring(result["TasteScore"]),
+				recipeBalance = tostring(result["BalancePoint"]),
+				price = tostring(result["Cost"])
+			}
+			
+			self.Entity.PlayerLog:RecipeFlow("1",tostring(grade),result["Tag"],burgerStack,bunSkinId,logValue)
+			
+			
+			local info = RecipeData()
+			info:SetFromTable(result)
+			
+			
+			table.insert(self.Recipes, info)
+			self:RequestSyncAllRecipe(self.Recipes, self.Entity.PlayerComponent.UserId)
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.RecipeTrial)
+			
+			return info
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RequestSyncAllRecipe(table allRecipes)
+		-- 모든 레시피 데이터를 클라이언트에 동기화하고 UI 새로고침
+		self.Recipes = allRecipes
+		self:RequestRefreshRecipeUI(nil)
+		_UILobbyManager:RefreshMenuInfo()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성에 따라 관련 UI 업데이트 및 메뉴 설정
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		local player = self.Entity
+		if name == "SetBun" then
+			_UIEntityLogic_RecipeGroup.UIIngreCardSetting.UIIngreCardSetting:RefreshBunSetSlot()
+			
+		elseif name == "SetRecipes" then
+			self:RequestRefreshRecipeUI(nil)
+			_MainMenuRedDotManager:EnableRecipeRedDot(self.Entity)
+			_UILobbyManager:RefreshMenuInfo()
+			
+			if self.IsRecipeSetComplete then
+				self.Entity.MenuManager:SetMenu(self.LastSetRecipesClientOnly, self.SetRecipes)
+				self:ChangeRecipeSetCompleteProgress(false)
+			end    
+		elseif name == "NowTrend" then
+			self:RequestRefreshRecipeUI(nil)
+			_UILobbyManager:RefreshMenuInfo()
+		elseif name == "ActiveRecipeCombo" then
+			self:RequestRefreshRecipeUI(nil)
+			_UILobbyManager:RefreshMenuInfo()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestDeleteRecipe(integer index)
+		-- 클라이언트에서 레시피 삭제 요청을 받아 처리
+		self:DeleteRecipe(index)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean DeleteRecipe(integer recipeId)
+		-- 레시피를 삭제하고 설정된 메뉴에서도 제거하며 로그 기록
+		if self.Recipes[recipeId] == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return false
+		end
+		
+		if #table.keys(self.Recipes) <= 1 then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage8", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return false
+		end
+		
+		local exSetRecipes = {}
+		for i, id in pairs(self.SetRecipes) do
+			exSetRecipes[i] = id
+		end
+		
+		local isSet = false
+		for i, setId in pairs(self.SetRecipes) do
+			if recipeId == setId then
+				isSet = true
+				break
+			end
+		end
+		
+		
+		if isSet and #table.values(self.SetRecipes) <= 1 then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeErrorMessage9", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return false
+		end
+		
+		
+		
+		---@type RecipeData
+		local recipeData = self.Recipes[recipeId]
+		
+		local grade = _TasteGradeDataSetLogic:ReturnGradeDataByScore(recipeData.TasteScore).Index
+		local burgerStack =  string.format("%d",#recipeData.IngreList)
+		---@type RecipeIngreDrawData
+		local bunData =  recipeData.IngreList[1]
+		local bunSkinId = bunData.IsBunSkinned == true and tostring(bunData.BunSkinId) or "empty"
+		
+		local logValue = {
+			recipeId = tostring(recipeData.UniqueId),
+			recipeName = recipeData.Name,
+			recipeScore = tostring(recipeData.TasteScore),
+			recipeBalance = tostring(recipeData.BalancePoint),
+			price = tostring(recipeData.Cost)
+		}
+		
+		self.Entity.PlayerLog:RecipeFlow("2",tostring(grade),recipeData.Tag,burgerStack,bunSkinId, logValue)
+		
+		
+		---@type RecipeData
+		local deleted = table.remove(self.Recipes, recipeId)
+		
+		for i, v in pairs(self.SetRecipes) do
+			if v == recipeId then
+				self.SetRecipes[i] = nil
+			elseif v > recipeId then
+				if v-1 > 0 then
+					self.SetRecipes[i] = v-1
+				end
+			end
+		end
+		
+		self:CalculateActiveRecipeCombo()
+		
+		
+		self:RequestSyncAllRecipe(self.Recipes, self.Entity.PlayerComponent.UserId)
+		self:ForceSyncSetRecipes(self.SetRecipes, self.Entity.PlayerComponent.UserId)
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmptyDisplay)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.RecipeTrial)
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_DeleteRecipe"], 1, self.Entity.PlayerComponent.UserId)
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void ChangeConnectingStatus(boolean status)
+		-- 클라이언트에서 서버 처리 상태를 변경
+		local player = _UserService.LocalPlayer
+		player.PlayerRecipe.IsServerProcessing = status
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetInitialDatas()
+		-- 초기 기본 레시피 데이터를 생성하여 설정
+		local name = _GetLocalizationTextLogic:GetLocalizedTextServer(self.Entity.PlayerDBManager.CurrentLocaleId, "InitialBurgerName") 
+		
+		local bottomBun = RecipeIngreDrawData()
+		bottomBun:Init(1, _RecipeIngreDrawEnum.Bun, "Bottom", false, nil)
+		
+		local ingre1 = RecipeIngreDrawData()
+		ingre1:Init(16, _RecipeIngreDrawEnum.Ingredient, "", false, nil)
+		
+		local ingre2 = RecipeIngreDrawData()
+		ingre2:Init(43, _RecipeIngreDrawEnum.Ingredient, "", false, nil)
+		
+		local topBun = RecipeIngreDrawData()
+		topBun:Init(1, _RecipeIngreDrawEnum.Bun, "Top", false, nil)
+		
+		local ingres = {bottomBun, ingre1, ingre2, topBun}
+			
+		local tasteScore = 0
+		local cost = 0
+		
+		for i = 1, #ingres do
+			---@type RecipeIngreDrawData
+			local drawData = ingres[i]
+			
+			if drawData.DrawType == _RecipeIngreDrawEnum.Bun then
+				local bunDetail = _IngredientDataSetLogic:GetBunDetailData(drawData.Id, drawData.DrawDetailType)
+				
+				tasteScore = tasteScore + bunDetail.TastePoint
+				cost = cost + bunDetail.BaseCost
+			else
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(drawData.Id)
+				
+				tasteScore = tasteScore + ingreData:GetTasteScore(self.Entity.PlayerStage.NowStage, self.Entity)
+				cost = cost + ingreData:GetCost(self.Entity.PlayerStage.NowStage, self.Entity)
+			end
+		end
+		
+		local ingreList = _RecipeIngreDrawEnum:EncodeIngreList(ingres)
+		local balancePoint = 0
+		local spicyPoint = 0
+		
+		local tag = _RecipeTagEnum.Meat
+		local trialSkillBonus = 0
+		local recipeData = {name, ingreList, tasteScore, balancePoint, spicyPoint, cost, tag, trialSkillBonus, nil, nil}
+		self:AddNewRecipe(recipeData, false)
+		
+		self:SetRecipe(1, 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetRecipe(integer slotIndex, integer recipeId)
+		-- 특정 슬롯에 레시피를 설정하고 메뉴 조합 계산 및 매력도 업데이트
+		local userRecipes = self.Recipes
+		
+		local isValid = isvalid(userRecipes[recipeId])
+		for i, v in pairs(self.SetRecipes) do
+			if v == recipeId then
+				isValid = false
+				break
+			end
+		end
+		
+		if isValid then
+			self.SetRecipes[slotIndex] = recipeId
+			self:CalculateActiveRecipeCombo()
+			
+			if self.ActiveRecipeCombo ~= 0 then
+				local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.MenuComboCount)
+				self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.MenuComboCount, tutProgress+1)
+				
+			end
+			
+			self.Entity.CustomerManager:CalcMyAttractive()
+			
+			if self.Entity.PlayerCheatComponent:HasAuthority() then 
+				self.Entity.PlayerDebugMonitor:UpdateDebugMonitorAttractive(self.Entity.PlayerComponent.UserId)  
+			end
+			
+			self.Entity.CustomerManager:RefreshSpawnTable()
+			
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmptyDisplay)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearSetRecipes()
+		-- 설정된 모든 레시피를 초기화하고 조합 계산
+		table.clear(self.SetRecipes)
+		self:CalculateActiveRecipeCombo()
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmptyDisplay)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UnsetRecipe(integer slotIndex, boolean isClear)
+		-- 특정 슬롯의 레시피 설정을 해제하거나 전체 초기화
+		if isClear then
+			self:ClearSetRecipes()
+			return
+		end
+		
+		if self.SetRecipes[slotIndex] ~= nil then
+			self.SetRecipes[slotIndex] = nil
+			self:CalculateActiveRecipeCombo()
+			
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmptyDisplay)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetRecipe(integer slotIndex, integer recipeId)
+		-- 클라이언트에서 레시피 설정 요청을 받아 처리
+		self:SetRecipe(slotIndex, recipeId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestUnsetRecipe(integer slotIndex, boolean isClear)
+		-- 클라이언트에서 레시피 해제 요청을 받아 처리
+		self:UnsetRecipe(slotIndex, isClear)
+	end
+
+	@ExecSpace("Client")
+	method void RequestRefreshRecipeUI(integer recipeId)
+		-- 레시피 관련 모든 UI를 새로고침
+		if _UIGroupManager.RecipeGroup.Enable == true and _UIEntityLogic_RecipeGroup.UIRecipeBook.Enable then
+			_UIEntityLogic_RecipeGroup.UIRecipeBook.UIRecipeBook:Refresh()
+		end
+		
+		if _UIGroupManager.RecipeSetGroup.Enable == true and _UIEntityLogic_RecipeGroup.UIRecipeList.Enable then
+			_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:RefreshListAndDetail(recipeId, nil)
+		end
+		
+		_LobbyHUDService:UpdateStoreInfoTrendUI()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetRecipeTrialBuff(integer recipeId)
+		-- 레시피에 시행 버프를 적용하고 만료 날짜 설정
+		if self.Recipes[recipeId] == nil then
+			return
+		end
+		
+		---@type RecipeData
+		local recipeData = self.Recipes[recipeId]
+		
+		local recipeTable = recipeData:ConvertToTable()
+		recipeTable["IsTrialBuff"] = true
+		recipeTable["TrialBuffProgress"] = 0
+		recipeTable["TrialBuffExpireDate"] = self.Entity.TimeManager.Utc.Day
+		
+		recipeData:SetFromTable(recipeTable)
+		self.Recipes[recipeId] = recipeData
+		
+		
+		_ReportMessageMaker:RequestAddToReportQueue(4003, recipeData.Name, "", "", self.Entity.PlayerComponent.UserId)
+		
+		self:RequestSyncAllRecipe(self.Recipes, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndRecipeTrialBuff(integer recipeId)
+		-- 레시피의 시행 버프를 종료하고 관련 데이터 초기화
+		if self.Recipes[recipeId] == nil then
+			return
+		end
+		
+		---@type RecipeData
+		local recipeData = self.Recipes[recipeId]
+		
+		local recipeTable = recipeData:ConvertToTable()
+		recipeTable["IsTrialBuff"] = false
+		recipeTable["TrialBuffProgress"] = 0
+		recipeTable["TrialBuffExpireDate"] = 0
+		
+		recipeData:SetFromTable(recipeTable)
+		self.Recipes[recipeId] = recipeData
+		
+		self:RequestSyncAllRecipe(self.Recipes, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeTrialBuffProgress()
+		-- 시행 버프가 적용된 모든 레시피의 진행도를 1씩 증가
+		local trialBuffRecipe = {}
+		for k, v in pairs(self.Recipes) do
+			---@type RecipeData
+			local recipeData = v
+			
+			if recipeData.IsTrialBuff then
+				table.insert(trialBuffRecipe, k)
+			end
+		end
+		
+		for i = 1, #trialBuffRecipe do
+			local recipeId = trialBuffRecipe[i]
+			---@type RecipeData
+			local recipeData = self.Recipes[recipeId]
+			
+			local recipeTable = recipeData:ConvertToTable()
+			local progress = recipeTable["TrialBuffProgress"]
+			recipeTable["TrialBuffProgress"] = progress+1
+			
+			recipeData:SetFromTable(recipeTable)
+			self.Recipes[recipeId] = recipeData
+			
+		end
+		self:RequestSyncAllRecipe(self.Recipes, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckTrialProgressExpiry(integer curDay)
+		-- 시행 버프가 적용된 레시피들의 만료 날짜를 확인하고 만료된 경우 버프를 종료
+		local trialBuffRecipe = {}
+		for k, v in pairs(self.Recipes) do
+			---@type RecipeData
+			local recipeData = v
+			
+			if recipeData.IsTrialBuff then
+				table.insert(trialBuffRecipe, k)
+			end
+		end
+		
+		for i = 1, #trialBuffRecipe do
+			local recipeId = trialBuffRecipe[i]
+			---@type RecipeData
+			local recipeData = self.Recipes[recipeId]
+			
+			if recipeData.TrialBuffProgress >= _RecipeDataSetLogic.TrialBuffExpireMonth then
+				if recipeData.TrialBuffExpireDate <= curDay then
+					self:EndRecipeTrialBuff(recipeId)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AutoSetRecipe()
+		-- 보유한 레시피를 가격 순으로 정렬하여 자동으로 메뉴 슬롯에 설정
+		self:RequestUnsetRecipe(0, true)
+		
+		local recipeSlotLimit = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.DisplayCount)
+		local canSetRecipes = {}
+		for i = 1, #self.Recipes do
+			table.insert(canSetRecipes, self.Recipes[i])
+		end
+		
+		table.sort(canSetRecipes, function(a, b)
+			return a.Cost > b.Cost
+		end)
+		
+		for i = 1, recipeSlotLimit do
+			local recipeData = canSetRecipes[i]
+			local playerRecipeIndex = 0
+			for j = 1, #self.Recipes do
+				if self.Recipes[j] == recipeData then
+					playerRecipeIndex = j
+					break
+				end
+			end
+			
+			if playerRecipeIndex ~= 0 then
+				self:SetRecipe(i, playerRecipeIndex)
+			end
+		end
+		
+		
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestAutoSetRecipe()
+		-- 클라이언트에서 자동 레시피 설정 요청을 받아 처리
+		self:AutoSetRecipe()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MakeNewTrend()
+		-- 새로운 트렌드를 생성하여 긍정적 트렌드와 부정적 트렌드를 설정하고 관련 이벤트 발생
+		local curYear = self.Entity.TimeManager.Utc.Year
+		if curYear <= 1 then
+			return
+		end
+		
+		if self.Entity.PlayerStage.NowStage <= 1 then
+			return
+		end
+		
+		local curDay = self.Entity.TimeManager.Utc.Day
+		local data = "0/"..curDay
+		
+		local nowTrendData = {}
+		for i = 1, #self.LastTrend do
+			---@type TrendData
+			local trendData = _RecipeDataSetLogic.TrendData[self.LastTrend[i]]
+			nowTrendData[trendData.Type] = self.LastTrend[i]
+		end
+		
+		local positivePool = {}
+		local negativePool = {}
+		for k, v in pairs(_RecipeDataSetLogic.TrendData) do
+			---@type TrendData
+			local trendData = v
+			
+			if nowTrendData[trendData.Type] ~= k then
+				if trendData.Type == "Positive" then
+					table.insert(positivePool, k)
+				end
+			end
+		end
+		
+		local randomPositiveIdx = _UtilLogic:RandomIntegerRange(1, #positivePool)
+		local randomPositive = positivePool[randomPositiveIdx]
+		
+		local stageConfigData = _BalanceDataSetLogic:GetStageConfigData(self.Entity.PlayerStage.NowStage)
+		if stageConfigData.FixedPositiveTrendId ~= nil then
+			randomPositive = stageConfigData.FixedPositiveTrendId
+		end
+		
+		
+		local negativeOccurPool = {}
+		for i = 1, 100 do
+			if i <= _RecipeDataSetLogic.NegativeTrendWeight then
+				table.insert(negativeOccurPool, true)
+			else
+				table.insert(negativeOccurPool, false)
+			end
+		end
+		local negativeOccurIdx = _UtilLogic:RandomIntegerRange(1, #negativeOccurPool)
+		local isNegativeOccur = negativeOccurPool[negativeOccurIdx]
+		
+		local randomNegative = 0
+		---@type TrendData
+		local positiveData = _RecipeDataSetLogic.TrendData[randomPositive]
+		local positiveTag = positiveData.TargetTag
+		for k, v in pairs(_RecipeDataSetLogic.TrendData) do
+			---@type TrendData
+			local trendData = v
+			
+			if nowTrendData[trendData.Type] ~= k then
+				if trendData.Type == "Negative" then
+					if trendData.TargetTag ~= positiveTag then
+						table.insert(negativePool, k)
+					end
+				end
+			end
+		end
+		
+		if isNegativeOccur then
+			local randomNegativeIdx = _UtilLogic:RandomIntegerRange(1, #negativePool)
+			randomNegative = negativePool[randomNegativeIdx]
+		end
+		
+		local endIds = {}
+		for k, v in pairs(self.NowTrend) do
+			---@type TrendData
+			local trendData = _RecipeDataSetLogic.TrendData[k]
+			if trendData.Type == "Positive" then
+				table.insert(endIds, k)
+				
+			elseif trendData.Type == "Negative" then
+				if _RecipeDataSetLogic.TrendData[randomNegative] ~= nil then
+					table.insert(endIds, k)
+				end
+			end
+		end
+		self:EndTrend(endIds)
+		
+		table.clear(self.NowTrend)
+		self.NowTrend[randomPositive] = data
+		if _EventDataSetLogic.EventGroupData[positiveData.OccurEvent] ~= nil then
+			_EventManager:SetEventReferKeyData(positiveData.OccurEvent, positiveData.TargetTag, self.Entity.PlayerComponent.UserId)
+			self.Entity.PlayerEvent:RequestCallEvent(positiveData.OccurEvent)
+		end
+		
+		if _RecipeDataSetLogic.TrendData[randomNegative] ~= nil then
+			self.NowTrend[randomNegative] = data
+			---@type TrendData
+			local negativeData = _RecipeDataSetLogic.TrendData[randomNegative]
+			if _EventDataSetLogic.EventGroupData[negativeData.OccurEvent] ~= nil then
+				_EventManager:SetEventReferKeyData(negativeData.OccurEvent, negativeData.TargetTag, self.Entity.PlayerComponent.UserId)
+				self.Entity.PlayerEvent:RequestCallEvent(negativeData.OccurEvent)
+			end
+		end
+		
+		local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.TrendCount)
+		self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.TrendCount, tutProgress+1)
+		
+		self.Entity.CustomerManager:CalcMyAttractive()
+		
+		if self.Entity.PlayerCheatComponent:HasAuthority() then 
+			self.Entity.PlayerDebugMonitor:UpdateDebugMonitorAttractive(self.Entity.PlayerComponent.UserId) 
+		end
+		
+		self.Entity.CustomerManager:RefreshSpawnTable() 
+		
+		table.initialize(self.LastTrend, table.keys(self.NowTrend))
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestMakeNewTrend()
+		-- 클라이언트에서 새로운 트렌드 생성 요청을 받아 처리
+		self:MakeNewTrend()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeTrendProgress()
+		-- 현재 활성화된 모든 트렌드의 진행도를 1씩 증가
+		for k, v in pairs(self.NowTrend) do
+			local splitDatas = _UtilLogic:Split(v, "/")
+			local progress = math.floor(tonumber(splitDatas[1]))
+			local newProgress = progress + 1
+			
+			local data = newProgress.."/"..splitDatas[2]
+			self.NowTrend[k] = data
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckTrendExpiry(integer curDay)
+		-- 트렌드의 만료 날짜를 확인하고 만료된 트렌드들을 종료
+		local trendIds = {}
+		for k, v in pairs(self.NowTrend) do
+			local splitDatas = _UtilLogic:Split(v, "/")
+			local progress = math.floor(tonumber(splitDatas[1]))
+			local expireDate = math.floor(tonumber(splitDatas[2]))
+			
+			if progress >= _RecipeDataSetLogic.TrendExpireMonth then
+				if expireDate <= curDay then
+					table.insert(trendIds, k)
+				end		
+			end
+		end
+		
+		self:EndTrend(trendIds)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndTrend(table trendIds)
+		-- 지정된 트렌드들을 종료하고 관련 이벤트를 발생시키며 고객 스폰 테이블을 새로고침
+		for i = #table.keys(self.NowTrend), 1, -1 do
+			local nowTrendId = table.keys(self.NowTrend)[i]
+			
+			for j = #trendIds, 1, -1 do
+				local trendId = trendIds[j]
+				
+				if trendId == nowTrendId then
+					self.NowTrend[nowTrendId] = nil
+					table.remove(trendIds, j)
+								
+					---@type TrendData
+					local trendData = _RecipeDataSetLogic.TrendData[trendId]
+					local trendTag = trendData.TargetTag
+					if _EventDataSetLogic.EventGroupData[trendData.EndEvent] ~= nil then
+						_EventManager:SetEventReferKeyData(trendData.EndEvent, trendTag, self.Entity.PlayerComponent.UserId)
+						self.Entity.PlayerEvent:RequestCallEvent(trendData.EndEvent)
+					end
+					
+					self.Entity.CustomerManager:RefreshSpawnTable()
+					break
+				end		
+			end	
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetYearlyPlan()
+		-- 연간 트렌드 계획을 설정하여 상반기와 하반기에 발생할 트렌드 날짜를 결정
+		local lastPlan = self.YearlyPlan
+		
+		local datas = {{"Trend", 1, 1, 3, 3}}
+		
+		local newPlan = {}
+		for i = 1, #datas do
+			local data = datas[i]
+			
+			local dataTable = {}
+			
+			local key = data[1]
+			local lastYearData
+			if lastPlan[key] ~= nil and lastPlan[key] ~= {} then
+				lastYearData = lastPlan[key][#lastPlan[key]]
+			end
+				
+			local timeGap = data[4]
+			local gapFromLastData = data[5]
+			
+			local firstHalfCount = data[2]
+			for j = 1, firstHalfCount do
+				local startMonth = 1
+				
+				local lastData = dataTable[#dataTable]
+				if isvalid(lastYearData) and isvalid(lastData) == false then
+					if gapFromLastData > 0 then
+						local targetStartMonth = lastYearData[1] + gapFromLastData
+						if targetStartMonth > 12 then
+							startMonth = targetStartMonth - 12
+						end
+					end
+				end
+						
+				if isvalid(lastData) and timeGap > 0 then
+					local lastMonth = lastData[1]
+					startMonth = lastMonth + timeGap
+					if startMonth > 6 then
+						break
+					end
+				end
+				
+				local month = _UtilLogic:RandomIntegerRange(startMonth, 6)
+				local date = _UtilLogic:RandomIntegerRange(1, 28)
+				table.insert(dataTable, {month, date})
+			end
+			
+			local secondHalfCount = data[3]
+			
+			for j = 1, secondHalfCount do
+				local lastData = dataTable[#dataTable]
+				local startMonth = 7
+				if isvalid(lastData) and timeGap > 0 then
+					local lastMonth = lastData[1]
+					startMonth = lastMonth + timeGap
+					if startMonth > 12 then
+						break
+					end
+				end
+				
+				local month = _UtilLogic:RandomIntegerRange(startMonth, 12)
+				local date = _UtilLogic:RandomIntegerRange(1, 28)
+				table.insert(dataTable, {month, date})
+			end
+			
+			newPlan[key] = dataTable
+		end
+		
+		table.clear(self.YearlyPlan)
+		self.YearlyPlan = newPlan
+		
+		for k, v in pairs(self.YearlyPlan) do
+			for i = 1, #v do
+				local data = v[i]
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckYearlyPlan(integer month, integer day)
+		-- 연간 계획에 따라 특정 날짜에 트렌드가 발생해야 하는지 확인하고 실행
+		local keys = {"Trend"}
+		
+		for i = 1, #keys do
+			local key = keys[i]
+			local yearlyPlan = self.YearlyPlan[key]
+			if yearlyPlan == nil then
+				continue
+			end
+			
+			for j = #yearlyPlan, 1, -1 do
+				local planData = yearlyPlan[j]
+				local planMonth = planData[1]
+				local planDay = planData[2]
+				
+				if month == planMonth and planDay <= day then
+					if key == "Trend" then
+						self:MakeNewTrend()
+					end
+					yearlyPlan[j] = {planMonth, 999}
+					self.YearlyPlan[key] = yearlyPlan
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CalculateActiveRecipeCombo()
+		-- 현재 설정된 레시피들의 태그 조합을 분석하여 활성화된 콤보를 계산
+		local recipeCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.DisplayCount)
+		if recipeCount < 5 then
+			self.ActiveRecipeCombo = 0
+			return
+		end
+		
+		local tagCountTable = {}
+		for i, v in pairs(self.SetRecipes) do
+			---@type RecipeData
+			local recipeData = self.Recipes[v]
+			
+			local tag = recipeData.Tag
+			if tagCountTable[tag] == nil then
+				tagCountTable[tag] = 0
+			end
+			tagCountTable[tag] = tagCountTable[tag] + 1
+			
+		end
+		
+		for k, v in pairs(_RecipeTagDataSetLogic.RecipeComboData) do
+			---@type RecipeComboData
+			local comboData = v
+			
+			local isCombo = true
+			for n, m in pairs(comboData.CountTable) do
+				if tagCountTable[n] == nil then
+					isCombo = false
+					break
+				end
+				
+				if tagCountTable[n] < m then
+					isCombo = false
+					break
+				end
+			end
+			
+			if isCombo then
+				self.ActiveRecipeCombo = k
+				return
+			end
+		end
+		
+		self.ActiveRecipeCombo = 0
+	end
+
+	@ExecSpace("Server")
+	method void RequestEndRecipeMaking(table ingres, table burgerData)
+		-- 클라이언트에서 레시피 제작 완료 요청을 받아 금지어 검사 및 보관함 제한 확인 후 처리
+		local name = burgerData[1]
+		
+		if _CheckProhibitedWordLogic:IsProhibitedWordUsingAPI(name, false) == true then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("UserInputErrorMessage", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false)
+			return
+		end
+		
+		local canMake = 0
+		
+		local recipeCount = #table.keys(self.Recipes)
+		local recipeMaxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.RecipeBoxCount)
+		if recipeCount >= recipeMaxCount then
+			canMake = 4
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeToastMessage2", nil, false, self.Entity.PlayerComponent.UserId)
+			_FadeService:ShowFade("RecipeEnd", self.Entity.PlayerComponent.UserId)
+		
+			return
+		end
+		
+		if canMake ~= 0 then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("RecipeToastMessage1", {canMake}, false, self.Entity.PlayerComponent.UserId)
+			
+			_FadeService:ShowFade("RecipeEnd", self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self:EndRecipeMakingServer(ingres, burgerData)
+	end
+
+	@ExecSpace("Client")
+	method void ChangeRecipeSetCompleteProgress(boolean value)
+		-- 레시피 설정 완료 상태를 변경
+		self.IsRecipeSetComplete = value
+	end
+
+	method integer ReturnRecipeIndexByUniqueId(integer uniqueId)
+		-- 고유 ID를 통해 레시피의 인덱스를 찾아 반환
+		for i, data in pairs(self.Recipes) do
+			---@type RecipeData
+			local recipeData = data
+			
+			if recipeData.UniqueId == uniqueId then
+				return i
+			end
+		end
+		
+		return 0
+	end
+
+	@ExecSpace("Client")
+	method void ForceSyncSetRecipes(SyncTable<integer, integer> setRecipes)
+		-- 서버에서 설정된 레시피들을 강제로 동기화하고 관련 UI 및 메뉴 업데이트
+		
+		table.clear(self.SetRecipes)
+		for slotId, recipeId in pairs(setRecipes) do
+			self.SetRecipes[slotId] = recipeId
+		end
+		
+		self:RequestRefreshRecipeUI(nil)
+		_MainMenuRedDotManager:EnableRecipeRedDot(self.Entity)
+		_UILobbyManager:RefreshMenuInfo()
+		
+		self.Entity.MenuManager:SetMenu(self.LastSetRecipesClientOnly, self.SetRecipes)
+		self:ChangeRecipeSetCompleteProgress(false)
+	end
+
+	@ExecSpace("Server")
+	method void RequestForceSyncSetRecipes()
+		-- 클라이언트에서 레시피 설정 강제 동기화 요청을 받아 처리
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return
+		end
+		
+		self:ForceSyncSetRecipes(self.SetRecipes, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetTempUsingCards(table cards)
+		-- 레시피 제작 시 임시로 사용될 카드 데이터를 설정
+		self.TempUsingCards = cards
+	end
+
+	@ExecSpace("ServerOnly")
+	method void verificationBurgerData(table burgerData)
+		-- 버거 데이터의 맛 점수와 가격이 최대 범위를 초과하지 않는지 검증
+		local burgerStack = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.BurgerStack)
+		local maxIngreScore = _GetConfigDataLogic:GetConfigNumDataByKey("IngredientTasteScoreMax")
+		local maxBunScore = _GetConfigDataLogic:GetConfigNumDataByKey("BunTasteScoreMax")
+		local specialtiesTasteBonusMax = _GetConfigDataLogic:GetConfigNumDataByKey("SpecialtiesTasteBonusMax")
+		local calScore1 = burgerStack * maxIngreScore + specialtiesTasteBonusMax + maxBunScore  * 2
+		
+		local balanceBonus = _GetConfigDataLogic:GetConfigNumDataByKey("RecipeBalanceSucessBonus")
+		local balanceCombo = _GetConfigDataLogic:GetConfigNumDataByKey("RecipeComboBonusRate")
+		local bunBonus = _GetConfigDataLogic:GetConfigNumDataByKey("RecipeBunCombinationBonus") 
+		local calScore2 = calScore1 * balanceBonus * (1 + balanceCombo * burgerStack) * bunBonus
+		
+		local skillBonus = tonumber(_DataService:GetTable("EmployeeSkillTypeDataSet"):FindRow("Id","30001"):GetItem("Grade5Value"))
+		local calScore3 = calScore2 * (1 + skillBonus)
+		
+		local sideMenuId = self.Entity.PlayerIngameManager.StageSideMenu
+		local smData = _StrategyDataSetLogic:GetSideMenuData(sideMenuId)
+		local sideMenuBonus = 0
+		if smData ~= nil then
+			sideMenuBonus =	tonumber(smData.Effect[2])
+		end
+		
+		if sideMenuBonus == nil then
+			sideMenuBonus = 0
+		end
+		
+		local calScore4 = calScore3 * (1 + sideMenuBonus)
+		
+		local maxingreCost = _GetConfigDataLogic:GetConfigNumDataByKey("IngredientCostMax") 
+		local maxBunCost = _GetConfigDataLogic:GetConfigNumDataByKey("BunCostMax") 
+		local specialtiesCostBonusMax = _GetConfigDataLogic:GetConfigNumDataByKey("SpecialtiesCostBonusMax") 
+		local calCost1 = burgerStack * maxingreCost + specialtiesCostBonusMax + maxBunCost * 2
+		
+		local gradeBonus = tonumber(_DataService:GetTable("TasteGradeData"):FindRow("Grade","S5+"):GetItem("GoldBonus"))
+		local bunSkinCollection = self.Entity.PlayerCollection.BunSkinCollection
+		local bunSkinCount = 0
+		local bunSkinUse = 0
+		for i = 1 , #bunSkinCollection do
+			if bunSkinCollection[i] == true then
+				bunSkinCount += 1
+				bunSkinUse = 1
+			end
+		end
+		local bunSkinBonus = bunSkinCount * _GetConfigDataLogic:GetConfigNumDataByKey("BunSkinCollectBonusAmountPerCount") + bunSkinUse * _GetConfigDataLogic:GetConfigNumDataByKey("BunSkinUseBonusAmount")
+		
+		local calCost2 = calCost1 * gradeBonus * (1 + bunSkinBonus)
+		
+		local logValue = {
+			tasteScore = burgerData[6],
+			cost = burgerData[3]
+		}
+		
+		
+		
+		if burgerData[6] > calCost2 or burgerData[3] > calScore4 then
+			self.Entity.PlayerLog:VerificationRecipe(logValue)
+		end
+	end
+
+end

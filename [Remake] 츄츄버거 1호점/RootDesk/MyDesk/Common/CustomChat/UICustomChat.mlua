@@ -1,0 +1,258 @@
+@Component
+script UICustomChat extends Component
+
+	property GridViewComponent grid = "e93e99f9-c7dd-4cfb-b69c-159bcc04430d"
+
+	property Entity baseMsg = "c8b45bb0-0aef-45f2-8fee-d8e6b0cb53ce"
+
+	property table chatData = {}
+
+	property integer currentChatIndex = 0
+
+	property Entity inputText = "5acfa0df-49ba-474c-af15-97a1192c0af2"
+
+	property string lastUsingCommand = ""
+
+	property Entity foldMsg = "d58c6885-bd3d-4b83-89b8-63eb5c5b97fd"
+
+	property Entity submitBtn = "770e4229-d0ee-48ad-b7b9-87bb8426a7b8"
+
+	property integer reportIndex = 0
+
+	property Entity inputText_banned = "46b941e9-eeaa-486d-9ad8-0469b9c7ea8d"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 채팅 UI 초기화 및 이벤트 연결 설정
+		self._T.inputTextSelected = false
+		
+		self._T.scrollInited = false
+		
+		self.grid.ItemEntity = self.Entity:GetChildByName("text_msg")
+		
+		self.grid.OnRefresh = function(i,e)
+			local index = i
+		
+			---@type OnGetChatMessage
+			local event = self.chatData[index + 1]
+			---@type Entity
+			local entity = e
+			
+			_CustomChatLogic:RefreshMsg(event, entity)
+		end
+		
+		self.inputText:ConnectEvent(TextInputSubmitEvent,function(e)
+		
+			local Text = e.Text
+			local placeHolder = self:OnSumitMessage(Text)
+			_TimerService:SetTimerOnce(function() 
+				self.inputText.TextInputComponent.Text = placeHolder
+			end,0.01)
+			
+			
+		end)
+		self.inputText.TextInputComponent.CharacterLimit = _CustomChatLogic.CharacterLimit
+		if isvalid(self.inputText.LocalizedTextInputComponent) then
+			self.inputText.LocalizedTextInputComponent:SetCharacterLimit()
+		end
+		
+		
+		self.submitBtn:ConnectEvent(ButtonClickEvent, function()
+			local text = self.inputText.TextInputComponent.Text
+			local e = TextInputSubmitEvent(text)
+			self.inputText:SendEvent(e)
+		end)
+		
+		self.inputText:ConnectEvent(TextInputEndEditEvent,function(e)
+			_TimerService:SetTimerOnce(function() 		
+				if self._T.inputTextSelected then
+					self:OnTextInputEndEdit()
+				end
+			end,0.15)
+			
+		end)
+		
+		_CustomChatLogic:AddSystemMessage(_GetLocalizationTextLogic:GetText("ChatDefaultSystemMessage"))
+		
+	end
+
+	method string OnSumitMessage(string text)
+		-- 입력된 채팅 메시지를 처리하고 적절한 채팅 타입으로 전송
+		if _UtilLogic:IsNilorEmptyString(text) then		
+			return ""
+		end 
+		local split = _UtilLogic:Split(text," ")
+		
+		local type = _CustomChatLogic:GetTypeByMessage(text)
+		if type == _CustomChatLogic.TYPE_DEFAULT then
+			_CustomChatLogic:RequestChat(text,_UtilLogic.ServerElapsedSeconds,type,"")
+		elseif type == _CustomChatLogic.TYPE_WHISPER then
+			if #split > 2 then
+				local code = split[2]
+				local result = text:match("^\\w%s%S+%s(.+)$")
+				_CustomChatLogic:RequestChat(result,_UtilLogic.ServerElapsedSeconds,type,code)
+				return text:match("^(\\w%s%S+)%s") .." "
+			else
+				_CustomChatLogic:AddSystemMessage("올바르지 않은 명령어입니다.")
+			end
+		elseif type == _CustomChatLogic.TYPE_PARTY then
+			if #split > 1 then		
+				local result = text:match("\\p%s+(.+)")
+				_CustomChatLogic:RequestChat(result,_UtilLogic.ServerElapsedSeconds,type,"")
+				return "\\p "
+			else
+				_CustomChatLogic:AddSystemMessage("올바르지 않은 명령어입니다.")
+			end
+		elseif type == _CustomChatLogic.TYPE_MEGAPHONE then
+			if #split > 1 then		
+				local result = text:match("\\m%s+(.+)")
+				_CustomChatLogic:RequestChat(result,_UtilLogic.ServerElapsedSeconds,type,"")
+				return "\\m "
+			else
+				_CustomChatLogic:AddSystemMessage("올바르지 않은 명령어입니다.")
+			end
+		else
+		end
+		
+		return ""
+	end
+
+	method void SetWhisper(string ppsn)
+		-- 귓속말 모드로 입력 필드를 설정
+		local userInfo = _UserService.Users[ppsn]
+		if userInfo == nil then
+			return
+		end
+		
+		self.inputText.TextInputComponent.Text = string.format("\\w %s ",userInfo.ProfileCode)
+		self:ActivateInputField()
+	end
+
+	method void Refresh(integer count)
+		-- 채팅 목록을 새로고침하고 스크롤 위치를 유지
+		self.grid.TotalCount = count
+		self._T.needRefresh = true
+		
+		if self._T.refreshEvent == nil then
+			self._T.refreshEvent = _TimerService:SetTimerRepeat(function() 
+				if self._T.needRefresh then
+					self._T.needRefresh = false
+					local scrollValue = self.grid:GetScrollNormalizedPosition(UITransformAxis.Vertical)
+					self.grid:Refresh(false,true)
+		
+					if self._T.scrollInited == false then		
+						self.grid:SetScrollNormalizedPosition(UITransformAxis.Vertical,1)	
+						if self.grid:GetScrollNormalizedPosition(UITransformAxis.Vertical) > 0 then
+							self._T.scrollInited = true
+						end
+					else
+						self.grid:SetScrollNormalizedPosition(UITransformAxis.Vertical,scrollValue)	
+					end
+				end
+			end,0.1)
+		end
+	end
+
+	method void ActivateInputField()
+		-- 채팅 입력 필드를 활성화하고 채팅창을 열기
+		if _UIGroupManager:IsOnLobby(true) == false then
+			return
+		end
+		
+		if self.Entity.Enable == false then
+			self.Entity.Parent.UICustomChatHolder:ToggleCustomChat(true)
+			return
+		end
+		
+		if self._T.inputTextSelected == false then
+			self.inputText.TextInputComponent:ActivateInputField()
+			self:OnActivateInputField()
+		end
+	end
+
+	method void OnTextInputEndEdit()
+		-- 입력 종료 시 선택 상태를 해제
+		self._T.inputTextSelected = false
+	end
+
+	method void OnActivateInputField()
+		-- 입력 필드 활성화 시 선택 상태를 설정
+		
+		
+		self._T.inputTextSelected = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshFoldMsg(OnGetChatMessage event)
+		-- 접힌 채팅창에 표시될 마지막 메시지를 업데이트
+		_CustomChatLogic:RefreshMsg(event, self.foldMsg)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearChatTextMaterial()
+		-- 채팅 텍스트의 마테리얼 효과를 정리
+		for i, child in pairs(self.grid.Entity.Children) do
+			local iconEntity = child:GetChildByName("icon")
+			local textEntity = child:GetChildByName("text")
+			if isvalid(textEntity) and isvalid(iconEntity)  then
+				if iconEntity.Enable == false then continue end 
+				
+				if isvalid(textEntity.UITweenTextColor) then
+					textEntity.UITweenTextColor:Stop()
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "CustomChatLogic")
+	handler HandleOnGetChatMessage(OnGetChatMessage event)
+		-- 채팅 메시지를 받아 UI에 추가하고 채팅 벌룬을 표시
+		local msg = event.msg
+		local nickName = event.name
+		local ppsn = event.ppsn
+		local type = event.type
+		local extra = event.extra
+		table.insert(self.chatData,event)
+		
+		if self.currentChatIndex > _CustomChatLogic.MaxChatCount then
+			table.remove(self.chatData,1)
+		end
+		self.currentChatIndex += 1
+		
+		self:Refresh(#self.chatData)
+		self:RefreshFoldMsg(event)
+		
+		if _UserService.LocalPlayer.PlayerComponent.UserId ~= ppsn then
+			return
+		end
+		
+		if self._T.hideEventId ~= nil then
+			_TimerService:ClearTimer(self._T.hideEventId)
+			self._T.hideEventId = nil
+		end
+		
+		local chatBalloon = _UserService.LocalPlayer.ChatBalloonComponent
+		chatBalloon.Message = msg
+		
+		self._T.hideEventId = _TimerService:SetTimerOnce(function() 
+			chatBalloon.Message = ""
+			self._T.hideEventId = nil
+		end,5)
+		
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyUpEvent(KeyUpEvent event)
+		-- 엔터 키 입력 시 채팅 입력 필드를 활성화
+		
+		local key = event.key
+		if key == KeyboardKey.Return then
+			self:ActivateInputField()
+		end
+	end
+
+end

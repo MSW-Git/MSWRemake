@@ -1,0 +1,138 @@
+@Component
+script EggComponent extends Component
+
+	@HideFromInspector
+	property string id = ""
+
+	@HideFromInspector
+	property string uniqueKey = ""
+
+	property integer touchedCount = 0
+
+	property string fixedHatchingEquipmentId = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnTouch()
+		-- 알을 터치했을 때 시각적 효과와 터치 카운트 증가, 최대 터치 수 달성 시 부화
+		self.Entity.SpriteRendererComponent:ChangeMaterial("material://3229da74-03f3-4c8b-8501-fcb4665269be")
+		self.touchedCount = self.touchedCount + 1
+		
+		_TimerService:SetTimerOnce(function()
+				self.Entity.SpriteRendererComponent:ChangeMaterial("")
+			end, 0.1)
+		
+		local grade = _ItemDataLogic.itemData[self.id].grade
+		local maxTouch = 999
+		
+		if grade == "normal" then
+			maxTouch = 1
+		elseif grade == "rare" then
+			maxTouch = 2
+		elseif grade == "epic" then
+			maxTouch = 3
+		elseif grade == "unique" then
+			maxTouch = 4
+		elseif grade == "legendary" then
+			maxTouch = 5
+		end
+		
+		if self.touchedCount >= maxTouch then
+			self:Hatch()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Hatch()
+		-- 알을 부화시켜 랜덤 장비 아이템 생성 및 기존 장착 상태 유지
+		local tempTable = {}
+		local data = _ItemDataLogic.itemData[self.id]
+		local grade = data.grade
+		local star = data.star
+		local playerEntity = _UserService.LocalPlayer
+		local storage = playerEntity.PlayerStorageComponent
+		local category = "weapon"
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, 100)
+		if rand >= 70 then
+			category = "armor"
+		end
+		
+		for key, value in pairs(_ItemDataLogic.equipmentData) do
+			if value.grade == grade and value.star == star and _UtilLogic:Contains(value.category, category) then
+				table.insert(tempTable, value)
+			end
+		end
+		
+		rand = _UtilLogic:RandomIntegerRange(1, #tempTable)
+		
+		
+		local id = tempTable[rand].id
+		local uniqueKey = _GameUtil:CreateGUID()
+		if self.fixedHatchingEquipmentId ~= "" then
+			id = self.fixedHatchingEquipmentId
+		end
+		
+		if isvalid(storage.storage[self.uniqueKey]) then 
+		else
+		end
+		
+		if storage.storage[self.uniqueKey].equippedSlotNum > 0 then
+			storage:Equip(uniqueKey, storage.storage[self.uniqueKey].equippedSlotNum)
+		end
+		
+		local newItem = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Model_Equipment"), uniqueKey, self.Entity.TransformComponent.Position, self.Entity.Parent)
+		storage:SetOldItem(uniqueKey)
+		newItem.StorageItemComponent:Init(id, uniqueKey)
+		_EffectService:PlayEffect("988f0dece4814e3c917626021bad2347", self.Entity.CurrentMap, self.Entity.TransformComponent.WorldPosition + Vector3(0, -0.25, 0), 0, Vector3.one * 0.5)
+		
+		self.Entity:Destroy()
+	end
+
+	@ExecSpace("Client")
+	method void Init(string uniqueKey, string itemId)
+		-- 알 컴포넌트 초기화 및 고정 부화 아이템 ID 설정
+		self.uniqueKey = uniqueKey
+		self.id = itemId
+		
+		local playerEntity = _UserService.LocalPlayer
+		local storage = playerEntity.PlayerStorageComponent
+		
+		if isvalid(storage.storage[self.uniqueKey]) and storage.storage[self.uniqueKey].content ~= "" then
+			self.fixedHatchingEquipmentId = storage.storage[self.uniqueKey].content
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshOutfit(string itemId, string uniqueKey)
+		-- 알의 외형을 기본 알 모양으로 새로고침
+		local newItem = self.Entity
+		local playerStorage = _UserService.LocalPlayer.PlayerStorageComponent
+		
+		newItem.StorageItemComponent:Init(itemId, uniqueKey)
+		newItem.SpriteRendererComponent.SpriteRUID = "a32eb7aabc9548d48fc2e2d4808370ae"
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchEvent(TouchEvent event)
+		-- 알 터치 이벤트 처리 (UI 위가 아니면 OnTouch 호출)
+		
+		if _InputService:IsPointerOverUI() then return end
+		
+		self:OnTouch()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleCreatedEggCauseMergeEvent(CreatedEggCauseMergeEvent event)
+		-- 머지로 인한 알 생성 이벤트 처리 시 외형 새로고침
+		local uniqueKey = event.uniqueKey
+		local itemId = event.itemId
+		local entityId = event.entityId
+		local playerEntit = event.playerEntity
+		if entityId == self.Entity.Id then
+			self:RefreshOutfit(itemId, uniqueKey)
+		end
+	end
+
+end

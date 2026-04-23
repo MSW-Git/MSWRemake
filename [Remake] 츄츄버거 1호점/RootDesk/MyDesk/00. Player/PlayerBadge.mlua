@@ -1,0 +1,155 @@
+@Component
+script PlayerBadge extends Component
+
+	@TargetUserSync
+	property SyncTable<integer, integer> BadgeProgress
+
+	@TargetUserSync
+	property SyncTable<string, boolean> BadgeAchieved
+
+	property boolean IsSaveDB = false
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 배지 데이터를 데이터베이스에 저장하는 함수
+		local dbTable = {}
+		
+		dbTable["BadgeProgress"] = _UtilLogic:TableToString(self.BadgeProgress)
+		
+		saveData["BadgeData"] = dbTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 배지 데이터를 로드하는 함수
+		local dbTable = loadedData["BadgeData"]
+		if dbTable == nil then
+			dbTable = {}
+		end
+		
+		if #table.keys(dbTable) > 0 then
+			
+			if dbTable["BadgeProgress"] then
+				table.initialize(self.BadgeProgress, _UtilLogic:StringToTable(dbTable["BadgeProgress"]))
+			end
+			
+		else
+			
+			table.clear(self.BadgeAchieved)
+			table.clear(self.BadgeProgress)
+		end
+		
+		self:GetBadgeAchievedFromPlatform()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeProgress(integer typeId, integer typeValue)
+		-- 배지 진행도를 변경하고 달성 여부를 확인하는 함수
+		if self.BadgeProgress[typeId] == nil then
+			self.BadgeProgress[typeId] = 0
+		end
+		
+		if self.BadgeProgress[typeId] >= typeValue then
+			return
+		end
+		
+		self.BadgeProgress[typeId] = typeValue
+		
+		self:CheckBadgeAchieved(typeId, typeValue)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckBadgeAchieved(integer typeId, integer typeValue)
+		-- 진행도에 따라 배지 달성 여부를 확인하는 함수
+		local badgeList = _BadgeDataSetLogic:GetBadgeListByTypeId(typeId)
+		
+		if #badgeList <= 0 then
+			return
+		end
+		
+		for _, badgeId in pairs(badgeList) do
+			local badgeData = _BadgeDataSetLogic:GetBadgeData(badgeId)
+			
+			if badgeData.TypeValue <= typeValue then
+				self:SetBadgeAchieved(badgeId)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBadgeAchieved(string badgeId)
+		-- 배지 달성 상태를 설정하는 함수
+		if self.BadgeAchieved[badgeId] == true then
+			return
+		end
+		
+		local badgeData = _BadgeDataSetLogic:GetBadgeData(badgeId)
+		if badgeData == nil then
+			return
+		end
+		
+		if badgeData.IsHideOnUI == true then
+			return
+		end
+		
+		local result = _BadgeService:AwardBadgeAndWait(self.Entity.PlayerComponent.UserId, badgeId)
+		if result == true then
+			self.BadgeAchieved[badgeId] = true
+			self:BadgeLog(badgeId)
+			_SoundService:PlaySound(_ResourceManager.SFXTable["System_AttendGift_Stamp_01"], 1, self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetBadgeAchievedFromPlatform()
+		-- 플랫폼에서 배지 달성 정보를 가져오는 함수
+		local badgeTable = _DataService:GetTable("BadgeData")
+		if badgeTable:GetColumn(Environment.WorldId) == nil then
+			return
+		end
+		
+		for i = 1, badgeTable:GetRowCount() do
+			local row = badgeTable:GetRow(i)
+			
+			local badgeId = row:GetItem(Environment.WorldId)
+			local hideSlot = _StringUtilLogic:GetBoolByString(row:GetItem("HideSlot"), false)
+			if hideSlot == true then
+				continue
+			end
+			
+			_BadgeService:UserHasBadgeAsync(self.Entity.PlayerComponent.UserId, badgeId, function(userId, badgeId, isAchieved)
+				self.BadgeAchieved[badgeId] = isAchieved
+			end)
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BadgeLog(string badgeId)
+		-- 배지 달성 로그를 기록하는 함수
+		local success,value = pcall(function()
+			local userId = self.Entity.PlayerComponent.UserId
+			local nickname = self.Entity.PlayerComponent.Nickname
+			local badgeData = _BadgeDataSetLogic:GetBadgeData(badgeId)
+			
+			_LogStorageLogic:LogValue(
+				userId,
+				_LogEnumType.BadgeFlow,
+				_HttpService:JSONEncode({
+					badgeTypeValue = tostring(badgeData.TypeValue),
+					badgeName = badgeData.Name
+				}),
+				{
+					nickname = nickname,
+					badgeId = badgeId,
+					badgeTypeId = tostring(badgeData.TypeId),
+					badgeGrade = tostring(badgeData.Grade),
+					playerLevel = self.Entity.PlayerStage:GetPlayerLastStageProgress()
+				}
+			)
+		end)
+		
+		if not success then  end
+	end
+
+end

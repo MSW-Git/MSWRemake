@@ -1,0 +1,374 @@
+@Component
+script UIStageSetting extends Component
+
+	property SyncTable<integer, Entity> EnumPages
+
+	property integer NowStage = 0
+
+	property integer NowIndex = 0
+
+	property Entity NextButton = "4826804b-3169-40c3-a068-39342e5979b1"
+
+	property Entity PreviousButton = "9fbc09c4-8f77-412b-980e-22906f0730d8"
+
+	property Entity DoneButton = "e2d92452-c8b8-4d73-b5c1-bd887b9f23c9"
+
+	property TextComponent SubTitle = "b7469b95-7d62-4b93-82e0-8cbb9b3c3a8b"
+
+	property Entity StageInfoBar = "b4b2b5e5-15b4-4f21-a055-54adac3725a4"
+
+	property SyncTable<integer, Entity> NavigatorNodes
+
+	property Entity NavigatorIndicator = "11cda26f-2656-4eb4-9018-7a54ae0cd08d"
+
+	property Entity Navigator = "6104a3d8-754c-4330-8728-bbeea35cfc80"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 페이지와 네비게이터를 설정하는 함수
+		self.Entity.Enable = false
+		
+		local pages = self.Entity:GetChildByName("SettingPages")
+		for i, page in pairs(pages.Children) do
+			for enum, key in pairs(_StageSettingEnum.Enum) do
+				if key == page.Name then
+					self.EnumPages[enum] = page
+				end
+			end
+		end
+		
+		for i, child in pairs(self.Navigator.Children) do
+			if child == self.NavigatorIndicator then
+				continue
+			end
+			
+			local index = tonumber(child.Name)
+			self.NavigatorNodes[index] = child
+		end
+		
+		self._T.firstIndex = table.keys(_StageSettingEnum.Enum)[1]
+		self._T.lastIndex = table.keys(_StageSettingEnum.Enum)[#table.keys(_StageSettingEnum.Enum)]
+	end
+
+	method void Open(integer stageId)
+		-- 스테이지 설정 UI를 열고 초기화하는 함수
+		self.Entity.Enable = true
+		
+		self:ResetSetting()
+		
+		self.NowStage = stageId
+		
+		_UIGroupManager:EnableMoneyBarGroup(false)
+		_UIGroupManager:EnableBackToLobbyBtn(false)
+		
+		self:RefreshSetting(1, false)
+		self:RefreshStageInfoBar(stageId)
+		
+		_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.EnterStageSetting)
+	end
+
+	method void Close()
+		-- 스테이지 설정 UI를 닫고 정리하는 함수
+		self.Entity.Enable = false
+		self:ResetSetting()
+		
+		_UIGroupManager:EnableMoneyBarGroup(nil)
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+	end
+
+	method void RefreshSetting(integer index, boolean isTween)
+		-- 설정 페이지를 새로고침하고 표시하는 함수
+		self.NowIndex = index
+		self:MoveNavigator(self.NowIndex, isTween)
+		
+		for enum, page in pairs(self.EnumPages) do
+			page.Enable = index == enum
+		end
+		
+		local getSubTitle = function(a)
+			if a == 1 then
+				return _GetLocalizationTextLogic:GetText("StageInfoTitleText")
+			elseif a == 2 then
+				return _GetLocalizationTextLogic:GetText("StageSettingSubTitleTab2")
+			elseif a == 3 then
+				return _GetLocalizationTextLogic:GetText("StartingEmployee")
+			elseif a == 4 then
+				return _GetLocalizationTextLogic:GetText("Strategy")
+			end
+		end
+		
+		self.SubTitle.Text = getSubTitle(index)
+		self.StageInfoBar.Enable = index > 1
+		self.NextButton.Enable = isvalid(_StageSettingEnum.Enum[self.NowIndex+1])
+		self.PreviousButton.Enable = isvalid(_StageSettingEnum.Enum[self.NowIndex-1])
+		self.DoneButton.Enable = self.NowIndex == self._T.lastIndex
+		
+		local key = _StageSettingEnum.Enum[index]
+		local page = self.EnumPages[index]
+		if key == _StageSettingEnum.StageInfo then
+			page.UIStageSettingStageInfo:Refresh(self.NowStage)
+		elseif key == _StageSettingEnum.Ingredient then
+			page.UIStageSettingIngredient:Refresh(self.NowStage)
+		elseif key == _StageSettingEnum.Employee then
+			page.UIStageSettingEmployee:Refresh()
+		elseif key == _StageSettingEnum.Strategy then
+			page.UIStageSettingStrategy:Open()
+		end
+	end
+
+	method void OnMoveNext()
+		-- 다음 페이지로 이동하는 함수
+		if isvalid(_StageSettingEnum.Enum[self.NowIndex+1]) == false then
+			return
+		end
+		
+		if self.NowIndex == _StageSettingEnum:GetIndexByKey(_StageSettingEnum.Employee) then
+			local page = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Employee)]
+			if #table.values(page.UIStageSettingEmployee.SelectedEmployee) < 2 then
+				_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("StageSettingEmployeeToast1")) 
+				return
+			end
+		end
+		
+		self:RefreshSetting(self.NowIndex+1, true)
+		_TutorialManager:CheckForceTo()
+	end
+
+	method void OnMovePrevious()
+		-- 이전 페이지로 이동하는 함수
+		if isvalid(_StageSettingEnum.Enum[self.NowIndex-1]) == false then
+			return
+		end
+		
+		local uiSettingStrategy = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy)].UIStageSettingStrategy
+		local uiSettingIngre = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Ingredient)].UIStageSettingIngredient
+		if _TutorialManager.target == uiSettingStrategy.T2003TutorialTarget or _TutorialManager.target == uiSettingIngre.PromotedIngreRerollBtn then
+			return
+		end
+		
+		self:RefreshSetting(self.NowIndex-1, true)
+	end
+
+	method void OnDone()
+		-- 설정 완료 시 처리하는 함수
+		local uiSettingStrategy = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy)].UIStageSettingStrategy
+		if _TutorialManager.target == uiSettingStrategy.T2003TutorialTarget then
+			return
+		end
+		
+		local player = _UserService.LocalPlayer
+		local ingrePage = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Ingredient)].UIStageSettingIngredient
+		local empPage = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Employee)]
+		local stPage = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy)].UIStageSettingStrategy
+		
+		
+		local isSideMenuNotSet = function()
+			local haveSideMenu = false
+			for id, bool in pairs(player.PlayerCollection.SideMenuCollection) do
+				if bool == true then
+					haveSideMenu = true
+					break
+				end
+			end
+			
+			return haveSideMenu and stPage.SelectedSideMenu == 0 
+		end
+		
+		local isSPNotLeft = function()
+			local userSP = player.PlayerOutgameManager.StrategyPoint
+			local usedSP = stPage.UsedSP
+			return usedSP < userSP
+		end
+		
+		local popupFinal = function()
+			_StageDataSetLogic.UIStageInfo:Open(self.NowStage, true)
+		end
+		
+		local popupSP = function()
+			local onOk = function()
+				popupFinal()
+			end
+			
+			_UIPopup:Open(_GetLocalizationTextLogic:GetText("StageSettingPopupContents1"), onOk, function() end, "SP")
+		end
+		
+		local popupSideMenu = function()
+			local onOk = function()
+				_TimerService:SetTimerOnce(function()
+					if isSPNotLeft() == true then
+						popupSP()
+						return
+					end
+					
+					popupFinal()
+				end, 0.2)
+			end
+			
+			_UIPopup:Open(_GetLocalizationTextLogic:GetText("StageSettingPopupContents2"), onOk, function() end, _GetLocalizationTextLogic:GetText("SideMenu"))
+		end
+		if isSideMenuNotSet() == true then
+			popupSideMenu()
+			return
+		end
+			
+		if isSPNotLeft() == true then
+			popupSP()
+			return
+		end
+		
+		popupFinal()
+	end
+
+	method table GetDataFromClient()
+		-- 클라이언트에서 설정 데이터를 가져오는 함수
+		local datas = {}
+		
+		local pageIngre = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Ingredient)]
+		datas[_StageSettingEnum.Ingredient] = table.values(pageIngre.UIStageSettingIngredient.PromotedIngres)
+		
+		local pageEmployee = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Employee)]
+		datas[_StageSettingEnum.Employee] = table.values(pageEmployee.UIStageSettingEmployee.SelectedEmployee)
+		
+		local pageStrg = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy)]
+		datas[_StageSettingEnum.Strategy] = pageStrg.UIStageSettingStrategy.SelectedStrategy
+		datas[_StageSettingEnum.SideMenu] = pageStrg.UIStageSettingStrategy.SelectedSideMenu
+		
+		return datas
+	end
+
+	method void RefreshStageInfoBar(integer stageId)
+		-- 스테이지 정보 바를 새로고침하는 함수
+		local stageData = _StageDataSetLogic:GetStageData(stageId)
+		
+		self.StageInfoBar:GetChildByName("StageIcon").SpriteGUIRendererComponent.ImageRUID = stageData.BadgeIconRUID
+		self.StageInfoBar:GetChildByName("StageName").TextComponent.Text = string.format("%d. %s", stageId, _GetLocalizationTextLogic:GetText(stageData.NameKey))
+		self.StageInfoBar:GetChildByName("StageDesc").TextComponent.Text = _GetLocalizationTextLogic:GetText(stageData.DescKey)
+	end
+
+	method void ResetSetting()
+		-- 설정을 초기화하는 함수
+		self.NowStage = 0
+		
+		for enum, page in pairs(self.EnumPages) do
+			if enum == _StageSettingEnum:GetIndexByKey(_StageSettingEnum.StageInfo) then
+				
+			elseif enum == _StageSettingEnum:GetIndexByKey(_StageSettingEnum.Ingredient) then
+				table.clear(page.UIStageSettingIngredient.PromotedIngres)
+				
+			elseif enum == _StageSettingEnum:GetIndexByKey(_StageSettingEnum.Employee) then
+				table.clear(page.UIStageSettingEmployee.SelectedEmployee)
+				
+			elseif enum == _StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy) then
+				page.UIStageSettingStrategy:ResetData()
+			end
+		end
+	end
+
+	method void MoveNavigator(integer index, boolean isTween)
+		-- 네비게이터를 이동시키는 함수
+		local startValue = self.Navigator.SliderComponent.Value
+		local endValue = 1/3 * (index-1)
+		
+		if isvalid(self._T.navigatorTween) then
+			self._T.navigatorTween:Destroy()
+		end
+		
+		if isTween == true then
+			self._T.navigatorTween = _TweenLogic:PlayTween(startValue, endValue, 0.5, EaseType.CubicEaseOut, function(t)
+				self.Navigator.SliderComponent.Value = t
+			end)
+			
+		else
+			self.Navigator.SliderComponent.Value = endValue
+		end
+		
+		for i, node in pairs(self.NavigatorNodes) do
+			node.SpriteGUIRendererComponent.ImageRUID = i <= index and "0236c08af5c44cd68b724fa040079eaa" or "01136e84a55f4f71b0030f16c1d136b7"
+		end
+		
+		
+		self:MoveIndicatorTo(index, isTween)
+	end
+
+	method void MoveIndicatorTo(integer index, boolean isTween)
+		-- 인디케이터를 특정 위치로 이동시키는 함수
+		local startPos = self.NavigatorIndicator.UITransformComponent.anchoredPosition
+		local targetPosX = self.NavigatorNodes[index].UITransformComponent.anchoredPosition.x
+		
+		if isvalid(self._T.indicatorTween) then
+			self._T.indicatorTween:Destroy()
+		end
+		
+		if isTween == true then
+			self._T.indicatorTween = _TweenLogic:PlayTween(startPos, Vector2(targetPosX, startPos.y), 0.5, EaseType.CubicEaseOut, function(t)
+				self.NavigatorIndicator.UITransformComponent.anchoredPosition = t
+			end)
+			
+		else
+			self.NavigatorIndicator.UITransformComponent.anchoredPosition = Vector2(targetPosX, startPos.y)
+		end
+		
+	end
+
+	@EventSender("Entity", "4826804b-3169-40c3-a068-39342e5979b1")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 다음 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnMoveNext()
+	end
+
+	@EventSender("Entity", "9fbc09c4-8f77-412b-980e-22906f0730d8")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 이전 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnMovePrevious()
+	end
+
+	@EventSender("Entity", "e2d92452-c8b8-4d73-b5c1-bd887b9f23c9")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 완료 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnDone()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "7033d75f-09f3-4ef2-8d1b-29aab19135f2")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		local uiSettingStrategy = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy)].UIStageSettingStrategy
+		local uiSettingIngre = self.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Ingredient)].UIStageSettingIngredient
+		if _TutorialManager.target == uiSettingStrategy.T2003TutorialTarget or _TutorialManager.target == uiSettingIngre.PromotedIngreRerollBtn then
+			return
+		end
+		
+		local onOk = function()
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+			self:Close()
+		end
+		
+		local contents = _GetLocalizationTextLogic:GetText("StageSettingQuitPopupContents")
+		_UIPopup:Open(contents, onOk, function() end, _GetLocalizationTextLogic:GetText("StageSettingQuitPopupTitle"))
+		
+	end
+
+end

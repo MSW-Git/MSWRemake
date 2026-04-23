@@ -1,0 +1,117 @@
+@Component
+script PenaltyManager extends Component
+
+	@TargetUserSync
+	property SyncTable<string> SetPenaltiesID
+
+	@TargetUserSync
+	property SyncTable<string> PlayPenaltiesID
+
+	@ExecSpace("ServerOnly")
+	method void InitNewGamePenaltySet()
+		-- 인게임 시작 전, 패널티 컴포넌트를 불러옵니다.
+		--------------------------------------------------------------
+		local userEntity = self.Entity
+		local gameManager = userEntity.GameManager
+		local penaltyListEntity = userEntity:GetChildByName("PenaltyListEntity")
+		--------------------------------------------------------------
+		if gameManager.NeedDataLoad then
+			for idx, penaltyID in pairs(self.PlayPenaltiesID) do
+				local penaltyEntity = penaltyListEntity:GetChildByName(string.format("Penalty_%d", idx))
+				penaltyEntity:AddComponent(penaltyID)
+			end
+		else
+			table.clear(self.PlayPenaltiesID)
+			
+			for idx, penaltyID in pairs(self.SetPenaltiesID) do
+				table.insert(self.PlayPenaltiesID, penaltyID)
+				local penaltyEntity = penaltyListEntity:GetChildByName(string.format("Penalty_%d", idx))
+				penaltyEntity:AddComponent(penaltyID)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetPenalties(string modeType, number modeLevel)
+		--------------------------------------------------------------
+		-- 랭크 모드 Penalty 세팅
+		if modeType == "Rank" then
+			table.clear(self.SetPenaltiesID)
+			for i = modeLevel, 1, -1 do
+				local penaltyInfo = _ModeDataLogic.SetRankPenalties[i]
+				
+				-- 프리셋 넘어갈 때마다 패널티 초기화
+				if penaltyInfo == "-" then
+					break
+				else
+					local pValue = _UtilLogic:Split(penaltyInfo, ",")
+					for _, penaltyID in pairs(pValue) do
+						table.insert(self.SetPenaltiesID, penaltyID)
+					end
+				end
+			end
+		--------------------------------------------------------------
+		-- 일반 모드 Penalty 세팅
+		else
+			local mTypeTable = _UtilLogic:Split(modeType, "_")
+			local type = mTypeTable[1]
+			local season = tonumber(mTypeTable[2])
+			
+			local singleModeInfo = _DataService:GetTable("SingleModeInfo")
+			table.clear(self.SetPenaltiesID)
+			for i = 1, modeLevel do
+				local getPenaltyID = singleModeInfo:GetRow(i):GetItem("AddPenaltyID")
+				if getPenaltyID ~= "-" then
+					table.insert(self.SetPenaltiesID, getPenaltyID)
+				end
+			end
+		end
+		--------------------------------------------------------------
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		if name == "PlayPenaltiesID" then
+			self:SetGameModeTooltip_PenaltyList()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetGameModeTooltip_PenaltyList()
+		local penaltyTable = _DataService:GetTable("PenaltyInfo")
+		
+		local setUI = function(ui_ingameModeTooltip_penaltyList)
+			local penaltiesText = ""
+			
+			for i=1, 5 do		
+				local penaltyID = self.PlayPenaltiesID[i]
+				
+				if _UtilLogic:IsNilorEmptyString(penaltyID) == false then
+					if i ~=1 then
+						penaltiesText = penaltiesText.."\n"
+					end
+					
+					penaltiesText = penaltiesText.._LocalizationService:GetText(penaltyID)
+				end
+			end
+			
+			ui_ingameModeTooltip_penaltyList.TextComponent.Text = penaltiesText
+		end
+		
+		setUI(_EntityService:GetEntityByPath("/ui/HoverPopupGroup/TooltipUI_GameMode/Text_Penalties"))
+		setUI(_EntityService:GetEntityByPath("/ui/ESCMenu/Panel_ESCMenu/TooltipUI_GameMode/Text_Penalties"))
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "62998ff3-2a14-45c3-b15f-1cbefac42db4")
+	handler HandleUITouchEnterEvent(UITouchEnterEvent event)
+		_UI_Tooltip.RealtimeUpdateTargetUI = _UI_Tooltip.UI_GameModeInfo
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "62998ff3-2a14-45c3-b15f-1cbefac42db4")
+	handler HandleUITouchExitEvent(UITouchExitEvent event)
+		_UI_Tooltip.RealtimeUpdateTargetUI = nil
+	end
+
+end

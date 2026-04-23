@@ -1,0 +1,298 @@
+@Component
+script UIVIPOrderSeasonInfo extends Component
+
+	property TextComponent LeftDayText = "48fc6e75-9e96-4d29-9a16-86904ec95e28"
+
+	property TextComponent DurationText = "074ee885-3141-423b-8957-0866ef16833b"
+
+	property Entity MainTagIcon = "47cdaf7b-1cd4-481c-a923-aa11cf20e46a"
+
+	property Entity MainTagText = "21cfdd75-6c9f-4663-900b-54625daab679"
+
+	property SliderComponent RewardSlider = "2f454bb8-3f0c-4d05-9402-1ddcccdd5d65"
+
+	property SyncTable<integer, Entity> Rewards
+
+	property Entity ScoreIcon = "44d6a367-1087-4df8-876b-6d067542d4c4"
+
+	property Entity RewardInfoTooltip = "67d90289-04ca-4ce8-8c13-e492bad16ab8"
+
+	property TextComponent CollectionTitle = "c7045a4e-6ca3-4433-9f9a-7c7234c25627"
+
+	property TextComponent CollectionValue = "36425977-dbc1-45fc-915b-1a3ef8ce3208"
+
+	property TextComponent St_CloverRewardBonusTitle = "1b872221-1633-4555-ace3-62419e5426af"
+
+	property TextComponent St_CloverRewardBonusValue = "0c5bd786-fa26-474f-b2ae-704d1cc0d8c8"
+
+	property Entity InfoBtn = "2d2bc3b7-c13e-4ff3-9d88-d43451a6eb21"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 시즌 정보 UI의 초기화 상태와 보상 상태를 설정
+		self._T.isInited = false
+		self._T.rewardState = {}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 시즌 정보, 메인 태그, 보상 슬라이더를 새로고침
+		if self._T.isInited == false then
+			self:Init()
+		end
+		
+		local player = _UserService.LocalPlayer
+		self.RewardInfoTooltip.Enable = false
+		if self.RewardInfoTooltip.Parent == self.InfoBtn then
+			self.RewardInfoTooltip.UITransformComponent.anchoredPosition = Vector2(-10, -15)
+		end
+		
+		self:RefreshRewardInfoTooltip()
+		
+		local nowSeasonStartElapsed = player.PlayerVIPOrder.NowSeasonStartUtcElapsed
+		local nowSeasonStartMonth =  _VIPOrderDataSetLogic:ReturnFixedStartMonthByStartElapsed(nowSeasonStartElapsed)
+		local nowSeasonEndMonth = DateTime(_VIPOrderDataSetLogic:ReturnSeasonEndElapsedByStartElapsed(nowSeasonStartElapsed)).Month - 1
+		
+		self.DurationText.Text = string.format("%s ~ %s", _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Month_Format", nowSeasonStartMonth),
+			_LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Month_Format", nowSeasonEndMonth))
+		
+		local tagData = _RecipeTagDataSetLogic:GetRecipeTagData(player.PlayerVIPOrder.NowSeasonMainTag)
+		self.MainTagIcon.SpriteGUIRendererComponent.ImageRUID = tagData.IconRUID
+		self.MainTagText.TextComponent.Text = _GetLocalizationTextLogic:GetText(tagData.TagNameKey)
+		
+		for score, _ in pairs(_VIPOrderDataSetLogic.VIPOrderSeasonRewardData) do
+			self:RefreshRewardTooltip(score)
+		end
+		
+		self:RefreshRewardSlider()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshLeftDayText(string leftDay)
+		-- 시즌 남은 날짜 텍스트를 업데이트
+		self.LeftDayText.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("LeftDay_Format", leftDay)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRewardSlider()
+		-- 시즌 점수에 따른 보상 슬라이더와 보상 버튼 상태를 업데이트
+		local player = _UserService.LocalPlayer
+		
+		if self._T.notToRefresh then
+			return
+		end
+		
+		local userScore = player.PlayerVIPOrder.SeasonCompleteScore
+		local maxScore = 0
+		for score, _ in pairs(_VIPOrderDataSetLogic.VIPOrderSeasonRewardData) do
+			maxScore = math.max(maxScore, score)
+		end
+		
+		self.RewardSlider.Value = userScore / maxScore
+		self._T.exScore = userScore
+		
+		for score, entity in pairs(self.Rewards) do
+			local isRewardGet = player.PlayerVIPOrder.SeasonRewardBox[score]
+			
+			if isRewardGet then
+				self:SetRewardEntity(entity, "Complete")
+				
+			else
+				if score <= userScore then
+					self:SetRewardEntity(entity, "CanGetReward")
+					
+				else
+					self:SetRewardEntity(entity, "OnDoing")
+					
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickRewardBtn(integer score)
+		-- 보상 버튼 클릭 시 보상 획득 또는 툴팁 표시 처리
+		local player = _UserService.LocalPlayer
+		
+		local userScore = player.PlayerVIPOrder.SeasonCompleteScore
+		local isRewardGet = player.PlayerVIPOrder.SeasonRewardBox[score]
+		
+		if isRewardGet then 
+			return
+		end
+		
+		if self._T.isTween then
+			return
+		end
+		
+		if score <= userScore then
+			player.PlayerVIPOrder:RequestGetSeasonReward(score)
+			
+		else
+			_TooltipService:OpenTooltip(self._T.tooltipEntity[score], nil)
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- 보상 버튼들과 툴팁을 생성하고 이벤트를 연결
+		self._T.tooltipEntity = {}
+		self._T.tooltipRewardSlot = {}
+		self._T.isInited = true
+		
+		self._T.exScore = 0
+		
+		local rewardBar = self.Entity:GetChildByName("MiddleArea"):GetChildByName("RewardBar")
+		
+		local scores = table.keys(_VIPOrderDataSetLogic.VIPOrderSeasonRewardData)
+		table.sort(scores)
+		
+		local maxScore = 0
+		for i = 1, #scores do
+			maxScore = math.max(maxScore, scores[i])
+		end
+		
+		local parentXSize = rewardBar.UITransformComponent.RectSize.x
+		
+		for i, score in pairs(scores) do
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_VIPOrderSeasonRewardBtn", score, rewardBar)
+			self.Rewards[score] = entity
+			
+			entity:GetChildByName("CountText").TextComponent.Text = score
+			
+			local ratio = score / maxScore
+			entity.UITransformComponent.AnchorsMax = Vector2(1, 0.5)
+			entity.UITransformComponent.AnchorsMin = Vector2(1, 0.5)
+			entity.UITransformComponent.anchoredPosition = Vector2(-parentXSize+parentXSize*ratio, 0)
+			
+			local tooltip = entity:GetChildByName("RewardTooltip")
+			self._T.tooltipEntity[score] = tooltip
+			tooltip.Enable = false
+			
+			local rewardList = tooltip:GetChildByName("RewardList")
+			self._T.tooltipRewardSlot[score] = rewardList:GetChildByName("Item1")
+			
+			entity:ConnectEvent(ButtonClickEvent, function()
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				if self._T.notToRefresh == true or self._T.isTween == true then
+					return
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+				self:OnClickRewardBtn(score)
+			end)
+		end
+		
+		self.InfoBtn:ConnectEvent(ButtonClickEvent,function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			if self.RewardInfoTooltip.Parent == self.InfoBtn then
+				self.RewardInfoTooltip:AttachTo(_VIPOrderDataSetLogic.UIVIPOrderPanel.Entity)
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			_TooltipService:OpenTooltip(self.RewardInfoTooltip, nil)
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRewardTooltip(integer score)
+		-- 보상 툴팁의 아이템과 수량을 보너스 적용하여 새로고침
+		local player = _UserService.LocalPlayer
+		
+		local rewardData = _VIPOrderDataSetLogic.VIPOrderSeasonRewardData[score]
+		for k, v in pairs(rewardData) do
+			v = math.floor(v * (1 + _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.CloverRewardBonus, player.PlayerStage.NowStage) + player.ChuchuCollectionDB.ChuchuCollectionCloverBonus))
+			
+			self._T.tooltipRewardSlot[score].UIItemRewardSlot:SetItem(k, v)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TweenRewardSlider()
+		-- 시즌 점수 증가에 따른 보상 슬라이더 애니메이션 실행
+		local maxScore = 0
+		for score, _ in pairs(_VIPOrderDataSetLogic.VIPOrderSeasonRewardData) do
+			maxScore = math.max(maxScore, score)
+		end
+		
+		if self._T.isTween == true then
+			return
+		end
+		
+		local player = _UserService.LocalPlayer
+		
+		local duration = 0.35
+		self._T.isTween = true
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_VipOrderPointGet"], 1)
+		
+		_TweenLogic:PlayTween(self._T.exScore, player.PlayerVIPOrder.SeasonCompleteScore, duration, EaseType.Linear, function(t)
+			self.RewardSlider.Value = t/maxScore
+			
+			for score, entity in pairs(self.Rewards) do
+				local isRewardGet = player.PlayerVIPOrder.SeasonRewardBox[score]
+				if t >= score and isRewardGet == false then
+					self:SetRewardEntity(entity, "CanGetReward")
+				end
+			end
+		end)
+		
+		_TimerService:SetTimerOnce(function()
+			self:SetNotToRefreshSlider(false)
+			self._T.isTween = false
+			self._T.exScore = player.PlayerVIPOrder.SeasonCompleteScore
+		end, duration)
+	end
+
+	method void SetRewardEntity(Entity entity, string state)
+		-- 보상 엔티티의 상태에 따라 버튼 활성화와 이미지를 설정
+		if self._T.rewardState[entity] == state then
+			return
+		end
+		
+		self._T.rewardState[entity] = state
+		if state == "Complete" then
+			entity.ButtonComponent.Enable = false
+			entity.SpriteGUIRendererComponent.ImageRUID = "c2388881f3144ebf985f1a55c9c4e9bb"
+			
+		elseif state == "CanGetReward" then
+			entity.ButtonComponent.Enable = true
+			entity.SpriteGUIRendererComponent.ImageRUID = "b1c0106c3f214b1dac766088a36b722a"
+			
+		elseif state == "OnDoing" then
+			entity.ButtonComponent.Enable = true
+			entity.SpriteGUIRendererComponent.ImageRUID = "7c2fa98992734260a1060819f6b1a68b"
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetNotToRefreshSlider(boolean notToRefresh)
+		-- 슬라이더 새로고침 금지 상태를 설정
+		self._T.notToRefresh = notToRefresh
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRewardInfoTooltip()
+		-- 보상 정보 툴팁의 컬렉션과 전략 보너스 정보를 새로고침
+		local player = _UserService.LocalPlayer
+		local collectionRate = player.ChuchuCollectionDB.ChuchuCollectionCloverBonus
+		local stRate = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.CloverRewardBonus, player.PlayerStage.NowStage)
+		
+		self.CollectionTitle.Text = _GetLocalizationTextLogic:GetText("CloverBonusText_Collection")
+		self.St_CloverRewardBonusTitle.Text = _GetLocalizationTextLogic:GetText("CloverBonusText_Strategy")
+		
+		self.CollectionValue.Text = tostring(math.floor(collectionRate * 1000)/10).."%"
+		self.St_CloverRewardBonusValue.Text = math.floor(stRate * 100).."%"
+		
+		
+	end
+
+end

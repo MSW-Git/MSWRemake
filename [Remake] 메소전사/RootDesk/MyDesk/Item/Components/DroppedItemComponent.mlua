@@ -1,0 +1,126 @@
+@Component
+script DroppedItemComponent extends Component
+
+	@HideFromInspector
+	property string itemId = ""
+
+	@HideFromInspector
+	property string uniqueKey = ""
+
+	@HideFromInspector
+	property number draggedTime = 0
+
+	@HideFromInspector
+	property boolean waveClear = false
+
+	property string name = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 드롭된 아이템 초기화 및 트리거 활성화 타이머 설정
+		local callback = function()
+			if isvalid(self.Entity) then
+				self.Entity.TriggerComponent.Enable = true
+			end
+		end
+		
+		_TimerService:SetTimerOnce(callback, 0.5)
+		
+		---@type TransformComponent
+		self._T.transform = self.Entity.TransformComponent
+		self._T.trackingSpeed = (_UtilLogic:RandomDouble() * 0.5 + 0.5) * 7
+		self.waveClear = false
+	end
+
+	@ExecSpace("Client")
+	method void Init(string itemId, string uniqueKey)
+		-- 드롭된 아이템의 ID와 고유키로 초기화하고 외형 설정
+		self.itemId = itemId
+		self.uniqueKey = uniqueKey
+		self.waveClear = false
+		
+		if isvalid(_ItemDataLogic.equipmentData[self.itemId]) and _ItemDataLogic.equipmentData[self.itemId].category == "weapon" then
+			local equipmentData = _ItemDataLogic.equipmentData[self.itemId]
+			local weaponSepc = _WeaponSpecLogic.weaponData[self.itemId]
+			local ruid = equipmentData.ruid
+			local grade = equipmentData.grade
+			local scale = equipmentData.scale
+			scale = tonumber(scale)
+			if _UtilLogic:IsNilorEmptyString(ruid) == true then
+				self.Entity.SpriteRendererComponent.SpriteRUID = weaponSepc.ruid
+			else
+				self.Entity.SpriteRendererComponent.SpriteRUID = equipmentData.ruid
+			end
+			
+			self.Entity.TransformComponent.Scale = Vector3.one * scale
+			self.name = equipmentData.name 
+		else
+			local itemData = _ItemDataLogic.itemData[self.itemId]
+			local ruid = itemData.ruid
+			
+			self.Entity.SpriteRendererComponent.SpriteRUID = itemData.ruid
+			
+			if isvalid(itemData.scale) and itemData.scale > 0 then
+				self.Entity.TransformComponent.Scale = Vector3.one * itemData.scale
+			else
+				self.Entity.TransformComponent.Scale = Vector3.one
+			end
+			
+			self.name = _LocalizeLogic:GetText("itemName_"..itemData.id) 
+		end
+		
+		local particle = self.Entity:GetChildByName("ParticleEffect").SpriteRendererComponent
+		
+		if isvalid(particle) then
+			particle.SortingLayer = self.Entity.SpriteRendererComponent.SortingLayer
+			particle.OrderInLayer = self.Entity.SpriteRendererComponent.OrderInLayer - 1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 웨이브 클리어 시 플레이어를 향해 이동하는 업데이트 처리
+		if _TimerLogic.pause then
+			return
+		end
+		
+		if self.waveClear then
+			local diff = _UserService.LocalPlayer.TransformComponent.Position - self._T.transform.Position
+			diff.z = 0
+			if diff:Magnitude() < 0.1 then
+				diff = diff:Normalize() * 0.1
+			end
+			self.draggedTime = self.draggedTime + delta 
+			local speed = self._T.trackingSpeed + self.draggedTime * 5
+			self.Entity.TransformComponent:Translate(diff.x * delta * speed,diff.y * delta * speed)
+			
+			return
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 플레이어가 드롭된 아이템에 닿았을 때 인벤토리에 추가
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		if TriggerBodyEntity ~= _UserService.LocalPlayer then return end
+		
+		_UserService.LocalPlayer.PlayerTempStorageComponent:RequestInsertRewardInTemp(self.itemId)
+		self.Entity.TriggerComponent.Enable = false
+		
+		_PoolingLogic:DestroyEntity(self.Entity)
+		_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("toast121"), self.name),"")
+		_TimerLogic:SetTimerOnce(function()
+				self.Entity.TriggerComponent.Enable = true
+			end, 1, "DroppedItemCompoent.TriggerEnterEvent")
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "WaveLogic")
+	handler HandleWaveEndEvent(WaveEndEvent event)
+		-- 웨이브 종료 시 아이템이 플레이어를 추적하도록 설정
+		self.waveClear = true
+	end
+
+end

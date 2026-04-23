@@ -1,0 +1,448 @@
+@Logic
+script KiteFlyEventLogic extends Logic
+
+	property string dbKey = "kite_fly_event_2024"
+
+	property number rewardInterval = 20000
+
+	property Entity kite = "a5b749b7-7d73-4cad-9c32-b01ea265052a"
+
+	property EntityRef parent = "bc376049-67b7-4819-8b18-abc871f66808"
+
+	property number kiteCount = 0
+
+	property boolean isCenterServer = false
+
+	property string sortableDBKey = "sort_kite_fly_event_2024"
+
+	property table random = {}
+
+	property Entity kite_Toast = "9d0766fe-7716-45ff-9e37-0f8301f8a918"
+
+	property KiteEventPopup kiteEventPopup = "cfc82acd-e949-4684-9911-d2dfc98296ff"
+
+	property EntityRef eventNPC = "c6d569d5-ca2d-437e-b8ea-1b340e0df367"
+
+	property SpriteGUIRendererComponent toastRewardIcon = "bbcad6c5-bb14-49db-9f31-4b13a12ab187"
+
+	@Sync
+	property number worldKiteCount = 0
+
+	@Sync
+	property string worldKiteNickName = ""
+
+	@ExecSpace("ServerOnly")
+	method void OnSuccessKiteEvent(string ppsn, string msg, string nickname, string originMsg)
+		-- 연날리기 성공 시 보상 지급 및 잭팟 확인 처리
+		if true then return end
+		--[[
+		local randomDia = _UtilLogic:RandomIntegerRange(1,10)
+		local bundle = {
+			{itemType = "diamond",itemId = "",itemNum = randomDia}
+		}
+		
+		local db = _DataStorageService:GetSortableDataStorage(self.sortableDBKey)
+		
+		db:IncreaseAsync("count",1,function(error,key,value) 
+				if error ~= 0 then	
+					_UIToast:ShowMessage("요청실패 했습니다.",ppsn)
+					local userDB = _DataStorageService:GetUserDataStorage(ppsn)
+					userDB:DeleteAndWait(_KiteFlyEventLogic.dbKey)
+					local user = _UserService:GetUserEntityByUserId(ppsn)
+					if isvalid(user) then
+						user.KiteFlyPlayerComponent.time = 0
+					end
+					return
+				end 
+		
+				
+				if 	value % 2024 == 0 then	
+					_WorldInstanceService:RequestSendEventToAllWorldInstancesAndWait(KiteJackPotEvent(msg,ppsn,value,true,nickname,true))
+					if _CheckLogic:IsEnoughConsumeSlot(ppsn,1) or _CheckLogic:IsEnoughConsumeCount(ppsn,1,"8_000006") then
+						_RewardLogic:GetReward("item","8_000006",1,ppsn,false,string.format("%d", value))
+					else
+						_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND,2024,ppsn,"KITE_EVENT",string.format("%d", value))
+					end
+					
+			
+				elseif value % 24 == 0 then 
+					_WorldInstanceService:RequestSendEventToAllWorldInstancesAndWait(KiteJackPotEvent(msg,ppsn,value,false,nickname,true))
+					
+				
+					if _CheckLogic:IsEnoughConsumeSlot(ppsn,1) or _CheckLogic:IsEnoughConsumeCount(ppsn,1,"8_000005") then
+						_RewardLogic:GetReward("item","8_000005",1,ppsn,false,string.format("%d", value))
+					else
+						_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND,100,ppsn,"KITE_EVENT",string.format("%d", value))
+					end
+				
+				
+		
+				else	
+					_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND,randomDia,ppsn,"KITE_EVENT",string.format("%d", value))
+					self:SpawnPrivateKite(ppsn,msg,_UtilLogic:RandomIntegerRange(0,100),false)
+					self:ShowKiteToastMessage(string.format("당신의 연이 %d 다이아를 물어왔습니다!",randomDia),3,0,0,"55cf3dd8c012429fb092b38af6ec0ede",ppsn)
+					_WorldInstanceService:RequestSendEventToAllWorldInstancesAndWait(KiteJackPotEvent("",ppsn,value,false,nickname,false))
+					
+				end
+				_WorldLog:LogEventFlow(ppsn,"KITE_EVENT","1",string.format("%d",randomDia),originMsg,value)
+		end)
+		]]--
+	end
+
+	@ExecSpace("Server")
+	method void RequestRandomDia(string msg)
+		-- 연날리기 보상 요청 처리 및 쿨타임 검증
+		if true then return end
+		--[[
+		local originMsg = msg
+		local ppsn = senderUserId
+		
+		local user = _UserService:GetUserEntityByUserId(ppsn)
+		if isvalid(user) == false then
+			return
+		end
+		local kiteFlyPlayerComp = user.KiteFlyPlayerComponent
+		if isvalid(kiteFlyPlayerComp) == false then
+		
+			return
+		end
+		
+		
+		local lastRewardTime = kiteFlyPlayerComp.time
+		if kiteFlyPlayerComp.inited == false then
+			kiteFlyPlayerComp:InitDB()
+		end
+		if kiteFlyPlayerComp.inited == false then
+			return
+		end
+		
+		
+		local diffTime = _LocalTimeLogic:GetElapsed() -  lastRewardTime
+		if (self.rewardInterval*60-diffTime) > 0 then 
+			_UIToast:ShowMessage((self.rewardInterval*60-diffTime)/1000 .."초 후에 받을 수 있습니다~" ,senderUserId)
+			return
+		end
+		
+		
+		 
+		local db = _DataStorageService:GetUserDataStorage(ppsn)
+		local error, data = db:GetAndWait(self.dbKey)
+		
+		if error ~= 0 then
+			_UIToast:ShowMessage("요청실패함",senderUserId)
+			return
+		end
+		
+		
+		local enableReward = false
+		if _UtilLogic:IsNilorEmptyString(data) then
+			enableReward = true
+		else
+			local previousInfo = _HttpService:JSONDecode(data)
+			local previousTime = previousInfo.time
+			diffTime = _LocalTimeLogic:GetElapsed() - previousTime
+			if (self.rewardInterval*60-diffTime) > 0 then
+				kiteFlyPlayerComp.time = previousInfo.time
+				enableReward = false 
+			else
+				enableReward = true
+			end
+		
+		end
+		
+		if enableReward == false then
+			_UIToast:ShowMessage((self.rewardInterval*60-diffTime)/1000 .."초 후에 받을 수 있다" ,senderUserId)
+			return
+		end
+		
+		local info = {
+			time = _LocalTimeLogic:GetElapsed()
+		}
+		
+		
+		local error2 = db:SetAndWait(self.dbKey,_HttpService:JSONEncode(info))
+		if error2 ~= 0 then
+			_UIToast:ShowMessage("요청실패함",senderUserId)
+			return
+		end
+		
+		kiteFlyPlayerComp.time = info.time
+		
+		msg = string.format("<b>%s</b>\n<noparse>%s</noparse>",user.PlayerComponent.Nickname,msg)
+		
+		self:OnSuccessKiteEvent(ppsn,msg,user.PlayerComponent.Nickname,originMsg)]]--
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetLastRewardTime(string ppsn)
+		-- 플레이어의 마지막 보상 시간을 데이터베이스에서 조회
+		if true then return end
+		--[[
+		local db = _DataStorageService:GetUserDataStorage(ppsn)
+		local error, data = db:GetAndWait(self.dbKey)
+		if error == 0 then
+			
+			
+			if _UtilLogic:IsNilorEmptyString(data) then
+				return {time =0, error = false}
+			end
+			
+			return {
+				time = _HttpService:JSONDecode(data).time,
+				error = false
+			}
+		end
+		
+		return {error = true, time = 0}]]--
+	end
+
+	@ExecSpace("ClientOnly")
+	method void VanishAfterMove()
+		-- 연이 이동 후 사라지는 효과 처리
+		
+	end
+
+	@ExecSpace("Client")
+	method Entity SpawnPrivateKite(string ppsn, string msg, number seed, boolean isDragonKite)
+		-- 개인용 연을 생성하고 설정
+		 if true then return end
+		--[[
+		if isvalid(self.eventNPC) == false then
+			return
+		end
+		local kite =_PoolingLogic:SpawnModel("model://c5bf1b92-6f2f-4a0f-b1e4-c34b94971ef0",self.eventNPC.TransformComponent.Position, self.parent)
+		
+		kite.KiteComponent:Reset(seed)
+		
+		kite.ChatBalloonComponent.Message = msg
+		kite.ChatBalloonComponent.Enable = not _UtilLogic:IsNilorEmptyString(msg)
+		self.kiteCount = self.kiteCount + 1
+		if _GameUtil.UI_DEBUG then
+			kite.NameTagComponent.Enable = true
+			kite.NameTagComponent.Name = self.kiteCount.."번째연"
+		end
+		
+		
+		kite.TransformComponent.Position = self.eventNPC.TransformComponent.Position
+		
+		kite.KiteComponent:SetBlueDragon(isDragonKite)
+		
+		_TimerService:SetTimerOnce(function()
+			_PoolingLogic:DestroyEntity(kite)
+			end,kite.KiteComponent.life)
+		
+		return kite]]--
+	end
+
+	method void OnBeginPlay()
+		-- 연날리기 이벤트 로직 초기화 및 랜덤 테이블 설정
+		if true then return end
+		--[[
+		self.random = {
+		    59, 12, 47, 94, 80, 1, 27, 4, 24, 31, 74, 51, 33, 27, 14, 34, 88, 38, 91,
+		    6, 45, 7, 88, 54, 26, 31, 86, 2, 26, 56, 89, 43, 46, 16, 46, 83, 8, 16,
+		    23, 39, 65, 52, 32, 88, 91, 34, 74, 44, 26, 64, 70, 88, 7, 92, 70, 59, 98,
+		    92, 26, 39, 46, 32, 39, 90, 70, 42, 37, 85, 25, 38, 61, 10, 14, 93, 67, 50,
+		    68, 35, 68, 94, 38, 64, 35, 86, 42, 59, 57, 16, 82, 61, 77, 70, 52, 41, 51,
+		    77, 20, 74, 51, 5, 31, 49, 25, 65, 76, 70, 56, 49, 12, 1, 49, 66, 95, 2,
+		    65, 58, 14, 91, 92, 16, 65, 35, 1, 5, 23, 83, 8, 76, 74, 37, 48, 5, 29,
+		    15, 73, 61, 37, 54, 11, 67, 25, 35, 76, 50, 35, 29, 11, 94, 41, 31, 15, 56,
+		    97, 34, 22, 95, 38, 93, 97, 96, 32, 58, 94, 9, 54, 64, 57, 51, 18, 27, 89,
+		    76, 13, 45, 50, 63, 96, 13, 85, 65, 1, 74, 4, 79, 22, 7, 8, 67, 35, 32,
+		    31, 91, 2, 18, 94, 77, 53, 79, 80, 91, 50, 8, 35, 45, 60, 88, 99, 27, 19,
+		    95, 43, 19, 20, 86, 59, 57, 59, 46, 70, 10, 3, 18, 54, 7, 46, 77, 92, 48,
+		    53, 79, 58, 47, 99, 7, 61, 65, 48, 19, 13, 97, 84, 12, 53, 63, 17, 39, 2,
+		    48, 89, 96, 38, 42, 98, 66, 94, 59, 8, 45, 11, 89, 36, 94, 11, 99, 21, 53,
+		    62, 24, 49, 77, 40, 45, 49, 58, 53, 71, 6, 58, 87, 50, 69, 22, 90, 85, 50,
+		    52, 36, 11, 82, 49, 27, 96, 25, 34, 33, 69, 36, 93, 75, 2, 58, 16, 4, 98,
+		    59, 42, 49, 89, 76, 37, 6, 80, 47, 56, 46, 10, 68, 23, 14, 21, 47, 54, 19,
+		    45, 6, 14, 82, 9, 100, 46, 45, 19, 99, 61, 15, 7, 68, 69, 100, 4, 34, 88
+		}
+		
+		if self:IsServer() then
+			local db = _DataStorageService:GetSortableDataStorage(self.sortableDBKey)
+		
+			local error, value = db:GetAndWait("count")
+			if error == 0 then
+				if value ~= nil then
+					self.worldKiteCount = value
+				end
+			
+			end
+			return
+		end
+		]]--
+	end
+
+	method number GetRandomValue(number seed, number index)
+		-- 시드와 인덱스를 이용해 랜덤 값을 계산
+		if true then return end
+		--[[
+		return self.random[(seed + index)%#self.random + 1] * 0.01]]--
+	end
+
+	@ExecSpace("Client")
+	method void ShowKiteToastMessage(string msg, number duration, number priority, integer colorType, string ruid)
+		-- 연날리기 토스트 메시지를 화면에 표시
+		if true then return end
+		--[[
+		if self._T.priority ~= nil and priority >= self._T.priority then
+			
+			if self._T.hideTimerId ~= nil then
+				_TimerService:ClearTimer(self._T.hideTimerId)
+				self._T.hideTimerId = nil
+			end
+			if self._T.showTween ~= nil then
+				---@type Tweener
+				local tween = self._T.showTween
+				tween:Destroy()
+				self._T.showTween = nil
+			end
+			if self._T.hideTween ~= nil then
+				---@type Tweener
+				local tween = self._T.hideTween
+				tween:Destroy()
+				self._T.hideTween = nil
+			end
+			if self._T.colorTween ~= nil then
+				---@type Tweener
+				local tween = self._T.colorTween
+				tween:Destroy()
+				self._T.colorTween = nil
+			end
+				
+		elseif self._T.priority ~= nil then
+			return
+		end
+		
+		
+		self._T.priority = priority
+		
+		
+		
+		
+		
+		self.kite_Toast.Enable = true
+		
+		
+		self.kite_Toast.TextComponent.Text = msg
+		
+		
+		self._T.showTween = _TweenLogic:PlayTween(0,1,0.25,EaseType.SineEaseIn, function(value)
+				self.kite_Toast.CanvasGroupComponent.GroupAlpha = value
+		end)
+		self._T.showTween:SetOnEndCallback(function() 
+			self._T.showTween = nil
+		end)
+		self._T.hideTimerId = _TimerService:SetTimerOnce(function()
+			self._T.hideTimerId = nil
+			
+			self._T.hideTween = _TweenLogic:PlayTween(1,0,0.25,EaseType.SineEaseOut, function(value)
+			self.kite_Toast.CanvasGroupComponent.GroupAlpha = value
+		
+			end)
+			self._T.hideTween:SetOnEndCallback(function() 
+				self._T.hideTween = nil
+				self.kite_Toast.Enable = false
+				self._T.priority  = nil
+			end)
+			
+			end,duration)
+		
+		
+		if colorType == 0 then
+			self.kite_Toast.TextComponent.FontColor = Color.white
+		elseif colorType == 1 then
+			self.kite_Toast.TextComponent.FontColor = Color.FromHexCode("#FEF785")
+		elseif colorType == 2 then
+			local color = Color.FromHexCode("#FEF785")
+			local h,s,v = Color.RGBToHSV(color)
+			local colorTween = _TweenLogic:PlayTween(0,duration*0.5,duration+1,EaseType.Linear,function(value) 
+				local hue = (h + math.sin(value*7) * 0.15+1)%1
+				self.kite_Toast.TextComponent.FontColor = Color.HSVToRGB(hue,s,v)
+			end)
+			self._T.colorTween = colorTween
+			colorTween:SetOnEndCallback(function() 
+				self._T.colorTween = nil
+			end)
+		end
+		
+		self.toastRewardIcon.ImageRUID = ruid]]--
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserEnterEvent(UserEnterEvent event)
+		-- 사용자 입장 이벤트 처리
+		
+		local UserId = event.UserId
+	end
+
+	@EventSender("Service", "WorldInstanceService")
+	handler HandleKiteJackPotEvent(KiteJackPotEvent event)
+		-- 연날리기 잭팟 이벤트 처리 및 전체 서버 알림
+		local message = event.message
+		local ppsn = event.ppsn
+		local nickname = event.nickname
+		local jackPot = event.jackPot
+		local kiteCount = event.kiteCount
+		local notice = event.notice
+		if true then return end
+		--[[
+		if kiteCount >= self.worldKiteCount then
+			self.worldKiteCount = kiteCount
+			self.worldKiteNickName = nickname
+		end
+		if notice == false then
+			return
+		end
+		
+		self:SpawnPrivateKite(ppsn,message,82,true)
+		if jackPot then
+			for i = 1, 5 do
+				_TimerService:SetTimerOnce(function() 
+					self:SpawnPrivateKite(ppsn,"",_UtilLogic:RandomIntegerRange(1,100),true)
+				end,i*0.3)
+			end
+		end
+		
+		if jackPot == false then
+		
+			self:ShowKiteToastMessage(nickname.."의 24번째 연이 "..nickname.."에게 평범한 여의주를 물어왔습니다~",5,4,1,"a897dad9fc5443b2a6d2e62090c713bf")
+			return
+		end	
+		_LocalizationService:GetTextFormat(nickname)
+		
+		for k,v in pairs(_UserService.UserEntities) do
+					if v.PlayerDBComponent.dbInited then
+					
+					
+					self:ShowKiteToastMessage(nickname.."님의 2024번째 연이 날아가 접속한 모든 메소전사들에게 평범한 여의주가 지급됩니다.",11,1,2,"20583cc3555b4c32a4a644c5e6429568",v.PlayerComponent.UserId)
+					
+		
+					
+					if _CheckLogic:IsEnoughConsumeSlot(v.PlayerComponent.UserId,1) or _CheckLogic:IsEnoughConsumeCount(v.PlayerComponent.UserId,1,"8_000005") then
+						_RewardLogic:GetReward("item","8_000005",1,v.PlayerComponent.UserId,false,string.format("%d", kiteCount))
+					else
+						_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND,100,v.PlayerComponent.UserId,"KITE_EVENT",string.format("%d", kiteCount))
+					end
+					
+				end
+				if v.PlayerComponent.UserId == ppsn then
+					
+					self:ShowKiteToastMessage(nickname.."님은 행운의 메소전사~ 방금 2024번째 연을 날려 특별한 여의주를 얻었습니다!",11,4,2,"20583cc3555b4c32a4a644c5e6429568",v.PlayerComponent.UserId)
+				
+				
+					_TimerService:SetTimerOnce(function() 
+						self:ShowKiteToastMessage(nickname.."님의 2024번째 연이 날아가 접속한 모든 메소전사들에게 평범한 여의주가 지급됩니다.",11,1,2,"a897dad9fc5443b2a6d2e62090c713bf",v.PlayerComponent.UserId)
+						
+					
+					end,4)
+				end
+		
+		end
+		]]--
+	end
+
+end

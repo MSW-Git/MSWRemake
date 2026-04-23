@@ -1,0 +1,125 @@
+@Component
+script AvatarBossObject extends BossObject
+
+	property table equipGun = {}
+
+	property table weaponId = {"1_001004","1_003004","1_014004"}
+
+	property any onDead = nil
+
+	method void Init(string monsterId, boolean isAfterMonster, boolean respawn, number life)
+		-- 아바타 보스 초기화 및 6개 무기 장착
+		__base:Init(monsterId,isAfterMonster,respawn,life)
+		
+		self:AddSixGuns()
+				
+		self.Entity:SendEvent(BodyActionStateChangeEvent(true,MapleAvatarBodyActionState.Walk))
+		self.Entity.AvatarRendererComponent.SortingLayer = "Foreground"
+		
+	end
+
+	method void AddGun(string id, number slot, string uniqueKey)
+		-- 아바타 보스 무기 추가 및 설정
+		
+		local gunData = _WeaponSpecLogic:GetWeaponSpec(id)
+		if gunData == nil then
+			return
+		end
+		local angle = _UtilLogic:RandomDouble() * math.pi * 2
+		local offsetPos = Vector3(math.cos(angle),math.sin(angle),0) * 1
+		
+		local gun = _SpawnService:SpawnByModelId(gunData.model,"gun",self._T.transform.Position + offsetPos,self.Entity.CurrentMap)
+		gun.BattleGunObject:SetPlayer(self.Entity,slot,gunData, uniqueKey,false)
+		gun.BattleGunObject:SetOriginalRange(gunData.range)
+		gun.BattleGunObject.isBossWeapon = true
+		gun.BattleGunObject.bossWeaponAtk = self.damageRatio
+		gun.SpriteRendererComponent.SpriteRUID = gunData.ruid
+		
+		gun.TriggerComponent.CollisionGroup = CollisionGroups.Monster
+		local equipGun = {}
+		equipGun.gun = gun
+		equipGun.id = id
+		equipGun.uniqueKey = uniqueKey
+		equipGun.isPhysicalWeapon = gun.BattleGunObject.physicalWeapon
+		self.equipGun[slot] = equipGun
+		
+		for k,v in pairs(self.equipGun) do
+			v.gun.BattleGunObject.angleOffset = -20 + (slot - 1) * -15
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UseSkill(string skillId, Vector3 pos, Entity target)
+		-- 아바타 보스 스킬 사용 (현재 빈 구현)
+		
+	end
+
+	method void MoveStop()
+		-- 아바타 보스 이동 정지 (현재 빈 구현)
+		
+	end
+
+	method void SetVelocity(Vector2 velocity)
+		-- 아바타 보스 속도 설정
+		__base:SetVelocity(velocity)
+	end
+
+	method void OnChangedSpriteFlipX(boolean flip)
+		-- 스프라이트 플립 시 아바타 렌더러도 동기화
+		__base:OnChangedSpriteFlipX(flip)
+		 
+		self.Entity.AvatarRendererComponent:GetBodyEntity().TransformComponent.Scale.x = flip and -1 or 1
+	end
+
+	method void AddSixGuns()
+		-- 현재 페이즈에 맞는 무기 3개 장착
+		for i = 1, 3 do
+			self:AddGun(self.weaponId[self.phase],i,"")
+			
+		end
+	end
+
+	method void OnChangePhase(number phase)
+		-- 페이즈 변경 시 기존 무기 제거 후 새 무기 장착
+		
+		for i = 1, #self.equipGun do
+			self.equipGun[i].gun:Destroy()
+			self.equipGun[i] = nil
+		end
+		self:AddSixGuns()
+	end
+
+	method void UpdateMove()
+		-- 아바타 보스 이동 패턴 (텔레포트 및 기본 이동)
+		if self.isUsingSkill then
+			return
+		end
+		
+			local diff = self:GetPositionVec2() - _UserService.LocalPlayer.BattlePlayer:GetPositionVec2()
+			if Vector2.Magnitude(diff) > 4.5 then
+				self.isUsingSkill = true
+			
+				self:ApplySpeedFactorByKey("SkillStop", 0)
+				
+		
+				_EffectService:PlayEffect("77dc1d461f214e6c81e278e091ba8ce9",self.Entity,self.Entity.TransformComponent.Position,0,Vector3.one)
+				local playerPos = _UserService.LocalPlayer.BattlePlayer:GetPositionVec2()
+				local pos = self:GetPositionVec2()
+				local dist = 0.5
+				local vec = pos - playerPos
+				vec = Vector2.Normalize(vec) * dist
+			
+				local teleportPos = playerPos + vec
+				_TimerLogic:SetTimerOnce(function() 
+					self.isUsingSkill = false	
+					self:SetPosition(teleportPos)
+				end,0.2, "AvatarBossObject.UpdateMove")
+				
+			
+				return
+			end
+		
+		__base:UpdateMove()
+	end
+
+end

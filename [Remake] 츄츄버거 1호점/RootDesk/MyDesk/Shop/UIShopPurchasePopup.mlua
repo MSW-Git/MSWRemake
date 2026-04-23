@@ -1,0 +1,440 @@
+@Component
+script UIShopPurchasePopup extends Component
+
+	property integer selectedCount = 1
+
+	property string postRemainString = ""
+
+	property string productId = ""
+
+	property boolean IsSpecialShop = false
+
+	property Entity BuyButtonText = nil
+
+	property Entity CountPanel = nil
+
+	property Entity CountSlice = nil
+
+	property Entity UIPanel = nil
+
+	property Entity ItemPanel = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 컴포넌트 초기화 및 이벤트 연결 설정
+		self.UIPanel = self.Entity:GetChildByName("Contents")
+		if self.UIPanel == nil then
+			self.UIPanel = self.Entity
+		end
+		
+		local buttonPanel = self.UIPanel:GetChildByName("ButtonPanel")
+		local buyButton = buttonPanel:GetChildByName("BuyButton")
+		local cancleButton = buttonPanel:GetChildByName("CancelButton")
+		local dim = self.Entity:GetChildByName("Dim")
+		
+		dim:ConnectEvent(ButtonClickEvent, self.PopDown)
+		buyButton:ConnectEvent(ButtonClickEvent, self.OnClickBuyButton)
+		cancleButton:ConnectEvent(ButtonClickEvent, self.OnClickCancelButton)
+		
+		local countPanel = self.UIPanel:GetChildByName("CountPanel")
+		local countSlice = countPanel:GetChildByName("CountSlice")
+		local countButtonPanel = countPanel:GetChildByName("ButtonPanel")
+		
+		local increaseButton = countSlice:GetChildByName("IncreaseButton")
+		local decreaseButton = countSlice:GetChildByName("DecreaseButton")
+		local minButton = countButtonPanel:GetChildByName("MinButton")
+		local tenButton = countButtonPanel:GetChildByName("TenButton")
+		local fiftyButton = countButtonPanel:GetChildByName("FiftyButton")
+		local hundredButton = countButtonPanel:GetChildByName("HundredButton")
+		local maxButton = countButtonPanel:GetChildByName("MaxButton")
+		
+		self.ItemPanel = self.UIPanel:GetChildByName("ItemPanel")
+		
+		local selfEntity = self
+		local minMaxValue = 100000
+		increaseButton:ConnectEvent(ButtonClickEvent, function() selfEntity:OnModifyButtonClicked(1) end)
+		decreaseButton:ConnectEvent(ButtonClickEvent, function() selfEntity:OnModifyButtonClicked(-1) end)
+		minButton:ConnectEvent(ButtonClickEvent, function() selfEntity:OnModifyButtonClicked(-minMaxValue) end)
+		tenButton:ConnectEvent(ButtonClickEvent, function() selfEntity:OnModifyButtonClicked(10) end)
+		fiftyButton:ConnectEvent(ButtonClickEvent, function() selfEntity:OnModifyButtonClicked(50) end)
+		hundredButton:ConnectEvent(ButtonClickEvent, function() selfEntity:OnModifyButtonClicked(100) end)
+		maxButton:ConnectEvent(ButtonClickEvent, function() selfEntity:OnModifyButtonClicked(minMaxValue) end)
+		
+		self.BuyButtonText = self.UIPanel:GetChildByName("ButtonPanel"):GetChildByName("BuyButton"):GetChildByName("BuyPriceText")
+		self.CountPanel = self.UIPanel:GetChildByName("CountPanel")
+		self.CountSlice = self.CountPanel:GetChildByName("CountSlice")
+		
+		if self.IsSpecialShop then
+		    self.BuyButtonText:GetChildByName("CurrencyImage").SpriteGUIRendererComponent.ImageRUID = _ItemDataSetLogic:GetItemData("G1001").IconRUID
+		    self._T.ContentsUnderPosition = self.UIPanel.UITransformComponent.Position
+		    self._T.ContentsAnchoredPosition = Vector2(0, 0)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Popup(string productId)
+		-- 일반 상점 상품 구매 팝업을 열고 상품 정보 표시
+		self.Entity.Enable = true
+		
+		
+		if _UserService.LocalPlayer == nil then
+			return
+		end
+		
+		
+		local productData = _ShopDataLogic:GetShopProductData(productId)
+		if productData == nil then
+			self:PopDown()
+			return
+		end
+		
+		local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+		if itemData == nil then
+			self:PopDown()
+			return
+		end
+		
+		self.selectedCount = 1
+		self.postRemainString = ""
+		self.productId = productId
+		
+		
+		local itemOwnCount = _UserService.LocalPlayer.PlayerInventory:GetItemCount(itemData.Id)
+		local ownCount = 0
+		if isvalid(itemOwnCount) then 
+			ownCount = itemOwnCount
+		end
+		
+		if itemData.Id == "G0002" then
+			ownCount = _UserService.LocalPlayer.PlayerInventory.LunchBox
+		end
+		
+		local ownCountString = _StringUtilLogic:ReturnThousandsSeparatedString(ownCount)
+		
+		self.ItemPanel:GetChildByName("ItemName").TextComponent.Text = _LocalizationService:GetText(itemData.NameKey)
+		self.ItemPanel:GetChildByName("ItemImage").SpriteGUIRendererComponent.ImageRUID = itemData.IconRUID
+		self.ItemPanel:GetChildByName("ItemDesc").TextComponent.Text = _GetLocalizationTextLogic:GetText(itemData.DescriptionKey)
+		self.ItemPanel:GetChildByName("OwnCountText").TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopHaveCount", ownCountString)
+		
+		local remainCount = -1
+		local privateShop = _UserService.LocalPlayer.PlayerPrivateShop
+		local remainCountText = self.CountPanel:GetChildByName("RemainCountText").TextComponent
+		if productData.MaxQuantity > 0 then
+			remainCount = privateShop:GetBuyMaxCountFromQuantity(productId)
+			remainCountText.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopCanBuyCount", _StringUtilLogic:ReturnThousandsSeparatedString(remainCount))
+			self.postRemainString = " / " .. tostring(productData.MaxQuantity)
+		else
+			remainCountText.Text = ""
+		end 
+		
+		self:UpdateText()
+		
+		if self.UIPanel ~= self.Entity then
+		    self._T.isProcessing = true
+		    _UIEntityService:PlayUIOpenAnim(self.UIPanel, self.UIPanel.UITransformComponent.anchoredPosition, Vector2.up, nil, nil, nil, nil, function()
+		        self._T.isProcessing = false
+		    end)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PopDown()
+		-- 구매 팝업을 닫고 애니메이션 처리
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		if self.IsSpecialShop then
+			if self.UIPanel ~= self.Entity then
+				self.UIPanel.UITransformComponent.Position = self._T.ContentsUnderPosition
+				self.Entity.Visible = false
+				return
+			end
+		end
+		
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickBuyButton()
+		-- 구매 버튼 클릭 시 일반/특별 상점에 따라 처리 분기
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		if self.IsSpecialShop then
+			if self:SpecialShopPurchasePriceCheck() then
+					_UIPurchasePopupLogic:OpenNoRefunablePurchasePopup(self.BuyButtonText.TextComponent.Text, function() 
+				self:PurchaseProcess_SpecialShop()
+				self:PopDown()
+			 end, false)
+			end
+		else
+			self:PurchaseProcess()
+			self:PopDown()
+		end
+	end
+
+	method void OnClickCancelButton()
+		-- 취소 버튼 클릭 시 팝업 닫기
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self:PopDown()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateText()
+		-- 일반 상점 구매 팝업의 텍스트와 가격 업데이트
+		local player = _UserService.LocalPlayer
+		local inventory = player.PlayerInventory
+		
+		local productData = _ShopDataLogic:GetShopProductData(self.productId)
+		if productData == nil then return end
+		
+		local shopData = _ShopDataLogic:GetShopData(productData.LinkedShopId)
+		if shopData == nil then	return end
+		
+		
+		local playerPrivateShop = player.PlayerPrivateShop
+		local ownCurreny = 0
+		if shopData.CurrencyType == "Meso" then
+			ownCurreny = inventory.Money
+		elseif shopData.CurrencyType == "Clover" then
+			ownCurreny = inventory.ArcaneSymbol
+		elseif shopData.CurrencyType == "Heart" then 
+			ownCurreny = inventory.Heart
+		elseif shopData.CurrencyType == "Diamond" then
+			ownCurreny = player.PlayerOutgameManager:GetDiamondCount()
+		end
+		
+		local canBuyMax = ownCurreny // productData.Price
+		local productMax = playerPrivateShop:GetBuyMaxCountFromQuantity(self.productId)
+		local subsMax
+		if string.sub(productData.ItemId, 1, 1) == "S" then
+			local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+			local subsData = _UpgradeDataSetLogic:GetSubscriptionData(itemData.funcUseItemParam[1])
+			local subsPeriod = subsData.Expiration
+			local targetItem = subsData.TargetItem
+			
+			local nowSubsInfo = player.PlayerUpgrade.Subscriptions[targetItem]
+			local nowSubsPeriod = 0
+			if nowSubsInfo ~= nil then
+				nowSubsPeriod = nowSubsInfo
+			end
+			
+			local subsMaxMonthLimit = _GetConfigDataLogic:GetConfigNumDataByKey("SubscriptionMaxMonthLimit")
+			subsMax = (subsMaxMonthLimit - nowSubsPeriod) // subsPeriod
+			
+			
+			
+			if subsMax < self.selectedCount then
+				_UIToast:ShowMessage(_LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopConditionToastSubs", subsMaxMonthLimit))
+			end
+		end
+		
+		local lunchboxMax
+		if productData.ItemId == "G0002" then 
+			local playerLunchbox = player.PlayerInventory.LunchBox
+			local playerLunchboxMax = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.LunchBoxCapacity)
+			
+			lunchboxMax = playerLunchboxMax - playerLunchbox
+		end
+		
+		local canBuyCount = math.tointeger(math.min(canBuyMax, productMax))
+		if subsMax ~= nil then
+			canBuyCount = math.tointeger(math.min(canBuyCount, subsMax))
+		end
+		if lunchboxMax ~= nil then
+			canBuyCount = math.tointeger(math.min(canBuyCount, lunchboxMax))
+		end
+		self.selectedCount = math.tointeger(math.min(self.selectedCount, canBuyCount))
+		self.selectedCount = math.tointeger(math.max(self.selectedCount, 1))
+		
+		local buyPrice = self.selectedCount * productData.Price
+		
+		local countSlice = self.CountPanel:GetChildByName("CountSlice")
+		local colorValue = "#7c6747" 
+		if ownCurreny < buyPrice then
+			colorValue = "#fa5246"
+		end
+		countSlice.TextComponent.Text = "<color=" .. colorValue .. ">" .. tostring(self.selectedCount) .. "</color>" .. self.postRemainString
+		
+		self.BuyButtonText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(buyPrice)
+		
+		if ownCurreny < buyPrice then
+			self.BuyButtonText.TextComponent.FontColor = _ColorCodeEnum:GetColor("#fa5246")
+		else
+			self.BuyButtonText.TextComponent.FontColor = _ColorCodeEnum:GetColor("#ffffff")
+		end
+		
+		local currencyImage = self.BuyButtonText:GetChildByName("CurrencyImage")
+		if shopData.CurrencyType == "Meso" then
+			currencyImage.SpriteGUIRendererComponent.ImageRUID = _DataService:GetTable("ItemData"):FindRow("Id","G0001"):GetItem("IconRUID")
+		elseif shopData.CurrencyType == "Clover" then
+			currencyImage.SpriteGUIRendererComponent.ImageRUID =_DataService:GetTable("ItemData"):FindRow("Id","G0004"):GetItem("IconRUID")
+		elseif shopData.CurrencyType == "Heart" then 
+			currencyImage.SpriteGUIRendererComponent.ImageRUID =_DataService:GetTable("ItemData"):FindRow("Id","G0005"):GetItem("IconRUID")
+		elseif shopData.CurrencyType == "Diamond" then
+			currencyImage.SpriteGUIRendererComponent.ImageRUID =_DataService:GetTable("ItemData"):FindRow("Id","G1001"):GetItem("IconRUID")
+		else	
+			currencyImage.SpriteGUIRendererComponent.ImageRUID = ""
+		end
+	end
+
+	method void OnModifyButtonClicked(integer count)
+		-- 수량 조절 버튼 클릭 시 구매 수량 변경 및 UI 업데이트
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self.selectedCount += count
+		if self.selectedCount < 0 then
+			self.selectedCount = 0
+		end
+		
+		if self.IsSpecialShop then
+			self:UpdateText_SpecialShop()
+		else
+			self:UpdateText()
+		end
+		
+	end
+
+	method void PurchaseProcess()
+		-- 일반 상점 상품 구매 처리 실행
+		local privateShop = _UserService.LocalPlayer.PlayerPrivateShop
+		
+		if privateShop:CanBuyProduct(self.productId, self.selectedCount) == false then
+		
+			local productData = _ShopDataLogic:GetShopProductData(self.productId)
+			local shopData = _ShopDataLogic:GetShopData(productData.LinkedShopId)
+			local source = shopData.CategoryNameKey
+			local assetId = shopData.CurrencyType	
+			
+		    _UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("ShopErrorMessage1"))
+		end
+			
+		privateShop:BuyProduct(self.productId, self.selectedCount)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Popup_SpecialShop(string productId)
+		-- 특별 상점 상품 구매 팝업을 열고 상품 정보 표시
+		local player = _UserService.LocalPlayer
+		if _UserService.LocalPlayer == nil then
+			return
+		end
+		
+		local productData = _SpecialShopDataLogic.SpecialShopProductData[productId]
+		if productData == nil then
+			return
+		end
+		
+		local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+		if itemData == nil then
+			return
+		end
+		
+		local itemOwnCount = _UserService.LocalPlayer.PlayerInventory:GetItemCount(itemData.Id)
+		
+		---@type SpecialShopProductData
+		if itemOwnCount >= itemData.MaxStackCount then
+			_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("ShopErrorMessageMaxStack"))
+			return
+		end
+		
+		if self.Entity.Enable == false then
+			self.Entity.Enable = true
+		end
+		self.Entity.Visible = true
+		
+		self.selectedCount = 1
+		self.postRemainString = ""
+		self.productId = productId
+		
+		local ownCountString = _StringUtilLogic:ReturnThousandsSeparatedString(itemOwnCount)
+		
+		self.ItemPanel:GetChildByName("ItemName").TextComponent.Text = _LocalizationService:GetText(itemData.NameKey)
+		self.ItemPanel:GetChildByName("ItemImage").SpriteGUIRendererComponent.ImageRUID = itemData.IconRUID
+		self.ItemPanel:GetChildByName("ItemDesc").TextComponent.Text = _GetLocalizationTextLogic:GetText(itemData.DescriptionKey)
+		self.ItemPanel:GetChildByName("OwnCountText").TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopHaveCount", ownCountString) 
+		
+		self:UpdateText_SpecialShop()
+		
+		if self.UIPanel ~= self.Entity then
+		    self._T.isProcessing = true
+		    _UIEntityService:PlayUIOpenAnim(self.UIPanel, self._T.ContentsAnchoredPosition, Vector2.up, nil, nil, nil, nil, function()
+		        self._T.isProcessing = false
+		    end)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateText_SpecialShop()
+		-- 특별 상점 구매 팝업의 텍스트와 가격 업데이트
+		local player = _UserService.LocalPlayer
+		local inventory = player.PlayerInventory
+		
+		---@type SpecialShopProductData
+		local productData = _SpecialShopDataLogic.SpecialShopProductData[self.productId]
+		if productData == nil then return end
+		
+		local shopData = _SpecialShopDataLogic.SpecialShopData[productData.LinkedShopId]
+		if shopData == nil then	return end
+		
+		local ownDiamond = player.PlayerOutgameManager:GetDiamondCount()
+		local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+		
+		local itemOwnCount = _UserService.LocalPlayer.PlayerInventory:GetItemCount(itemData.Id)
+		
+		local canBuyCount = math.tointeger(math.min(ownDiamond // productData.Price, itemData.MaxStackCount - itemOwnCount, 999))
+		self.selectedCount = math.tointeger(math.min(self.selectedCount, canBuyCount))
+		self.selectedCount = math.tointeger(math.max(self.selectedCount, 1))
+		
+		local buyPrice = self.selectedCount * productData.Price
+		local colorValue = "#7c6747" 
+		if ownDiamond < buyPrice then
+			colorValue = "#fa5246"
+		end
+		self.CountSlice.TextComponent.Text = "<color=" .. colorValue .. ">" .. tostring(self.selectedCount) .. "</color>" .. self.postRemainString
+		self.BuyButtonText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(buyPrice)
+		
+		if ownDiamond < buyPrice then
+			self.BuyButtonText.TextComponent.FontColor = _ColorCodeEnum:GetColor("#fa5246")
+		else
+			self.BuyButtonText.TextComponent.FontColor = _ColorCodeEnum:GetColor("#ffffff")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PurchaseProcess_SpecialShop()
+		-- 특별 상점 상품 구매 처리 실행
+		if self:SpecialShopPurchasePriceCheck() then
+			_PaidLogic:RequestPurchaseDiamondProduct_SpecialShop(self.productId, self.selectedCount, _UserService.LocalPlayer.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean SpecialShopPurchasePriceCheck()
+		-- 특별 상점 상품 구매 가격 및 재화 제한 확인
+		local player = _UserService.LocalPlayer
+		
+		---@type SpecialShopProductData
+		local productData = _SpecialShopDataLogic.SpecialShopProductData[self.productId]
+		local totalPrice = productData.Price * self.selectedCount
+		local ownDiamond = player.PlayerOutgameManager:GetDiamondCount()
+		
+		if ownDiamond < totalPrice then
+			_UIToast:ShowMessage(_LocalizationService:GetText("ShopErrorMessage1"))
+			_UIGroupManager.DiaInfoGroup.UIDiaInfo:OpenUI()
+			_PurchaseLogLogic:PurchaseFailLog_DiamondLack(player.PlayerComponent.UserId, productData.ItemId, totalPrice)
+			return false
+		end
+		
+		return true
+	end
+
+end

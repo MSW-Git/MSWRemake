@@ -1,0 +1,715 @@
+@Logic
+script ArmorSystemLogic extends Logic
+
+	property number soloGachaPrice = 0
+
+	property number multipleGachaPrice = 0
+
+	property table resultTable = {}
+
+	property table gachaPercentData = {}
+
+	property ArmorGachaPopup armorGachaPopup = "d0f18ffb-e789-41a5-b6d9-9ab2f0f7826d"
+
+	property ArmorInformationUI armorInformation = "1e53cb2f-bf1d-49d6-a663-28399405fcb4"
+
+	property ArmorBatchLevelupPopup armorBatchLevelup = "6cc2869a-1799-4751-887c-86b30b4f4fe1"
+
+	@ExecSpace("Server")
+	method table GetArmorList(Entity player)
+		-- 플레이어가 보유한 모든 방어구 목록 반환
+		local storage = player.PlayerStorageComponent
+		local armorTable = {}
+		local equipmentData = _ItemDataLogic.equipmentData
+		
+		for key, value in pairs(storage.storage) do
+			if string.sub(equipmentData[value.originalId].category, 1, 5) == "armor" then
+				armorTable[value.originalId] = value
+			end
+		end
+		
+		return armorTable
+	end
+
+	@ExecSpace("Server")
+	method void LevelUp(string uniqueKey, boolean showEffect, string source)
+		-- 방어구 레벨업 처리 및 재화 소모 검증
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if player.PlayerCurrencyData.canRequestLevelUp == false then
+			_LocalizeLogic:ShowToast("toast23", senderUserId)
+			
+			return
+		end
+		player.PlayerCurrencyData.canRequestLevelUp = false
+		
+		local item = player.PlayerStorageComponent.storage[uniqueKey]
+		local itemData = _ItemDataLogic.equipmentData[item.originalId]
+		
+		if not isvalid(item) then
+			player.PlayerCurrencyData.canRequestLevelUp = true
+			return
+		end
+		
+		if item.level >= itemData.maxLevel then 
+			if itemData.mergeLevel >= 12 then 
+				_LocalizeLogic:ShowToast("toast14", player.PlayerComponent.UserId)
+		
+			else 
+				_LocalizeLogic:ShowToast("toast13", player.PlayerComponent.UserId)
+				
+			end
+			player.PlayerCurrencyData.canRequestLevelUp = true
+			return
+		end
+		
+		local currency = player.PlayerCurrencyData.currencyTable
+		local needGold = tonumber(_ArmorSpecLogic.armorLevelUpData[item.level + 1].needGold)
+		local needScroll = tonumber(_ArmorSpecLogic.armorLevelUpData[item.level + 1].needScroll)
+		
+		if currency["Gold"].amount < needGold then
+			_LocalizeLogic:ShowToast("toast20", player.PlayerComponent.UserId)
+			
+			player.PlayerCurrencyData.canRequestLevelUp = true
+			return
+		end
+		
+		if currency["WeaponScroll"].amount < needScroll then
+			_LocalizeLogic:ShowToast("toast18", player.PlayerComponent.UserId)
+		
+			player.PlayerCurrencyData.canRequestLevelUp = true
+			return
+		end
+		
+		_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, needGold, senderUserId, source)
+		_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, needScroll, senderUserId, source)
+		_ItemReinforceLogic:ItemLevelUp(uniqueKey, showEffect, player)
+		
+		if showEffect == true then
+			self:RefreshArmorUI(senderUserId) 
+		end
+		
+		player.PlayerCurrencyData.canRequestLevelUp = true
+	end
+
+	@ExecSpace("Server")
+	method void GradeUp(string targetUniqueKey, string materialUniqueKey)
+		-- 방어구 등급 업그레이드 처리 및 재료 소모
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(player) then
+			return
+		end
+		
+		local storage = player.PlayerStorageComponent
+		
+		local target = storage.storage[targetUniqueKey]
+		local material = storage.storage[materialUniqueKey]
+		
+		local targetData = _ItemDataLogic.equipmentData[target.originalId]
+		local materialData = _ItemDataLogic.equipmentData[material.originalId]
+		
+		
+		if targetData == nil or materialData == nil then 
+			return
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(targetData.nextEquipment) then 
+			return
+		end
+		
+		if target == nil then
+			return
+		end
+		
+		if material == nil then
+			return
+		end
+		
+		if material.level > 1 then
+			_LocalizeLogic:ShowToast("toast12", senderUserId)
+		
+			return
+		end
+		
+		
+		local equippedSlotNum = 0 
+		if target.equippedSlotNum > 0 then 
+			equippedSlotNum = target.equippedSlotNum	
+		end
+		
+		local setLevel = target.level
+		
+		if target.level < material.level then
+			setLevel = material.level
+		end
+		
+		
+		if materialData.detailCategory ~= targetData.detailCategory or materialData.mergeLevel ~= targetData.mergeLevel then
+			return
+		end
+		
+		
+		storage:RequestRemoveItemFromServer(target.originalId, targetUniqueKey, senderUserId,true,"ArmorGradeUp")
+		storage:RequestRemoveItemFromServer(material.originalId, materialUniqueKey, senderUserId,true,"ArmorGradeUp")
+		
+		local newUniqueKey = _GameUtil:CreateGUID()
+		storage:RequestAddItemFromServer(newUniqueKey, 1, targetData.nextEquipment, setLevel, senderUserId,"FromArmorGradeUp","")
+		
+		if equippedSlotNum > 0 then 
+			storage:Equip(newUniqueKey, equippedSlotNum)
+		end
+		
+		self:SendArmorGradeUpEvent(newUniqueKey, senderUserId)
+		self:RefreshArmorUI(senderUserId)
+		
+		player:SendEvent(NewbieMissionUpdateEvent("armorGradeUp", "0", 1))
+		player:SendEvent(DailyMissionUpdateEvent("gradeUpArmor", "0", 1))
+	end
+
+	method table GetGradeUpMaterialList(string uniqueKey, Entity player)
+		-- 등급업에 사용 가능한 재료 아이템 목록 반환
+		local storage = player.PlayerStorageComponent.storage
+		local targetItem = storage[uniqueKey] 
+		local equipmentData = _ItemDataLogic.equipmentData
+		local targetItemData = _ItemDataLogic.equipmentData[targetItem.originalId]
+		local materialList = {}
+		
+		if targetItemData ~= nil then 
+		for key, value in pairs(storage) do
+			if  _UtilLogic:Split(value.originalId, "_")[1] == "2" and targetItemData.mergeLevel < 12 then
+				if targetItem.uniqueKey ~= value.uniqueKey then
+					if targetItemData.mergeLevel == 1 or targetItemData.mergeLevel == 3 or targetItemData.mergeLevel == 5 or targetItemData.mergeLevel == 8 then
+						if value.originalId == targetItem.originalId then
+							materialList[key] = value
+						end
+					else 
+						if equipmentData[value.originalId].detailCategory ==
+							 targetItemData.detailCategory and 
+								equipmentData[value.originalId].mergeLevel 
+										== targetItemData.mergeLevel then
+							materialList[key] = value
+						end
+					end
+				end
+			end
+		end
+		end
+		return materialList
+	end
+
+	@ExecSpace("Client")
+	method void SendArmorGradeUpEvent(string newUniqueKey)
+		-- 방어구 등급업 완료 이벤트 전송
+		_UIGroupManager.armorInformation:SendEvent(ArmorGradeUp(newUniqueKey))
+	end
+
+	method string GetColorCodeByGrade(string grade)
+		-- 방어구 등급에 따른 색상 코드 반환
+		if _UtilLogic:Contains(grade, "normal") then
+			
+			return "#ffffff"
+		
+		elseif _UtilLogic:Contains(grade, "rare") then
+			
+			return "#78ed38"
+		
+		elseif _UtilLogic:Contains(grade, "epic") then
+			
+			return "#43a3fe"
+		
+		elseif _UtilLogic:Contains(grade, "unique") then
+			
+			return "#ba51ff"
+		
+		elseif _UtilLogic:Contains(grade, "legendary")then
+			
+			return "#ff514d"
+		end
+	end
+
+	method string GetGradeById(string grade)
+		-- 등급 문자열에서 기본 등급명 추출
+		if _UtilLogic:Contains(grade, "normal") then
+			return "normal"
+			
+		elseif _UtilLogic:Contains(grade, "rare") then
+			return "rare"
+		
+		elseif _UtilLogic:Contains(grade, "epic") then
+			return "epic"
+		
+		elseif _UtilLogic:Contains(grade, "unique") then
+			return "unique"
+		
+		elseif _UtilLogic:Contains(grade, "legendary") then
+			return "legendary"
+		end
+	end
+
+	method boolean CheckCanArmorGacha(string userId, integer gatchaNum, table outFailInfo)
+		-- 방어구 가챠 가능 여부 확인 (슬롯 수 검증)
+		if not _CheckLogic:IsEnoughArmorSlot(userId, gatchaNum) then
+			_LocalizeLogic:ShowToast("toast24", userId)
+		
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Armor slot is not enough to gacha. gatchaNum: " .. tostring(gatchaNum)
+			end
+				
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method table RequestArmorGacha(string userId, boolean multiGacha)
+		-- 방어구 가챠 요청 처리
+		
+		return self:ExcuteArmorGacha(userId, multiGacha)
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ExcuteArmorGacha(string userId, boolean multiGacha)
+		-- 방어구 가챠 실행 및 결과 반환
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not multiGacha then
+			self:GetItemByArmorGacha(userId)
+		
+		else 
+			for i = 1, 11 do
+				self:GetItemByArmorGacha(userId)
+				
+			end
+		
+		end
+		
+		self:ShowGachaPanel(multiGacha, self.resultTable, userId)
+		local tempTable = _GameUtil:DeepCopyTable(self.resultTable)
+		table.clear(self.resultTable)
+		return tempTable
+		
+		
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetItemByArmorGacha(string userId)
+		-- 가챠에서 랜덤 방어구 아이템 획득 처리
+		
+		local resultId = self:PickRandomArmorItemId()
+		local user = _UserService:GetUserEntityByUserId(userId)
+		user.PlayerStorageComponent:RequestAddItemFromServer(_GameUtil:CreateGUID(), 1, resultId, 1, userId,"ArmorGatcha","")
+		table.insert(self.resultTable, resultId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PickRandomArmorItemId()
+		-- 확률에 따라 랜덤 방어구 아이템 ID 선택
+		local rand = _UtilLogic:RandomIntegerRange(1, 10000)
+		local sum = 0
+		local resultId = ""
+		for key, value in pairs(self.gachaPercentData) do
+			sum = sum + value.percent
+			if rand <= sum then
+				resultId = value.id
+				break
+			end
+		end
+		
+		return resultId
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 방어구 가챠 확률 데이터 초기화
+		
+		
+		local data = _DataService:GetTable("ArmorGachaPercent")
+		
+		for i = 1, data:GetRowCount() do
+			local temp = {}
+			temp.id = data:GetCell(i, "id")
+			temp.grade = data:GetCell(i, "grade")
+			temp.percent = tonumber(data:GetCell(i, "percent"))
+			
+			self.gachaPercentData[temp.id] = temp
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void ShowGachaPanel(boolean multiple, table results)
+		-- 가챠 결과 팝업 표시
+		self.armorGachaPopup:Show()
+		self.armorGachaPopup.results = results
+		
+	end
+
+	method string GetCategoryIconRUID(string id)
+		-- 방어구 카테고리별 아이콘 RUID 반환
+		if _ArmorSpecLogic.armorData[id].type == "helmet" then
+			return "01b29b2ec80b4b6b9836805b1dd3b628"
+		elseif _ArmorSpecLogic.armorData[id].type == "suit" then
+			return "9e43df083ac14fdf9927c04fe947ad71"
+		elseif _ArmorSpecLogic.armorData[id].type == "glove" then
+			return "3d24b6f557b5459195e6ad21f92ec7f5"
+		elseif _ArmorSpecLogic.armorData[id].type == "shoes" then
+			return "0a659c8e91944c598b5008e0e3d2aff9"
+		end
+	end
+
+	method string GetSlotColorRUID(string id)
+		-- 방어구 등급에 따른 슬롯 색상 RUID 반환
+		local grade = {}
+		grade = _UtilLogic:Split( _ArmorSpecLogic.armorData[id].grade, "_")
+		
+		
+		if grade[1] == "unique" then
+			return "401b646213b241c59f4ebc3712e7aad6"
+		
+		elseif grade[1] == "epic" then
+			return "8cd3e973b6f04b67a5d425eaed80e916"
+		
+		elseif grade[1] == "rare" then
+			return "ee76a77c3f60420786df557ca6cb29ba"
+			
+		elseif grade[1] == "legendary" then
+			return "87f20108334748dc94da9983a1e7e96c"
+		else
+			return "2502dac4d15a46f4ab26445abd1cc7f9"
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetArmorSlot(Entity slot, string uniqueKey)
+		-- 방어구 슬롯 UI 설정 (아이콘, 레벨, 등급 표시)
+		local id = _UserService.LocalPlayer.PlayerStorageComponent.storage[uniqueKey].originalId
+		local itemData = _UserService.LocalPlayer.PlayerStorageComponent.storage[uniqueKey]
+		local armorData = _ArmorSpecLogic.armorData[id]
+		
+		slot.SpriteGUIRendererComponent.ImageRUID = self:GetSlotColorRUID(id) 
+		slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = armorData.ruid 
+		slot:GetChildByName("Level").TextComponent.Text = itemData.level 
+		slot:GetChildByName("Category").SpriteGUIRendererComponent.ImageRUID = self:GetSlotColorRUID(id) 
+		slot:GetChildByName("Category"):GetChildByName("CategoryIcon").SpriteGUIRendererComponent.ImageRUID = self:GetCategoryIconRUID(id) 
+		
+		
+		if itemData.equippedSlotNum > 0 then
+			slot:GetChildByName("Selected"):SetEnable(true)
+		else
+			slot:GetChildByName("Selected"):SetEnable(false)
+		end
+		
+		
+		local temp = _UtilLogic:Split(armorData.grade, "_")
+		local count = 0
+		
+		if isvalid(temp[2]) then
+			if temp[2] == "1" then
+				count = 1
+			elseif temp[2] == "2" then
+				count = 2
+			elseif temp[2] == "3" then
+				count = 3
+			end
+		end 
+		
+		for i = 1 , #slot:GetChildByName("GradeStar").Children do
+			if count >= i then
+				slot:GetChildByName("GradeStar"):GetChildByName("Star_"..math.floor(i)):SetEnable(true)
+			else
+				slot:GetChildByName("GradeStar"):GetChildByName("Star_"..math.floor(i)):SetEnable(false)
+			end
+		end
+	end
+
+	method table GetResetValue(string uniqueKey, string userId)
+		-- 방어구 리셋 시 반환받을 재화 계산
+		local valueTable = {}
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local id = user.PlayerStorageComponent.storage[uniqueKey].originalId
+		local itemData = user.PlayerStorageComponent.storage[uniqueKey]
+		local level = itemData.level
+		local armorData = _ArmorSpecLogic.armorData[id]
+		
+		local goldSum = 0
+		local scrollSum = 0
+		
+		
+		for i = 2, (level + 1) - 1 do
+			goldSum = goldSum + _ArmorSpecLogic.armorLevelUpData[i].needGold
+			scrollSum = scrollSum + _ArmorSpecLogic.armorLevelUpData[i].needScroll
+		end
+		
+		valueTable.gold = goldSum
+		valueTable.scroll = scrollSum
+		
+		
+		return valueTable
+	end
+
+	@ExecSpace("Server")
+	method void ResetArmor(string uniqueKey)
+		-- 방어구를 1레벨로 리셋하고 소모한 재화 반환
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		local resetValueTable = self:GetResetValue(uniqueKey, senderUserId)
+		
+		user.PlayerStorageComponent.storage[uniqueKey].level = 1
+		user.PlayerStorageComponent:SyncStorageInClient(uniqueKey, user.PlayerStorageComponent.storage[uniqueKey], senderUserId) 
+		
+		
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, resetValueTable.gold, senderUserId,"ResetArmor",uniqueKey)
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, resetValueTable.scroll, senderUserId,"ResetArmor",uniqueKey)
+		
+		if user.PlayerStorageComponent.storage[uniqueKey].equippedSlotNum > 0 then 
+			user.PlayerStorageComponent:ApplyArmorStatus(false)
+		end
+		
+		self:RefreshArmorUI(senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshArmorUI()
+		-- 방어구 관련 UI 새로고침
+		_UIGroupManager.uiPlayerStatusPopup:RefreshArmorPanel() 
+		_UIGroupManager.uiPlayerStatusPopup:RefreshStatusPanel() 
+		_UIGroupManager.uiPlayerStatusPopup:RefreshInventoryList(_ItemDataLogic:GetUniqueKeyListByCategory("armor", _UserService.LocalPlayer.PlayerComponent.UserId), "armor")
+		
+		if self.armorBatchLevelup.uniqueKey ~= "" then
+			self.armorBatchLevelup:RefreshMainPanel()
+		end
+	end
+
+	method string GetArmorUniqueKeyBySlotNum(number slotNum, string userId)
+		-- 슬롯 번호로 장착된 방어구의 고유 키 반환
+		local uniqueKey = ""
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		for key, value in pairs(user.PlayerStorageComponent.storage) do
+			if value.equippedSlotNum == slotNum then
+				uniqueKey = value.uniqueKey
+				break
+			end
+		end
+			
+		return uniqueKey
+	end
+
+	method integer GetArmorInventoryNum(string type, string userId)
+		-- 방어구 인벤토리에서 사용 가능한 슬롯 번호 반환
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local playerInfo = player.PlayerInfoComponent.playerInfo
+		local storage = player.PlayerStorageComponent.storage
+		local findNum = 1
+		
+		if type == "armor" then
+			for key, value in pairs(storage) do
+				local itemData = _ItemDataLogic:GetItemData(value.originalId)
+				if itemData ~= nil and itemData.category == "armor" then
+					if value.inventoryNum >= findNum then
+						findNum = value.inventoryNum + 1
+						if findNum > _GameConfig:GetConfig().LIMIT_ARMORSLOT + playerInfo.armorStorageSlot then 
+							return 0
+						end
+					end
+				end
+			end	
+			return findNum
+		else
+			return 0
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RefreshArmorInventoryNum(string userId, integer removeInventoryNum)
+		-- 방어구 인벤토리 번호 재정렬 (아이템 제거 후)
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local storage = player.PlayerStorageComponent.storage
+		local findNum = 1
+		
+		for key, value in pairs(storage) do
+			local itemData = _ItemDataLogic:GetItemData(value.originalId)
+			if itemData ~= nil and itemData.category == "armor" then
+				if value.inventoryNum > removeInventoryNum then
+					value.inventoryNum = value.inventoryNum -1
+					player.PlayerStorageComponent:SyncStorageInClient(value.uniqueKey, value, userId)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SellArmor(string uniqueKey)
+		-- 방어구 판매 처리 및 재화 지급
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local storage = player.PlayerStorageComponent
+		local item = storage.storage[uniqueKey]
+		
+		if not isvalid(storage.storage[uniqueKey]) then
+			
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Try Sell Armor.", 0, 0, 0, 0)
+			return
+		end
+		
+		if item.level > 1 then
+			_LocalizeLogic:ShowToast("toast19", senderUserId)
+			
+			return
+		end
+		if item.equippedSlotNum > 0 then
+			storage:UnEquip(uniqueKey)
+		end
+		
+		local price = self:GetArmorSellPrice(_ArmorSpecLogic.armorData[item.originalId].grade)
+		
+		
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, price.meso, senderUserId,"SellArmor",uniqueKey)
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, price.scroll, senderUserId,"SellArmor",uniqueKey)
+		
+		storage:RequestRemoveItemFromServer(item.originalId, uniqueKey, senderUserId, true, "Sell")
+		self:RefreshArmorUI(senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshArmorSlot(string uniqueKey, Entity slot, string userId)
+		-- 방어구 슬롯 정보 업데이트 (아이콘, 레벨, 별 등급)
+		
+		
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local item = player.PlayerStorageComponent.storage[uniqueKey] 
+		local id = item.originalId
+		local star = _ArmorSpecLogic.armorData[id].star
+		
+		local selected = slot:GetChildByName("Selected", true)
+		local icon = slot:GetChildByName("Icon", true)
+		local level = slot:GetChildByName("Level", true)
+		local categorySlot = slot:GetChildByName("Category", true)
+		local categoryIcon = slot:GetChildByName("CategoryIcon", true)
+		local stars  = slot:GetChildByName("GradeStar", true)
+		
+		if item.equippedSlotNum > 0 then
+			selected:SetEnable(true)
+		else
+			selected:SetEnable(false)
+		end
+		
+		slot.SpriteGUIRendererComponent.ImageRUID = self:GetSlotColorRUID(id)
+		
+		icon.SpriteGUIRendererComponent.ImageRUID = _ItemDataLogic.equipmentData[id].ruid
+		level.TextComponent.Text = "Lv "..tostring(math.floor(item.level))
+		
+		categorySlot.SpriteGUIRendererComponent.ImageRUID = self:GetSlotColorRUID(id)
+		categoryIcon.SpriteGUIRendererComponent.ImageRUID = self:GetCategoryIconRUID(id)
+		
+		for i = 1, 3 do
+			if star >= i then
+				stars:GetChildByName("Star_"..math.floor(i)):SetEnable(true)
+			else
+				stars:GetChildByName("Star_"..math.floor(i)):SetEnable(false)
+			end
+		end
+	end
+
+	method table GetArmorSellPrice(string grade)
+		-- 방어구 등급에 따른 판매 가격 반환
+		return _ArmorSpecLogic.armorSellPriceData[grade]
+	end
+
+	@ExecSpace("Server")
+	method void BatchLevelUp(string uniqueKey)
+		-- 방어구 일괄 레벨업 처리 (가능한 최대 레벨까지)
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if player.PlayerCurrencyData.canRequestBatchLevelUp == false then
+			_LocalizeLogic:ShowToast("toast23", senderUserId)
+			
+			return
+		end
+		player.PlayerCurrencyData.canRequestBatchLevelUp = false
+		
+		local currency = player.PlayerCurrencyData.currencyTable
+		local item = player.PlayerStorageComponent.storage[uniqueKey]
+		local itemData = _ItemDataLogic.equipmentData[item.originalId]
+		
+		if not isvalid(item) then
+			player.PlayerCurrencyData.canRequestBatchLevelUp = true
+			return
+		end
+		
+		local needGold =  0 
+		local needScroll = 0 
+		
+		local armorLevelupData = _ArmorSpecLogic.armorLevelUpData
+		local levelUpCount = 0
+		local failedMessage = ""
+		
+		for i = item.level, #armorLevelupData do
+			if i >= itemData.maxLevel then 
+				failedMessage = "방어구가 이미 최대 레벨입니다."
+				break
+			end
+			
+			needGold = needGold + tonumber(_ArmorSpecLogic.armorLevelUpData[i + 1].needGold)
+			needScroll = needScroll + tonumber(_ArmorSpecLogic.armorLevelUpData[i + 1].needScroll)
+		
+			if currency["Gold"].amount < needGold or currency["WeaponScroll"].amount < needScroll then
+				failedMessage = "보유한 메소, 주문서의 수량이 부족합니다."
+				break
+			else
+				levelUpCount = levelUpCount + 1
+			end
+		end
+		
+		
+		if levelUpCount == 0 then
+			_UIToast:ShowMessage(failedMessage, senderUserId)
+			player.PlayerCurrencyData.canRequestBatchLevelUp = true
+			return
+		end
+		
+		
+		local lastCount = false
+		
+		for i = 1, levelUpCount do
+			
+			if i == levelUpCount then
+				lastCount = true
+			end
+		
+			if item.level >= itemData.maxLevel then 
+				if itemData.mergeLevel >= 12 then 
+					_LocalizeLogic:ShowToast("toast14", player.PlayerComponent.UserId)
+				else 
+					_LocalizeLogic:ShowToast("toast13", player.PlayerComponent.UserId)
+				end
+				break
+			end
+		
+			
+			local realGold = tonumber(_ArmorSpecLogic.armorLevelUpData[item.level + 1].needGold)
+			local realScroll = tonumber(_ArmorSpecLogic.armorLevelUpData[item.level + 1].needScroll)
+		
+			if currency["Gold"].amount < realGold then
+				_LocalizeLogic:ShowToast("toast20", player.PlayerComponent.UserId)
+				break
+			end
+		
+			if currency["WeaponScroll"].amount < realScroll then
+				_LocalizeLogic:ShowToast("toast18", player.PlayerComponent.UserId)
+				break
+			end
+		
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, realGold, senderUserId, "ArmorBatchLevelUp")
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, realScroll, senderUserId, "ArmorBatchLevelUp")
+			_ItemReinforceLogic:ItemLevelUp(uniqueKey, lastCount, player)
+		end
+		
+		self:RefreshArmorUI(senderUserId) 
+		player.PlayerCurrencyData.canRequestBatchLevelUp = true
+	end
+
+end

@@ -1,0 +1,310 @@
+@Component
+script LobbyPlayer extends Component
+
+	property table equipGun = {}
+
+	property SyncTable<number, string> syncWeaponData
+
+	property number speed = 1
+
+	property boolean isDashingNow = false
+
+	property table stageRecord = {}
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 컴포넌트 파괴 시 장착된 무기들을 정리
+		self:ClearWeapon()
+	end
+
+	method void EquipWeapon(string uniqueKey, number slot)
+		-- 지정된 슬롯에 무기를 장착
+		local storageData = self.Entity.PlayerStorageComponent.storage[uniqueKey]
+		local id = storageData.originalId
+		self:AddWeapon(id,slot,uniqueKey)
+		
+	end
+
+	method void UnequipWeapon(number slot)
+		-- 지정된 슬롯의 무기를 해제
+		self:RemoveWeapon(slot)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 로비 플레이어 컴포넌트 초기화 및 이벤트 연결
+		self.Entity.MovementComponent.InputSpeed = _GameConfig:GetConfig().SPEED_MASTER * self.Entity.MovementComponent.InputSpeed
+		
+		self.speed = self.Entity.MovementComponent.InputSpeed
+		self._T.transform = self.Entity.TransformComponent
+		
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		_UserService.LocalPlayer.CameraComponent:SetZoomTo(80,1)
+		self.Entity:ConnectEvent(EquipEvent,function(e) 
+			local slotNum = e.slotNum
+			local isEquip = e.isEquip
+			local uniqueKey = e.uniqueKey
+			
+			local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage[uniqueKey]
+			if storage ==  nil then
+				return
+			end
+				
+			local originalId = storage.originalId
+		
+			if not isvalid(_ItemDataLogic.equipmentData[originalId]) then
+				
+				return
+			end
+			
+			if _ItemDataLogic.equipmentData[originalId].category == "weapon"  then
+				if isEquip then
+					self:EquipWeapon(uniqueKey,slotNum)
+				else
+					for k,v in pairs(self.equipGun) do
+						if v.uniqueKey == uniqueKey then
+							self:UnequipWeapon(k)
+						end
+					end		
+				end
+			end
+		end)
+		
+		self.Entity:ConnectEvent(DBLoadedEvent,function(e) 
+			self:RefreshWeapon()
+		end)
+		
+		self:RefreshWeapon()
+	end
+
+	method void RefreshWeapon()
+		-- 플레이어의 장착된 무기들을 새로고침
+		if self.Entity ~= _UserService.LocalPlayer and self.Entity.CurrentMap.BattleMap ~= nil then
+			self:ClearWeapon()
+			return
+		end
+		for k,v in pairs(self.Entity.PlayerStorageComponent.storage) do
+			local itemData = _ItemDataLogic.equipmentData[v.originalId]
+			if itemData ~= nil then
+				if itemData.category == "weapon" then
+					if v.equippedSlotNum > 0 then
+						self:EquipWeapon(k,v.equippedSlotNum)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void EquipWeaponToServer(string id, number slot)
+		-- 서버에서 무기 장착 정보를 동기화
+		self.syncWeaponData[slot] = id
+	end
+
+	@ExecSpace("Server")
+	method void UnequipWeaponToServer(number slot)
+		-- 서버에서 무기 해제 정보를 동기화
+		self.syncWeaponData[slot] = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 다른 플레이어의 무기 동기화 정보를 처리
+		if self.Entity == _UserService.LocalPlayer then
+			return
+		end
+		if name == "syncWeaponData" then
+			self:SyncUserWeapon(value)
+		end
+	end
+
+	method void AddWeapon(string id, number slot, string uniqueKey)
+		-- 무기를 생성하고 플레이어에게 장착
+		local gunData = _WeaponSpecLogic:GetWeaponSpec(id)
+		if gunData == nil then
+			return
+		end
+		local angle = _UtilLogic:RandomDouble() * math.pi * 2
+		local offsetPos = Vector3(math.cos(angle),math.sin(angle),0) * 1
+		
+		local gun = _SpawnService:SpawnByModelId(gunData.model,"gun",self.Entity.TransformComponent.Position + offsetPos,self.Entity.CurrentMap)
+		
+		local isMultiMap = false
+		if self.Entity.CurrentMap.BattleMap ~= nil then
+			if self.Entity.CurrentMap.BattleMap.isMultiMode then
+				isMultiMap = true
+			end
+		end
+		
+		gun.BattleGunObject:SetPlayer(self.Entity,slot,gunData, uniqueKey,not isMultiMap)
+		gun.BattleGunObject:SetOriginalRange(gunData.range)
+		gun.SpriteRendererComponent.SpriteRUID = gunData.ruid
+		
+		if isMultiMap == false then
+			if self.Entity ~= _UserService.LocalPlayer then
+				gun.SpriteRendererComponent.Color.a = 0.5
+			end
+		end
+		local equipGun = {}
+		equipGun.gun = gun
+		equipGun.id = id
+		equipGun.uniqueKey = uniqueKey
+		equipGun.isPhysicalWeapon = gun.BattleGunObject.physicalWeapon
+		if isvalid(self.equipGun[slot]) and self.Entity == _UserService.LocalPlayer then
+			self:UnequipWeapon(slot)
+		end
+		self.equipGun[slot] = equipGun
+		
+		for k,v in pairs(self.equipGun) do
+			v.gun.BattleGunObject.angleOffset = -20 + (slot - 1) * -15
+		end
+	end
+
+	method void RemoveWeapon(number slot)
+		-- 지정된 슬롯의 무기를 제거
+		if self.equipGun[slot]  == nil then
+			return
+		end
+		self.equipGun[slot].gun:Destroy()
+		self.equipGun[slot] = nil
+	end
+
+	method void SyncUserWeapon(SyncTable<number, string> data)
+		-- 다른 플레이어의 무기 정보를 동기화
+		
+		
+		for k,v in pairs(data) do
+			if self.equipGun[k] == nil or self.equipGun[k].id ~= v  then
+				self:AddWeapon(v,k,_GameUtil:CreateGUID())
+			elseif self.equipGun[k] ~= nil and self.equipGun[k].id ~= v  then
+				self:RemoveWeapon(k)
+			end
+			
+		end
+	end
+
+	method void Dash()
+		-- 플레이어 대시 동작을 실행
+		if self.Entity.PlayerControllerComponent.Enable == false then
+			return
+		end
+		if self.Entity.KinematicbodyComponent.MoveVelocity:Magnitude() == 0 then
+			return
+		end
+		if self._T.lastDashTime  ~= nil and (_UtilLogic.ElapsedSeconds - self._T.lastDashTime) < 1 then
+			return
+		end
+		self._T.lastDashTime = _UtilLogic.ElapsedSeconds
+		
+		local option = { ["FlipX"] = true, ["PlayRate"] = 2 }
+		local moveDelta = self.Entity.KinematicbodyComponent.MoveVelocity:Normalize()*3 * 1.5
+		local duration =  0.2
+		local lookDirection = self.Entity.PlayerControllerComponent.LookDirectionX
+		
+		if lookDirection < 0 then
+			option.FlipX = false
+		else
+		
+			option.FlipX = true
+		end
+		
+		if moveDelta.x < 0 then
+			option.FlipX = false
+		end
+		
+		_EffectService:PlayEffectAttached("d78c0195e5b9452fbc01aef903ff590a",self.Entity,Vector3.zero,0,Vector3.one, false, option)
+		self.isDashingNow = true
+		
+		
+		self.Entity.PlayerControllerComponent.Enable = false
+		self.Entity.KinematicbodyComponent.MoveVelocity = moveDelta
+		self.Entity.ExtendKinematicbodyComponent:SetVelocityRatio(3 * 1.5)
+		_TimerLogic:SetTimerOnce(function()
+				self.Entity.PlayerControllerComponent.Enable = true
+				self.Entity.ExtendKinematicbodyComponent:SetVelocityRatio(1)
+				self.isDashingNow = false 
+			
+				local animEvent = BodyActionStateChangeEvent()
+				animEvent.needResetAction = true
+				animEvent.ActionState = MapleAvatarBodyActionState.Walk
+				self.Entity:SendEvent(animEvent)
+			
+		end,duration, "LobbyPlayer.Dash")
+		
+		local speed = moveDelta.x > 0 and 360 or -360
+		local avatar = self.Entity.AvatarRendererComponent:GetAvatarRootEntity()
+		
+		local animEvent = BodyActionStateChangeEvent()
+		animEvent.needResetAction = true
+		animEvent.ActionState = MapleAvatarBodyActionState.Fly
+		self.Entity:SendEvent(animEvent)
+		
+		
+		
+		_TimerLogic:SetTimerOnce(function()
+				_EffectService:PlayEffectAttached("e95dc8def28745c8b8d436ccbfb4c949",self.Entity,Vector3.zero,0,Vector3.one * 1.5)
+			end, duration, "LobbyPlayer.Dash_playEffect")
+		
+	end
+
+	method void OnEnterMultiMode()
+		-- 멀티플레이 모드 진입 시 무기를 정리하고 새로고침
+		self:ClearWeapon()
+		self:RefreshWeapon()
+	end
+
+	method void ClearWeapon()
+		-- 모든 장착된 무기를 제거
+		for key, value in pairs(self.equipGun) do
+			self:RemoveWeapon(key)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RecordPlayedStage(string stageId, boolean clear)
+		-- 플레이한 스테이지 기록 (빈 구현)
+	end
+
+	method void SetMovementSpeed(number speed)
+		-- 플레이어의 이동 속도를 설정
+		speed = speed * _GameConfig:GetConfig().SPEED_MASTER * 1.3
+		self.Entity.MovementComponent.InputSpeed = speed
+		self.Entity.AvatarRendererComponent.PlayRate = speed
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleOnMapEnter(OnMapEnter event)
+		-- 맵 진입 시 로비 플레이어 상태를 설정
+		local currentMap = event.currentMap
+		if currentMap.BattleMap == nil then
+			self.Enable = true
+			_BattleUIManager.loadingUI:Hide(4,function()
+				_UserService.LocalPlayer.MovementComponent.InputSpeed = 1.3*_GameConfig:GetConfig().SPEED_MASTER
+		
+			end, _UserService.LocalPlayer.PlayerComponent.UserId)
+		else
+			self.Enable = false
+		end
+		
+		if not self.Enable then
+			self:ClearWeapon()
+			
+			return
+		end
+		
+		if self.Entity ~= _UserService.LocalPlayer then
+		else
+			self:ClearWeapon()
+			self:RefreshWeapon()
+		end
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleDBLoadedEvent(DBLoadedEvent event)
+		-- DB 로드 완료 이벤트 처리 (빈 구현)
+		local ppsn = event.ppsn
+	end
+
+end

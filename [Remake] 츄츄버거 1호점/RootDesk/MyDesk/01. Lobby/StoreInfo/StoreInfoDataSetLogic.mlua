@@ -1,0 +1,396 @@
+@Logic
+script StoreInfoDataSetLogic extends Logic
+
+	property table CustomerReviewData = {}
+
+	property table StoreInfoReportData = {}
+
+	property UIStoreInfo UIStoreInfo = "a847dd35-8343-46d4-ba54-208e4b84a58a"
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 데이터셋을 로드하는 함수
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- 고객 리뷰 데이터와 상점 정보 리포트 데이터를 로드하는 함수
+		table.clear(self.CustomerReviewData)
+		local dataSet = _DataService:GetTable("CustomerReviewData")
+		for i = 1, dataSet:GetRowCount() do
+			local data = CustomerReviewData()
+			data:Load(dataSet, i)
+			
+			if self.CustomerReviewData[data.Id] ~= nil then
+				break
+			end
+			
+			self.CustomerReviewData[data.Id] = data
+		end
+		
+		table.clear(self.StoreInfoReportData)
+		local dataSet2 = _DataService:GetTable("StoreInfoReportDataSet")
+		for i = 1, dataSet2:GetRowCount() do
+			local data = StoreInfoReportData()
+			data:Load(dataSet2, i)
+			
+			if self.StoreInfoReportData[data.Id] ~= nil then
+				break
+			end
+			
+			self.StoreInfoReportData[data.Id] = data
+		end
+	end
+
+	method integer ReturnPlayerScoreByCustomerReviewId(Entity player, integer customerReviewId)
+		-- 고객 리뷰 ID를 기반으로 플레이어의 점수를 계산하여 반환하는 함수
+		---@type CustomerReviewData
+		local reviewData = self.CustomerReviewData[customerReviewId]
+		local earningLevel = player.PlayerSettlement.EarningLevel
+		local stageEarningLevelData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage):GetStageEarningLevelData(earningLevel)
+		local storeAttractiveLevelData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+		
+		
+		local recipeAttractive = player.CustomerManager:CalcAttractiveRecipe()
+		
+		local storeAttractiveExpansion = player.CustomerManager:CalcAttractiveExpension()
+		local storeAttractiveInterior = player.CustomerManager:CalcAttractiveInterior()
+		local storeAttractiveDeco = player.CustomerManager:CalacAttractiveDeco()
+		
+		local storeAttractive = storeAttractiveExpansion + storeAttractiveInterior + storeAttractiveDeco
+		
+		local playerTotalAttractive = recipeAttractive + storeAttractive
+		
+		local nowGroup = 1 
+		for i = 1, 9 do
+			local reqAtt = storeAttractiveLevelData.RequiredAttractiveGroup[i]
+			if playerTotalAttractive < reqAtt then
+				break
+			end
+			nowGroup = i
+		end
+		
+		local nowGroupIndex = 9-nowGroup 
+		
+		local lackRecipeId = self:ReturnLackRecipeId(player)
+		
+		
+		local score
+		if reviewData.Category == "Store" then
+			if reviewData.Type == "Expansion" then
+				
+				local isOpened = _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.ExpansionStep):IsUpgradeConditionSatisfied(player)
+				if isOpened then 
+					if storeAttractiveExpansion < storeAttractiveLevelData.ExpectedExpansionAttractive then
+						score = 12.5 * nowGroupIndex
+					else
+						score = 0
+					end
+				end
+				
+				
+			elseif reviewData.Type == "Interior" then
+				
+				local isOpened = _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.InteriorLevel):IsUpgradeConditionSatisfied(player)
+				if isOpened then
+					if storeAttractiveInterior < storeAttractiveLevelData.ExpectedInteriorAttractive then
+						score = 12.5 * nowGroupIndex
+					else
+						score = 0
+					end
+				end
+				
+						
+			elseif reviewData.Type == "Deco" then
+				
+				local isOpened = _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.StoreDeco):IsUpgradeConditionSatisfied(player)
+				
+				if isOpened then
+					if storeAttractiveDeco < storeAttractiveLevelData.ExpectedDecoAttractive then
+						score = 12.5 * nowGroupIndex
+					else
+						score = 0
+					end
+				end
+			end
+			
+		elseif reviewData.Category == "Recipe" then
+			if reviewData.Type == "Tag" then
+				local spawnPool = player.CustomerManager.CustomerSpawnDataTable
+				local totalCount = #table.keys(spawnPool)
+				local tagCount = 0
+				for id, info in pairs(spawnPool) do
+					local targetTag = info["TargetTag"]
+					if targetTag == nil then
+						continue
+					end
+					
+					if targetTag == reviewData.TypeDetail then
+						tagCount += 1
+					end
+				end
+				
+				
+				if tagCount > 0 then
+					local isTagRecipeSet = false
+					for i, recipeId in pairs(player.PlayerRecipe.SetRecipes) do
+						---@type RecipeData
+						local recipeData = player.PlayerRecipe.Recipes[recipeId]
+						if recipeData.Tag == reviewData.TypeDetail then
+							isTagRecipeSet = true
+							break
+						end
+					end
+					
+					if isTagRecipeSet == true then
+						score = 0
+					else
+						score = math.floor(tagCount / totalCount * 100)
+						
+					end
+				end
+				
+				
+			elseif reviewData.Type == "TasteScore" then
+				
+				if lackRecipeId ~= 0 then
+					score = 8 * nowGroupIndex
+				else
+					score = 0
+				end
+				
+			elseif reviewData.Type == "Trend" then
+						
+				local positiveId = nil
+				local negativeId = nil
+				for k, v in pairs(player.PlayerRecipe.NowTrend) do
+					---@type TrendData
+					local trendData = _RecipeDataSetLogic.TrendData[k]
+					if trendData.Type == "Positive" then
+						positiveId = k
+					elseif trendData.Type == "Negative" then
+						negativeId = k
+					end
+				end
+				
+				if reviewData.TypeDetail == "Positive" then
+					if positiveId ~= nil then
+						---@type TrendData
+						local trendData = _RecipeDataSetLogic.TrendData[positiveId]
+						local isTrendContained = false
+						for i, recipeId in pairs(player.PlayerRecipe.SetRecipes) do
+							---@type RecipeData
+							local recipeData = player.PlayerRecipe.Recipes[recipeId]
+							if trendData.TargetTag == recipeData.Tag then
+								isTrendContained = true
+								break
+							end
+						end
+						
+						if isTrendContained then
+							score = 0
+						else
+							score = 60
+						end
+					end
+					
+				elseif reviewData.TypeDetail == "Negative" then
+					if negativeId ~= nil then
+						---@type TrendData
+						local trendData = _RecipeDataSetLogic.TrendData[negativeId]
+						local isTrendContained = false
+						for i, recipeId in pairs(player.PlayerRecipe.SetRecipes) do
+							---@type RecipeData
+							local recipeData = player.PlayerRecipe.Recipes[recipeId]
+							if trendData.TargetTag == recipeData.Tag then
+								isTrendContained = true
+								break
+							end
+						end
+						
+						if isTrendContained == false then
+							score = 0
+						else
+							score = 60
+						end
+					end
+					
+				end
+				
+			elseif reviewData.Type == "Trial" then
+				local isTrialOpened = _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.MainMenuTrial, player)
+				local isAnyTrialBuffed = false
+				for i, recipeId in pairs(player.PlayerRecipe.SetRecipes) do
+					---@type RecipeData
+					local recipeData = player.PlayerRecipe.Recipes[recipeId]
+					if recipeData.IsTrialBuff == true then
+						isAnyTrialBuffed = true
+						break
+					end
+				end
+						
+				local isRecipeGood = lackRecipeId == 0
+				local isExpansionGood = storeAttractiveExpansion >= storeAttractiveLevelData.ExpectedExpansionAttractive
+				if _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.ExpansionStep):IsUpgradeConditionSatisfied(player) == false then
+					isExpansionGood = true
+				end
+				
+				local isInteriorGood = storeAttractiveInterior >= storeAttractiveLevelData.ExpectedInteriorAttractive
+				if _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.InteriorLevel):IsUpgradeConditionSatisfied(player) == false then
+					isInteriorGood = true
+				end
+				local isDecoGood = storeAttractiveDeco >= storeAttractiveLevelData.ExpectedDecoAttractive
+				if _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.StoreDeco):IsUpgradeConditionSatisfied(player) == false then
+					isDecoGood = true
+				end
+				
+				
+				if nowGroupIndex > 0 and isRecipeGood and isExpansionGood and isInteriorGood and isDecoGood and isTrialOpened and not isAnyTrialBuffed then
+					score = 10
+				end
+			end
+			
+		elseif reviewData.Category == "Total" then
+			if reviewData.Type == "Attractive" then
+				local isAnyTrialBuffed = false
+				for i, recipeId in pairs(player.PlayerRecipe.SetRecipes) do
+					---@type RecipeData
+					local recipeData = player.PlayerRecipe.Recipes[recipeId]
+					if recipeData.IsTrialBuff == true then
+						isAnyTrialBuffed = true
+						break
+					end
+				end
+				
+				local isTrialOpened = _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.MainMenuTrial, player)
+				if isTrialOpened == false then
+					isAnyTrialBuffed = true
+				end
+						
+				local isRecipeGood = lackRecipeId == 0
+				local isExpansionGood = storeAttractiveExpansion >= storeAttractiveLevelData.ExpectedExpansionAttractive
+				if _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.ExpansionStep):IsUpgradeConditionSatisfied(player) == false then
+					isExpansionGood = true
+				end
+				
+				local isInteriorGood = storeAttractiveInterior >= storeAttractiveLevelData.ExpectedInteriorAttractive
+				if _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.InteriorLevel):IsUpgradeConditionSatisfied(player) == false then
+					isInteriorGood = true
+				end
+				local isDecoGood = storeAttractiveDeco >= storeAttractiveLevelData.ExpectedDecoAttractive
+				if _UpgradeDataSetLogic:GetData(_UpgradeTypeEnum.StoreDeco):IsUpgradeConditionSatisfied(player) == false then
+					isDecoGood = true
+				end
+				
+				
+				if nowGroupIndex > 0 and isRecipeGood and isExpansionGood and isInteriorGood and isDecoGood and isAnyTrialBuffed then
+					score = 10
+				end
+			end
+		end
+		
+		return score
+	end
+
+	method table ReturnTutorialMainTags(Entity player)
+		-- 플레이어의 튜토리얼 메인 태그들을 반환하는 함수
+		local isFirstYear = player.PlayerAchievement:ReturnAchievementProgress(_RecordAchievementTypeEnum.YearChange) < 1
+		if isFirstYear == true then
+			return nil
+		end
+		
+		local recipeSlotCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.DisplayCount)
+		
+		if recipeSlotCount == 0 then
+			return nil
+		end
+		
+		local mainTags = {}
+		
+		local containsTable = function(t, e)
+			for i = 1, #t do
+				if t == e then
+					return true
+				end
+			end
+			return false
+		end
+		
+		local setRecipes = player.PlayerRecipe.SetRecipes
+		local userTags = {}
+		for i, recipeId in pairs(setRecipes) do
+			---@type RecipeData
+			local recipe = player.PlayerRecipe.Recipes[recipeId]
+			if containsTable(userTags, recipe.Tag) == false then
+				table.insert(userTags, recipe.Tag)
+			end
+		end
+		
+		if recipeSlotCount == 1 then
+			table.insert(mainTags, _RecipeTagEnum.Meat)
+		end
+		
+		if recipeSlotCount >= 2 then
+			table.insert(mainTags, _RecipeTagEnum.Chicken)
+			 if recipeSlotCount == 2 then
+				local addCount = 0
+				for i, tag in pairs(userTags) do
+					if containsTable(mainTags, tag) == false and addCount < 1 then
+						table.insert(mainTags, tag)
+						addCount += 1
+					end
+				end
+			else
+				table.insert(mainTags, _RecipeTagEnum.Meat)
+			end
+		end
+		
+		if recipeSlotCount >= 3 then
+			table.insert(mainTags, _RecipeTagEnum.Veggie)
+		end
+		
+		if recipeSlotCount >= 4 then
+			table.insert(mainTags, _RecipeTagEnum.Seafood)
+		end
+		
+		if recipeSlotCount >= 5 then
+			table.insert(mainTags, _RecipeTagEnum.Spicy)
+		end
+		
+		
+		return mainTags
+	end
+
+	method integer ReturnLackRecipeId(Entity player)
+		-- 플레이어가 부족한 레시피 ID를 반환하는 함수
+		local earningLevel = player.PlayerSettlement.EarningLevel
+		
+		local stageEarningLevelData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage):GetStageEarningLevelData(earningLevel)
+		if stageEarningLevelData == nil then
+			return 0
+		end
+		
+		local storeAttractiveData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+		if storeAttractiveData == nil then
+			return 0
+		end
+		
+		local lackRecipeTable = {} 
+		for slotIdx, recipeId in pairs(player.PlayerRecipe.SetRecipes) do
+			local att = player.CustomerManager:CalcRecipeAttractive(recipeId)
+			if att < stageEarningLevelData.ExpectedRecipeAttractive then
+				table.insert(lackRecipeTable, {recipeId, att})
+			end
+		end
+		
+		table.sort(lackRecipeTable, function(a, b)
+			return a[2] < b[2]
+		end)
+		
+		if #lackRecipeTable > 0 then
+			return lackRecipeTable[1][1]
+		else
+			return 0
+		end
+	end
+
+end

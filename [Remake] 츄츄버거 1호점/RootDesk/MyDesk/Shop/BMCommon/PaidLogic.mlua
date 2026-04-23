@@ -1,0 +1,741 @@
+@Logic
+script PaidLogic extends Logic
+
+	property UISpecialShop UISpecialShop = "786a099c-45ec-434d-a7ab-e64a59b2e925"
+
+	property UIEmployeeEquipShop UIEmployeeEqiupShop = "adbfcb28-8545-4c7d-b2a1-3a49d38fac77"
+
+	property UIStagePass UIStagePass = "f96cb0f0-b032-46a5-b189-a42ab5963b45"
+
+	property string WorldCoinItemId = "G2000"
+
+	method void OnBeginPlay()
+		-- 서버에서 결제 콜백 설정
+		if self:IsServer() then
+			_WorldShopService:SetProcessPurchaseCallback(self.PurchaseCallback)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PurchaseCallback(any arg1)
+		-- 월드샵 구매 콜백 처리 및 검증
+		---@type WorldShopPurchaseInfo
+		local purchaseInfo = arg1
+		
+		local userEntity = _UserService:GetUserEntityByUserId(purchaseInfo.UserId)
+		
+		if not _EntityService:IsValid(userEntity) then
+		    _PurchaseLogLogic:PurchaseFailLog_InvalidEntity(purchaseInfo)
+		    return false
+		end
+		
+		userEntity.PlayerOutgameManager:AddPurchaseCount(purchaseInfo.ProductId)
+		
+		local res = self:PurchaseProcessByShopType(purchaseInfo)
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+		
+		return res
+	end
+
+	@ExecSpace("Client")
+	method void NotifyPurchaseToClient(string productId, integer purchaseCount)
+		-- 클라이언트에 구매 완료 알림 및 UI 업데이트
+		for _,entity in pairs(self.UISpecialShop.ProductLayoutEntity.Children) do
+			if entity.UISpecialShopProduct.ProductId == productId then
+				entity.UISpecialShopProduct:ResetProductPurhaseState(purchaseCount)
+			end
+		end
+	end
+
+	method void OnPurchaseCountChanged(string userId, string productId)
+		-- 구매 횟수 변경 시 클라이언트 알림
+		
+		local purchaseCount = _UserService.UserEntities[userId].PlayerOutgameManager:GetPurchaseCount(productId)
+		self:NotifyPurchaseToClient(productId, purchaseCount, userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestPurchaseWorldShopProduct_SpecialShop(string productId, string userId)
+		-- 스페셜 샵 월드샵 상품 구매 요청 처리
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local userEntity = _UserService.UserEntities[userId]
+		---@type SpecialShopProductData
+		local productData = _SpecialShopDataLogic.SpecialShopProductData[productId]
+		local purchaseCount = userEntity.PlayerOutgameManager:GetPurchaseCount(productId)
+		if not _SpecialShopDataLogic:HasRemainingStock(productId, purchaseCount) then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		
+		end
+		
+		local itemId = _SpecialShopDataLogic.SpecialShopProductData[productId].ItemId
+		
+		local rewards = _ItemDataSetLogic:GetItemData(itemId):GetUseItems_Dictinary()
+		if rewards == nil then
+			return
+		end
+		
+		for id, count in pairs(rewards) do
+			local maxCount = userEntity.PlayerInventory:IsItemOverMaxCount(id, count)
+			if maxCount > 0 then
+				self:SendItemOverMaxCountPopup(id, maxCount, userId)
+				return
+			end
+		end
+		
+		local isCurrencyDiamond = _SpecialShopDataLogic.SpecialShopData[productData.LinkedShopId].UseItemId == "G1001"
+		if not isCurrencyDiamond then
+			local worldShopProduct = _WorldShopService:GetProductAndWait(productId)
+			if isvalid(worldShopProduct) then
+				self:PromptPurchase(productId, userId)
+			else
+				_SpecialShopDataLogic:AbnormalLog()
+				return
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestPurchaseDiamondProduct_SpecialShop(string productId, integer count, string userId)
+		-- 스페셜 샵 다이아몬드 상품 구매 요청 처리
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		
+		---@type SpecialShopProductData
+		local productData = _SpecialShopDataLogic.SpecialShopProductData[productId]
+		
+		local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+		local userEntity = _UserService.UserEntities[userId]
+		local ownDiamond = userEntity.PlayerOutgameManager:GetDiamondCount()
+		
+		local itemOwnCount = userEntity.PlayerInventory:GetItemCount(itemData.Id)
+		local canBuyCount = math.tointeger(math.min(ownDiamond // productData.Price, itemData.MaxStackCount - itemOwnCount , 999))
+		
+		if canBuyCount < count then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		
+		self:GivePurchaseItem(productData.ItemId, userId, count, false)
+		
+		local realPurchaseCount = userEntity.PlayerInventory:GetItemCount(itemData.Id) - itemOwnCount
+		if realPurchaseCount > 0 then
+			userEntity.PlayerOutgameManager:SubDiamond(realPurchaseCount * productData.Price, "SpecialShop Purchase - "..productData.ItemId, "SpecialShop Purchase")
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("ShopSuccessMessage1", nil, false, userId)
+			_PurchaseLogLogic:PurchaseSuccessLog_SpecialShop_Diamond(userId, productData, tostring(realPurchaseCount))
+		end
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+	end
+
+	@ExecSpace("Client")
+	method void PromptPurchase(string productId)
+		-- 월드샵 구매 프롬프트 표시
+		_WorldShopService:PromptPurchase(productId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GivePurchaseItem(string itemId, string userId, integer count, boolean isPackage)
+		-- 구매한 아이템을 플레이어에게 지급
+		local player = _UserService.UserEntities[userId]
+		if isPackage then
+			player.PlayerItemFunction:OpenPackage(_ItemDataSetLogic:GetItemData(itemId).funcUseItemParam, count)
+		else
+			player.PlayerInventory:AddItem(itemId, count, "SpecialShopProduct Purchase", "SpecialShopProduct Purchase")
+		end
+		
+		self:SendPurchaseResult(itemId, count, "Special Shop", userId)
+	end
+
+	@ExecSpace("Client")
+	method void SendPurchaseResult(string itemId, integer count, string source)
+		-- 구매 결과를 보상 UI로 표시
+		local rewards = _ItemDataSetLogic:GetItemData(itemId):GetUseItems_Dictinary()
+		
+		if rewards == nil then
+			rewards = {}
+			rewards[itemId] = count
+		end
+		
+		_UIItemRewardService:SetCloseUICallback(function()
+				_UIGroupManager:EnableMoneyBarGroup(nil)
+			end)
+		_UIItemRewardService:SetItemRewardUI(rewards, source)
+	end
+
+	@ExecSpace("Server")
+	method void RequestPurchaseEmployeeEquip(string employeeId, string userId)
+		-- 직원 장비 구매 요청 처리 및 지급
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		local employeeOutgameDetailTable = userEntity.EmployeeManager.EmployeeOutgameDetailTable
+		---@type EmployeeOutgameDetailData
+		local employeeOutgameDetailData = employeeOutgameDetailTable[employeeId]
+		if employeeOutgameDetailData.EquipLevel ~= -1 then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local itemOwnCount = userEntity.PlayerInventory:GetItemCount(_ItemDataEnum.EmployeeEquipOpenItemId)
+		
+		userEntity.PlayerInventory:RemoveItem(_ItemDataEnum.EmployeeEquipOpenItemId, 1, "Employee Equip Open", "Employee Equip Open", employeeId)
+		
+		userEntity.EmployeeManager:AddEmployeeEquipLevel(employeeId)
+		userEntity.ChuchuCollectionDB:LogChuchuEquipPurchase(employeeId) 
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+		
+		local buyCount = userEntity.PlayerBadge.BadgeProgress[_BadgeEnum.EmployeeEquipBuyCount]
+		if buyCount == nil then
+			buyCount = 0
+		end
+		userEntity.PlayerBadge:ChangeProgress(_BadgeEnum.EmployeeEquipBuyCount, buyCount+1)
+		
+		self:NotifyPurchaseEmployeeEquipToClient(employeeId, userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestUpgradeEmployeeEquip(string employeeId, string userId, string currencyId)
+		-- 직원 장비 업그레이드 요청 처리 및 확률 계산
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		
+		
+		local itemOwnCount = userEntity.PlayerInventory:GetItemCount(currencyId)
+		
+		---@type EmployeeOutgameDetailData
+		local myData = userEntity.EmployeeManager:GetEmployeeOutgameDetail(employeeId)
+		local lastEquipLevel = myData.EquipLevel
+		local nextEquipLevel = myData.EquipLevel + 1
+		
+		local equipUpgradeData = _EmployeeEquipUpgradeDataLogic:GetEmployeeEquipUpgrageData(nextEquipLevel)
+		local upgradeCost = equipUpgradeData.UpgradeCost
+		local upgradeProb = equipUpgradeData.UpgradeProb
+		
+		if itemOwnCount < upgradeCost then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		userEntity.PlayerInventory:RemoveItem(currencyId, upgradeCost, "Employee Equip Upgrade", "Employee Equip Upgrade", employeeId)
+		
+		local res = self:UpgradeProcess(upgradeProb)
+		
+		if res then
+			userEntity.EmployeeManager:AddEmployeeEquipLevel(employeeId)
+			
+			userEntity.ChuchuCollectionDB:LogChuchuEquipUpgrade(employeeId, "1", currencyId, tostring(upgradeCost), tostring(upgradeProb), tostring(itemOwnCount), tostring(lastEquipLevel), tostring(nextEquipLevel))
+			local badgeProgress = userEntity.PlayerBadge.BadgeProgress[_BadgeEnum.EmployeeEquipUpgradeCount]
+			if badgeProgress == nil then
+				badgeProgress = 0
+			end
+			userEntity.PlayerBadge:ChangeProgress(_BadgeEnum.EmployeeEquipUpgradeCount, badgeProgress+1)
+		else
+			userEntity.ChuchuCollectionDB:LogChuchuEquipUpgrade(employeeId, "2", currencyId, tostring(upgradeCost), tostring(upgradeProb), tostring(itemOwnCount), tostring(lastEquipLevel), tostring(nextEquipLevel))
+		end
+		
+		local _itemCount = userEntity.PlayerInventory:GetItemCount(currencyId)
+		local _equipLevel = userEntity.EmployeeManager:GetEmployeeOutgameDetail(employeeId).EquipLevel
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+		
+		self:NotifyUpgradeEmployeeEquipToClient(res, currencyId, _itemCount, _equipLevel, employeeId, userId)
+	end
+
+	@ExecSpace("Client")
+	method void NotifyPurchaseEmployeeEquipToClient(string employeeId)
+		-- 직원 장비 구매 완료를 클라이언트에 알리고 UI 업데이트
+		self.UIEmployeeEqiupShop:OnPurchaseEquipCompleted(employeeId)
+		
+		local chuchu = _UserService.LocalPlayer.CurrentMap:GetChildByName(employeeId)
+		
+		if isvalid(chuchu) then
+			local chuchuState = chuchu.EmployeeInfoScript.AnimType
+			_EmployeeService:UpdateAnim(chuchuState, chuchu)
+		end
+		
+		local player = _UserService.LocalPlayer
+		player.EmployeeManager:CallbackAfterSyncDetailTable(player.EmployeeManager:GetEmployeeDetail(employeeId)) 
+	end
+
+	@ExecSpace("Client")
+	method void NotifyUpgradeEmployeeEquipToClient(boolean res, string itemId, integer count, integer equipLevel, string employeeId)
+		-- 직원 장비 업그레이드 결과를 클라이언트에 알림
+		self.UIEmployeeEqiupShop:OnUpgradeEquipCompleted(res, itemId, count, equipLevel)
+		local player = _UserService.LocalPlayer
+		player.EmployeeManager:CallbackAfterSyncDetailTable(player.EmployeeManager:GetEmployeeDetail(employeeId)) 
+	end
+
+	@ExecSpace("Server")
+	method boolean UpgradeProcess(integer upgradeProb)
+		-- 업그레이드 확률 계산 및 랜덤 시드 설정
+		
+		local seedOffset = 1
+		for i=1, 10 do
+			seedOffset = math.random(1, 100000)
+		end
+		local seed = os.time() * 1000000 + os.clock() * 1000000 + seedOffset
+		math.randomseed(seed)
+		math.random() 
+		
+		local res = math.random(1, 100)
+		
+		self:CommonLog('강화 결과 - '..res..'/'..upgradeProb.. ' (앞의 수가 뒤의 수보다 작거나 같으면 강화 성공)')
+		
+		if res <= upgradeProb then
+			return true
+		end
+		
+		return false
+	end
+
+	method void CommonLog(string msg)
+		-- 공통 로그 출력 (비어있음)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EmployeeEquipUpgradeSimulator1(integer equipLevel, integer tryCount, string userId)
+		-- 직원 장비 업그레이드 시뮬레이터 1 (지정 레벨 획수 테스트)
+		---@type EmployeeEquipUpgradeData
+		local data = _EmployeeEquipUpgradeDataLogic:GetEmployeeEquipUpgrageData(equipLevel)
+		local upgradeProb = data.UpgradeProb
+		
+		local successCount = 0
+		
+		local startTime = os.clock() * 10000
+		for i=1, tryCount do
+			if self:UpgradeProcess(upgradeProb) then
+				successCount += 1
+			end
+		end
+		
+		local text = string.format("%d강을 %d번 시도하여 %d번 성공했습니다. (확률: %d%% / 실제: %.2f%% ) %.3f 초 소요", equipLevel, tryCount, successCount, upgradeProb, successCount/tryCount * 100, (os.clock()*10000 - startTime)/10000 )
+		
+		_UIToast:ShowMessage(text, userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EmployeeEquipUpgradeSimulator2(string userId)
+		-- 직원 장비 업그레이드 시뮬레이터 2 (전체 레벨 비용 계산)
+		local totalTries = 0
+		local totalCosts = 0
+		for i=1, _EmployeeEquipUpgradeDataLogic.MaxUpgradeLevel do 
+			---@type EmployeeEquipUpgradeData
+			local data = _EmployeeEquipUpgradeDataLogic:GetEmployeeEquipUpgrageData(i)
+			local prob = data.UpgradeProb
+			local cost = data.UpgradeCost
+			
+			local tryCount = 0
+			while (true) do
+				tryCount += 1
+				if self:UpgradeProcess(prob) == true then
+					break
+				end
+			end
+			
+			totalTries += tryCount
+			local costs = tryCount * cost
+			totalCosts += costs
+			local text = string.format("%d강 %d번 시도 %d개 주문서 소모 (확률: %d%% / 실제: %.2f%% )", i, tryCount, costs, prob, 1/tryCount * 100)
+			
+		end
+		
+		local text = string.format("총 %d번 시도하여 %d개의 주문서를 소모했습니다.", totalTries, totalCosts)
+		_UIToast:ShowMessage(text, userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestPurchaseWorldShopProduct_StagePass(string productId, string userId)
+		-- 스테이지 패스 월드샵 상품 구매 요청 처리
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local purchaseCount = _UserService:GetUserEntityByUserId(userId).PlayerOutgameManager:GetPurchaseCount(productId)
+		if purchaseCount ~= 0 then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local worldShopProduct = _WorldShopService:GetProductAndWait(productId)
+		if isvalid(worldShopProduct) then
+			self:PromptPurchase(productId, userId)
+		else
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PurchaseCallback_SpecialShop(any _Info, SpecialShopProductData productData)
+		-- 스페셜 샵 구매 콜백 처리 및 검증
+		---@type WorldShopPurchaseInfo
+		local purchaseInfo = _Info
+		
+		local userEntity = _UserService:GetUserEntityByUserId(purchaseInfo.UserId)
+		if not _EntityService:IsValid(userEntity) then
+			return false
+		end
+		
+		local itemId = _SpecialShopDataLogic.SpecialShopProductData[purchaseInfo.ProductId].ItemId
+		
+		local rewards = _ItemDataSetLogic:GetItemData(itemId):GetUseItems_Dictinary()
+		if rewards == nil then
+			return false
+		end
+		
+		for id, count in pairs(rewards) do
+			local maxCount = userEntity.PlayerInventory:IsItemOverMaxCount(id, count)
+			if maxCount > 0 then
+				self:SendItemOverMaxCountPopup(id, maxCount, purchaseInfo.UserId)
+				return false
+			end
+		end
+		
+		self:GivePurchaseItem(itemId, purchaseInfo.UserId, 1, true)
+		self:OnPurchaseCountChanged(purchaseInfo.UserId, purchaseInfo.ProductId)
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PurchaseCallback_StagePass(any _Info)
+		-- 스테이지 패스 구매 콜백 처리 및 데이터 업데이트
+		
+		---@type WorldShopPurchaseInfo
+		local purchaseInfo = _Info
+		
+		for i,data in pairs(_StagePassDataLogic.StagePassProductData) do
+			---@type StagePassProductData
+			local productData = data
+			if productData.ProductId == purchaseInfo.ProductId then
+				_UserService:GetUserEntityByUserId(purchaseInfo.UserId).PlayerOutgameManager.StagePassRecentRewardId[string.sub(productData.Id, 1, 1)] = nil
+				_PurchaseLogLogic:PurchaseSuccessLog_StagePass(purchaseInfo, productData)
+				break
+			end 
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PurchaseProcessByShopType(any _Info)
+		-- 샵 타입에 따른 구매 처리 분기 및 실행
+		
+		---@type WorldShopPurchaseInfo
+		local purchaseInfo = _Info 
+		
+		---@type SpecialShopProductData
+		local specialShopProductData = _SpecialShopDataLogic.SpecialShopProductData[purchaseInfo.ProductId]
+		if specialShopProductData ~= nil then
+			return self:PurchaseCallback_SpecialShop(purchaseInfo, specialShopProductData)
+		end
+		
+		if _StagePassDataLogic:IsWorldCoinProduct(purchaseInfo.ProductId) then
+			return self:PurchaseCallback_StagePass(purchaseInfo)
+		end
+		
+		if _PiggyBankDataLogic.PiggyBankLevelDataIdByProductId[purchaseInfo.ProductId] then
+			return self:PurchaseCallback_PiggyBank(purchaseInfo)
+		end
+		
+		_PurchaseLogLogic:PurchaseFailLog_InvalidProductId(purchaseInfo)
+		return false
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetReward_StagePass(table rewardSlotIds, string userId)
+		-- 스테이지 패스 보상 수령 요청 처리
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		if #rewardSlotIds == 0 then
+			return
+		end
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		
+		local lastRewardSlot = -1
+		local lastProductId = ""
+		
+		local items = {}
+		for i, id in pairs(rewardSlotIds) do
+			---@type StagePassRewardData
+			local rewardData = _StagePassDataLogic.StagePassRewardData[id]
+		
+			local productId = string.sub(id, 1, 2)
+			local isPurchased = _StagePassDataLogic:IsPassProductPurchased(productId, userId)
+			if isPurchased == false then
+				_SpecialShopDataLogic:AbnormalLog()
+				return
+			end
+			
+			local isReceived = userEntity.PlayerOutgameManager:GetStagePassRewardReceived(id)
+			if isReceived then
+				_SpecialShopDataLogic:AbnormalLog()
+				return
+			end
+			
+			local res = userEntity.PlayerOutgameManager:ReceiveStagePassReward(userEntity, rewardData)
+			
+			if res == false then
+				_SpecialShopDataLogic:AbnormalLog()
+				return
+			end
+			
+			_PurchaseLogLogic:StagePassCompleteLog(rewardData, userId, nil)
+			
+			
+			if items[rewardData.RewardItemId] == nil then
+				items[rewardData.RewardItemId] = rewardData.RewardItemCount
+			else
+				items[rewardData.RewardItemId] += rewardData.RewardItemCount
+			end
+			
+			local slotNum = tonumber(string.sub(id, 3, 4))
+			if lastRewardSlot < slotNum then
+				lastRewardSlot = slotNum
+				lastProductId = productId
+			end
+		end
+		
+		
+		local groupId = string.sub(lastProductId, 1, 1)
+		userEntity.PlayerOutgameManager.StagePassRecentRewardId[groupId] = lastProductId..string.format("%02d", lastRewardSlot)
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+		
+		_UIItemRewardService:SetItemRewardUI(items, "StagePass", userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetPurchaseReward_StagePass(string productId, string userId)
+		-- 스테이지 패스 구매 보상 수령 요청 처리
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		
+		---@type StagePassProductData
+		local productData = _StagePassDataLogic.StagePassProductData[productId]
+		
+		local isPurchased = _StagePassDataLogic:IsPassProductPurchased(productId, userId)
+		if isPurchased == false then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local isReceived = userEntity.PlayerOutgameManager:GetStagePassPurchaseRewardReceived(productId)
+		if isReceived then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local res = userEntity.PlayerOutgameManager:ReceiveStagePassPurchaseReward(userEntity, productData)
+		
+		if res == false then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		_PurchaseLogLogic:StagePassCompleteLog(nil, userId, productData)
+		
+		local item = {}
+		item[productData.PurchaseRewardItemId] = 1
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+		
+		_UIItemRewardService:SetItemRewardUI(item, "StagePass Purchase Reward", userId)
+	end
+
+	@ExecSpace("Client")
+	method void SendItemOverMaxCountPopup(string itemId, integer maxCount)
+		-- 아이템 최대 수량 초과 알림 팝업 표시
+		_UIPurchasePopupLogic:OpenOverMaxCountPopup(itemId, _ItemDataSetLogic:GetItemData(itemId).NameKey, maxCount, nil, false, true)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddEarnings_PiggyBank(integer earnings, string userId)
+		-- 피기뱅크 수익 추가 및 데이터 저장
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		userEntity.PlayerSettlement:AddPiggyBankEarnings(earnings)
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+	end
+
+	@ExecSpace("Server")
+	method void RequestReceiveReward_PiggyBank(integer slotId, string userId)
+		-- 피기뱅크 보상 수령 요청 처리
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		
+		
+		---@type PiggyBankLevelUpRewardData
+		local rewardData = _PiggyBankDataLogic.PiggyBankLevelUpRewardData[slotId]
+		if rewardData == nil then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		local myLevel = userEntity.PlayerOutgameManager.PiggyBankLevel
+		
+		if myLevel <= rewardData.RequiredLevel then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		
+		end
+		
+		if userEntity.PlayerOutgameManager:ReceivePiggyBankReward(userEntity, rewardData) then
+			
+			_PurchaseLogLogic:PiggyBankLevelUpRewardLog(rewardData, userId)
+			local item = {}
+			item[rewardData.ItemId] = rewardData.ItemCount
+			
+			userEntity.PlayerDBManager:SaveToDB(false)
+			
+			_UIItemRewardService:SetItemRewardUI(item, "PiggyBank Reward", userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestPurchaseWorldShopProduct_PiggyBank(string userId)
+		-- 피기뱅크 월드샵 상품 구매 요청 처리
+		if senderUserId ~= userId then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local playerOutgameManager = _UserService:GetUserEntityByUserId(userId).PlayerOutgameManager
+		local myLevel = playerOutgameManager.PiggyBankLevel
+		local nextLevel = myLevel + 1
+		if nextLevel > _PiggyBankDataLogic.MaxLevelDefault then
+			nextLevel = _PiggyBankDataLogic.MaxLevelDefault
+		end
+		local productId = _PiggyBankDataLogic:GetPiggyBankLevelData(myLevel).ProductId
+		
+		local purchaseCount = playerOutgameManager:GetPurchaseCount(productId)
+		if nextLevel ~= _PiggyBankDataLogic.MaxLevelDefault and purchaseCount ~= 0 then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		if not playerOutgameManager:IsPiggyBankFull() then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		local worldShopProduct = _WorldShopService:GetProductAndWait(productId)
+		if isvalid(worldShopProduct) then
+			self:PromptPurchase(productId, userId)
+		else
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PurchaseCallback_PiggyBank(any _Info)
+		-- 피기뱅크 구매 콜백 처리 및 레벨 검증
+		---@type WorldShopPurchaseInfo
+		local purchaseInfo = _Info
+		local purchasedLevelData = _PiggyBankDataLogic:GetPiggyBankLevelDataByProductId(purchaseInfo.ProductId)
+		local userEntity = _UserService:GetUserEntityByUserId(purchaseInfo.UserId)
+		local myLevel = userEntity.PlayerOutgameManager.PiggyBankLevel
+		
+		local nextLevel = myLevel + 1
+		if nextLevel > _PiggyBankDataLogic.MaxLevelDefault then
+			nextLevel = _PiggyBankDataLogic.MaxLevelDefault
+		end
+		if myLevel ~= purchasedLevelData.Level then
+			local invalidLevelMsg = string.format("Failed to purchase the piggy bank for the specified level. %d -> %d", myLevel, nextLevel)
+			_PurchaseLogLogic:PurchaseFailLog_UnauthorizedPiggyBank(purchaseInfo, invalidLevelMsg)
+			return false
+		end
+		
+		if not userEntity.PlayerOutgameManager:IsPiggyBankFull() then
+			local invalidLevelMsg = string.format("The piggy bank was purchased even though it was not full. NowPoint - %d", userEntity.PlayerOutgameManager.PiggyBankPoint)
+			_PurchaseLogLogic:PurchaseFailLog_UnauthorizedPiggyBank(purchaseInfo, invalidLevelMsg)
+			return false
+		end
+		
+		userEntity.PlayerOutgameManager:AddPiggyBankLevel()
+		_PurchaseLogLogic:PurchaseSuccessLog_PiggyBank(purchaseInfo, purchasedLevelData)
+		
+		userEntity.PlayerOutgameManager.PiggybankTotalPurchaseCount += 1
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void RequestPurchase_BoosterPack(integer packageNumber, string userId)
+		-- 부스터 팩 구매 요청 처리 및 검증
+		if senderUserId ~= userId then
+			local msg = string.format("The user who sent the packet is different from the user attempting the purchase. sender - %s, purchaser - %s", senderUserId, userId)
+			_PurchaseLogLogic:PurchaseFailLog_UnauthorizedBoosterPack(userId, msg, _PurchaseLogLogic.EmptyString, -1)
+			return
+		end
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		local nowStage = userEntity.PlayerStage.NowStage
+		
+		---@type BoosterPackData
+		local boosterPackData = _BoosterPackDataLogic.BoosterPackData[nowStage]
+		local pacakageItemId = boosterPackData.BoosterPackItemIdPricePair[packageNumber][1]
+		local pacakagePrice = boosterPackData.BoosterPackItemIdPricePair[packageNumber][2]
+		
+		
+		local myDiamond = userEntity.PlayerOutgameManager:GetDiamondCount()
+		
+		if pacakagePrice > 0 and myDiamond < pacakagePrice then
+			local msg = string.format("An attempt to purchase was made despite insufficient diamonds. myDiamond - %d, price - %d", myDiamond, pacakagePrice)
+			_PurchaseLogLogic:PurchaseFailLog_UnauthorizedBoosterPack(userId, msg, pacakageItemId, pacakagePrice)
+			return
+		end
+		if userEntity.PlayerManagement:OnBoosterPackPurchased(packageNumber, nowStage, userEntity) == false then
+			local msg = "Already purchased."
+			_PurchaseLogLogic:PurchaseFailLog_UnauthorizedBoosterPack(userId, msg, pacakageItemId, pacakagePrice)
+			return	
+		end
+		
+		userEntity.PlayerOutgameManager:AddPurchaseCount(pacakageItemId)
+		
+		userEntity.PlayerOutgameManager:SubDiamond(pacakagePrice, "BoosterPack Purchase", "BoosterPack Purchase")
+		userEntity.PlayerItemFunction:OpenPackage(_ItemDataSetLogic:GetItemData(pacakageItemId).funcUseItemParam, 1)
+		
+		_PurchaseLogLogic:PurchaseSuccessLog_BoosterPack(userId, pacakageItemId, pacakagePrice)
+		
+		userEntity.PlayerDBManager:SaveToDB(false)
+		
+		self:SendPurchaseResult(pacakageItemId, 1, "BoosterPack", userId)
+	end
+
+end

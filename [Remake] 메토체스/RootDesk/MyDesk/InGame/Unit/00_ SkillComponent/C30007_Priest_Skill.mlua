@@ -1,0 +1,150 @@
+@Component
+script C30007_Priest_Skill extends Component
+
+	property number skillAnimLength = 0.8
+
+	property string buffEffectRUID = "5c5962004561407891143b01456dba91"
+
+	property string skillObjRUID = "5cfd25d3ec694ba69ae10952aefbeb93"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		
+		local setBuffCount = 0
+		local setBuffTimer = 0
+		
+		-- 가장 아군이 많은 곳에 버프를 주어야 함
+		---@type table<Entity>
+		local myTeams = {}
+		if unitInfo.TeamType == "User" then
+			myTeams = teamManager.OwnUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			myTeams = teamManager.EnemyUnits
+		end
+		
+		local checkMyTeams = _BTLogic_New:getEntities(myTeams, "Alive")
+		local setTileInfo = _BTLogic_New:getTile(myUnit, checkMyTeams, "TileWithMostEnemies_All_2")
+		local setTile = setTileInfo[1]
+		
+		local function SetSkillObjTimerFnc()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetSkillObj(setTile)
+			end
+		end
+		
+		
+		
+		local buffTime = tonumber(_S01_SkillDescLogic.C30007_Active_SkillTime_Int[unitInfo.level])
+		local function SetBuff()
+			checkMyTeams = _BTLogic_New:getEntities(myTeams, "Alive")
+			local getBuffTeamUnits = _BTLogic_New:getTargets(setTile, checkMyTeams, "Around_0_2")
+				
+			for _, teamUnit in pairs(getBuffTeamUnits) do
+				if _BTLogic_New:CheckAttackAble(teamUnit, teamUnit, "Skill") then
+					self:SetBuff(teamUnit)
+				end
+			end
+				
+			setBuffCount += 0.5
+			if setBuffCount >= buffTime then
+				_TimerService:ClearTimer(setBuffTimer)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(SetSkillObjTimerFnc, 0)
+		setBuffTimer = _TimerService:SetTimerRepeat(SetBuff, 0.5 / skillRate, 1.13 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0096", self.Entity.UnitInfo.OwnerId)
+		
+		--연출
+		self:PlaySkillEffect(setTile, unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillObj(Entity setTile)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1}
+		_CustomizedBattleEffectService:PlayEffectAttached(self.skillObjRUID, setTile, Vector3(0, 0, 0), 0, Vector3(1.5, 1.5, 1.5), false, options, unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBuff(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:BuffEffect(targetUnit, unitInfo.OwnerId)
+			
+			local getHP = unitStatus.MagicalAttack * _S01_SkillDescLogic.C30007_Active_GetHP_Magic[unitInfo.level]
+			
+			_StatusChangeLogic:SetVariableStatus(myUnit, targetUnit, "HP", getHP, "skill")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void BuffEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill BuffEffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.buffEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void PlaySkillEffect(Entity targetTile)
+		--범위 표시
+		local tiles = {}
+		if self.Entity.UnitInfo.TeamType == "User" then
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("Priest", 2, targetTile)
+		else
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("Priest", 2, targetTile)
+		end
+		
+		local removetile = function()
+			for i = 1, #tiles do
+				tiles[i].Enable = false
+				_GeneralDirectorLogic:InsertRangeEntity(tiles[i])
+			end
+		end
+		
+		_TimerService:SetTimerOnce(removetile, 4)
+	end
+
+end

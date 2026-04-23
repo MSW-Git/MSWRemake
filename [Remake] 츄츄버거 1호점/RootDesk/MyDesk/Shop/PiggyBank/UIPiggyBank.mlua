@@ -1,0 +1,344 @@
+@Component
+script UIPiggyBank extends Component
+
+	property string MyCurrentPointBgRuid_Default = "fa38390b79434182852e89ded7d3067e"
+
+	property string MyCurrentPointBgRuid_Full = "fe19d7f548f24242b4853133697aaf60"
+
+	property SpriteGUIRendererComponent MyCurrentPointBg = "360937c9-db03-4386-ac2b-504e21758f3f"
+
+	property TextComponent UIDiscountRateText = "5ad886d8-8444-4191-9e1f-dd4a5469fd7b"
+
+	property TextComponent MyCurrentPointText = "016106e9-9893-4b34-9b62-2716dca284b2"
+
+	property UITransformComponent GaugeBg = "115b963e-61b0-4f30-bd10-5ec0bfb4f697"
+
+	property UITransformComponent GaugeFillSprite = "4b7bffd4-2691-4f51-9786-6349b3e4f907"
+
+	property TextComponent LevelText = "8420c24a-8256-44ac-9319-97712bbafea9"
+
+	property TextComponent MaxPointText = "2ee724a9-369a-43cc-84ec-f9ca185c89df"
+
+	property TextComponent PriceText = "4ed81126-a866-4939-905f-c46a7003eb35"
+
+	property Entity PruchaseDescText1 = "0994e30c-3287-4706-9eec-094f8f7b8699"
+
+	property Entity PruchaseDescText2 = "8e6fafbf-3eae-40f7-bb34-e02d11f580db"
+
+	property TextComponent MaxPointCurrent = "a6707a37-0de3-4110-be77-ea741bd8eb1d"
+
+	property TextComponent MaxPointNext = "90678250-4add-4977-a7ba-362e8c4cc259"
+
+	property Entity LevelUpRewardList = "848b4925-e448-49de-b02d-6295c2ca9de7"
+
+	property boolean IsInit = false
+
+	property SyncTable<EntityRef> PiggyBankBtnEntities
+
+	property Entity PiggyBankToolTip = "5b0e8fff-262f-443e-9532-10059b945d40"
+
+	property TextComponent PolicyText = "75774f24-63f4-4318-af41-b587db8e1d59"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 저금통 UI 초기화 및 스크롤뷰와 버튼 엔티티 설정
+		self.LevelUpRewardList.RecycleScrollView.onUpdateCell = function(index, entity)
+			---@type Entity
+			local slotEntity = entity
+			slotEntity.UIPiggyBankLevelUpRewardSlot:Init(index)
+		end
+		
+		self.PiggyBankBtnEntities[1] = _EntityService:GetEntityByPath("/ui/LobbyHUDGroup/DropdownItemGroup_Shop/ItemList/PiggyBankButton")
+		self.PiggyBankBtnEntities[2] = _EntityService:GetEntityByPath("/ui/UISpecialShopGroup/ButtonScroll/PiggyBankButton")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- 저금통 UI의 모든 요소를 플레이어 데이터에 맞게 초기화
+		if self.IsInit == false then
+			self.IsInit = true
+		else
+			return
+		end
+		
+		local player = _UserService.LocalPlayer
+		local myPoint = player.PlayerOutgameManager.PiggyBankPoint
+		local myLevel = player.PlayerOutgameManager.PiggyBankLevel
+		
+		---@type PiggyBankLevelData
+		local levelData = _PiggyBankDataLogic.PiggyBankLevelData[myLevel]
+		
+		if player.PlayerOutgameManager:IsPiggyBankFull() then
+			myPoint = levelData.MaxPoint
+			self.MyCurrentPointBg.ImageRUID = self.MyCurrentPointBgRuid_Full
+		else
+			self.MyCurrentPointBg.ImageRUID = self.MyCurrentPointBgRuid_Default
+		end
+		
+		self.MyCurrentPointText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(myPoint)
+		self.GaugeBg.RectSize.x = levelData.GaugeWidth
+		self:ResetGaugeFillSprite()
+		
+		self.LevelText.Text = _LocalizationService:GetText(levelData.ProductName)
+		self.MaxPointText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(levelData.MaxPoint)
+		self:ResetDiscountRate(levelData)
+		self:ResetMaxPointTextPositionByGauge(levelData.GaugeWidth)
+		
+		self:ResetMidSectionUI(myLevel, levelData)
+		
+		self.LevelUpRewardList.RecycleScrollView:SetTotalCount(#_PiggyBankDataLogic.PiggyBankLevelUpRewardData)
+		self.LevelUpRewardList.RecycleScrollView:Refresh(true)
+		
+		self:ResetPolicyText(levelData)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 저금통 UI 그룹을 비활성화하여 닫기
+		_UIGroupManager:EnablePiggyBankGroup(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 저금통 UI 그룹을 활성화하고 초기화하여 열기
+		_UIGroupManager:EnablePiggyBankGroup(true)
+		self:Init()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitBottomSection()
+		-- 저금통 레벨업 보상 섹션을 동적으로 생성하고 초기화
+		local rewardDatas = _PiggyBankDataLogic.PiggyBankLevelUpRewardData
+		local dataCount = #rewardDatas
+		
+		for i=1, dataCount do
+			local entityName = "Reward"..i
+			local modelName = "Model_PiggyBankLevelUpRewardSlot"
+			local entity = self.LevelUpRewardList:GetChildByName(entityName)
+			if entity == nil then
+				local modelId = _EntryService:GetModelIdByName(modelName)
+				entity = _SpawnService:SpawnByModelId(modelId, entityName, Vector3.zero, self.LevelUpRewardList)
+			end
+			entity.UIPiggyBankLevelUpRewardSlot:Init(i)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetGaugeFillSprite()
+		-- 현재 포인트에 따라 게이지 채우기 스프라이트 크기를 조정
+		local player = _UserService.LocalPlayer
+		
+		local myLevel = player.PlayerOutgameManager.PiggyBankLevel
+		local maxPoint = _PiggyBankDataLogic:GetPiggyBankLevelData(myLevel).MaxPoint
+		self.GaugeFillSprite.RectSize.x = player.PlayerOutgameManager.PiggyBankPoint / maxPoint * self.GaugeBg.RectSize.x
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdatePoint()
+		-- 포인트 변경 시 배경 이미지와 텍스트, 게이지를 업데이트
+		
+		local player = _UserService.LocalPlayer
+		local myPoint = player.PlayerOutgameManager.PiggyBankPoint
+		
+		if player.PlayerOutgameManager:IsPiggyBankFull() then
+			self.MyCurrentPointBg.ImageRUID = self.MyCurrentPointBgRuid_Full
+		else
+			self.MyCurrentPointBg.ImageRUID = self.MyCurrentPointBgRuid_Default
+		end
+		
+		self.MyCurrentPointText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(myPoint)
+		self:ResetGaugeFillSprite()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdateLevel()
+		-- 레벨 변경 시 UI의 모든 레벨 관련 요소들을 업데이트
+		local player = _UserService.LocalPlayer
+		local myLevel = player.PlayerOutgameManager.PiggyBankLevel
+		local levelData = _PiggyBankDataLogic:GetPiggyBankLevelData(myLevel)
+		
+		self.LevelText.Text = _LocalizationService:GetText(levelData.ProductName)
+		self.GaugeBg.RectSize.x = levelData.GaugeWidth
+		self.MaxPointText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(levelData.MaxPoint)
+		
+		self:ResetDiscountRate(levelData)
+		
+		self:ResetMidSectionUI(myLevel, levelData)
+		
+		self:OnUpdatePoint()
+		
+		self:ResetRedDot()
+		
+		self:ResetMaxPointTextPositionByGauge(levelData.GaugeWidth)
+		
+		self:ResetPolicyText(levelData)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetMidSectionUI(integer myLevel, PiggyBankLevelData levelData)
+		-- 현재 레벨에 따라 중간 섹션 UI를 최대 레벨 도달 여부에 따라 설정
+		self.PriceText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(levelData.Price)
+		
+		if myLevel >= _PiggyBankDataLogic.MaxLevelDefault then
+			self.PruchaseDescText2.Enable = true
+			
+			self.PruchaseDescText1.Enable = false
+			self.MaxPointCurrent.Entity.Parent.Enable = false 
+		else
+			self.PruchaseDescText1.Enable = true
+			self.MaxPointCurrent.Entity.Parent.Enable = true 
+			
+			self.MaxPointCurrent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(levelData.MaxPoint)
+			---@type PiggyBankLevelData
+			local nextLevelData = _PiggyBankDataLogic.PiggyBankLevelData[myLevel + 1]
+			self.MaxPointNext.Text = _StringUtilLogic:ReturnThousandsSeparatedString(nextLevelData.MaxPoint)
+			
+			self.PruchaseDescText2.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetRedDot()
+		-- 수령 가능한 보상이 있는지 확인하여 빨간 점 표시 상태를 설정
+		
+		local isRedDotOn = false
+		
+		local playerOutgameManaer = _UserService.LocalPlayer.PlayerOutgameManager
+		local myPiggyBankLevel = playerOutgameManaer.PiggyBankLevel
+		
+		for k,v in pairs(_PiggyBankDataLogic.PiggyBankLevelUpRewardData) do
+			---@type PiggyBankLevelUpRewardData
+			local rewardData = v
+			if myPiggyBankLevel > rewardData.RequiredLevel and playerOutgameManaer.PiggyBankRewardReceived[rewardData.RewardSlotIndex] ~= true then
+				isRedDotOn = true
+				break
+			end
+		end
+		
+		for _,entity in pairs(self.PiggyBankBtnEntities) do
+			entity:GetChildByName("RedDot").Enable = isRedDotOn
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetMaxPointTextPositionByGauge(integer gaugeWidth)
+		-- 게이지 너비에 따라 최대 포인트 텍스트의 위치를 조정
+		self.MaxPointText.Entity.UITransformComponent.anchoredPosition.x = gaugeWidth + _PiggyBankDataLogic.MaxPointTextOffset
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetDiscountRate(PiggyBankLevelData levelData)
+		-- 레벨에 따라 할인율 텍스트 표시 여부와 내용을 설정
+		if levelData.Level < 2 then
+			self.UIDiscountRateText.Entity.Parent.Enable = false
+		else
+			self.UIDiscountRateText.Entity.Parent.Enable = true
+			self.UIDiscountRateText.Text = levelData.UIDiscountRate.."%"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetPolicyText(PiggyBankLevelData levelData)
+		-- 레벨에 따라 정책 설명 텍스트 표시 여부와 내용을 설정
+		if levelData.Level < 2 then
+			self.PolicyText.Entity.Enable = false
+		else
+			self.PolicyText.Entity.Enable = true
+			self.PolicyText.Text = _LocalizationService:GetTextFormat("PolicyExplanationForDiscountText2", levelData.Level, levelData.UIDiscountRate)
+		end
+	end
+
+	@EventSender("Entity", "42b3162f-d501-4071-905b-4ff1d8bc257f")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 시 닫기 사운드 재생 후 UI 닫기
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+	@EventSender("Entity", "352c9e9b-3e63-4b18-96ba-d33d89bb676e")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 저금통 열기 버튼 클릭 시 UI 열기
+		
+		self:Open()
+	end
+
+	@EventSender("Entity", "2e419d9e-7e91-45c3-b8a4-e83251a826eb")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 저금통 열기 버튼 클릭 시 UI 열기
+		
+		self:Open()
+	end
+
+	@EventSender("Entity", "f59ad430-b8c7-4be9-8ca6-3f812d224dde")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 저금통 구매 버튼 클릭 시 포인트 가득참 여부 확인 후 구매 처리
+		local player = _UserService.LocalPlayer 
+		if player.PlayerOutgameManager:IsPiggyBankFull() then
+			
+			local maxCount = player.PlayerInventory:IsItemOverMaxCount(_PiggyBankDataLogic.DiamondItemIdDefault, player.PlayerOutgameManager.PiggyBankPoint)
+			if maxCount > 0 then
+				_UIPurchasePopupLogic:OpenOverMaxCountPopup(_PiggyBankDataLogic.DiamondItemIdDefault, _ItemDataSetLogic:GetItemData(_PiggyBankDataLogic.DiamondItemIdDefault).NameKey, maxCount, nil, false, true)
+				return
+			end
+			
+			local productName = _PiggyBankDataLogic:GetPiggyBankLevelData(player.PlayerOutgameManager.PiggyBankLevel).ProductName
+			productName = _LocalizationService:GetText(productName)
+			_UIPurchasePopupLogic:OpenPurchaseConfirmPopup_Immediately(productName, function() 
+				_PaidLogic:RequestPurchaseWorldShopProduct_PiggyBank(player.PlayerComponent.UserId)
+			end)
+		else
+			_UIToast:ShowMessage(_LocalizationService:GetText("PiggyBankNeeToFillUpToastMsg"))
+		end
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerPiggyBankPointChangedEvent(PlayerPiggyBankPointChangedEvent event)
+		-- 플레이어 저금통 포인트 변경 시 UI 업데이트
+		if self.IsInit == false then
+			return
+		end
+		
+		self:OnUpdatePoint()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerPiggyBankLevelChangedEvent(PlayerPiggyBankLevelChangedEvent event)
+		-- 플레이어 저금통 레벨 변경 시 UI 업데이트 또는 빨간 점만 업데이트
+		if self.IsInit == false then
+			self:ResetRedDot()
+			return
+		end
+		
+		self:OnUpdateLevel()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerPiggyBankRewardReceivedChangedEvent(PlayerPiggyBankRewardReceivedChangedEvent event)
+		-- 플레이어 저금통 보상 수령 상태 변경 시 빨간 점 상태 업데이트
+		self:ResetRedDot()
+	end
+
+	@EventSender("Entity", "ef2aa66e-2b38-41fb-9e9b-a94362c3d45d")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 환불 관련 버튼 클릭 시 철회 안내 팝업 열기
+		
+		_UIPurchasePopupLogic:OpenWithdrawalNoticePopup()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerNowStageChangedEvent(PlayerNowStageChangedEvent event)
+		-- 플레이어 현재 스테이지 변경 시 저금통 버튼 활성화 여부 설정
+		local nowStage = _UserService.LocalPlayer.PlayerStage.NowStage
+		local enable = false
+		if nowStage >= 2 then
+			enable = true
+		end
+		
+		_LobbyHUDService.DropDown_BM.UIHUDDropDown:SetDrawOfName(_HUDDropDownEnum.PiggyBankButton, enable)
+		for _,entity in pairs(self.PiggyBankBtnEntities) do
+			entity.Enable = enable
+		end
+	end
+
+end

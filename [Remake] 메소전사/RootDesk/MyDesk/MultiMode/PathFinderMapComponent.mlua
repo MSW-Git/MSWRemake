@@ -1,0 +1,408 @@
+@Component
+script PathFinderMapComponent extends Component
+
+	property any Path = nil
+
+	property RectTileMapComponentRef tileMap = "439bface-921f-46fd-ba17-82585381fa04"
+
+	property number maxFindCount = 4000
+
+	property table cachedPath = {}
+
+	method void OnBeginPlay()
+		-- 패스파인더 컴포넌트 초기화
+		
+	end
+
+	method any GetDistance()
+		-- 경로의 총 거리 계산
+		 local path = self.Path
+		 if not path then return end
+		 return self._T.distance( path[1], path[#path] )
+	end
+
+	method any GetTiles()
+		-- 경로의 타일 개수 반환
+		local path = self.Path
+		if not path then return end
+		return #path
+	end
+
+	method table FindPath(any start, any finish)
+		-- A* 알고리즘을 사용한 경로 탐색
+		
+		
+		local path = self._T.CalculatePath(start,finish,self.maxFindCount)
+		if path == nil or #path == 0 then
+			return {}
+		end
+		
+		return path
+		
+	end
+
+	method void SetUpVector()
+		-- Vector 클래스 및 메타메소드 설정
+		if Vector ~= nil then
+			return
+		end
+		
+		Vector = {}
+		Vector.__index = Vector
+		
+		
+		
+		function Vector.new( x, y )
+		    return setmetatable( { x = x or 0, y = y or 0 }, Vector )
+		end
+		
+		function isvector( vTbl )
+		    return getmetatable( vTbl ) == Vector
+		end
+		
+		function Vector.__unm( vTbl )
+		    return Vector.new( -vTbl.x, -vTbl.y )
+		end
+		
+		function Vector.__add( a, b )
+		    return Vector.new( a.x + b.x, a.y + b.y )
+		end
+		
+		function Vector.__sub( a, b )
+		    return Vector.new( a.x - b.x, a.y - b.y )
+		end
+		
+		function Vector.__mul( a, b )
+		    if type( a ) == "number" then
+		        return Vector.new( a * b.x, a * b.y )
+		    elseif type( b ) == "number" then
+		        return Vector.new( a.x * b, a.y * b )
+		    else
+		        return Vector.new( a.x * b.x, a.y * b.y )
+		    end
+		end
+		
+		function Vector.__div( a, b )
+		    return Vector.new( a.x / b, a.y / b )
+		end
+		
+		function Vector.__eq( a, b )
+		    return a.x == b.x and a.y == b.y
+		end
+		
+		function Vector:__tostring()
+		    return "(" .. self.x .. ", " .. self.y .. ")"
+		end
+		
+		function Vector:ID()
+		    if self._ID == nil then
+		        local x, y = self.x, self.y
+		        self._ID = 0.5 * ( ( x + y ) * ( x + y + 1 ) + y )
+		    end
+		
+		    return self._ID
+		end
+		
+	end
+
+	method any GetCellPosition(Vector3 pos)
+		-- 월드 좌표를 셀 좌표로 변환
+		return self.tileMap:ToCellPosition(pos)
+	end
+
+	method Vector3 ToWorldPosition(Vector2 v)
+		-- 셀 좌표를 월드 좌표로 변환
+		return self.tileMap:ToWorldPosition(Vector2Int(v.x,v.y))
+	end
+
+	method boolean IsOpenTile(Vector2 pos)
+		-- 해당 위치의 타일이 이동 가능한지 확인
+		return self._T.IsOpenTile(Vector.new(pos.x,pos.y))
+	end
+
+	method void FindPathAync(any start, any finish, any callback)
+		-- 비동기 경로 탐색 (콜백 방식)
+		self._T.CalculatePathAync(start,finish,self.maxFindCount,function(path) 
+			if path == nil or #path == 0 then
+				path = {}
+			end
+			callback(path)
+		end)
+		
+	end
+
+	method void BeginPlayTest()
+		-- A* 알고리즘 초기화 및 경로 탐색 함수 설정
+		self:SetUpVector()
+		
+		local function distanceSquared(start, finish)
+		    local dx = start.x - finish.x
+		    local dy = start.y - finish.y
+		    return dx * dx + dy * dy
+		end
+		
+		local cacheColliderInfo = {}
+		
+		local function positionIsOpenTable(pos)
+		    if cacheColliderInfo[pos] ~= nil then
+		        return cacheColliderInfo[pos]
+		    end
+		    local tile = self.tileMap:GetTile(Vector2Int(pos.x, pos.y))
+		    if tile == nil then
+		        return true
+		    end
+		    local isOpen = not tile.IsCollidable
+		    cacheColliderInfo[pos] = isOpen
+		    return isOpen
+		end
+		
+		self._T.IsOpenTile = positionIsOpenTable
+		
+		local adjacentPositions = {
+		    Vector.new(0, -1),
+		    Vector.new(-1, 0),
+		    Vector.new(0, 1),
+		    Vector.new(1, 0)
+		}
+		
+		local adjacentPositionsCross = {
+		    Vector.new(-1, -1),
+		    Vector.new(1, -1),
+		    Vector.new(-1, 1),
+		    Vector.new(1, 1)
+		}
+		
+		local function fetchOpenAdjacentNodes(pos)
+		    local result = {}
+		
+		    for _, offset in ipairs(adjacentPositions) do
+		        local adjacentPos = pos + offset
+		        if positionIsOpenTable(adjacentPos) then
+		            table.insert(result, adjacentPos)
+		        end
+		    end
+		
+		    for _, offset in ipairs(adjacentPositionsCross) do
+		        local adjacentPos = pos + offset
+		        local adjacentPos2 = pos + Vector.new(offset.x, 0)
+		        local adjacentPos3 = pos + Vector.new(0, offset.y)
+		        if positionIsOpenTable(adjacentPos) and positionIsOpenTable(adjacentPos2) and positionIsOpenTable(adjacentPos3) then
+		            table.insert(result, adjacentPos)
+		        end
+		    end
+		
+		    return result
+		end
+		
+		local function VectorGetId(pos)
+		    local x, y = pos.x, pos.y
+		    return 0.5 * ((x + y) * (x + y + 1) + y)
+		end
+		
+		self._T.CalculatePath = function(startIntPos, finishIntPos, maxCount)
+		    local start = Vector.new(startIntPos.x, startIntPos.y)
+		    local finish = Vector.new(finishIntPos.x, finishIntPos.y)
+		
+		    if not positionIsOpenTable(finish) then
+		        return
+		    end
+		
+		    local open, closed = {}, {}
+		
+		    start.gScore = 0
+		    start.hScore = distanceSquared(start, finish)
+		    start.fScore = start.hScore
+		
+		    open.Compare = function(a, b)
+		        return a.fScore < b.fScore
+		    end
+		
+		    table.insert(open, start)
+		
+		    local count = 0
+		    while not (#open == 0 or count > maxCount) do
+		        count = count + 1
+		        local current = open[1]
+		        table.remove(open, 1)
+		        local currentId = VectorGetId(current)
+		        if not closed[currentId] then
+		            if current == finish then
+		                local path = {}
+		                while true do
+		                    if current.previous then
+		                        table.insert(path, 1, current)
+		                        current = current.previous
+		                    else
+		                        table.insert(path, 1, start)
+		                        self.Path = path
+		
+		                        return path
+		                    end
+		                end
+		            end
+		
+		            closed[currentId] = true
+		
+		            local adjacents = fetchOpenAdjacentNodes(current)
+		            for _, adjacent in ipairs(adjacents) do
+		                local adjacentId = VectorGetId(adjacent)
+		                if not closed[adjacentId] then
+		                    local added_gScore = current.gScore + distanceSquared(current, adjacent)
+		
+		                    if not adjacent.gScore or added_gScore < adjacent.gScore then
+		                        adjacent.gScore = added_gScore
+		                        adjacent.hScore = distanceSquared(adjacent, finish)
+		                        adjacent.fScore = added_gScore + adjacent.hScore
+		
+		                        table.insert(open, adjacent)
+		                        adjacent.previous = current
+		                    end
+		                end
+		            end
+		        end
+		    end
+		end
+		
+		
+		
+		
+		local callcnt = 0
+		
+		self._T.CalculatePathAync = function(startIntPos, finishIntPos, maxCount,callback)
+		
+		    local start = Vector.new(startIntPos.x, startIntPos.y)
+		    local finish = Vector.new(finishIntPos.x, finishIntPos.y)
+		
+		    if not positionIsOpenTable(finish) then
+		        return
+		    end
+		
+		    local open, closed = {}, {}
+		
+		    start.gScore = 0
+		    start.hScore = distanceSquared(start, finish)
+		    start.fScore = start.hScore
+		
+		    open.Compare = function(a, b)
+		        return a.fScore < b.fScore
+		    end
+		
+		    table.insert(open, start)
+		
+		    local count = 0
+		    while not (#open == 0 or count > maxCount) do
+		        count = count + 1
+		        local current = open[1]
+		        table.remove(open, 1)
+		        local currentId = VectorGetId(current)
+		        if not closed[currentId] then
+		            if current == finish then
+		                local path = {}
+		                while true do
+		                    if current.previous then
+		                        table.insert(path, 1, current)
+		                        current = current.previous
+		                    else
+		                        table.insert(path, 1, start)
+								callback(path)
+								return
+		                    end
+		                end
+		            end
+		
+		            closed[currentId] = true
+		
+		            local adjacents = fetchOpenAdjacentNodes(current)
+		            for _, adjacent in ipairs(adjacents) do
+		                local adjacentId = VectorGetId(adjacent)
+		                if not closed[adjacentId] then
+		                    local added_gScore = current.gScore + distanceSquared(current, adjacent)
+		
+		                    if not adjacent.gScore or added_gScore < adjacent.gScore then
+		                        adjacent.gScore = added_gScore
+		                        adjacent.hScore = distanceSquared(adjacent, finish)
+		                        adjacent.fScore = added_gScore + adjacent.hScore
+		
+		                        table.insert(open, adjacent)
+		                        adjacent.previous = current
+		                    end
+		                end
+		            end
+		        end
+				if count %30 == 0 then
+					wait(0.01)
+				end
+		    end
+		end
+		
+		
+		
+		self._T.CalculatePathWait = function(startIntPos, finishIntPos, maxCount)
+		
+		    local start = Vector.new(startIntPos.x, startIntPos.y)
+		    local finish = Vector.new(finishIntPos.x, finishIntPos.y)
+		
+		    if not positionIsOpenTable(finish) then
+		        return
+		    end
+		
+		    local open, closed = {}, {}
+		
+		    start.gScore = 0
+		    start.hScore = distanceSquared(start, finish)
+		    start.fScore = start.hScore
+		
+		    open.Compare = function(a, b)
+		        return a.fScore < b.fScore
+		    end
+		
+		    table.insert(open, start)
+		
+		    local count = 0
+		    while not (#open == 0 or count > maxCount) do
+		        count = count + 1
+		        local current = open[1]
+		        table.remove(open, 1)
+		        local currentId = VectorGetId(current)
+		        if not closed[currentId] then
+		            if current == finish then
+		                local path = {}
+		                while true do
+		                    if current.previous then
+		                        table.insert(path, 1, current)
+		                        current = current.previous
+		                    else
+		                        table.insert(path, 1, start)
+								
+								return path
+		                    end
+		                end
+		            end
+		
+		            closed[currentId] = true
+		
+		            local adjacents = fetchOpenAdjacentNodes(current)
+		            for _, adjacent in ipairs(adjacents) do
+		                local adjacentId = VectorGetId(adjacent)
+		                if not closed[adjacentId] then
+		                    local added_gScore = current.gScore + distanceSquared(current, adjacent)
+		
+		                    if not adjacent.gScore or added_gScore < adjacent.gScore then
+		                        adjacent.gScore = added_gScore
+		                        adjacent.hScore = distanceSquared(adjacent, finish)
+		                        adjacent.fScore = added_gScore + adjacent.hScore
+		
+		                        table.insert(open, adjacent)
+		                        adjacent.previous = current
+		                    end
+		                end
+		            end
+		        end
+				if count %30 == 0 then
+					wait(0.01)
+				end
+		    end
+		end
+	end
+
+end

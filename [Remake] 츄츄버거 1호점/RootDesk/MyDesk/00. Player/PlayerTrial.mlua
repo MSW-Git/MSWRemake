@@ -1,0 +1,802 @@
+@Component
+script PlayerTrial extends Component
+
+	property table CharacterData = {}
+
+	property table RankData = {}
+
+	property table PlayData = {}
+
+	property boolean IsServerProcessing = false
+
+	@TargetUserSync
+	property string SelectedTrialId = ""
+
+	@TargetUserSync
+	property string SelectedEmployeeId = ""
+
+	@TargetUserSync
+	property integer SelectedRecipeId = 0
+
+	@TargetUserSync
+	property boolean IsFinallySynced = false
+
+	property table IngredientData = {}
+
+	@TargetUserSync
+	property SyncTable<string, string> TrialProgress
+
+	@TargetUserSync
+	property SyncTable<string> OfficialTrials
+
+	@TargetUserSync
+	property SyncTable<string, boolean> UnofficialTrials
+
+	@TargetUserSync
+	property integer NowOfficialType = 9
+
+	@TargetUserSync
+	property SyncTable<string, string> ExEmployeeIds
+
+	@TargetUserSync
+	property boolean IsTrialTab2RedDotChecked = false
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 시행 관련 데이터를 데이터베이스에 저장
+		local trialTotal = {}
+		trialTotal["TrialProgress"] = _UtilLogic:TableToString(self.TrialProgress)
+		trialTotal["UnofficialTrials"] = _UtilLogic:TableToString(self.UnofficialTrials)
+		trialTotal["ExEmployeeIds"] = _UtilLogic:TableToString(self.ExEmployeeIds)
+		trialTotal["IsTrialTab2RedDotChecked"] = self.IsTrialTab2RedDotChecked
+		
+		saveData["Trial"] = trialTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 시행 데이터를 로드하여 초기화
+		local trialTable = loadedData["Trial"]
+		if trialTable == nil then
+			trialTable = {}
+		end
+		
+		if #table.keys(trialTable) > 0 then
+		    
+			if isvalid(trialTable["TrialProgress"]) then
+				table.initialize(self.TrialProgress, _UtilLogic:StringToTable(trialTable["TrialProgress"]))
+			end
+			
+			if isvalid(trialTable["UnofficialTrials"]) then
+				table.initialize(self.UnofficialTrials, _UtilLogic:StringToTable(trialTable["UnofficialTrials"]))
+			end
+			
+			if isvalid(trialTable["ExEmployeeIds"]) then
+				table.initialize(self.ExEmployeeIds, _UtilLogic:StringToTable(trialTable["ExEmployeeIds"]))
+			end
+			
+			self.IsTrialTab2RedDotChecked = trialTable["IsTrialTab2RedDotChecked"]
+			
+		else
+			self.Entity.PlayerTrial:SetUnofficialTrials() 
+		end
+		
+		self.Entity.PlayerEvent:RefreshAllToDoSecretaryInfo()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 시행 컴포넌트의 모든 데이터를 초기화
+		table.clear(self.TrialProgress)
+		table.clear(self.UnofficialTrials)
+		table.clear(self.ExEmployeeIds)
+		self.IsTrialTab2RedDotChecked = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성에 따라 관련 UI 업데이트 및 이벤트 처리
+		if name == "TrialProgress" then	
+			if _UIGroupManager.TrialGroup.Enable then
+				_TrialUILogic.UITrialSelect.UITrialSelect:Apply(_TrialUILogic.UITrialSelect.UITrialSelect.SelectTab)
+			end
+			
+			_TrialUILogic:CheckTrialRedDotEnable(self.Entity)
+			
+		elseif name == "UnofficialTrials" then
+			if _UIGroupManager.TrialGroup.Enable then
+				_TrialUILogic.UITrialSelect.UITrialSelect:Apply(_TrialUILogic.UITrialSelect.UITrialSelect.SelectTab)
+			end
+			
+			_TrialUILogic:CheckTrialRedDotEnable(self.Entity)
+			
+		elseif name == "IsFinallySynced" then
+			if value == true then
+				_TrialSimpleRenderLogic:ChangePhase(0)
+			end
+			
+		elseif name == "ExEmployeeIds" then
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeTrial)
+			if _UIGroupManager.TrialGroup.Enable then
+				_TrialUILogic.UITrialSelect.UITrialSelect:Apply(_TrialUILogic.UITrialSelect.UITrialSelect.SelectTab)
+			end
+			
+		elseif name == "IsTrialTab2RedDotChecked" then
+			_TrialUILogic:CheckTrialRedDotEnable(self.Entity)
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetTrialData(string trialId)
+		-- 시행 데이터를 설정하고 랜더링 준비 및 클라이언트 동기화
+		self.SelectedTrialId = trialId
+		_TrialSimpleRenderLogic:EnterTrialRender(trialId, self.Entity.PlayerComponent.UserId)
+		
+		
+		if _UtilLogic:IsNilorEmptyString(self.SelectedEmployeeId) then
+			self.SelectedEmployeeId = _EmployeeService:ReturnRandomCharId(self.Entity, nil, self.Entity.PlayerComponent.UserId)
+		end
+		
+		self:SetRankData(trialId)
+		self:SetIngredientData(trialId)
+		
+		self:SyncTableData("RankData", self.RankData, self.Entity.PlayerComponent.UserId)
+		self:SyncTableData("PlayData", self.PlayData, self.Entity.PlayerComponent.UserId)
+		self:SyncTableData("CharacterData", self.CharacterData, self.Entity.PlayerComponent.UserId)
+		self:SyncTableData("IngredientData", self.IngredientData, self.Entity.PlayerComponent.UserId)
+		
+		self.IsFinallySynced = true
+		
+		self.Entity.PlayerLog:PlayflowLog(_LogSourceEnumType.Trial,"0")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCharacterData(string trialId)
+		-- 시행 참가자들의 캐릭터 데이터를 생성하여 레이아웃에 배치
+		local layoutIndexs = {}
+		for i = 1, _TrialSimpleRenderLogic.LayoutCount do
+			if i ~= _TrialSimpleRenderLogic.UserLayoutIndex then
+				table.insert(layoutIndexs, i)
+			end
+		end
+		
+		local indexCount = 1
+		for i = 1, _TrialSimpleRenderLogic.LayoutCount do
+			local rankData = self.RankData[i]
+			local isUserRank = rankData[4]
+			if isUserRank then
+				self.CharacterData[i] = self:ReturnCharacterData(trialId, _TrialSimpleRenderLogic.UserLayoutIndex, true)
+			else
+				self.CharacterData[i] = self:ReturnCharacterData(trialId, layoutIndexs[indexCount], false)
+				indexCount = indexCount + 1
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ReturnPlayData(string trialId, number weight)
+		-- 시행 가중치에 따라 플레이 데이터를 생성하여 시간 배열로 반환
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, self.Entity, self.NowOfficialType)
+		local missionNumValue = _TrialDataSetLogic:GetTrialData(trialId):GetGradeData(challengingData.Grade).MissionCount
+		local bestDelay = _TrialSimpleRenderLogic.RenderTotalDuration/missionNumValue
+		local delay = bestDelay * weight
+		
+		local count = 0
+		local playData = {}
+		
+		local logKey
+		while(true) do
+			if count >= missionNumValue then
+				break
+			end
+			
+			count = count + 1
+			local time = delay * count
+				
+			table.insert(playData, {count, delay, time})
+		end
+		
+		return playData
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetRankData(string trialId)
+		-- 사용자 스탯과 요구사항을 기반으로 랜킹 데이터를 설정하고 시행 순서 결정
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, self.Entity, self.NowOfficialType)
+		
+		local requirement = challengingData.Requirement
+		local userStat = _TrialLogic:ReturnUserStatByTrialInfo(trialId, self.SelectedEmployeeId, self.SelectedRecipeId, self.Entity)
+		
+		local userRankData = _TrialLogic:ReturnUserRank(userStat, requirement)
+		local userRank = userRankData[1]
+		local userRankRate = userRankData[2]
+		
+		self.RankData = {}
+		
+		local playDatas = {}
+		local weights = {1, 1.3, 2}
+		for i = 1, _TrialSimpleRenderLogic.LayoutCount do
+			local weight = weights[i]
+			local playData = self:ReturnPlayData(trialId, weight)
+			table.insert(playDatas, playData)
+		end
+		
+		for i = 1, #playDatas do
+			local userWeight = nil
+			if i == userRank then
+				userWeight = userRankRate
+			end
+			local score = _TrialLogic:ReturnTrialScore(i, userWeight)
+			
+			local lastTime = 0
+			for k, v in pairs(playDatas[i]) do
+				if lastTime < v[3] then
+					lastTime = v[3]
+				end
+			end
+			self.RankData[i] = {i, lastTime, score, i == userRank} 
+		end
+		
+		table.sort(self.RankData, function(a, b) return a[2] < b[2] end)
+		
+		for k, v in pairs(self.RankData) do
+			local index = v[1]
+			self.PlayData[k] = playDatas[index]
+		end
+		
+		self:SetCharacterData(trialId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ReturnCharacterData(string trialId, integer layoutIndex, boolean isMyChar)
+		-- 사용자 또는 라이벌 캐릭터의 데이터를 생성하여 레이아웃 인덱스와 함께 반환
+		
+		local grade = _TrialLogic:GetChallengingTrialData(trialId, self.Entity, self.NowOfficialType).Grade
+		
+		local storeNames = {}
+		if isvalid(self.CharacterData) then
+			for k, v in pairs(self.CharacterData) do
+				local storeName = v[3]
+				table.insert(storeNames, storeName)
+			end
+		end
+		
+		local charId = ""
+		local storeName = ""
+		if isMyChar then
+			charId = self.SelectedEmployeeId
+			storeName = self.Entity.PlayerOutgameManager.StoreName
+		else
+			charId = _TrialLogic:ReturnRandomRivalId(self.Entity, grade)
+			local gradeIndex = #_StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage).StageRankingData-grade
+			storeName = _StoreRankingDataSetLogic:ReturnRandomStoreNameOfGrade(gradeIndex, storeNames, self.Entity)
+		end
+		
+		local charData = {charId, isMyChar, storeName, layoutIndex}
+		
+		return charData
+	end
+
+	@ExecSpace("Server")
+	method void ClearDatas()
+		-- 시행 관련 모든 데이터를 초기화하고 선택 상태를 리셋
+		self.SelectedTrialId = ""
+		self.SelectedRecipeId = 0
+		self.SelectedEmployeeId = ""
+		self.NowOfficialType = 9
+		
+		self.IsFinallySynced = false
+		
+		self.CharacterData = {}
+		self.RankData = {}
+		self.PlayData = {}
+		self.IngredientData = {}
+	end
+
+	@ExecSpace("Client")
+	method void SyncTableData(string tableKey, table data)
+		-- 서버에서 전송된 테이블 데이터를 클라이언트에 동기화
+		if tableKey == "CharacterData" then
+			for k, v in pairs(data) do
+				self.CharacterData[k] = v
+			end
+		    	
+		elseif tableKey == "PlayData" then
+			for k, v in pairs(data)	 do
+				self.PlayData[k] = v
+			end
+		
+		elseif tableKey == "RankData" then
+			for k, v in pairs(data) do
+				self.RankData[k] = v
+			end
+			
+		elseif tableKey == "IngredientData" then
+			for k, v in pairs(data) do
+				self.IngredientData[k] = v
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ChangeConnectingStatus(boolean status)
+		-- 서버 처리 상태를 변경하여 로딩 상태 관리
+		self.IsServerProcessing = status
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SelectTrial(string trialId, integer officialType)
+		-- 시행을 선택하고 비용 및 조건 검사 후 시행 설정 UI로 이동
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		if trialData == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, self.Entity, officialType)
+		
+		if challengingData == nil then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("TrialToastMsg1", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local cost = challengingData:GetTrialCost(officialType, self.Entity)
+		if cost > self.Entity.PlayerInventory.Money then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("TrialToastMsg2", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self.SelectedTrialId = trialId
+		self.NowOfficialType = officialType
+		self:RequestSetTarget(trialId, self.Entity.PlayerComponent.UserId)
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSelectTrial(string trialId, integer officialType)
+		-- 클라이언트에서 시행 선택 요청을 받아 처리
+		self:SelectTrial(trialId, officialType)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndTrial()
+		-- 시행을 종료하고 승부에 따라 보상 지급 및 성과 처리
+		local trialId = self.SelectedTrialId
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		if trialData == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			self.Entity.TimeManager:RequestTimeFlowClient(self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, self.Entity, self.NowOfficialType)
+		if challengingData == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			self.Entity.TimeManager:RequestTimeFlowClient(self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local winnerData = self.CharacterData[1]
+		---@type TrialDifficultyData
+		local difficultyData
+		
+		local rewardLog = nil
+		
+		if winnerData[2] then
+			self:UpdateTrialProgress(trialId)
+			
+			local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.TrialWinCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.TrialWinCount, tutProgress+1)
+			if self.NowOfficialType == _TrialOfficialTypeEnum.Official then
+				local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.OfficialTrialWinCount)
+				self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.OfficialTrialWinCount, achiProgress+1)
+			else
+				local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.UnofficialTrialWinCount)
+				self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.UnofficialTrialWinCount, achiProgress+1)
+			end
+			
+			
+			
+			local badgeProgress = self.Entity.PlayerBadge.BadgeProgress[_BadgeEnum.TrialWinCount]
+			if badgeProgress == nil then
+				badgeProgress = 0
+			end
+			self.Entity.PlayerBadge:ChangeProgress(_BadgeEnum.TrialWinCount, badgeProgress+1)
+			
+			local reward = self.NowOfficialType == _TrialOfficialTypeEnum.Official and challengingData.OfficialReward or challengingData.UnofficialReward
+			rewardLog = reward
+			for k, v in pairs(reward) do
+				if _ItemDataSetLogic.ItemData[k] ~= nil then
+					
+					self.Entity.PlayerInventory:AddItem(k, v,"Trial reward","Trial result popup")
+					
+				else
+					local split = _UtilLogic:Split(k, ":")
+					local ingreId = math.floor(tonumber(split[1]))
+					local isBun = split[2]
+					if isBun == "False" or isBun == "false" or isBun == "FALSE" then
+						if _IngredientDataSetLogic:GetIngredientData(ingreId) ~= nil then
+							self.Entity.PlayerIngredient:AddIngredientCard(ingreId, v,"TrialReward")
+					
+						end
+						
+					else
+						if _IngredientDataSetLogic.BunData[ingreId] ~= nil then
+							self.Entity.PlayerIngredient:AddBun(ingreId, v,"TrialReward")
+						end
+						
+					end
+				end
+				
+			end
+			
+			
+			if trialData.Target == "Recipe" then
+				if self.Entity.PlayerRecipe.Recipes[self.SelectedRecipeId] ~= nil then
+					self.Entity.PlayerRecipe:SetRecipeTrialBuff(self.SelectedRecipeId)
+					for i, recipe in pairs(self.Entity.PlayerRecipe.SetRecipes) do
+						if recipe == self.SelectedRecipeId then
+							self.Entity.CustomerManager:CalcMyAttractive()
+							
+							if self.Entity.PlayerCheatComponent:HasAuthority() then 
+								self.Entity.PlayerDebugMonitor:UpdateDebugMonitorAttractive(self.Entity.PlayerComponent.UserId) 
+							end
+							self.Entity.CustomerManager:RefreshSpawnTable()
+							break
+						end
+					end
+					
+					_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.TrialWin, self.Entity.PlayerComponent.UserId)
+					self.Entity.PlayerEvent:AddToDayEventQueue("C0003")
+				end
+				
+				local countProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_RecordAchievementTypeEnum.RecipeTrialWin)
+				self.Entity.PlayerAchievement:ChangeProgress(_RecordAchievementTypeEnum.RecipeTrialWin, countProgress + 1)
+			
+			elseif trialData.Target == "Employee" then
+				local countProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_RecordAchievementTypeEnum.EmployeeTrialWin)
+				self.Entity.PlayerAchievement:ChangeProgress(_RecordAchievementTypeEnum.EmployeeTrialWin, countProgress + 1)
+				
+				if self.NowOfficialType == _TrialOfficialTypeEnum.Official then
+					self.ExEmployeeIds[trialData.TargetStat] = self.SelectedEmployeeId
+				end
+				
+			end
+				
+		
+		else
+			
+			
+		end
+		
+			
+		---@type RecipeData
+		local recipe = self.Entity.PlayerRecipe.Recipes[self.SelectedRecipeId]
+		
+		local difficulty = string.format("%d-%d",challengingData.Grade, challengingData.Difficulty)
+		local flowType = tostring(winnerData[2])
+		
+		if trialData.Target == "Recipe" then 
+		
+			local recipeID = string.format("%d",self.SelectedRecipeId)
+			local recipeScore = string.format("%d",recipe.TasteScore)
+			
+			self.Entity.PlayerLog:TrialRecipe(trialId,difficulty,self.NowOfficialType,recipe.UniqueId ,recipe.Tag, recipe.TasteScore, flowType, trialData.Name,rewardLog)
+			
+		else
+		
+			self.Entity.PlayerLog:TrialEmployee(trialId,difficulty,self.NowOfficialType,self.SelectedEmployeeId,flowType,trialData.Name,rewardLog)
+			
+		end
+		
+		self.Entity.PlayerLog:PlayflowLog(_LogSourceEnumType.Trial,"1")
+		
+		
+		self:ClearDatas()
+		
+		self.Entity.TimeManager:RequestTimeFlowClient(self.Entity.PlayerComponent.UserId)
+		
+		_FadeService:HideFade(self.Entity.PlayerComponent.UserId)
+		_BGMService:ApplyLobbyBGM(self.Entity.PlayerComponent.UserId)
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestEndTrial()
+		-- 클라이언트에서 시행 종료 요청을 받아 처리
+		self:EndTrial()
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetSelectedRecipe(integer recipeId)
+		-- 클라이언트에서 선택된 레시피 설정 요청을 받아 처리
+		self:SetSelectedRecipe(recipeId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetSelectedRecipe(integer recipeId)
+		-- 레시피 시행에서 선택된 레시피를 설정하고 시행 비용을 차감하여 시행 시작
+		local trialData = _TrialDataSetLogic:GetTrialData(self.SelectedTrialId)
+		if trialData == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local challengingData = _TrialLogic:GetChallengingTrialData(self.SelectedTrialId, self.Entity, self.NowOfficialType)
+		if challengingData == nil then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("TrialToastMsg1", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local cost = challengingData:GetTrialCost(self.NowOfficialType, self.Entity)
+		if cost > self.Entity.PlayerInventory.Money then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("TrialToastMsg2", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local playerRecipe = self.Entity.PlayerRecipe
+		if playerRecipe.Recipes[recipeId] == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self.Entity.PlayerInventory:ModifyMoney(-cost,"Trial fee","Trial popup")
+		self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.M_Etc, cost)
+		
+		self.SelectedRecipeId = recipeId
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+		
+		self:SetTrialData(self.SelectedTrialId)
+	end
+
+	@ExecSpace("Client")
+	method void RequestSetTarget(string trialId)
+		-- 시행 대상에 따라 레시피 또는 직원 선택 UI를 열기
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		local target = trialData.Target
+		
+		if target == "Recipe" then
+			_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:Open(nil, "Trial", {trialId})
+		elseif target == "Employee" then
+			_TrialUILogic.UITrialSetEmployee.UITrialSetEmployee:Open(trialId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetSelectedEmployee(string employeeId)
+		-- 클라이언트에서 선택된 직원 설정 요청을 받아 처리
+		self:SetSelectedEmployee(employeeId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetSelectedEmployee(string employeeId)
+		-- 직원 시행에서 선택된 직원을 설정하고 시행 비용을 차감하여 시행 시작
+		if _TrialDataSetLogic.TrialData[self.SelectedTrialId] == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local trialData = _TrialDataSetLogic:GetTrialData(self.SelectedTrialId)
+		local challengingData = _TrialLogic:GetChallengingTrialData(self.SelectedTrialId, self.Entity, self.NowOfficialType)
+		if challengingData == nil then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("TrialToastMsg1", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local cost = challengingData:GetTrialCost(self.NowOfficialType, self.Entity)
+		if cost > self.Entity.PlayerInventory.Money then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("TrialToastMsg2", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local employeeData = self.Entity.EmployeeManager:GetEmployeeDetail(employeeId)
+		if employeeData == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		
+		self.Entity.PlayerInventory:ModifyMoney(-cost,"Trial fee","Trial popup")
+		self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.M_Etc, cost)
+		
+		self.SelectedEmployeeId = employeeId
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+		
+		self:SetTrialData(self.SelectedTrialId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetIngredientData(string trialId)
+		-- 시행 타입에 따라 각 참가자의 재료 데이터를 설정하여 시각적 표시
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		local position = trialData.Type
+		
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, self.Entity, self.NowOfficialType)
+		local missionValue = trialData:GetGradeData(challengingData.Grade).MissionCount
+		
+		local stage = challengingData.Grade * 3 + challengingData.Difficulty - 1
+		if stage < 3 then
+			stage = 3
+		elseif stage > 10 then
+			stage = 10
+		end
+		
+		for i = 1, _TrialSimpleRenderLogic.LayoutCount do
+			local charData = self.CharacterData[i]
+			local layoutIndex = charData[4]
+			
+			if position == 1 then
+				local isMyChar = charData[2]
+				if self.SelectedRecipeId == 0 or self.SelectedRecipeId == nil then
+					
+					local ingreCount = 2 + stage
+					local tag = nil
+		            
+					local data = _TrialLogic:ReturnRandomBurgerIngreList(challengingData.Grade, ingreCount, tag, self.Entity)
+					local dataTable = {}
+					dataTable["IngreList"] = data[1]
+					dataTable["BurgerName"] = data[2]
+					self.IngredientData[layoutIndex] = dataTable
+					
+					
+				else
+					---@type RecipeData
+					local recipeData = self.Entity.PlayerRecipe.Recipes[self.SelectedRecipeId]
+					
+					if isMyChar then
+						local dataTable = {}
+						dataTable["IngreList"] = recipeData.IngreList
+						dataTable["BurgerName"] = recipeData.Name
+						self.IngredientData[layoutIndex] = dataTable
+						
+					else
+						local ingreCount = 2 + stage
+						local tag = trialData.TargetType
+						
+						local data = _TrialLogic:ReturnRandomBurgerIngreList(challengingData.Grade, ingreCount, tag, self.Entity)
+						local dataTable = {}
+						dataTable["IngreList"] = data[1]
+						dataTable["BurgerName"] = data[2]
+						self.IngredientData[layoutIndex] = dataTable
+						
+					end
+					
+				end
+				
+			elseif position == 2 then
+				
+				local data = _TrialLogic:ReturnRandomBurgerIngreList(challengingData.Grade, missionValue, nil, self.Entity)
+				local dataTable = {}
+				dataTable["IngreList"] = data[1]
+				dataTable["BurgerName"] = data[2]
+				self.IngredientData[layoutIndex] = dataTable
+				
+			end
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateTrialProgress(string trialId)
+		-- 시행 승리 시 공식/비공식 시행 진행도를 업데이트하고 관련 이벤트 처리
+		if _TrialDataSetLogic:GetTrialData(trialId) == nil then
+			return
+		end
+		
+		if self.NowOfficialType == _TrialOfficialTypeEnum.Official then
+			local progress = self.TrialProgress[trialId]
+			if _UtilLogic:IsNilorEmptyString(progress) then
+				progress = "0-0"
+			end
+			
+			local nextProgress = _TrialLogic:ReturnNextProgress(progress, trialId)
+			
+			self:SetTrialGradeDifficulty(trialId, nextProgress)
+			
+		elseif self.NowOfficialType == _TrialOfficialTypeEnum.Unofficial then
+			for key, isComplete in pairs(self.UnofficialTrials) do
+				local keyId = _UtilLogic:Split(key, "&")[1]
+				if keyId == trialId then
+					self.UnofficialTrials[key] = true
+					break
+				end
+			end
+			
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.UnofficialTrial)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetTrialGradeDifficulty(string trialId, string gradeDifficulty)
+		-- 시행의 등급과 난이도를 설정하고 관련 비서 정보를 새로고침
+		if _TrialDataSetLogic:GetTrialData(trialId) == nil then
+			return
+		end
+		
+		self.TrialProgress[trialId] = gradeDifficulty
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.RecipeTrial)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeTrial)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.UnofficialTrial)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetOfficialTrials()
+		-- 현재 스테이지에 따라 공식 시행 목록을 설정
+		local stageTrialId = _StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage).RecipeTrialId
+		
+		table.clear(self.OfficialTrials)
+		table.initialize(self.OfficialTrials, {"E0001", "E0002", stageTrialId})
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetUnofficialTrials()
+		-- 랜덤으로 비공식 시행 목록을 생성하여 직원과 레시피 시행으로 분류
+		local empTCount, recipeTCount = 1, 2
+		table.clear(self.UnofficialTrials)
+		
+		local empTrialPool = {}
+		local recipeTrialPool = {}
+		for id, data in pairs(_TrialDataSetLogic.TrialData) do
+			---@type TrialData
+			local trialData = data
+			
+			if trialData.Target == "Employee" then
+				table.insert(empTrialPool, id)
+			elseif trialData.Target == "Recipe" then
+				table.insert(recipeTrialPool, id)
+			end
+		end
+		
+		local nowEmpTrials = {}
+		for i = 1, empTCount do
+			local randomIdx = _UtilLogic:RandomIntegerRange(1, #empTrialPool)
+			local trialId = empTrialPool[randomIdx]
+			
+			local trialProgress = _TrialLogic:ReturnUnofficialTrialProgress(trialId, self.Entity)
+			table.insert(nowEmpTrials, string.format("%s&%s", trialId, trialProgress))
+			
+			table.remove(empTrialPool, randomIdx)
+		end
+		
+		local nowRecipeTrials = {}
+		for i = 1, recipeTCount do
+			local randomIdx = _UtilLogic:RandomIntegerRange(1, #recipeTrialPool)
+			local trialId = recipeTrialPool[randomIdx]
+			
+			local trialProgress = _TrialLogic:ReturnUnofficialTrialProgress(trialId, self.Entity)
+			table.insert(nowRecipeTrials, string.format("%s&%s", trialId, trialProgress))
+			
+			table.remove(recipeTrialPool, randomIdx)
+		end
+		
+		for i = 1, #nowEmpTrials do
+			local trialInfo = nowEmpTrials[i]
+			self.UnofficialTrials[trialInfo] = false
+		end
+		
+		for i = 1, #nowRecipeTrials do
+			local trialInfo = nowRecipeTrials[i]
+			self.UnofficialTrials[trialInfo] = false
+		end
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.UnofficialTrial)
+		self:RequestSetTrialTab2RedDotChecked(false)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetTrialTab2RedDotChecked(boolean bool)
+		-- 시행 탭2의 빨간점 확인 상태를 설정하는 함수
+		self.IsTrialTab2RedDotChecked = bool
+	end
+
+end

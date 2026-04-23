@@ -1,0 +1,142 @@
+@Component
+script C50012_GateKeeper_Skill extends Component
+
+	@Sync
+	property number skillAnimLength = 1.08
+
+	property string attackEffectRUID = "0ca7497efb474700bb11e690998c79bc"
+
+	property string hitEffectRUID = "d5abdf4c9fa246eda2634413cbf8da2c"
+
+	property SyncTable<Entity> TargetTable
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		
+		-- 가장 체력 수치가 낮은 적 찾기
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		
+		local targets = _BTLogic_New:getEntities(enemies, "AttackAble")
+		local checkTargets = {}
+		
+		-- 기존 타겟 테이블에 들어간 유닛은 제외
+		for _, checkTarget in pairs(targets) do
+			local added = false
+			for _, t in pairs(self.TargetTable) do
+				if t == checkTarget then
+					added = true
+				end
+			end
+			
+			if not added then
+				table.insert(checkTargets, checkTarget)
+			end
+		end
+		
+		local target = _BTLogic_New:getTarget(unitInfo.setTile, checkTargets, "HP_Low")
+		
+		if isvalid(target) then
+			table.insert(self.TargetTable, target)
+		end
+		
+		
+		self:SetAttackEffect(unitInfo.OwnerId)
+		
+		local function attackEffect2Fnc()
+			for _, setTarget in pairs(self.TargetTable) do
+				if _BTLogic_New:CheckAttackAble(myUnit, setTarget, "Skill") then
+					local targetInfo = setTarget.UnitInfo
+					self:SetAttackEffect2(targetInfo.setTile, unitInfo.OwnerId)
+				end
+			end
+		end
+		
+		local function skillHitFnc()
+			for _, setTarget in pairs(self.TargetTable) do
+				if _BTLogic_New:CheckAttackAble(myUnit, setTarget, "Skill") then
+					self:SetSkillDamage(setTarget)
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(attackEffect2Fnc, 0.45 / skillRate)
+		_TimerService:SetTimerOnce(skillHitFnc, 0.7 / skillRate)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			-- 데미지
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C50012_Active_SDamage_Magic[unitInfo.level]
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = skillRate, ["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.attackEffectRUID, myUnit, Vector3(0, 0, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect2(Entity targetTile)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Attack Effect
+		local options = {["FlipX"] = false, ["PlayRate"] = 1, ["Color"]=Color(1,1,1,(_ESCMenuService.skillEffectAlpha-10)/100)}
+		
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetTile, Vector3.zero, 0, Vector3.one * 1.2, false, options)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0126")
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		table.clear(self.TargetTable)
+	end
+
+end

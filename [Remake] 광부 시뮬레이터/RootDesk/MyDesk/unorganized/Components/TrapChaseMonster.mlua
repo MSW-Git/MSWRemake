@@ -1,0 +1,129 @@
+@Component
+script TrapChaseMonster extends Component
+
+	@Sync
+	property boolean Signal = false
+
+	property boolean isCooltime = true
+
+	property number Cooltime = 5
+
+	property number damage = 5
+
+	property string hitEffectId = ""
+
+	property string hitSoundId = "5b59c860a1944a5b8b67ea0864baf0ab"
+
+	property number effectSerial = 0
+
+	property Entity Controller = nil
+
+	@Sync
+	property boolean AttackEnable = true
+
+	@Sync
+	property number StunnedTime = 25
+
+	@Sync
+	property number timer = 25
+
+	@Sync
+	property boolean isStunned = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 랜덤하게 알파 또는 베타 신호로 설정
+		local randNum = math.random(1,2)
+		
+		if randNum == 1 then
+			self.Signal = true
+		elseif randNum == 2 then
+			self.Signal = false
+		end
+		
+		self.AttackEnable = true
+	end
+
+	@ExecSpace("Server")
+	method void Destroy(boolean OnOff, Entity TargetPlayer)
+		-- 전송받은 신호에 따라 로봇을 정지시키거나 플레이어를 공격
+		local callback = function()
+			self.Entity.MovementComponent.Enable = true
+			self.Controller.TrapChaseMobController:SetUsed(false)
+			_EffectService:RemoveEffect(self.effectSerial)
+			self.Entity:GetChildByName("Count"):Destroy()
+			self.AttackEnable = true
+			self.isStunned = false
+			self.timer = self.StunnedTime
+		end
+		
+		if TargetPlayer ~= nil then
+			if self.Signal == OnOff then -- 전송 받은 신호랑 일치하면
+				local pos = self.Entity.TransformComponent.Position
+				self.effectSerial = 
+				_EffectService:PlayEffect("aff31eceba614575ab4959a4bbb43806", self.Entity, pos + Vector3(0,0,0),0,Vector3(2,2,0), true)
+				self.Entity.MovementComponent.Enable = false
+				_SpawnService:SpawnByModelId("model://f0687fdb-9fdd-46d5-878f-99f38c81c880", "Count", Vector3(0,0,0), self.Entity)
+				self.Controller.TrapChaseMobController:SetUsed(true)
+				_TimerService:SetTimerOnce(callback, self.StunnedTime) -- 로봇의 움직임 속박 시간
+				self:SendMessage("로봇이 정지되었습니다!", TargetPlayer.Id, 1)
+				self.AttackEnable = false
+				self.isStunned = true
+			else -- 전송 받은 신호랑 일치하지 않으면
+				TargetPlayer.PlayerIngameData:Hit(self.damage)
+				self:SendMessage("송신 오류로 감전되었습니다!!!!", TargetPlayer.Id, 2)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SendMessage(string msg, string id, number num)
+		-- 특정 플레이어에게 메시지를 전송하고 사운드 재생
+		if _UserService.LocalPlayer.Id == id then
+			_UIToast:ShowMessage(msg)
+			
+			if num == 2 then 
+				_SoundService:PlaySound(self.hitSoundId, 1) 
+			end
+		else 
+			return 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 로봇이 정지된 동안 수리 시간을 표시하고 업데이트
+		if self.isStunned == true then
+			self.timer = self.timer - delta
+			self.Entity:GetChildByName("Count").TextComponent.Text = "수리까지: "..math.floor(self.timer).." 초"
+		else end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 플레이어가 로봇 주변에 접근했을 때 대미지를 가하고 쿨타임 적용
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		--------------------------------------------------------
+		if self.isCooltime == true then
+			if self.AttackEnable == false then return end
+			if TriggerBodyEntity.TagComponent and
+				TriggerBodyEntity.TagComponent.Tags[1] == "player" then
+				_SoundService:PlaySound(self.hitSoundId, 1)
+				TriggerBodyEntity.PlayerIngameData:Hit(self.damage)
+				
+				self.isCooltime = false
+				local callback = function()
+				self.isCooltime = true
+				end
+				_TimerService:SetTimerOnce(callback, self.Cooltime)	
+				if TriggerBodyEntity.StateComponent.CurrentStateName == "LADDER" 
+				or  TriggerBodyEntity.StateComponent.CurrentStateName == "ROPE" then
+					TriggerBodyEntity.StateComponent:ChangeState("IDLE")
+				end		
+			end
+		end
+		
+	end
+
+end

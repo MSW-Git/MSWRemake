@@ -1,0 +1,142 @@
+@Component
+script C40012_Irena_Skill extends Component
+
+	property number skillAnimLength = 1.9
+
+	property Entity projectile = nil
+
+	property string AttackEffectRUID = "fea142cf9bf84c7eb3732241c1a83a5c"
+
+	property string AttackProjectileRUID = "b8e2ca8812f04ed0a9d6545aa0cdce36"
+
+	property string HitEffectRUID = "185fc4132336405a806b034836c4ac89"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		self:SetAttackEffect(unitInfo.OwnerId)
+		
+		-- projectile Spwan
+		local pjCount = 0
+		local arrowAmount = _S01_SkillDescLogic.C40012_Active_ArrowAmount_Int[unitInfo.level] +
+							unitStatus.AttackSpeed * _S01_SkillDescLogic.C40012_Active_ArrowAmount_AttackSpeed[unitInfo.level]
+		arrowAmount = math.floor(arrowAmount)
+		local spawnTimer = 0
+		local function ProjectileSpawn()
+			pjCount += 1
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self.projectile = _UnitSetLogic_New:GetProjectileEntity(unitInfo.OwnerId, "Skill")
+				self.projectile:AddComponent(C40012_Irena_SkillProjectileInfo)
+				
+				self.projectile.SpriteRendererComponent.SpriteRUID = self.AttackProjectileRUID
+				self.projectile.TransformComponent.Scale = unitInfo.spriteRenderer.TransformComponent.Scale
+				self.projectile.SpriteRendererComponent.FlipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+				_GeneralDirectorLogic:SetEffectAlpha(self.projectile,unitInfo.OwnerId)
+				self.projectile.C40012_Irena_SkillProjectileInfo:SetProjectile(self.Entity, targetUnit, 0.9, 2.4, 0.2 + ( (pjCount%3 + 1) * 0.06), 0.3)
+				self.projectile.C40012_Irena_SkillProjectileInfo.AttackCount = pjCount
+			end
+				
+			if pjCount >= arrowAmount then
+				_TimerService:ClearTimer(spawnTimer)
+			end
+		end
+		
+		spawnTimer = _TimerService:SetTimerRepeat(ProjectileSpawn, 1.2 / arrowAmount / skillRate, 0.3 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0122",self.Entity.UnitInfo.OwnerId)
+		
+		-- 이리나 도전과제 
+		_AchievementService:UpdateProgress_Char(unitInfo,arrowAmount,user)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit, number attackCount)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C40012_Active_SDamage_Physic[unitInfo.level]
+			
+			local nowHP = targetStatus.HP
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Physical")
+			
+			if attackCount <= 1 then
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+			else
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], string.format("skill_%d", attackCount))
+			end
+			
+			if nowHP > 0 and targetStatus.HP <= 0 then
+				local getMP = unitStatus.MagicalAttack * _S01_SkillDescLogic.C40012_Active_GetMP_Magic[unitInfo.level]
+				_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", getMP, "skill")
+				
+				--MP상승 연출
+				_GeneralDirectorLogic:BattleBuffEffect(self.Entity,_RuneCardDirectEnum.MP,unitInfo.OwnerId)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.HitEffectRUID, targetUnit, Vector3(0, 0, 0), 0, Vector3.one * 1.5, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1, ["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.AttackEffectRUID, myUnit, Vector3.zero, 0, Vector3.one * 0.8, false, options)
+	end
+
+end

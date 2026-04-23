@@ -1,0 +1,165 @@
+@Component
+script NPCComponent extends Component
+
+	property string npcType = ""
+
+	property string npcId = ""
+
+	property table npcData = {}
+
+	property number openedUITime = 0
+
+	@ExecSpace("ClientOnly")
+	method void OpenUI()
+		-- NPC 타입에 따라 해당하는 UI를 열어줌
+		if self.npcType == _GameConfig:GetConfig().NPCTYPE_PATROL then
+			 _UserService.LocalPlayer.PlayerAutoGathering:Init()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_CASHSHOP then
+			_CashShopLogic.cashShopUI:Show()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_CHARACTERISTIC then
+			_CharacteristicManager:Open()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_LIMITLAND then
+			_LimitLandWaveLogic.limitLandUI:Show()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_MYINFO then
+			_UIGroupManager.playerStatusPopup.UIPlayerStatusPopup:Show()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_RANKING then
+			_RankingLogic.rankingUI:Show()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_ATTENDANCE then
+			_DailyGiftLogic.dailyGiftUI:Show()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_WEAPON then
+			_UIGroupManager.uiMergePopup:Show()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_DEX then
+			_CollectionLogic.EquipCollectionPopup:Show()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_CRACK then
+			_RandomBossLogic.randomBossUI:Show()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_PET then
+			local cashShopUi = _CashShopLogic.cashShopUI
+			if cashShopUi.Entity.ContentLockComponent:CheckUIAvailable() then
+				cashShopUi:Show()
+				cashShopUi.currentShopCategory = "4"
+				cashShopUi:Refresh()
+				cashShopUi:ChangeTapButton(cashShopUi.petCategoryButton)
+			end
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_QUEST then
+			_QuestUILogic.questUI:SetEnable(true)
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_SOULDUST then
+			_RewardLogic:RequestExchangeSoulDust()
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_2402SHOP then 
+			if _NewYearEventLogic:CheckEventTerm() then
+				_ShopLogic.shopUI:Init("1")
+				_ShopLogic.shopUI:Show()
+			else
+				_LocalizeLogic:GetText("toast176")
+				_GameUtil:DestroyInServer(self.Entity)
+			end
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_PILOT then
+			local stageMovePopup = _UIGroupManager.uiStageMovePopup
+			stageMovePopup.fieldOn = 2
+			stageMovePopup:ShowByButtonClick()
+			stageMovePopup.fieldModeBtn.Enable = false
+			stageMovePopup.originalModeBtn.Enable = false
+		elseif self.npcType == _GameConfig:GetConfig().NPCTYPE_FIELDSHOP then 
+			_ShopLogic.fieldShopUI:Show()
+		end
+		
+		self.openedUITime = _UtilLogic.ServerElapsedSeconds
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartDialogue()
+		-- 퀘스트 상태에 따라 대화를 시작하거나 UI를 열어줌
+		local playerQuest = _UserService.LocalPlayer.PlayerQuestComponent
+		local currentQuestId = playerQuest.currentQuestId
+		local questData = _QuestLogic.questData[currentQuestId]
+		local needStatrDialogue = false
+		local dialogueId = ""
+		
+		if isvalid(playerQuest.questProgress[currentQuestId].questStatus) and playerQuest.questProgress[currentQuestId].questStatus == "INPROGRESS" then
+			if isvalid(questData) then
+				if questData.questType == "objective" then
+					local objectiveType =  _UtilLogic:Split(questData.objectiveType, "/")
+					local objectiveIds = _UtilLogic:Split(questData.objectiveId, "/")
+					
+					for i = 1, #objectiveIds do
+						if objectiveType[i] == "npc" and objectiveIds[i] == self.npcId then
+							local currentQuestObjective = _UtilLogic:Split(playerQuest.questProgress[currentQuestId].questObjective, "/")
+							local str = ""
+							
+							needStatrDialogue = true
+							dialogueId = _UtilLogic:Split(questData.npcDialogueId, "/")[i]
+							
+							for i = 1, #currentQuestObjective do
+								if currentQuestObjective[i] == objectiveIds[i] then
+									if tonumber(currentQuestObjective[i + 1]) >= 1 then
+										needStatrDialogue = false
+									end
+								end
+							end
+							
+							if needStatrDialogue then
+								break
+							end
+						end
+					end
+				end
+			end
+		end
+		
+		if needStatrDialogue then
+			_DialogDataLogic:StartScene(dialogueId, "normal", function() 
+				playerQuest:AddObjectiveCount("npc", self.npcId, 1, currentQuestId, true, "npc")
+				_WorldLog:RequestLogQuestFlow(playerQuest.questProgress[playerQuest.currentQuestId], _WorldLog.FlowType_Quest_Change, "npc")
+			end)
+		else
+			if self.openedUITime + 0.5 < _UtilLogic.ServerElapsedSeconds then
+				self:OpenUI()
+			else
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast23"))
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- NPC 컴포넌트 초기화 및 데이터 설정
+		self.npcData = _NPCLogic.npcData[self.npcId]
+		
+		if isvalid(self.npcData) then
+			if _UtilLogic:IsNilorEmptyString(self.npcData.name) == false then
+				if self.npcId == "crack" then
+					self.Entity.NameTagComponent.Name = _LocalizationService:GetText("ui_open_randomBoss") 
+				else
+					self.Entity.NameTagComponent.Name = _LocalizationService:GetText("npc_name_"..self.npcId)	
+				end
+			end
+			if _UtilLogic:IsNilorEmptyString(self.npcData.name) == false then
+				self.Entity.InteractionObject.localizationKey = "" 
+				self.Entity.InteractionObject.description = _LocalizationService:GetText(self.npcData.interaction)
+			end
+		end
+		
+		if self.npcType == _GameConfig:GetConfig().NPCTYPE_2402SHOP and not _NewYearEventLogic:CheckEventTerm() then 
+			_GameUtil:DestroyInServer(self.Entity)
+		end
+		if self.npcType == _GameConfig:GetConfig().NPCTYPE_FIELDSHOP then
+			_MultiHUDManager.minimap.MinimapComponent:SetMinimapInfo("shop",self.Entity.Id,self.Entity.TransformComponent)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- NPC와의 상호작용 이벤트 처리
+		
+		local InteractionEntity = event.InteractionEntity
+		
+		if not self.Entity.Enable then return end
+		
+		if Environment:IsPublishedPlay() then
+			if not self.Enable then return end
+		end
+		
+		self:StartDialogue()
+	end
+
+end

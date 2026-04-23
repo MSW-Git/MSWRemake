@@ -1,0 +1,215 @@
+@Component
+script MinimapComponent extends Component
+
+	property Entity minimapImage = "b48779b2-a16d-47c9-8b24-6b89538f0999"
+
+	property number zoom = 3
+
+	property Entity fieldMapPopup = "9cbc69af-bd0e-4baa-9742-d8dfe95a0b35"
+
+	property string iconModelId = "model://6a07bfdb-8d10-42fe-9723-c443bbc10dd1"
+
+	property table minimapInfo = {}
+
+	property table icons = {}
+
+	property Vector2 offset = Vector2(28.33,21.57)
+
+	property Entity playerIcon = "883f8517-a05b-4115-a59e-a5f30644c29b"
+
+	property number xLeft = -50
+
+	property number xRight = 51
+
+	property number yHigh = 76
+
+	property number yLow = 0
+
+	@ExecSpace("Client")
+	method void miniPlayerUI()
+		-- 미니맵에서 플레이어 위치에 따른 UI 업데이트
+		self.minimapImage.SpriteGUIRendererComponent.ImageRUID = _MultiMapDataLogic.multiMapData[_UserService.LocalPlayer.CurrentMapName].minimapImage
+		self.minimapImage.UITransformComponent.RectSize = self.Entity.UITransformComponent.RectSize * self.zoom
+		
+		local mWidth = self.minimapImage.UITransformComponent.RectSize.x - self.zoom * self.offset.x
+		local mHeight = self.minimapImage.UITransformComponent.RectSize.y - self.zoom * self.offset.y
+		
+		local xTimes = (- mWidth) / ( self.xRight - self.xLeft)
+		local yTimes = (- mHeight) / ( self.yHigh - self.yLow)
+		
+		
+		local mainPlayer = _UserService.LocalPlayer
+		local posx = mainPlayer.TransformComponent.WorldPosition.x
+		local posy = mainPlayer.TransformComponent.WorldPosition.y
+		self.minimapImage.Parent.UITransformComponent.anchoredPosition = Vector2(posx*xTimes-posx*self.offset.x*0.01,(posy-(self.yHigh-self.yLow)/2)*(yTimes))
+	end
+
+	method void ShowMinimap(Entity map)
+		-- 미니맵 표시 및 주기적 새로고침 시작
+		self:ClearInfo()
+		if self._T.refreshMinimapEventId  == nil then
+			self._T.refreshMinimapEventId = _TimerService:SetTimerRepeat(function() 
+				self:RefreshMinimap()
+			end,1)
+		end
+	end
+
+	method void HideMimimap()
+		-- 미니맵 숨기기 및 타이머 정리
+		_TimerService:ClearTimer(self._T.refreshMinimapEventId)
+		self._T.refreshMinimapEventId = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 미니맵 컴포넌트 초기화
+		self.minimapInfo["shop"] = {}
+		self.minimapInfo["campfire"] = {}
+		self.minimapInfo["boss"] = {}
+		self.minimapInfo["open"] = {}
+		self.minimapInfo["party"] = {}
+		self.minimapInfo["portal"] = {}
+	end
+
+	method void SetMinimapInfo(string type, string id, TransformComponent transform)
+		-- 미니맵에 표시할 오브젝트 정보 설정
+		self.minimapInfo[type][id] = transform
+	end
+
+	method void RefreshMinimap()
+		-- 미니맵 아이콘들 위치 및 상태 새로고침
+		local mWidth = self.minimapImage.UITransformComponent.RectSize.x * 1150/1200
+		local mHeight = self.minimapImage.UITransformComponent.RectSize.y* 878/900
+		local offset = self.minimapImage.Parent.UITransformComponent.anchoredPosition
+		
+		
+		local xTimes = - mWidth / ( self.xRight - self.xLeft)
+		local yTimes = - mHeight / ( self.yHigh - self.yLow)
+		
+		local player = _UserService.LocalPlayer
+		local playerPos = player.TransformComponent.WorldPosition:Clone()
+		local playerMap = player.CurrentMap
+		
+		for k,v in pairs(self.minimapInfo) do
+			local ruid = "8dae84c6a2e346c3b21557f6705e8831"
+			if k == "shop" then
+				ruid = "8dae84c6a2e346c3b21557f6705e8831"
+			elseif k == "campfire" then
+				ruid = "e11e5b7169134309b934fccff0c2e299"
+			elseif k == "boss" then
+				ruid = "fd13be44ef944b3a9925199d9cb928e6"
+			elseif k == "open" then
+				ruid = "d68416e1e4f149e3b8a6e52b801fb50a"
+			elseif k == "party" then
+				ruid = "c5d181ecff1943388e0e0e7fd8dedb1c"
+			elseif k == "portal" then
+				ruid = "98206ed6a092467d897ab6d2c1072cb9"
+			end
+			
+			for id,v2 in pairs(v) do
+				---@type Entity
+				local icon = self.icons[id]
+				---@type TransformComponent
+				local transform = v2
+				local entity = _EntityService:GetEntity(id)
+				
+				if not isvalid(entity) then
+					entity = _UserService:GetUserEntityByUserId(id)
+				end
+				
+				if not isvalid(entity) or (entity.Enable == false and self.minimapInfo[k][id] ~= nil) then
+					self.minimapInfo[k][id] = nil
+					_PoolingLogic:DestroyEntity(self.icons[id])
+					self.icons[id] = nil
+					continue
+				end
+				
+				if isvalid(transform) == false or entity.CurrentMap ~= playerMap then
+					_PoolingLogic:DestroyEntity(self.icons[id])
+					self.icons[id] = nil				
+					continue
+				end
+				
+				if isvalid(icon) == false and entity.CurrentMap == playerMap then
+					icon = _PoolingLogic:SpawnModel(self.iconModelId,Vector3.zero,self.minimapImage.Parent)
+					self.icons[id] = icon			
+				end
+				icon.SpriteGUIRendererComponent.ImageRUID = ruid
+				if k ~= "portal" then
+					icon.UITransformComponent.anchoredPosition =  Vector2((transform.WorldPosition.x - playerPos.x)*-xTimes,
+					(transform.WorldPosition.y  - playerPos.y)*-yTimes) - offset 
+				else
+					icon.UITransformComponent.anchoredPosition =  Vector2((transform.WorldPosition.x - playerPos.x)*-xTimes,
+					(transform.WorldPosition.y+0.4  - playerPos.y)*-yTimes) - offset 
+				end
+			end
+		end
+	end
+
+	method void ClearInfo()
+		-- 모든 미니맵 정보 지우기
+		for k,v in pairs(self.minimapInfo) do
+			table.clear(v)
+		end
+	end
+
+	method void ResetPartyInfo()
+		-- 파티 멤버 미니맵 정보 초기화
+		for k,v in pairs(self.minimapInfo) do
+			if k == "party" then
+				for id,v2 in pairs(v) do
+					---@type Entity
+					local icon = self.icons[id]
+					---@type TransformComponent
+					local transform = v2
+					
+					if isvalid(icon) then
+						_PoolingLogic:DestroyEntity(self.icons[id])
+						self.icons[id] = nil
+					end
+				end
+			end
+			
+		end
+		
+		self.minimapInfo["party"] = {}
+	end
+
+	method void ClearIcon()
+		-- 모든 미니맵 아이콘 제거
+		for id, icon in pairs(self.icons) do
+			_PoolingLogic:DestroyEntity(icon)
+			self.icons[id] = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 미니맵 클릭 시 필드맵 팝업 표시
+		
+		local Entity = event.Entity
+		self.fieldMapPopup.FieldMapPopup:Show()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleOnMapEnter(OnMapEnter event)
+		-- 맵 진입 시 미니맵 상태 및 바운드 업데이트
+		local currentMap = event.currentMap
+		local userEnter = event.userEnter
+		self:ClearIcon()
+		self:ClearInfo()
+		if currentMap.MultiBattleMap == nil then
+			self:HideMimimap()
+		else
+			self:ShowMinimap(currentMap)
+		end
+		
+		
+		self.xLeft = currentMap.MapComponent.LeftBottom.x
+		self.xRight = currentMap.MapComponent.RightTop.x
+		self.yHigh = currentMap.MapComponent.RightTop.y
+		self.yLow = currentMap.MapComponent.LeftBottom.y
+	end
+
+end

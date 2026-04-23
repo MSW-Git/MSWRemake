@@ -1,0 +1,195 @@
+@Component
+script UISkillOpenPopup extends Component
+
+	property SpriteGUIRendererComponent SkillIcon = nil
+
+	property TextComponent SkillName = nil
+
+	property TextComponent SkillDesc = nil
+
+	property table queue = {}
+
+	property SpriteGUIRendererComponent SkillBg = nil
+
+	property Entity Title = nil
+
+	property boolean CanClose = false
+
+	property Entity BG = nil
+
+	property Entity ChuchuImg = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 스킬 오픈 팝업의 UI 컴포넌트들을 초기화하는 함수
+		self.BG = self.Entity:GetChildByName("BG")
+		self.SkillIcon = self.BG:GetChildByName("SkillIcon").SpriteGUIRendererComponent
+		self.SkillBg = self.BG:GetChildByName("BgSlot").SpriteGUIRendererComponent
+		self.SkillName = self.BG:GetChildByName("SkillName").TextComponent
+		self.SkillDesc = self.BG:GetChildByName("SkillDesc").TextComponent
+		self.Title = self.Entity:GetChildByName("Title")
+		self.ChuchuImg = self.BG:GetChildByName("Chuchu")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string employeeId, string skillId, boolean isOverlimit)
+		-- 스킬 오픈 팝업을 열고 애니메이션을 재생하는 함수
+		if self.Entity.Enable == true then
+			table.insert(self.queue, {employeeId, skillId})
+			return
+		end
+		
+		self.Entity.Enable = true
+		self._T.isOverLimit = isOverlimit
+		if isOverlimit == false then
+			self:Refresh(employeeId, skillId)
+			self:OpenAnim()
+		else
+			self:Refresh_Overlimit(employeeId)
+			self:OpenAnim_OverLimit()
+			if isvalid(skillId) then
+				table.insert(_EmployeeUpgradeUIServcie.UISkillOpenPopup.queue, {employeeId, skillId}) 
+			end
+		end
+		
+		self.CanClose = false
+		_TimerService:SetTimerOnce(function()
+			self.CanClose = true
+		end, 0.6)
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_Overlimit"], 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh(string employeeId, string skillId)
+		-- 스킬 정보를 새로고침하여 UI에 표시하는 함수
+		local skillLevel = _EmployeeSkillService:ReturnSkillGrade(employeeId, skillId, _UserService.LocalPlayer)
+		local skillData = _EmployeeSkillService:GetData(skillId)
+		self.SkillIcon.ImageRUID = _EmployeeSkillService:ReturnSkillIcon(skillId)
+		self.SkillBg.ImageRUID = _EmployeeSkillService:ReturnSkillSlotBg(skillLevel)
+		self.SkillName.Text = _EmployeeSkillService:ReturnSkillName(skillId, skillLevel)
+		self.SkillDesc.Text = _EmployeeSkillService:ReturnSkillDesc(skillId, skillLevel)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 스킬 오픈 팝업을 닫고 큐에 있는 다음 팝업을 여는 함수
+		if self.CanClose == false then
+			return
+		end
+		
+		self.Entity.Enable = false
+		if self._T.isOverLimit == true then
+			_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.EmployeeOverLimit)
+			self._T.isOverLimit = false
+		end
+		
+		if #self.queue > 0 then
+			local queueData = table.remove(self.queue, 1)
+			self:Open(queueData[1], queueData[2], false)
+			return
+		end
+		
+		local skillQueue = _EmployeeUpgradeUIServcie.UISkillOpenPopup.queue 
+		if #skillQueue > 0 then
+			local queueData = table.remove(skillQueue, 1)
+			_EmployeeUpgradeUIServcie.UISkillOpenPopup:Open(queueData[1], queueData[2], false)
+			return
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenAnim()
+		-- 일반 스킬 오픈 애니메이션을 재생하는 함수
+		local duration = 0.4
+		local bgOriginSize = 164
+		local iconOriginSize = 128
+		
+		self.SkillBg.Entity.UITransformComponent.RectSize.x = 0
+		self.SkillBg.Entity.UITransformComponent.RectSize.y = 0
+		self.SkillIcon.Entity.UITransformComponent.RectSize.x = 0
+		self.SkillIcon.Entity.UITransformComponent.RectSize.y = 0
+		self.Title.CanvasGroupComponent.GroupAlpha = 0
+		self.SkillName.Enable = false
+		self.SkillDesc.Enable = false
+		
+		_TweenLogic:PlayTween(0, bgOriginSize, duration, EaseType.CubicEaseOut, function(t)
+			self.SkillBg.Entity.UITransformComponent.RectSize.x = t
+			self.SkillBg.Entity.UITransformComponent.RectSize.y = t
+		end)
+		
+		_TweenLogic:PlayTween(0, iconOriginSize, duration-0.2, EaseType.CubicEaseOut, function(t)
+			self.SkillIcon.Entity.UITransformComponent.RectSize.x = t
+			self.SkillIcon.Entity.UITransformComponent.RectSize.y = t
+		end)
+		
+		_TimerService:SetTimerOnce(function()
+			_TweenLogic:PlayTween(0, 1, duration, EaseType.Linear, function(t)
+				self.Title.CanvasGroupComponent.GroupAlpha = t
+			end)
+		end, duration)
+		
+		_TimerService:SetTimerOnce(function()
+			self.SkillName.Enable = true
+		end, duration)
+		
+		_TimerService:SetTimerOnce(function()
+			self.SkillDesc.Enable = true
+		end, duration+0.1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh_Overlimit(string empId)
+		-- 한계돌파 팝업의 직원 정보를 새로고침하는 함수
+		local data =  _EmployeeService:GetData(empId)
+		_EmployeeUIService:DrawPortraitWithEquip(self.ChuchuImg, self.ChuchuImg, data)
+		self.SkillName.Text = _LocalizationService:GetText(data.NameKey)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenAnim_OverLimit()
+		-- 한계돌파 스킬 오픈 애니메이션을 재생하는 함수
+		local duration = 0.4
+		local bgOriginSize = 280
+		local chuchuOriginYPos = 55
+		
+		local effect = self.BG:GetChildByName("Effect")
+		effect.UITransformComponent.RectSize.x = 0
+		effect.UITransformComponent.RectSize.y = 0
+		self.Title.CanvasGroupComponent.GroupAlpha = 0
+		self.ChuchuImg.UITransformComponent.anchoredPosition.y = 70
+		self.SkillName.Enable = false
+		
+		_TweenLogic:PlayTween(0, bgOriginSize, duration, EaseType.CubicEaseOut, function(t)
+			effect.UITransformComponent.RectSize.x = t
+			effect.UITransformComponent.RectSize.y = t
+		end)
+		
+		_TweenLogic:PlayTween(0, chuchuOriginYPos, duration-0.2, EaseType.CubicEaseOut, function(t)
+			self.ChuchuImg.UITransformComponent.anchoredPosition.y = t
+		end)
+		
+		_TimerService:SetTimerOnce(function()
+			_TweenLogic:PlayTween(0, 1, duration, EaseType.Linear, function(t)
+				self.Title.CanvasGroupComponent.GroupAlpha = t
+			end)
+		end, duration)
+		
+		_TimerService:SetTimerOnce(function()
+			self.SkillName.Enable = true
+		end, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 팝업 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self:Close()
+	end
+
+end

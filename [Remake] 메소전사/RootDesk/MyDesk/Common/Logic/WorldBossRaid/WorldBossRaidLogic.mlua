@@ -1,0 +1,320 @@
+@Logic
+script WorldBossRaidLogic extends Logic
+
+	property string sortableDBKey = "RAID_%d"
+
+	property string raidInfoDBKey = "RAID_INFO"
+
+	@Sync
+	property boolean raidInfoInited = false
+
+	property number MAX_RANK = 100
+
+	property table leaderboard = {}
+
+	property number refreshInterval = 60
+
+	property table raidInfo = {}
+
+	property table userDamage = {}
+
+	property string version = "0.01"
+
+	property table bossRaidInfoData = {}
+
+	property number week = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 월드 보스 레이드 로직 초기화
+		self._T.seasonDB = {}
+		
+		local data = _DataService:GetTable("WorldBossRaidData")
+		
+		
+		for i = 1, data:GetRowCount() do
+			local eachData = {}
+			local week = tonumber(data:GetCell(i,"week"))
+			local boss = data:GetCell(i,"boss")
+			table.insert(self.bossRaidInfoData,eachData)
+		end
+		
+		---@param info table<SortableDataStorageItem>
+		local function getLeaderboard(info)
+			table.clear(self.leaderboard)
+			for k,v in pairs(info) do
+				local each = {}
+				each.ppsn = v.KeyInfo.Key
+				each.nickname = v.KeyInfo.Tag
+				each.score = v.Value
+				each.rank = k
+				table.insert(self.leaderboard,each)
+			end
+			self:OnGetLeaderboard(_HttpService:JSONEncode(self.leaderboard))
+		end
+		
+		
+		
+		_TimerService:SetTimerRepeat(function() 
+				self:Refresh(function() 
+					self:RequestLeaderboard(getLeaderboard,1)
+				end)
+		end,self.refreshInterval)
+		
+		
+		_TimerService:SetTimerRepeat(function() 
+			self.week =	self:GetCurrentWeek()
+		end,10)
+	end
+
+	method any GetSeasonDB()
+		-- 시즌 DB 가져오기
+		local key = self:GetCurrentSeasonDBKey()
+		if self._T.seasonDB[key] == nil then
+			self._T.seasonDB[key] = _DataStorageService:GetSortableDataStorage(key)
+		end
+		return self._T.seasonDB[key]
+	end
+
+	method string GetCurrentSeasonDBKey()
+		-- 현재 시즌 DB 키 생성
+		return string.format(self.sortableDBKey,self.raidInfo.season%2)
+	end
+
+	method any GetRaidInfoDB()
+		-- 레이드 정보 DB 가져오기
+		if self._T.raidInfoDB == nil then
+			self._T.raidInfoDB = _DataStorageService:GetGlobalDataStorage(self.raidInfoDBKey)
+		end
+		return self._T.raidInfoDB
+	end
+
+	method table ToRaidInfoTable(string value)
+		-- JSON 문자열을 레이드 정보 테이블로 변환
+		local info = nil
+		if _UtilLogic:IsNilorEmptyString(value) then
+			info = {}
+			info.season = 1	
+			info.bossId = 1
+			info.bossHP = 1000000 
+			info.startDate = _LocalTimeLogic:GetUtcNow().Elapsed
+		else
+			info = _HttpService:JSONDecode(value)
+		end
+		return info
+	end
+
+	@ExecSpace("Server")
+	method void AddBossDamage(Entity user, number damage, number tryCnt, any callback)
+		-- 보스에게 데미지 추가 및 리더보드 업데이트
+		if self.raidInfoInited == false then
+			return
+		end
+		
+		if isvalid(user) == false then
+			return
+		end
+		
+		local ppsn = user.PlayerComponent.UserId
+		local nickname = user.PlayerComponent.Nickname
+		if self.userDamage[ppsn] == nil then
+			self:RequestUserDamage(ppsn,function()
+				self:AddBossDamage(user,damage,tryCnt,callback)		
+			end,1)
+			return
+		end
+		self:SetUserDamage(ppsn,self.userDamage[ppsn] + damage)
+		
+		---@type SortableDataStorage
+		local seasonDB = self:GetSeasonDB()
+		seasonDB:SetByInfoAsync(DataStorageKeyInfo(ppsn,self.version,nickname),self.userDamage[ppsn],function(error,info) 
+			if error == 0 then
+				self:Refresh(function() 
+				local originHP = self.raidInfo.bossHP
+							
+				self.raidInfo.bossHP = self.raidInfo.bossHP - damage
+				self:SetBossRaidInfo(1)
+				if callback ~= nil then
+					local clear = self.raidInfo.bossHP <= 0
+					if originHP > 0 and clear then
+						self:ClearBoss()
+					end
+					callback(clear)
+				end
+							
+				end)
+			elseif tryCnt < 5 then
+				self:AddBossDamage(user,damage,tryCnt + 1,callback)
+			end
+		end) 
+		
+		
+	end
+
+	method void RequestRaidInfo(any callback, number tryCnt)
+		-- 레이드 정보 요청
+		---@type GlobalDataStorage
+		local raidDB = self:GetRaidInfoDB()
+		
+		raidDB:GetAsync(self.raidInfoDBKey,function(error,key,value)
+			if error == 0 then
+				callback(value)
+			else
+				if tryCnt < 5 then
+					self:RequestRaidInfo(callback,tryCnt + 1) 
+				end
+			end
+		end)
+	end
+
+	method void RequestLeaderboard(any callback, number tryCnt)
+		-- 리더보드 요청
+		---@type SortableDataStorage
+		local seasonDB = self:GetSeasonDB()
+		 
+		local result = {}
+		
+		seasonDB:GetSortedAsync(SortDirection.Descending,1,math.maxinteger,function(error,p) 
+			if error == 0 then
+				---@type SortableDataStorageItemPages
+				local pages = p
+				local cnt = 0
+				while true do
+					local items = pages:GetCurrentPageDatas()
+					for _,v in pairs(items) do			
+						table.insert(result,v)
+						cnt = cnt + 1
+						if cnt > self.MAX_RANK then
+							callback(result)
+							return		
+						end
+					end
+					if pages.IsLastPage then
+						callback(result)
+						return
+					end
+					pages:MoveToNextPageAndWait()
+				end
+			else
+				if tryCnt < 5 then
+					self:RequestLeaderboard(callback,tryCnt + 1) 
+				end
+			end
+		end)
+	end
+
+	@ExecSpace("Client")
+	method void OnGetLeaderboard(string data)
+		-- 리더보드 데이터 수신 및 이벤트 발생
+		if _UtilLogic:IsNilorEmptyString(data) then
+			table.clear(self.leaderboard)
+		else
+			self.leaderboard = _HttpService:JSONDecode(data)
+		end
+		
+		self:SendEvent(GetWorldBossRaidLeaderboard(self.leaderboard))
+	end
+
+	method void Refresh(any callback)
+		-- 레이드 정보 새로고침
+		self:RequestRaidInfo(function(value)
+			self.raidInfo = self:ToRaidInfoTable(value)	
+			self:OnGetBossRaidInfo(value)
+			self.raidInfoInited = true
+			if callback ~= nil then
+				callback()
+			end
+		end,1)
+	end
+
+	method void SetBossRaidInfo(number tryCnt)
+		-- 보스 레이드 정보 저장
+		---@type GlobalDataStorage
+		local raidDB = self:GetRaidInfoDB()
+		local raidStringData = _HttpService:JSONEncode(self.raidInfo)
+		
+		raidDB:SetAsync(self.raidInfoDBKey,raidStringData,function(error,key)
+			if error == 0 then
+				self:OnGetBossRaidInfo(raidStringData)
+			elseif tryCnt < 5 then
+				self:SetBossRaidInfo(tryCnt + 1)
+			end
+		end)
+	end
+
+	@ExecSpace("Client")
+	method void OnGetBossRaidInfo(string data)
+		-- 보스 레이드 정보 수신 및 이벤트 발생
+		self.raidInfo = self:ToRaidInfoTable(data)
+		self:SendEvent(GetWorldBossRaidInfo(self.raidInfo))
+	end
+
+	method void RequestUserDamage(string ppsn, any callback, number tryCnt)
+		-- 사용자 데미지 정보 요청
+		---@type SortableDataStorage
+		local seasonDB = self:GetSeasonDB()
+		
+		seasonDB:GetByInfoAsync(DataStorageKeyInfo(ppsn,self.version,""),function(error,info,value)
+				if error == 0 then
+					if value == nil then
+						value = 0
+					end
+					self:SetUserDamage(ppsn,value)
+					callback(value)
+				else
+					if tryCnt < 5 then
+						self:RequestUserDamage(ppsn,callback,tryCnt + 1)
+					end
+				end
+		end)
+	end
+
+	method void ClearBoss()
+		-- 보스 처치 후 다음 보스로 전환
+		local season = self.raidInfo.season + 1
+		self.raidInfo.bossHP = 1000000 
+		self.raidInfo.bossId = self.raidInfo.bossId + 1 
+		self.raidInfo.startDate = _LocalTimeLogic:GetUtcNow().Elapsed
+		self:SetBossRaidInfo(1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetUserDamage(string ppsn, number damage)
+		-- 사용자 데미지 설정
+		self.userDamage[ppsn] = damage
+		
+		local user = _UserService:GetUserEntityByUserId(ppsn)
+		if isvalid(user) then
+			user.PlayerInfoComponent:SetWorldRaidUserDamage(damage)
+		end
+	end
+
+	method any GetCurrentDateTime()
+		-- 현재 시간 가져오기 (KST)
+		return _LocalTimeLogic:GetUtcNow() + TimeSpan(9,0,0)
+	end
+
+	method number GetCurrentWeek()
+		-- 현재 주차 계산
+		local now = self:GetCurrentDateTime()
+		local week = math.floor((now.Elapsed / (1000 * 3600 * 24 * 7)) % #self.bossRaidInfoData)
+		
+		return week
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserEnterEvent(UserEnterEvent event)
+		-- 사용자 입장 이벤트 처리
+		
+		local UserId = event.UserId
+		if self.raidInfoInited == false then
+			return
+		end
+		
+		self:RequestUserDamage(UserId,function(value)
+			self:OnGetLeaderboard(_HttpService:JSONEncode(self.leaderboard),UserId)
+		end,1)
+	end
+
+end

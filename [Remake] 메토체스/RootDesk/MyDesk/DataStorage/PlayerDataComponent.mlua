@@ -1,0 +1,477 @@
+@Component
+script PlayerDataComponent extends Component
+
+	@TargetUserSync
+	property SyncTable<string, number> ClearLevelByMode
+
+	@TargetUserSync
+	property SyncTable<string, number> ClearStageByMode
+
+	@TargetUserSync
+	property number StartGameCount = 0
+
+	@TargetUserSync
+	property number PlayGameCount = 0
+
+	@TargetUserSync
+	property number WinGameCount = 0
+
+	@TargetUserSync
+	property integer Level = 0
+
+	@TargetUserSync
+	property integer EXP = 0
+
+	@TargetUserSync
+	property integer Syrup = 0
+
+	@TargetUserSync
+	property integer RoyalSyrup = 0
+
+	@TargetUserSync
+	property integer Repechage = 0
+
+	@TargetUserSync
+	property integer Repechage_Free = 0
+
+	@TargetUserSync
+	property integer CumulativeBoxPurchases = 0
+
+	@TargetUserSync
+	property boolean Profile_Record_IsPublic = false
+
+	@TargetUserSync
+	property boolean Profile_History_IsPublic = false
+
+	@TargetUserSync
+	property SyncTable<number, boolean> Profile_IsWin
+
+	@TargetUserSync
+	property SyncTable<number, string> Profile_ModeType
+
+	@TargetUserSync
+	property SyncTable<number, string> Profile_ModeSeason
+
+	@TargetUserSync
+	property SyncTable<number, number> Profile_ModeLevel
+
+	@TargetUserSync
+	property SyncTable<number, string> Profile_LastRound
+
+	@TargetUserSync
+	property SyncTable<number, string> Profile_GameEndTime
+
+	@TargetUserSync
+	property SyncTable<number, string> Profile_UnitInfo
+
+	@TargetUserSync
+	property SyncTable<number, string> Profile_RuneList
+
+	@TargetUserSync
+	property SyncTable<number, string> Profile_CoachList
+
+	@TargetUserSync
+	property SyncTable<number, number> Profile_GetTeamHP
+
+	@TargetUserSync
+	property SyncTable<number, number> Profile_GetCoinAmount
+
+	@TargetUserSync
+	property SyncTable<number, number> Profile_UsedCoinAmount
+
+	@TargetUserSync
+	property SyncTable<number, string> Profile_EndTime
+
+	@TargetUserSync
+	property number SetProfileGameCount = 0
+
+	@TargetUserSync
+	property string LastLoginDate = "0000_00_00_00"
+
+	@TargetUserSync
+	property SyncTable<string> fave_Character_Dictionary
+
+	@TargetUserSync
+	property SyncTable<string> fave_Item_Dictionary
+
+	@TargetUserSync
+	property SyncTable<string> fave_Rune_Dictionary
+
+	@TargetUserSync
+	property string HighClearLevelInfo = ""
+
+	@TargetUserSync
+	property string HighRankInfo = ""
+
+	@TargetUserSync
+	property integer ChallengeMode_LeftTryCount = -1
+
+	@TargetUserSync
+	property boolean TutorialRewardReceived = false
+
+	@TargetUserSync
+	property boolean TutorialRejected = false
+
+	property number NoticeCount = 0
+
+	method void OnBeginPlay()
+		-- 플레이어 데이터 컴포넌트 초기화 및 데이터 로드
+		---------------------------------------------------------------
+		if self:IsServer() then
+			log("OnBeginPlay InServer", self.Entity.OwnerId)
+			local timer = 0
+			local function getDataFnc()
+				if isvalid(self.Entity) == false then
+					_TimerService:ClearTimer(timer)
+					return
+				end
+				
+				if _ModeDataLogic.OrdinalNumber ~= 0 and isvalid(_UserService:GetUserEntityByUserId(self.Entity.OwnerId)) then
+					_TimerService:ClearTimer(timer)
+					
+					log("OnBeginPlay InServer Fnc")
+					local userID = self.Entity.OwnerId
+					
+					-- 시즌 및 분기 첫 접속 기록 확인
+					_ModeDataLogic:CountUserToSeason(userID)
+					
+					-- 클리어 레벨 받아오는 임시 함수
+					_ModeDataLogic:GetModeClearCountData(userID)
+					
+					-- 업적, 도감 등
+					_PlayerDataLogic:GetPlayerData(userID)
+					
+					-- 이어하기 데이터 확인
+					_InGameInfoDataLogic:GetSavedDataDB(userID)
+					
+					
+					-- 이벤트 체크 샘플
+					-- _EventDataLogic:CheckedUserAlreadyGetCoupon(userID)
+				else
+					log(_ModeDataLogic.OrdinalNumber)
+				end
+			end
+			
+			timer = _TimerService:SetTimerRepeat(getDataFnc, 0.5, 1) 
+			
+		---------------------------------------------------------------	
+			-- Client
+		else
+			_EntityService:GetEntityByPath("/ui/Lobby_HUD/Profile/NameTag/Nickname").TextComponent.Text = _UserService.LocalPlayer.NameTagComponent.Name
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddSyrup(string type, number amount, string systemType)
+		-- 시럽 종류별로 지정된 양만큼 추가
+		local user = self.Entity
+		local userID = user.OwnerId
+		
+		if string.lower(type) == "syrup" then
+			self.Syrup += amount
+			_PlayerDataLogic:SetPlayerSyrupData(userID)
+		elseif string.lower(type) == "royalsyrup" then
+			self.RoyalSyrup += amount
+			_PlayerDataLogic:SetPlayerRoyalSyrupData(userID)
+		elseif string.lower(type) == "repechage" then
+			self.Repechage += amount
+			_PlayerDataLogic:SetPlayerRepechageData(userID)
+		elseif string.lower(type) == "repechage_free" then
+			self.Repechage_Free += amount
+			_PlayerDataLogic:SetPlayerRepechageData(userID)
+		end
+		
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AddEXP(integer amount, string systemType)
+		-- 경험치를 획득하는 함수. 레벨 업이 됐다면, 변동된 레벨 값을 return 합니다.
+		-------------------------------------------------
+		self.EXP += amount
+		
+		local changedLevel = self.Level
+		local levelDelta = 0
+		-- 레벨업 여부를 체크합니다.
+		while true do
+			local remainEXP = _PlayerLevelLogic:IsLevelUpCondition(changedLevel, self.EXP)
+			if remainEXP >= 0 then
+				self.EXP = remainEXP
+				changedLevel += 1
+				levelDelta += 1
+				
+				if changedLevel > 500 then
+					changedLevel = 500
+				end
+			else
+				break
+			end
+		end
+		
+		local rewardsForLog = {}
+		local rewardsForLogCheck = false
+		--------------------------------------------------------------
+		-- 레벨이 오른 경우 >>> 보상 목록을 작성하고, 지급합니다.
+		if levelDelta > 0 then
+			local rewards = {}
+			local reward_syrup = 0
+			
+			local rewardTable = _DataService:GetTable("Reward_LevelUP")
+			for i = self.Level+1, self.Level+levelDelta do
+						
+				if i % 10 == 0 then
+					rewardsForLogCheck = true
+					
+					local rewardRow = rewardTable:FindRow("Level", string.format("%d", i))
+					local rewardType = rewardRow:GetItem("Reward_Type")
+					local rewardID = rewardRow:GetItem("Reward_ID")
+					local rewardAmount = tonumber(rewardRow:GetItem("Reward_amount"))
+					
+					table.insert(rewards, rewardType.."/"..rewardID.."/"..rewardAmount)
+					table.insert(rewardsForLog, rewardType.."/"..rewardID.."/"..rewardAmount)
+					if rewardType == "Coach" then	-- 코치 보상을 지급합니다
+						self.Entity.CoachManager:ModifyPlayerOwnedCoachesID(rewardID, 1,"LvUp")
+						_PlayerDataLogic:SetPlayerOwnedCoachesData(self.Entity.OwnerId)
+					elseif rewardType == "Repechage" then	-- 패자 부활권 보상을 지급합니다
+						self:AddSyrup("Repechage_Free", rewardAmount, "LvUp")
+						_PlayerDataLogic:SetPlayerRepechageData(self.Entity.OwnerId)
+					end
+				end
+				
+				reward_syrup += 80 -- 레벨 업 당 지급하는 시럽 수
+			end
+			self:AddSyrup("Syrup", reward_syrup, "LvUp")	-- 시럽 보상을 지급합니다.
+			
+			
+			
+			-- '레벨 업' 팝업의 내용을 변경합니다.
+			_PlayerLevelLogic:SetUI_LevelUpPopup(self.Level, self.Level+levelDelta, reward_syrup, _UtilLogic:TableToString(rewards), self.Entity.OwnerId)
+		end
+		--------------------------------------------------------------
+		--[[
+		-- 2레벨을 넘기면 이벤트 참여 조건 완성
+		if self.Level < 2 and (self.Level + levelDelta) >= 2 then
+			_EventDataLogic:IncreaseCouponSetCount(self.Entity.OwnerId, "AlphaWorldCoinEvent")
+			log("이벤트 조건 달성")
+		end
+		]]
+		
+		-- 레벨 데이터를 변경합니다.
+		self.Level += levelDelta
+		
+		
+		-- 최고 레벨을 초과하는 경우, 다시 최고 레벨로 돌립니다.
+		if self.Level > 500 then
+			self.Level = 500
+		end
+		
+		--------------------------------------------------------------
+		_PlayerDataLogic:SetPlayerLevelData(self.Entity.PlayerComponent.UserId)
+		
+		
+		
+		return levelDelta
+	end
+
+	@ExecSpace("Server")
+	method boolean SubtractSyrup(string type, number amount)
+		-- 시럽을 차감하고 성공/실패 여부 반환
+		-- 시럽 사용에 실패/성공 하였음을 구분하기 위해 boolean 반환합니다. 실패 시 false, 성공 시 true
+		local user = self.Entity
+		local userID = user.OwnerId
+		
+		if type == "Syrup" then
+			if self.Syrup - amount < 0 then
+				--log("시럽 사용에 실패했어요 :: 잔여량보다 많이 사용")
+				--_UIToast:ShowMessage("시럽이 부족합니다.", userID)
+				_UIToast:ShowMessageByLocalizingKey("Toast_SyrupError",userID)
+				return false
+			end
+			self:AddSyrup("Syrup", -amount, "GachaCoach")
+			return true
+			
+		elseif type == "RoyalSyrup" then
+			if self.RoyalSyrup - amount < 0 then
+			--	log("시럽 사용에 실패했어요 :: 잔여량보다 많이 사용")
+				--_UIToast:ShowMessage("로얄 시럽이 부족합니다.", userID)
+				_UIToast:ShowMessageByLocalizingKey("Toast_RoyalSyrupError",userID)
+				return false
+			end
+			self:AddSyrup("RoyalSyrup", -amount, "GachaCoach")
+			return true
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddBoxPurchaseCount(integer amount)
+		-- 가챠 박스 구매 횟수를 누적하여 카운트
+		-- 가챠 박스 구매 횟수를 카운트 합니다. (DB 저장 필요)
+			-- 연챠(연속가챠) 또는 여러 개 동시 구매를 할 수도 있으니 amount 넣어둡니당!
+		
+		local user = self.Entity
+		local userID = user.OwnerId
+		
+		self.CumulativeBoxPurchases += amount
+		-- DB 저장 함수 호출 --
+		_PlayerDataLogic:SetPlayerCumulativeBoxPurchasesAmountData(userID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetGameRecordProperty(string targetUserID)
+		-- 최근 플레이한 게임 기록을 프로필 프로퍼티에 저장
+		-- 최근에 플레이한 20개의 게임 데이터를 불러옵니다.
+		-- profile_ 형태의 프로퍼티들에 데이터를 저장합니다.
+		------------------------------------------------------------------------------
+		local user = self.Entity
+		local userID = user.OwnerId
+		if isvalid(targetUserID) then
+			userID = targetUserID
+		end
+		local getStartGameNumber = math.max(self.SetProfileGameCount, self.PlayGameCount - 19)
+		------------------------------------------------------------------------------
+		-- 1. Profile_ 프로퍼티에 값 저장 (key 값은 모두 해당 Game의 카운트)
+		for gameCount = getStartGameNumber + 1, self.PlayGameCount do
+			-- DB 값 가져오기
+			--[[
+				- 승패 여부
+				- 게임 모드 및 도달 스테이지
+				- 사용 유닛 및 장착 아이템
+				- 최종 룬카드
+				- 사용 코치
+				- 최종 팀 체력
+				- 지금까지 획득한 코인
+				- 지금까지 사용한 코인
+			]]--
+			local keyName = string.format("EndGameData_%s_%d", _PlayerDataLogic.SetVer, gameCount)
+			local eg_err, eg_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(keyName)
+			
+			
+			for i = 1, 10 do
+				if eg_err == 0 then
+					break
+				elseif i == 10 then
+					log_error("Save 실패")
+				else
+					eg_err, eg_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(keyName)
+				end
+			end
+		
+			local egTable = _UtilLogic:Split(eg_Value, ",")
+			
+			-- 승패 여부
+			if egTable[1] == "win" then
+				self.Profile_IsWin[gameCount] = true
+			elseif egTable[1] == "lose" then
+				self.Profile_IsWin[gameCount] = false
+			end
+			
+			
+			-- 게임 모드 및 난이도, 도달 스테이지
+			local modeAndRound = _UtilLogic:Split(egTable[2], "_")
+			self.Profile_ModeType[gameCount] = modeAndRound[1]
+			self.Profile_ModeSeason[gameCount] = modeAndRound[2]
+			self.Profile_ModeLevel[gameCount] = tonumber(modeAndRound[3])
+			self.Profile_LastRound[gameCount] = modeAndRound[4]
+			
+			-- 사용 유닛 및 장착 아이템
+			--  캐릭터_별 개수_(아이템-아이템-아이템) / 캐릭터_별 개수_(아이템들) / 캐릭터_별 개수_(아이템들) / ..
+			-- "_" 로 Split해서 앞부분은 charID, 뒷부분은 아이템리스트, 뒷부분의 아이템 리스트는 한 번 더 "-"로 Split해서 사용
+			self.Profile_UnitInfo[gameCount] = egTable[3]
+			
+			-- 최종 룬카드
+			-- 룬ID_룬ID_룬ID_..
+			-- "_" 로 Split해서 사용
+			self.Profile_RuneList[gameCount] = egTable[4]
+			
+			-- 사용 코치
+			-- 코치ID_코치ID_코치ID_..
+			-- "_" 로 Split해서 사용
+			self.Profile_CoachList[gameCount] = egTable[5]
+			
+			-- 최종 팀 체력
+			self.Profile_GetTeamHP[gameCount] = tonumber(egTable[6])
+			
+			-- 지금까지 획득한 코인
+			self.Profile_GetCoinAmount[gameCount] = tonumber(egTable[7])
+			
+			-- 지금까지 사용한 코인
+			self.Profile_UsedCoinAmount[gameCount] = tonumber(egTable[8])
+			
+			-- 게임 종료 일시
+			-- 값을 DateTime(self.Profile_EndTime[gameCount])로 사용하면 UTCNow로 저장한 값을 사용 가능
+			-- DateTime(self.Profile_EndTime[gameCount]).Elapsed 값을 클라 환경에서 다시 DateTime()으로 변환 후 _UtilLogic:GetLocalTimeFrom()을 사용하면 로컬 시간으로 사용 가능
+			self.Profile_EndTime[gameCount] = egTable[9]
+			
+		end
+		------------------------------------------------------------------------------
+		-- 2. 가장 최근에 플레이한 GameCount를 SetProileGameCount 프로퍼티에 기록
+		self.SetProfileGameCount = self.PlayGameCount
+		------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("Server")
+	method void SetFavoriteTable(string type, table data)
+		-- 즐겨찾기 테이블을 타입별로 설정
+		if type == "Character" then
+			table.initialize(self.fave_Character_Dictionary, data)
+		elseif type == "Item" then
+			table.initialize(self.fave_Item_Dictionary, data)
+		elseif type == "Rune" then
+			table.initialize(self.fave_Rune_Dictionary, data)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetChallengeModeTryCount(integer setValue)
+		-- 챌린지 모드 남은 도전 횟수 설정
+		self.ChallengeMode_LeftTryCount = setValue
+		
+		-- save
+		_PlayerDataLogic:SetPlayerChallengeInfoData(self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 프로퍼티 동기화 시 UI 갱신 처리
+		if name == "Level" or name == "EXP" then
+			-- 경험치 또는 레벨 싱크
+			_UI_PlayerLevel:RefreshLobbyProfile(self.Level, self.EXP)
+		end
+		--------------------------------------------------------
+		if name == "Syrup" then
+			local ui_currency = _EntityService:GetEntityByPath("/ui/Lobby_CurrencyHUD/List_Currency/Currency_1/Amount")
+			ui_currency.TextComponent.Text = string.format("%d", self.Syrup)
+			
+		elseif name == "RoyalSyrup" then
+			local ui_currency = _EntityService:GetEntityByPath("/ui/Lobby_CurrencyHUD/List_Currency/Currency_2/Amount")
+			ui_currency.TextComponent.Text = string.format("%d", self.RoyalSyrup)
+			
+		elseif name == "Repechage" or name == "Repechage_Free" then
+			local ui_currency = _EntityService:GetEntityByPath("/ui/Lobby_CurrencyHUD/List_Currency/Currency_3/Amount")
+			ui_currency.TextComponent.Text = string.format("%d", self.Repechage + self.Repechage_Free)
+			ui_currency.Parent.UI_SimpleTooltipActivator.Desc = 
+				_LocalizationService:GetText("Repechage_Tooltip").."\n\n"
+				.._LocalizationService:GetTextFormat("Repechage_Tooltip_Extra", self.Repechage_Free, self.Repechage)
+				
+			
+		elseif name == "ChallengeMode_LeftTryCount" then
+			--log("챌린지 모드 남은 횟수 = ", self.ChallengeMode_LeftTryCount)
+			local ui_challengeModeTryCount = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode/Button_ChallengeMode/Text_TryCount")
+			ui_challengeModeTryCount.TextComponent.Text = _LocalizationService:GetTextFormat("Challenge_LeftTryCount", self.ChallengeMode_LeftTryCount) -- 오늘 남은 도전 ? / 3
+		end
+		--------------------------------------------------------
+		if name == "Syrup" or name == "RoyalSyrup" or name == "Repechage" or name == "Repechage_Free" then 
+			_UI_CoachShopList:Refresh_Syrup(name,self.Syrup,self.RoyalSyrup)
+			if _UI_CoachShopList.Shop.Enable then 		
+				_UI_CoachShopService:RefreshShopUI()
+			end
+			
+			_UI_LobbyCoachInventory:RefreshCurrencyList()
+		--------------------------------------------------------	
+		elseif name == "ClearLevelByMode" then
+			_ModeDataLogic:RefreshUI_RankModeButton()
+		end
+	end
+
+end

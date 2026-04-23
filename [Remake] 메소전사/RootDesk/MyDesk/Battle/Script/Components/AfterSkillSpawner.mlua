@@ -1,0 +1,214 @@
+@Component
+script AfterSkillSpawner extends Component
+
+	property string effectRuidSpawn = "6a39036e76c547a79e2a10e65719b7b6"
+
+	property string effectRuidDead = "013e0f82874d4eea82c1cdfe54b3249b"
+
+	property number damageRatio = 1
+
+	property Vector3 fireOffset = Vector3(0.8,0,0)
+
+	property string skillId = "60"
+
+	property string afterEffect = "086b740f9ce343a48be3dbb9260f6600"
+
+	property Vector3 afterEffectScale = Vector3(3,3,3)
+
+	property boolean spawnOnStart = true
+
+	property boolean spawnOnEnd = false
+
+	property number spawnCount = 1
+
+	property number spawnRadius = 0
+
+	property number anglePerSpawnCount = 0
+
+	property number delay = 0
+
+	property EntityRef target = nil
+
+	property number delayPerSpawnCount = 0
+
+	property Entity owner = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 컴포넌트 파괴 시 정리 작업 (현재 빈 구현)
+		
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 스킬 이펙트 시작/종료 시점에 추가 스킬 생성 및 관리
+		self._T.transform = self.Entity.TransformComponent
+		
+		local parent = self:GetParentEntity(self.Entity.Parent)
+		if isvalid(parent) == false then
+			return
+		end
+		local parentSkill = parent.SkillEffectObject
+		if isvalid(parentSkill) == false then
+			return
+		end
+		self.owner = parent.SkillEffectObject.owner
+		parent:ConnectEvent(SkillEffectStart,function(e)
+			self.damageRatio = parentSkill.damage
+			if self.spawnOnStart then
+				for i = 1, self.spawnCount do
+					
+					local target = self.target
+					if isvalid(target) == false then
+						target = _UserService.LocalPlayer				
+					end
+					self:UseSkill(self.skillId,target,parentSkill.delay + self.delay+self.delayPerSpawnCount * i,i)
+				end
+			end
+		end)
+		parent:ConnectEvent(SkillEffectEnd,function(e) 
+			if _UtilLogic:IsNilorEmptyString(self.afterEffect) == false then
+				_EffectService:PlayEffect(self.afterEffect,self.Entity,self.Entity.TransformComponent.WorldPosition,0,self.afterEffectScale)
+			end
+			if self.spawnOnEnd then
+				for i = 1, self.spawnCount do
+					local target = self.target
+					if isvalid(target) == false then
+						target = _UserService.LocalPlayer				
+					end
+					self:UseSkill(self.skillId,target,parentSkill.delay + self.delay+self.delayPerSpawnCount * i,i)
+				end
+			end
+		end)
+	end
+
+	method Entity GetParentEntity(Entity parent)
+		-- 스킬 이펙트 오브젝트를 가진 부모 엔티티 재귀 탐색
+		if parent.MapComponent ~= nil then
+			return nil
+		end
+		if parent.SkillEffectObject ~= nil then
+			return parent
+		end
+		return self:GetParentEntity(parent.Parent)
+	end
+
+	method void UseSkill(string skillId, Entity target, number delay, number index)
+		-- 지정된 스킬을 타겟에게 사용 (딜레이 및 다중 발사 지원)
+		
+		if not self.Entity.Enable then return end
+		
+		local skillData = _MonsterSkillLogic:GetSkill(skillId)
+		if skillData == nil then
+		
+			return
+		end
+		
+		local attackFunc = function()
+					
+			if _UtilLogic:IsNilorEmptyString(skillData.sound) == false then
+		   			_SoundService:PlaySound(skillData.sound,_SoundLogic.effectRatio)
+			else
+		
+			end
+		
+			local faceLeft = self._T.isFaceLeft
+			local skillbeforeDelay = skillData.skillDelay
+			local damage = self.damageRatio
+			
+		
+			
+			for k,v in pairs(skillData.shot) do
+				local playEffect = function()
+					if not self.Entity.Enable then return end
+		
+					local skillPos = self:GetFirePosition(index)
+					local targetPos = target.TransformComponent.WorldPosition:Clone()
+					local diff = targetPos - skillPos
+					local dir = diff:Normalize()
+					
+					if not (skillData.offset.x == 0 and skillData.offset.y == 0) then
+						skillPos.x = skillPos.x + skillData.offset.x * (faceLeft and 1 or -1) 
+						skillPos.y = skillPos.y + skillData.offset.y
+						
+					end
+					
+					if skillData.type == "target" then
+						skillPos = target.TransformComponent.WorldPosition:Clone()
+					end
+					
+					local effect = _PoolingLogic:SpawnModel(skillData.effectModelId,skillPos,self.Entity.CurrentMap)
+					if skillData.type == "targetDir" then
+						effect.SkillEffectObject.dir = dir:ToVector2()
+					end
+					if skillData.angle[k] == nil then
+					end
+					
+					if skillData.type == "nontargetDir" then
+						effect.SkillEffectObject:SetAngle(skillData.angle[k] + 180 * (faceLeft and 1 or 0),true)
+					else
+						effect.SkillEffectObject:SetAngle(skillData.angle[k],true)	
+					end
+					if skillData.hpRatioDamage > 0 then
+						damage = self._T.player.BattlePlayer.maxHp * skillData.hpRatioDamage
+					end
+			
+					if #skillData.afterSkill > 0 then
+						local afterSkillId = _UtilLogic:RandomIntegerRange(1,#skillData.afterSkill)
+						local afterSkill = skillData.afterSkill[afterSkillId]
+							effect.SkillEffectObject.onDestroy = function()
+							self:UseSkill(afterSkill,target,delay,index)
+						end
+					end
+			
+					
+					effect.SkillEffectObject:Init(damage, false, "Monster", skillId)
+				
+				
+					
+					effect.SkillEffectObject:SetTarget(target)
+					
+			
+				end
+		
+				if v == 0 then
+					playEffect()
+				else
+					_TimerLogic:SetTimerOnce(playEffect,v, "AfterSkillSpawner.UseSkill_playEffect")
+				end
+			end
+			
+			
+			
+		end
+		
+		
+		local skillDelay = delay + skillData.skillDelay
+		if skillDelay == 0 then
+			
+			attackFunc()
+		else
+			
+			_TimerLogic:SetTimerOnce(function() 
+				attackFunc()			
+				end,skillDelay, "AfterSkillSpawner.UseSkill_attackFunc")
+		end
+		
+		
+		
+	end
+
+	method Vector3 GetFirePosition(number index)
+		-- 스킬 발사 위치 계산 (원형 배치 또는 기본 오프셋)
+		if self.anglePerSpawnCount > 0 then
+			local angle = math.rad(self.anglePerSpawnCount * (index - 1))
+			local x = self.spawnRadius * math.cos(angle)
+			local y = self.spawnRadius * math.sin(angle)	
+			return self._T.transform:ToWorldPoint(self.fireOffset) + Vector3(x,y,0) 	
+		end
+		return self._T.transform:ToWorldPoint(self.fireOffset)
+	end
+
+end

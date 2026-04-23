@@ -1,0 +1,159 @@
+@Component
+script C10018_Powderbutterfly_Skill extends Component
+
+	property number skillAnimLength = 0.72
+
+	property string attackEffectRUID = "b5f0d78b8a1d4cce9241ed05835e9315"
+
+	property string hitEffectRUID = "6a1c220ef1dd480e87ddc494028bed73"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		
+		local function hitSkill()
+			local hitCount = 0
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetAttackEffect(unitInfo.OwnerId)
+				
+				local enemies = {}
+				if unitInfo.TeamType == "Enemy" then
+					enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+				elseif unitInfo.TeamType == "User" then
+					enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+				end
+				
+				local attackEnemies = _BTLogic_New:getTargets(unitInfo.setTile, enemies, "Around_1_1")
+					
+				if isvalid(attackEnemies) then
+					for _, enemy in pairs(attackEnemies) do
+						if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+							self:SetSkillDamage(enemy)
+							hitCount+=1
+						end
+					end
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(hitSkill, 0.18 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0051",self.Entity.UnitInfo.OwnerId)
+		
+		--스킬 이펙트
+		self:PlaySkillEffect(1.6 / skillRate,self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.attackEffectRUID, myUnit, Vector3(0, 0, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			-- 실명
+			local debuffTime = tonumber(_S01_SkillDescLogic.C10018_Active_DebuffTime_Int[unitInfo.level])
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0007", debuffTime)
+			
+			-- 데미지
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C10018_Active_SDamage_Magic[unitInfo.level]
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void PlaySkillEffect(number time)
+		--범위 표시
+		local range=_SpawnService:SpawnByModelId("model://ddb8dc6e-88f6-4c9b-978f-523d71988570","Range",Vector3(0,0,0),self.Entity)
+		
+		
+		if self.Entity.UnitInfo.TeamType=="User" then
+			range.SpriteRendererComponent.Color=Color.FromHexCode("#5eff00")
+		else
+			range.SpriteRendererComponent.Color=Color.FromHexCode("#ff7800")
+		end
+		
+		
+		local alpha=0
+		
+		--범위 표시 스프라이트가 점점 진해집니다.
+		local setalpha=function()
+			range.SpriteRendererComponent.Color.a=alpha
+			alpha+=(1/60*0.5*_ESCMenuService.skillEffectAlpha/100)
+		end
+		
+		for i=1,60 do
+			_TimerService:SetTimerOnce(setalpha,(i*time)/60)
+		end
+		
+		--각 캐릭터별 범위 공격용 이펙트
+		if _ESCMenuService.skillEffectAlpha>0 then
+			local destroyandparticle=function()
+				range.Enable=false
+				local particle=_ParticleService:PlayBasicParticleAttached(BasicParticleType.TinyExplosion,self.Entity,Vector3(0,0,0),0,Vector3(1.2,1,1),false,{["SortingLayer"]="Layer1",["OrderInLayer"]=-1,["PlaySpeed"]=0.8,["ParticleSize"]=0.5,["ParticleSpeed"]=1.5
+																				,["ParticleCount"]=0.5,["ParticleLifeTime"]=0.1, ["Alpha"]=_ESCMenuService.skillEffectAlpha/100})
+				
+				_TimerService:SetTimerOnce(function() _ParticleService:RemoveParticle(particle) end,0.5)
+				_TimerService:SetTimerOnce(function() range:Destroy() end,0.5)
+				
+			end
+			_TimerService:SetTimerOnce(destroyandparticle, time)
+		end
+	end
+
+end

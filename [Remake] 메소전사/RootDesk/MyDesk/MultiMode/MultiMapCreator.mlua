@@ -1,0 +1,149 @@
+@Logic
+script MultiMapCreator extends Logic
+
+	property table DungeonGeneratorByBinarySpacePartitioning = {}
+
+	property Vector2 mapSize = Vector2(64,64)
+
+	property number maxNode = 4
+
+	property number minDivideSize = 0.6
+
+	property number maxDivideSize = 1
+
+	property string tile = "left"
+
+	method table CreateTreeNode(integer x, integer y, integer width, integer height)
+		-- BSP 알고리즘용 트리 노드 생성
+		local node = {}
+		
+		node.leftTree = nil
+		node.rightTree = nil
+		node.parentTree = nil
+		node.treeSize = Vector4(x, y, width, height)
+		node.dungeonSize = Vector4(0, 0, 0, 0)
+		return node
+	end
+
+	method void GenerateMap(RectTileMapComponent tileMap)
+		-- BSP 알고리즘을 사용하여 던전 맵 생성
+		tileMap:Reset()
+		tileMap.TileSetRUID = "tileset://76e84877-ef3f-4eac-affd-edd2dac8560e"
+			
+		local rootNode = self:CreateTreeNode(0, 0, self.mapSize.x, self.mapSize.y)
+		self:DivideTree(rootNode, 0)
+		self:GenerateDungeon(rootNode, 0,tileMap)
+		self:GenerateRoad(rootNode, 0,tileMap)
+	end
+
+	method void DivideTree(table treeNode, integer n)
+		-- 트리 노드를 재귀적으로 분할하여 공간 나누기
+		if n < self.maxNode then
+		        local size = treeNode.treeSize
+		        local length = size.z >= size.w and size.z or size.w
+		
+				if length <= 0 then
+					return
+				end
+			
+		        local split = _UtilLogic:RandomIntegerRange(length * self.minDivideSize, length * self.maxDivideSize)
+		        if size.z >= size.w then
+		            treeNode.leftTree = self:CreateTreeNode(size.x, size.y, split, size.w)
+		            treeNode.rightTree = self:CreateTreeNode(size.x + split, size.y, size.z - split, size.w)
+		        else
+		            treeNode.leftTree = self:CreateTreeNode(size.x, size.y, size.z, split)
+		            treeNode.rightTree = self:CreateTreeNode(size.x, size.y + split, size.z, size.w - split)
+		        end
+		        treeNode.leftTree.parentTree = treeNode
+		        treeNode.rightTree.parentTree = treeNode
+		        self:DivideTree(treeNode.leftTree, n + 1)
+		        self:DivideTree(treeNode.rightTree, n + 1)
+		end
+		
+	end
+
+	method Vector4 GenerateDungeon(table treeNode, integer n, RectTileMapComponent tileMap)
+		-- 분할된 공간에 던전 방 생성
+		 if n == self.maxNode then
+			local size = treeNode.treeSize
+			local width = math.max(_UtilLogic:RandomIntegerRange(size.z / 2, size.z - 1))
+			local height = math.max(_UtilLogic:RandomIntegerRange(size.w / 2, size.w - 1))
+			local x = size.x + _UtilLogic:RandomIntegerRange(1, size.z - width)
+			local y = size.y + _UtilLogic:RandomIntegerRange(1, size.w - height)
+			self:OnDrawDungeon(x, y, width, height,tileMap)
+			return Vector4(x, y, width, height)
+		end
+		treeNode.leftTree.dungeonSize = self:GenerateDungeon(treeNode.leftTree, n + 1,tileMap)
+		treeNode.rightTree.dungeonSize = self:GenerateDungeon(treeNode.rightTree, n + 1,tileMap)
+		return treeNode.leftTree.dungeonSize
+	end
+
+	method void GenerateRoad(table treeNode, integer n, RectTileMapComponent tilemap)
+		-- 던전 방들을 연결하는 통로 생성
+		if n == self.maxNode then
+		        return
+		    end
+		    local x1 = self:GetCenterX(treeNode.leftTree.dungeonSize)
+		    local x2 = self:GetCenterX(treeNode.rightTree.dungeonSize)
+		    local y1 = self:GetCenterY(treeNode.leftTree.dungeonSize)
+		    local y2 = self:GetCenterY(treeNode.rightTree.dungeonSize)
+		 
+		
+		    for x = math.min(x1, x2), math.max(x1, x2) do	
+				if tilemap:GetTile(Vector2Int(x - self.mapSize.x / 2, y1 - self.mapSize.y / 2)) ~= nil then
+		       		tilemap:RemoveTile(Vector2Int(x - self.mapSize.x / 2, y1 - self.mapSize.y / 2))
+				else
+					tilemap:SetTile("top",Vector2Int(x - self.mapSize.x / 2, y1 - self.mapSize.y / 2))
+				end
+		    end
+		    for y = math.min(y1, y2), math.max(y1, y2) do
+				if tilemap:GetTile(Vector2Int(x2 - self.mapSize.x / 2, y - self.mapSize.y / 2)) ~= nil then
+		       		tilemap:RemoveTile(Vector2Int(x2 - self.mapSize.x / 2, y - self.mapSize.y / 2))
+		 		else
+					tilemap:SetTile("top",Vector2Int(x2 - self.mapSize.x / 2, y - self.mapSize.y / 2))
+				end 
+			end
+		    self:GenerateRoad(treeNode.leftTree, n + 1,tilemap)
+		    self:GenerateRoad(treeNode.rightTree, n + 1,tilemap)
+	end
+
+	method void OnDrawDungeon(integer x, integer y, integer width, integer height, RectTileMapComponent tilemap)
+		-- 던전 방의 벽면 타일 그리기
+		for i = x, x + width do
+		   for j = y, y + height do
+			   if i == x or i == x + width - 1 or j == y or j == y + height - 1 then
+		       local tileToSet = self:GetWallTileBasedOnDirection(i, x, x + width - 1, j, y, y + height - 1)
+		
+					
+		       	tilemap:SetTile(tileToSet,Vector2Int(i - self.mapSize.x / 2, j - self.mapSize.y / 2))
+			   end
+		   end
+		end
+	end
+
+	method number GetCenterX(Vector4 size)
+		-- 영역의 중심 X 좌표 계산
+		return size.x + size.z / 2
+	end
+
+	method number GetCenterY(Vector4 size)
+		-- 영역의 중심 Y 좌표 계산
+		return size.y + size.w / 2
+	end
+
+	method string GetWallTileBasedOnDirection(integer i, integer x1, integer x2, integer j, integer y1, integer y2)
+		-- 위치에 따른 벽 타일 종류 결정
+		    if i == x1 then
+		        return "left"
+		    elseif i == x2 then
+		        return "right"
+		    elseif j == y1 then
+		        return "bottom"
+		    elseif j == y2 then
+		        return "top"
+		    else
+		        return "left"
+		    end
+	end
+
+end

@@ -1,0 +1,261 @@
+@Component
+script PolearmSpecialBuff extends WeaponSpecialBuff
+
+	property number cooltime = 2
+
+	property number damageRate = 1
+
+	property table bulletTable = {"model://7b50d212-7d9b-440d-b668-37f50a272c05","model://11f62948-fad3-4b4a-8b03-26ae3f26fd75","model://6e72b071-9728-49ec-9ba9-ee17d3d54775","model://421c074a-5e41-4416-9728-2af684e498f9","model://497c01dd-0a87-441a-9e68-314f996e9899"}
+
+	property number count = 3
+
+	method void BuffOn()
+		-- 창 특수 버프 활성화 및 복제 공격 시작
+		__base:BuffOn()
+		
+		self._T.bulletMeleeFireTime = 0
+		self._T.battleGunObject = self.Entity.BattleGunObject
+		
+		local weaponGrade = _ItemDataLogic.equipmentData[self._T.battleGunObject.weaponSpec.id].grade
+		if weaponGrade == "normal" then
+			weaponGrade = 1
+		elseif weaponGrade == "rare" then
+			weaponGrade = 2
+		elseif weaponGrade == "epic" then
+			weaponGrade = 3
+		elseif weaponGrade == "unique" then
+			weaponGrade = 4
+		elseif weaponGrade == "legendary" then
+			weaponGrade = 5
+		end
+		self._T.weaponGrade = weaponGrade
+		self._T.bulletModel = self.bulletTable[weaponGrade]
+		
+		self:Replica()
+	end
+
+	method void Replica()
+		-- 몬스터 접촉 시 창 복제 공격 발동
+		local spawnReplica = function(TriggerBodyEntity)
+			
+			if not isvalid(self) then return end
+			
+			local monster = TriggerBodyEntity.MonsterObject
+		
+			if isvalid(monster) then
+				if isvalid(self._T.battleGunObject) and isvalid(self._T.battleGunObject.target) then
+					local deltaCoolTime = _TimerLogic.ElapsedSeconds - self._T.bulletMeleeFireTime
+					if deltaCoolTime > self.cooltime then
+						self._T.bulletMeleeFireTime = _TimerLogic.ElapsedSeconds
+						self._T.originalEffect = _PoolingLogic:SpawnModel("model://d0027be1-0090-41f1-8b8a-7beff0045c92",self.Entity.TransformComponent.Position-Vector3(0,0.4,0),self.Entity.CurrentMap)
+						self:SpawnBullet()
+					end
+				end
+			end
+		end
+		
+		local eventHandler = self.Entity.Children[1]:ConnectEvent(TriggerEnterEvent,function(e)
+			local TriggerBodyEntity = e.TriggerBodyEntity
+			spawnReplica(TriggerBodyEntity)
+		end)
+	end
+
+	method void Reset()
+		-- 창 특수 버프 리셋 시 모든 데이터 초기화
+		__base:Reset()
+		
+		self._T.bulletTable = {}
+		self._T.effectTable = {}
+		self._T.battleGunObject = nil
+		self._T.weaponGrade = 0
+		self._T.bulletModel = ""
+		self._T.bulletMeleeFireTime = 0
+		self._T.originalEffect = nil
+	end
+
+	method void SpawnBullet()
+		-- 회전하는 창 복제본들을 생성하여 공격
+		local damage = self._T.battleGunObject:CalculateDamage() * self.damageRate
+		local criticalDamage = self._T.battleGunObject:CalculateCriticalDamage()
+		local cricicalRate = self._T.battleGunObject.weaponSpec.criticalRate + _BuffLogic:GetCriticalPercent()
+		
+		self._T.bulletTable = {}
+		self._T.effectTable = {}
+		
+		for i=1, self.count do
+			local effect = _PoolingLogic:SpawnModel("model://b0770a92-76f8-4899-8ec9-82613c2426cf",self.Entity.TransformComponent.Position-Vector3(0,0.2,0),self.Entity.CurrentMap)
+			table.insert(self._T.effectTable,effect)
+			local polearmObject = _PoolingLogic:SpawnModel(self._T.bulletModel,self.Entity.TransformComponent.Position,self.Entity.CurrentMap)
+			table.insert(self._T.bulletTable,polearmObject)
+			polearmObject.TransformComponent.Scale = self.Entity.TransformComponent.Scale
+			local skillObject = polearmObject.SkillEffectObject
+			skillObject:Init(damage, true,self._T.battleGunObject.uniqueKey, "")
+			skillObject.spiralAngle = i*360/self.count
+			skillObject:SetAngle(0,false)
+			skillObject.criticalRate = cricicalRate
+			skillObject.criticalDamage = criticalDamage
+			if self._T.weaponGrade == 5 then
+				local eventHandler = skillObject.Entity:ConnectEvent(TriggerEnterEvent,function(e)
+					if isvalid(self) == false then return end
+					local TriggerBodyEntity = e.TriggerBodyEntity
+					if isvalid(TriggerBodyEntity.MonsterObject) then
+						TriggerBodyEntity.MonsterObject:ApplyStun(1)
+					end
+				end)
+				local disconnectEvent = function()
+					if isvalid(self) == false then return end
+					if isvalid(skillObject) == false then return end
+					self.Entity.Children[1]:DisconnectEvent(TriggerEnterEvent,eventHandler)
+				end
+				_TimerLogic:SetTimerOnce(disconnectEvent,skillObject.life-0.05, "PolearmSpecialBuff.SpawnBullet_disconnectEvent")
+			end
+			
+			local effectRemove = function()
+				if isvalid(self) == false then return end
+				
+				_PoolingLogic:DestroyEntity(effect)
+			end
+			_TimerLogic:SetTimerOnce(effectRemove,skillObject.life, "PolearmSpecialBuff.SpawnBullet_effectRemove")
+		end
+		
+		local originEffectRemove = function()
+			if isvalid(self) == false then return end
+			
+			_PoolingLogic:DestroyEntity(self._T.originalEffect)
+			self._T.originalEffect = nil
+		end
+		_TimerLogic:SetTimerOnce(originEffectRemove,self._T.bulletTable[1].SkillEffectObject.life/2, "PolearmSpecialBuff.SpawnBullet_originEffectRemove")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 창 복제본들의 회전 및 위치 업데이트
+		if _TimerLogic.pause then
+			return
+		end
+		
+		if isvalid(self._T.bulletTable) then
+			if isvalid(self._T.originalEffect) then
+				self._T.originalEffect.TransformComponent.WorldPosition = self.Entity.TransformComponent.WorldPosition-Vector3(0,0.4,0)
+			end
+			if isvalid(self._T.bulletTable) then
+				if #self._T.bulletTable == self.count then
+					for i, bullet in pairs(self._T.bulletTable) do
+						
+						if isvalid(bullet) == false or bullet.Enable == false then
+							table.clear(self._T.bulletTable)
+						end
+						bullet.TransformComponent.ZRotation += self._T.battleGunObject.rotateSpeed * delta
+						
+						if isvalid(self._T.effectTable[i]) == false or self._T.effectTable[i].Enable == false then
+							table.clear(self._T.effectTable)
+							return
+						end
+						self._T.effectTable[i].TransformComponent.WorldPosition = bullet.TransformComponent.WorldPosition-Vector3(0,0.2,0)
+						
+					end
+				end
+			end
+		end
+	end
+
+	method void BuffOnForField(number mode)
+		-- 멀티 필드 모드에서 창 특수 버프 처리
+		__base:BuffOnForField(mode)
+		
+		if mode == 2 then
+			self._T.bulletMeleeFireTime = 0
+			self._T.battleGunObject = self.Entity.MultiBattleGunObject
+			
+			if self.Entity.Enable == false then
+				self.Entity.Enable = true
+				self.Entity.Visible = false
+			end
+		
+			self._T.battleGunObject.specialBuffOn = true
+		
+			local weaponGrade = _ItemDataLogic.equipmentData[self._T.battleGunObject.weaponSpec.id].grade
+			if weaponGrade == "normal" then
+				weaponGrade = 1
+			elseif weaponGrade == "rare" then
+				weaponGrade = 2
+			elseif weaponGrade == "epic" then
+				weaponGrade = 3
+			elseif weaponGrade == "unique" then
+				weaponGrade = 4
+			elseif weaponGrade == "legendary" then
+				weaponGrade = 5
+			end
+			self._T.weaponGrade = weaponGrade
+			self._T.bulletModel = self.bulletTable[weaponGrade]
+		
+			local count = 0
+			local timer = 0
+			local spawnReplica = function(TriggerBodyEntity)
+				if isvalid(self) == false then _TimerService:ClearTimer(timer) return end
+				self:SpawnBulletForField()
+				count += 1
+				if count >= 5 then
+					_TimerService:ClearTimer(timer)
+					local disable = function()
+						self._T.battleGunObject.specialBuffOn = false				
+						if self._T.battleGunObject.fighting == false then
+							self.Entity.Enable = false
+							self.Entity.Visible = true
+						end
+					end
+					_TimerService:SetTimerOnce(disable,1.5)
+				end
+			end
+			timer = _TimerService:SetTimerRepeat(spawnReplica,1.6)
+		end
+	end
+
+	method void SpawnBulletForField()
+		-- 멀티 필드용 창 복제본 생성 (랜덤 각도 추가)
+		local damage = self._T.battleGunObject:CalculateDamage() * self.damageRate
+		local criticalDamage = self._T.battleGunObject:CalculateCriticalDamage()
+		local cricicalRate = self._T.battleGunObject.weaponSpec.criticalRate + _BuffLogic:GetCriticalPercent()
+		
+		self._T.bulletTable = {}
+		self._T.effectTable = {}
+		
+		for i=1, self.count do
+			local effect = _PoolingLogic:SpawnModel("model://b0770a92-76f8-4899-8ec9-82613c2426cf",_UserService.LocalPlayer.TransformComponent.Position,self.Entity.CurrentMap)
+			table.insert(self._T.effectTable,effect)
+			local polearmObject = _PoolingLogic:SpawnModel(self._T.bulletModel,_UserService.LocalPlayer.TransformComponent.Position,self.Entity.CurrentMap)
+			table.insert(self._T.bulletTable,polearmObject)
+			polearmObject.TransformComponent.Scale = self.Entity.TransformComponent.Scale
+			local skillObject = polearmObject.SkillEffectObject
+			skillObject:Init(damage, true,self._T.battleGunObject.uniqueKey, "")
+			skillObject.spiralAngle = i*360/self.count + _UtilLogic:RandomDouble() * 60
+			skillObject:SetAngle(0,false)
+			skillObject.criticalRate = cricicalRate
+			skillObject.criticalDamage = criticalDamage
+			if self._T.weaponGrade == 5 then
+				local eventHandler = skillObject.Entity:ConnectEvent(TriggerEnterEvent,function(e)
+					if isvalid(self) == false then return end
+					local TriggerBodyEntity = e.TriggerBodyEntity
+					if isvalid(TriggerBodyEntity.MonsterObject) then
+						TriggerBodyEntity.MonsterObject:ApplyStun(1)
+					end
+				end)
+				local disconnectEvent = function()
+					if isvalid(self) == false then return end
+					if isvalid(skillObject) == false then return end
+					self.Entity.Children[1]:DisconnectEvent(TriggerEnterEvent,eventHandler)
+				end
+				_TimerService:SetTimerOnce(disconnectEvent,skillObject.life-0.05)
+			end
+			
+			local effectRemove = function()
+				if isvalid(self) == false then return end
+				
+				_PoolingLogic:DestroyEntity(effect)
+			end
+			_TimerService:SetTimerOnce(effectRemove,skillObject.life)
+			
+		end
+	end
+
+end

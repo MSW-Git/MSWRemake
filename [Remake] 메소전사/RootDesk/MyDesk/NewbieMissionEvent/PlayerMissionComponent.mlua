@@ -1,0 +1,419 @@
+@Component
+script PlayerMissionComponent extends Component
+
+	property table missionInfo = {}
+
+	@HideFromInspector
+	property string userId = ""
+
+	@HideFromInspector
+	property PlayerDBComponent playerDB = nil
+
+	@HideFromInspector
+	property number requestedTime = 0
+
+	method void OnBeginPlay()
+		-- 플레이어 미션 컴포넌트 초기화
+		self.userId = self.Entity.PlayerComponent.UserId
+		self.playerDB = self.Entity.PlayerDBComponent
+	end
+
+	method void InitData()
+		-- 신규 유저 미션 데이터 초기화
+		local info = {}
+		
+		info.firstEnteredDate = tostring(_LocalTimeLogic:GetKST())
+		info.enteredDate = tostring(_LocalTimeLogic:GetKST())
+		
+		
+		info.newbieMissionDay = 1
+		info.newbieMissionPoint = 0
+		
+		for key, value in pairs(_NewbieMissionEventLogic.missionEventData) do
+			local newKey = string.format("newbieMissionProgress_%d", tonumber(key))
+			
+			if value.objectiveType == "connectGame" then
+				info[newKey] = 1
+			else
+				info[newKey] = 0 
+			end
+			
+			newKey = string.format("newbieMissionStatus_%d", tonumber(key))
+			
+			info[newKey] = "INCOMPLETE" 
+		end
+		
+		for key, value in pairs(_NewbieMissionEventLogic.missionEventRewardData) do
+			local newKey = string.format("newbieMissionReward_%d", tonumber(key))
+			
+			info[newKey] = "NONE"
+		end
+		
+		self.missionInfo = info
+		
+		if self:IsServer() then
+			self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncDataInClient(string data)
+		-- 클라이언트에서 미션 데이터 동기화
+		self.missionInfo = _HttpService:JSONDecode(data)
+		
+		_NewbieMissionEventLogic.newbieMissionUI:Refresh()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestSetMissionInfo(integer missionId, integer value)
+		-- 미션 진행도 설정 요청 처리
+		
+		local newKey = string.format("newbieMissionProgress_%d", missionId)
+		
+		if not isvalid(self.missionInfo[newKey]) then
+			self:InitData()
+		end
+		
+		if not isvalid(self.missionInfo[newKey])then
+			_WorldLog:LogAbnormalFlow(self.userId, "Invalid Try Set NewbieMission", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		self:SetMissionInfo(missionId, value)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetMissionInfo(integer missionId, integer value)
+		-- 미션 진행도 설정 및 동기화
+		local newKey = string.format("newbieMissionProgress_%d", missionId)
+		
+		self.missionInfo[newKey] = value
+		
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		
+	end
+
+	@ExecSpace("Server")
+	method void CheckEnteredDate()
+		-- 접속 날짜 확인 및 일일 미션 업데이트
+		local enteredDate = DateTime(self.missionInfo.enteredDate)
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		self:CheckMissionInfoIsValid()
+		
+		if not (enteredDate.Day == currentDate.Day and enteredDate.Month == currentDate.Month and enteredDate.Year == currentDate.Year) then 
+			self.missionInfo.newbieMissionDay += 1
+			self.missionInfo.enteredDate = tostring(currentDate)
+			
+			if self.missionInfo.newbieMissionDay <= 7 then
+				_WorldLog:LogPlayMissionFlow(self.userId, "1", "0", tostring(self.missionInfo.newbieMissionDay))
+			end
+		end
+		
+			
+		local changedValue = false
+		
+		for key, value in pairs(_NewbieMissionEventLogic.missionEventData) do
+		
+			if value.objectiveType == "connectGame" then
+				local newKey = string.format("newbieMissionProgress_%d", tonumber(key))
+				
+				if self.missionInfo[newKey] ~= self.missionInfo.newbieMissionDay then
+					self.missionInfo[newKey] = self.missionInfo.newbieMissionDay
+					changedValue = true
+				end
+			end
+		end
+		
+		if changedValue then
+			self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetPlayerMissionInfo()
+		-- 미션 데이터를 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["playerMissionInfo"] = _HttpService:JSONEncode(self.missionInfo)
+	end
+
+	@ExecSpace("Server")
+	method void RequestCompleteMission(integer missionId)
+		-- 미션 완료 요청 처리
+		if self.Entity.PlayerComponent.UserId ~= senderUserId then
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		if self:IsCanCompleteMission(missionId) then
+			self:CompleteMission(missionId)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CompleteMission(integer missionId)
+		-- 미션 완료 처리 및 보상 지급
+		local statusKey = string.format("newbieMissionStatus_%d", missionId)
+		local missionData = _NewbieMissionEventLogic.missionEventData[tostring(missionId)]
+		
+		self.missionInfo[statusKey] = "COMPLETE"
+		self.missionInfo.newbieMissionPoint = self.missionInfo.newbieMissionPoint + missionData.rewardPoint
+		
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		
+		_WorldLog:LogPlayMissionFlow(self.userId, "1", "1", tostring(missionId))
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, missionData.rewardDiamondAmount, self.userId,"PlayMission",string.format("%d",missionId))
+		_UIToast:ShowMessage(string.format("<color=yellow>- %s 미션 달성 -</color> %d 다이아를 획득합니다.", missionData.name, missionData.rewardDiamondAmount), self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckMissionInfoIsValid()
+		-- 미션 데이터 유효성 검사 및 초기화
+		local needSync = false
+		
+		if #table.keys(self.missionInfo) < 1 or not isvalid(self.missionInfo["newbieMissionProgress_1"]) 
+			or not isvalid(self.missionInfo["newbieMissionReward_1"]) then
+			
+			self:InitData()
+		end
+		
+		if not isvalid(self.missionInfo["firstEnteredDate"]) then
+			self.missionInfo.firstEnteredDate = self.missionInfo.enteredDate
+			needSync = true
+		end
+		
+		if not isvalid(self.missionInfo["newbieMissionPoint"]) then
+			self.missionInfo.newbieMissionPoint = 0
+			needSync = true
+		end
+		
+		if needSync then
+			self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		end
+	end
+
+	method boolean IsCanCompleteMission(integer missionId)
+		-- 미션 완료 가능 여부 확인
+		local newKey = string.format("newbieMissionProgress_%d", missionId)
+		local statusKey = string.format("newbieMissionStatus_%d", missionId)
+		
+		if not isvalid(self.missionInfo[newKey]) then
+			self:InitData()
+		end
+		
+		if not isvalid(self.missionInfo[newKey])then
+			_WorldLog:LogAbnormalFlow(self.userId, "Invalid Try Complete Newbie Mission.", 0, 0, 0, 0)
+			
+			return false
+		end
+		
+		if self.missionInfo[statusKey] == "COMPLETE" then
+			
+			return false
+		end
+		
+		local missionInfo = self.missionInfo
+		local limitTime = DateTime(missionInfo.firstEnteredDate) + TimeSpan(14, 0, 0, 0)
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		if limitTime.Elapsed - _LocalTimeLogic:GetKST().Elapsed <= 0 or
+			(currentDate.Year >= 2024 and currentDate.Month >= 2 and currentDate.Day >= 22 and currentDate.Hour >= 10 and currentDate.Minute >= 0)  then
+			_UIToast:ShowMessage("도전 기간이 종료됐습니다.", self.userId)
+			
+			return false
+		end
+		
+		local objectiveNum = _NewbieMissionEventLogic.missionEventData[tostring(missionId)].objectiveNum
+		
+		if self.missionInfo[newKey] < objectiveNum then
+			
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetReward(integer rewardId)
+		-- 보상 수령 요청 처리
+		if self.Entity.PlayerComponent.UserId ~= senderUserId then
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		
+		if self:IsCanGetReward(rewardId) then
+			self:GetReward(rewardId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetReward(integer rewardId)
+		-- 보상 지급 처리 및 로그 기록
+		local newKey = string.format("newbieMissionReward_%d", rewardId)
+		local rewardData = _NewbieMissionEventLogic.missionEventRewardData[tostring(rewardId)]
+		
+		self.missionInfo[newKey] = "REWARDED"
+		
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		
+		if rewardData.rewardType == "bundle" then
+			_RewardLogic:RequestGetBundleReward(rewardData.rewardId, self.userId, true)
+		else
+			_RewardLogic:GetReward(rewardData.rewardType, rewardData.rewardId, 1, self.userId, true, "PlayMissionPointReward")
+		end
+		
+		_WorldLog:LogPlayMissionFlow(self.userId, "1", "2", tostring(rewardId))
+	end
+
+	method boolean IsCanGetReward(integer rewardId)
+		-- 보상 수령 가능 여부 확인
+		local newKey = string.format("newbieMissionReward_%d", rewardId)
+		
+		if not isvalid(self.missionInfo[newKey]) then
+			self:InitData()
+		end
+		
+		if not isvalid(self.missionInfo[newKey])then
+			
+			return false
+		end
+		
+		if self.missionInfo[newKey] == "REWARDED" then
+			
+			return false
+		end
+		
+		local missionInfo = self.missionInfo
+		local limitTime = DateTime(missionInfo.firstEnteredDate) + TimeSpan(14, 0, 0, 0)
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		if limitTime.Elapsed - _LocalTimeLogic:GetKST().Elapsed <= 0 or
+			(currentDate.Year >= 2024 and currentDate.Month >= 2 and currentDate.Day >= 22 and currentDate.Hour >= 10 and currentDate.Minute >= 0)  then
+			_UIToast:ShowMessage("도전 기간이 종료됐습니다.", self.userId)
+			
+			return false
+		end
+		
+		local needPoint = _NewbieMissionEventLogic.missionEventRewardData[tostring(rewardId)].needPoint
+		
+		if self.missionInfo.newbieMissionPoint < needPoint then
+			
+			return false
+		end
+		
+		return true
+	end
+
+	method boolean IsTooShortRequestedTime()
+		-- 요청 간격이 너무 짧은지 확인
+		if _UtilLogic.ServerElapsedSeconds - self.requestedTime < 0.2 then
+			return true
+		else
+			self.requestedTime = _UtilLogic.ServerElapsedSeconds
+			
+			return false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void NoticeWaitAMoment()
+		-- 잠시 대기 메시지 표시
+		_UIToast:ShowMessage(_LocalizeLogic:GetText("toast23"))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestAddMissionInfo(integer missionId, integer value)
+		-- 미션 진행도 추가 요청 처리
+		
+		local newKey = string.format("newbieMissionProgress_%d", missionId)
+		
+		if not isvalid(self.missionInfo[newKey]) then
+			self:InitData()
+		end
+		
+		if not isvalid(self.missionInfo[newKey])then
+			
+			return
+		end
+		
+		self:SetMissionInfo(missionId, self.missionInfo[newKey] + value)
+	end
+
+	@ExecSpace("Server")
+	method void SendKillBossMissionEvent(string monsterId)
+		-- 보스 처치 미션 이벤트 전송
+		local playerEntity = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(playerEntity) then
+			
+			return
+		end
+		
+		playerEntity:SendEvent(NewbieMissionUpdateEvent("killBoss", monsterId, 1))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckChapterClear()
+		-- 챕터 클리어 미션 진행도 확인
+		if not self.Entity.PlayerDBComponent.dbInited then return end
+		
+		local chapter = math.floor(self.Entity.PlayerInfoComponent.playerInfo.stageStep / 10)
+		
+		for key, value in pairs(_NewbieMissionEventLogic.missionEventData) do
+			local objectiveType = value.objectiveType
+			local objectiveNum = tonumber(value.objectiveId)
+			local newKey = string.format("newbieMissionProgress_%d", chapter)
+			local currentNum = self.missionInfo[newKey]
+			
+			if objectiveType == "clearChapter" and objectiveNum <= chapter and currentNum < 1 then
+				self:RequestAddMissionInfo(tonumber(value.id), 1)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleNewbieMissionUpdateEvent(NewbieMissionUpdateEvent event)
+		-- 신규 미션 업데이트 이벤트 처리
+		local objectiveType = event.objectiveType
+		local objectiveId = event.objectiveId
+		local objectiveNum = event.objectiveNum
+		for key, value in pairs(self.missionInfo) do
+			local newKey = _UtilLogic:Split(key, "_")[2]
+			
+			if isvalid(newKey) and _UtilLogic:Contains(key, "newbieMissionProgress") then
+				local missionData = _NewbieMissionEventLogic.missionEventData[newKey]
+				local objectiveTypeData = missionData.objectiveType
+				
+				if objectiveTypeData == "clearChapter" or objectiveTypeData == "connectGame" or objectiveTypeData == "reachBattlePower" 
+					or objectiveTypeData == "reachAccountLevel" or objectiveTypeData == "clearQuest" then 
+					if objectiveTypeData == objectiveType and tonumber(missionData.objectiveId) <= tonumber(objectiveId) then
+						self:RequestSetMissionInfo(tonumber(newKey), objectiveNum)
+					end
+				else
+					if objectiveTypeData == objectiveType then
+						if objectiveType == "weaponGradeUp" and missionData.objectiveId == "0" then
+							self:RequestAddMissionInfo(tonumber(newKey), objectiveNum)
+						elseif objectiveType == "armorGradeUp" and missionData.objectiveId == "0" then
+							self:RequestAddMissionInfo(tonumber(newKey), objectiveNum)
+						elseif missionData.objectiveId == objectiveId then
+							self:RequestAddMissionInfo(tonumber(newKey), objectiveNum)
+						end
+					end
+				end
+				
+			end
+			
+		end
+	end
+
+end

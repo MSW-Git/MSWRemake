@@ -1,0 +1,214 @@
+@Component
+script PlayerVoidItem extends Component
+
+	property SyncTable<number> haveItems
+
+	property SyncTable<number> randomList
+
+	method void OnBeginPlay()
+		-- 공허 아이템 시스템 초기화 및 테이블 설정
+		self._T.tableList = {
+			haveItems = self.haveItems, 
+			randomList = self.randomList,
+		}
+		
+		self._T.tableType = {
+			haveItems = "number", 
+			randomList = "number",
+		}
+	end
+
+	@ExecSpace("Server")
+	method void LoadedData(string haveItemsStr, string randomListStr)
+		-- 사용자 데이터에서 공허 아이템 보유 정보와 랜덤 목록을 로드
+		local itemTable = _DataService:GetTable("VoidItems")
+		-------------------------------------------------------------------------------------------------------------------------
+		if haveItemsStr == nil then
+			for i=1, itemTable:GetRowCount() do
+				self.haveItems[i] = 0
+			end
+		else
+			local tableValue = _UtilLogic:StringToTable(haveItemsStr)
+			for i=1, itemTable:GetRowCount() do
+				if tableValue[i] == nil then
+					self.haveItems[i] = 0
+				else 
+					self.haveItems[i] = tableValue[i]
+				end
+			end
+		end
+		self:SetTableClient("haveItems", _UtilLogic:TableToString(self.haveItems), self.Entity.OwnerId)
+		-------------------------------------------------------------------------------------------------------------------------
+		if randomListStr == nil then
+			self:SetRandomList()
+			return
+		else
+			local tableValue = _UtilLogic:StringToTable(randomListStr)
+			for i=1, 3 do
+				if tableValue[i] == nil then
+					self:SetRandomList()
+					return
+				else 
+					self.randomList[i] = tableValue[i]
+				end
+			end 
+		end
+		-------------------------------------------------------------------------------------------------------------------------
+		-- 동기화 
+		self:SetTableClient("randomList", _UtilLogic:TableToString(self.randomList), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 클라이언트로 테이블 전체 데이터 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 클라이언트로 테이블의 특정 요소만 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string tableName)
+		-- 테이블 변경 시 관련 UI들을 새로고침
+		if tableName == "haveItems" then
+			_EntityService:GetEntityByPath("/ui/VoidItemGroup/VoidItemStorage/VoidItemStorage_panel").VoidItemStorageUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GetItem(number idx)
+		-- 지정된 인덱스의 공허 아이템을 얻고 레벨을 올리며 능력치 적용
+		-- 검증 
+		local itemTable = _DataService:GetTable("VoidItems")
+		if idx > itemTable:GetRowCount() or idx < 1 then
+			return
+		end 
+		
+		if self.haveItems[idx] >= tonumber(itemTable:GetCell(idx, "MaxLevel")) then
+			log("이미 최대레벨임!")
+			return
+		end
+		------------------------------------------------------------------------------
+		-- 데이터 처리
+		self.haveItems[idx] = self.haveItems[idx] + 1
+		_UIAlarmMarker:SetEnableMarker("voidItem", true, self.Entity.OwnerId)
+		
+		-- 동기화
+		self:SetTableElementClient("haveItems", idx, tostring(self.haveItems[idx]), self.Entity.OwnerId)
+		
+		
+		-- 스탯 변경 처리
+		self.Entity.PlayerData:ApplyPlayerStatus()
+	end
+
+	@ExecSpace("Server")
+	method void PurchaseItem(number idx)
+		-- 랜덤 목록에서 선택된 공허 아이템을 구매하고 재화 소모, 업적 처리
+		local itemTable = _DataService:GetTable("VoidItems")
+		idx = self.randomList[idx]
+		--------------------------------------------------------------------------------
+		--------------------------------------------------------------------------------
+		-- 검증
+		--------------------------------------------------------------------------------
+		-- 인덱스 검증
+		if idx > itemTable:GetRowCount() or idx < 1 then
+			return
+		end 
+		
+		-- 재화 보유량 검증
+		local cost = math.floor(0.05 * ((self.Entity.PlayerData.VoidItemPurchaseCount+1)^1.8) + 5)
+		if self.Entity.PlayerStorage.currencyItems[5] < cost then
+			log("비용 부족!")
+			return
+		end
+		
+		-- 최고레벨 검증
+		if self.haveItems[idx] >= tonumber(itemTable:GetCell(idx, "MaxLevel")) then
+			log("이미 최대레벨임!")
+			return
+		end
+		--------------------------------------------------------------------------------
+		--------------------------------------------------------------------------------
+		self:GetItem(idx)
+		self.Entity.PlayerStorage:UseCurrencyItems(5, cost)
+		self.Entity.PlayerData.VoidItemPurchaseCount = self.Entity.PlayerData.VoidItemPurchaseCount + 1
+		
+		-- 업적 : 공허 아이템 구매하기
+		self.Entity.PlayerAchievementComponent:GetProgress(41, 1)
+		self.Entity.PlayerAchievementComponent:GetProgress(42, 1)
+		self.Entity.PlayerAchievementComponent:GetProgress(43, 1)
+		self.Entity.PlayerAchievementComponent:GetProgress(44, 1)
+		--------------------------------------------------------------------------------
+		-- 랜덤 리스트를 새로 뽑습니다.
+		self:SetRandomList()
+		--------------------------------------------------------------------------------
+		-- 결과 팝업을 띄웁니다!
+		self:SetPurchaseResultPopup(idx, self.haveItems[idx], self.Entity.OwnerId)
+		--------------------------------------------------------------------------------
+		--------------------------------------------------------------------------------
+		self.Entity.PlayerData:SaveData(1)
+	end
+
+	@ExecSpace("Client")
+	method void SetPurchaseResultPopup(number idx, number level)
+		-- 공허 아이템 구매 결과 팝업을 UI에 표시
+		_EntityService:GetEntityByPath("/ui/VoidItemGroup/VoidItemShop").VoidItemShopUI:SetPurchaseResultPopup(idx, level)
+	end
+
+	@ExecSpace("Server")
+	method void SetRandomList()
+		-- 3개의 랜덤한 공허 아이템 목록을 생성하여 상점에 표시
+		local itemTable = _DataService:GetTable("VoidItems")
+		
+		local targetTable = {}
+		
+		local hasUnlockedItem = false
+		for i=1, itemTable:GetRowCount() do -- 0레벨 아이템을 먼저 타겟으로 합니다.
+			if self.haveItems[i] == 0 then
+				table.insert(targetTable, i)
+				hasUnlockedItem = true
+			end
+		end
+		
+		if hasUnlockedItem == false then -- 0렙 아이템이 없다면 최고레벨이 아닌 아이템들이 전부 타겟임
+			for i=1, itemTable:GetRowCount() do
+				if self.haveItems[i] < tonumber(itemTable:GetCell(i, "MaxLevel")) then
+					table.insert(targetTable, i)
+				end
+			end
+		end
+		
+		for i=1, 3 do
+			local randIdx = _UtilLogic:RandomIntegerRange(1, #targetTable)
+			self.randomList[i] = targetTable[randIdx]
+			
+			if #targetTable > (3-i) then -- 뽑아야 하는 수가 랜덤 타겟보다 적으면 제거하지 않음. (예: 2개 더 뽑아야 하는데 남은 추첨 대상이 1개라면 제거하지 않음)
+				table.remove(targetTable, randIdx)
+			end
+		end
+		--------------------------------------------------------------------------------
+		-- 동기화 
+		self:SetTableClient("randomList", _UtilLogic:TableToString(self.randomList), self.Entity.OwnerId)
+	end
+
+end

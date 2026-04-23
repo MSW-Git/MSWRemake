@@ -1,0 +1,260 @@
+@Logic
+script TutorialGuide extends Logic
+
+	property SyncTable<string> SpeakerQueue
+
+	property SyncTable<string> MessageQueue
+
+	property SyncTable<boolean> IsPlayed
+
+	property number currentPlayedIndex = 0
+
+	property SyncTable<number> playCondition
+
+	property number guideNum = 10
+
+	@ExecSpace("Client")
+	method void PlayGuide(number Index)
+		-- 특정 인덱스의 튜토리얼 가이드를 재생하고 화면에 표시
+		-- 이미 재생된 적 있다면 재생하지 않음
+		if self.IsPlayed[Index] == true then
+			return
+		else 
+			self.IsPlayed[Index] = true
+				
+			self:SaveData(_UserService.LocalPlayer.OwnerId, _UtilLogic:TableToString(self.IsPlayed), _UtilLogic:TableToString(self.playCondition))
+		end
+		------------------------------------
+		local tutorialTextTable = _DataService:GetTable("TutorialGuide")
+		self.currentPlayedIndex = Index
+		
+		-- 재생되어야 하는 내용(+화자)을 큐에 삽입
+		for i=1, tutorialTextTable:GetRowCount() do
+			local idx = tonumber(tutorialTextTable:GetCell(i, 1))
+			
+			if idx == Index then
+				table.insert(self.SpeakerQueue, tutorialTextTable:GetCell(i, 2))
+				table.insert(self.MessageQueue, tutorialTextTable:GetCell(i, 3))
+			end
+		end
+		
+		self:ShowNextMessage()
+	end
+
+	@ExecSpace("Client")
+	method void ShowNextMessage()
+		-- 큐에서 다음 메시지를 가져와서 화면에 애니메이션과 함께 출력
+		if self.SpeakerQueue[1] ~= nil then
+			local fromField = _EntityService:GetEntity("f65d7ce8-7ef4-424b-ab92-2ff6f0f3ccf2")
+			local messsageField = _EntityService:GetEntity("a38d3a6d-dd4c-465a-9882-a829dcb1bd99")
+			local npcImageField = _EntityService:GetEntity("3d6d2ca0-329b-4756-84ff-0ecf6c595c58")
+			
+			-- 이미지 교체 
+			if self.SpeakerQueue[1] == "TutorialNPC_1" then
+				npcImageField.SpriteGUIRendererComponent.ImageRUID = "05b924095af34482bd582448ad2ccc65"
+			elseif self.SpeakerQueue[1] == "TutorialNPC_2" then
+				npcImageField.SpriteGUIRendererComponent.ImageRUID = "2193e3721cd3441e93a67bac90b5537d"
+			elseif self.SpeakerQueue[1] == "TutorialNPC_3" then
+				npcImageField.SpriteGUIRendererComponent.ImageRUID = "bc8fb37b35a7400ba3f539ad46155cec"
+			end
+			
+			-- from 변경
+			fromField.TextComponent.Text = "From: ".._LocalizationService:GetText(self.SpeakerQueue[1])
+			
+			local tutorialGroup = _EntityService:GetEntity("44202060-27a8-4974-8ff8-3f5dd0dc47b2")
+			tutorialGroup:SetEnable(true)
+			
+			-- Message 연출
+			local message = _LocalizationService:GetText(self.MessageQueue[1])
+			local playNextButton = _EntityService:GetEntityByPath("/ui/TutorialGroup/PopupType/PlayNextButton")
+			local clickIcon = _EntityService:GetEntityByPath("/ui/TutorialGroup/PopupType/ChatBallonImage")
+			local exitButton = _EntityService:GetEntityByPath("/ui/TutorialGroup/PopupType/ExitButton")
+			playNextButton.Enable = false
+			clickIcon.Enable = false
+			exitButton.Enable = false
+			
+			messsageField.Enable = true
+			messsageField.TextComponent.Text = ""
+			for i=1, utf8.len(message) do
+				local setDialogFragment = function()
+					local newMessage = tostring(message)
+					
+					if i == utf8.len(message) then
+						playNextButton.Enable = true
+						-- 다음 메세지가 있다면
+						if self.SpeakerQueue[1] ~= nil then
+							clickIcon.Enable = true
+						else 
+							exitButton.Enable = true
+						end
+					end
+					
+					local fragmentedMessage = _UtilLogic:SubString(newMessage, 1, i)
+					messsageField.TextComponent.Text = fragmentedMessage
+				end
+				
+				_TimerService:SetTimerOnce(setDialogFragment, i/30)
+			end
+			
+			
+			-- 큐에서 제거
+			table.remove(self.SpeakerQueue, 1)
+			table.remove(self.MessageQueue, 1)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 클라이언트 시작 시 튜토리얼 데이터를 초기화하고 저장된 데이터를 로드
+		local toField = _EntityService:GetEntity("2f94c768-527b-4a28-aac1-252d2d26eb06")
+		toField.TextComponent.Text = "To:\n".._UserService.LocalPlayer.NameTagComponent.Name
+		
+		for i=1, self.guideNum do
+			self.IsPlayed[i] = false
+			self.playCondition[i] = 0
+		end
+		
+		
+		self:LoadData(_UserService.LocalPlayer.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void LoadData(string userId)
+		-- 유저의 튜토리얼 진행 상태와 조건 데이터를 서버에서 로드
+		local dataStroage = _DataStorageService:GetGlobalDataStorage(userId.."_tutorial")
+		
+		local errorCode, isPlayedTableStr = dataStroage:GetAndWait("IsPlayedTable")
+		local errorCode2, conditionTableStr = dataStroage:GetAndWait("Condition")
+		if errorCode ~= 0 or errorCode2 ~= 0 then
+			log("데이터 로드 중 에러 발생 :", errorCode, errorCode2)
+			return
+		end
+		-----------------------
+		local dataNum = _DataService:GetRowCount("TutorialGuide")
+		if isPlayedTableStr == nil or isPlayedTableStr == "" then
+			
+			local initTable = {}
+			for i=1, self.guideNum do
+				initTable[i] = false
+			end
+			self:OnTableChanged(_UtilLogic:TableToString(initTable), "IsPlayed", userId)
+		else 
+			self:OnTableChanged(isPlayedTableStr, "IsPlayed", userId)
+		end
+		
+		
+		if conditionTableStr == nil or conditionTableStr == "" then
+			local initConditionTable = {}
+			for i=1, self.guideNum do
+				initConditionTable[i] = 0
+			end
+			self:OnTableChanged(_UtilLogic:TableToString(initConditionTable), "Condition", userId)
+		else 
+			self:OnTableChanged(conditionTableStr, "Condition", userId)
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void SaveData(string userId, string isPlayedTableStr, string conditionTableStr)
+		-- 유저의 튜토리얼 진행 상태와 조건 데이터를 서버에 저장
+		--log("save data")
+		
+		local dataStroage = _DataStorageService:GetGlobalDataStorage(userId.."_tutorial")
+		
+		local errorCode = dataStroage:SetAndWait("IsPlayedTable", isPlayedTableStr)
+		local errorCode2 = dataStroage:SetAndWait("Condition", conditionTableStr)
+		
+		if errorCode ~= 0 or errorCode2 ~= 0 then
+			log("데이터 저장 중 에러 발생 : ", errorCode, errorCode2)
+			return
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnTableChanged(string tableString, string tableName)
+		-- 서버에서 받은 테이블 데이터를 클라이언트의 해당 테이블에 적용
+		local convertedTable = _UtilLogic:StringToTable(tableString)
+		if tableName == "IsPlayed" then
+			for i=1, #convertedTable do
+				self.IsPlayed[i] = convertedTable[i]
+			end
+		elseif tableName == "Condition" then
+			for i=1, #convertedTable do
+				self.playCondition[i] = convertedTable[i]
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void AddCondition(number index)
+		-- 특정 튜토리얼 조건을 추가하고 조건이 만족되면 가이드를 재생
+		self.playCondition[index] = self.playCondition[index] + 1
+		
+		if index == 2 and self.playCondition[index] >= 3 then
+			self:PlayGuide(2)
+		elseif index == 8 and self.playCondition[index] >= 1 then
+			self:PlayGuide(8)
+		end
+		
+		self:SaveData(_UserService.LocalPlayer.OwnerId, _UtilLogic:TableToString(self.IsPlayed), _UtilLogic:TableToString(self.playCondition))
+	end
+
+	@EventSender("Entity", "060ec13f-3bb8-4b68-a851-dd958171313a")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 다음 메시지 버튼 클릭 시 다음 튜토리얼 메시지를 표시
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:ShowNextMessage()
+	end
+
+	@EventSender("Entity", "45e9804d-f432-4e57-83bb-6d12dd840a50")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 종료 버튼 클릭 시 튜토리얼 종료 후 해당 UI를 열어줌
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		if self.currentPlayedIndex == 5 then
+			local achievementUI = _EntityService:GetEntityByPath("/ui/AchievementGroup")
+			achievementUI.Enable = true
+		elseif self.currentPlayedIndex == 8 then
+			local relicBookPanel = _EntityService:GetEntity("ca507c77-9fe8-478c-991c-21eac5238dd3")
+			relicBookPanel.Enable = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleLocalPlayerMapEnterEvent(LocalPlayerMapEnterEvent event)
+		-- 플레이어가 맵에 진입할 때 조건에 따라 해당 튜토리얼을 재생
+		-- Parameters
+		local EnteredMapType = event.EnteredMapType
+		--------------------------------------------------------
+		if EnteredMapType == "Town" then
+			if self.IsPlayed[3] == false and self.playCondition[3] >= 1 then
+				self:PlayGuide(3)
+			
+			elseif self.IsPlayed[4] == false and self.playCondition[4] >=1 then
+				self:PlayGuide(4)
+				
+			elseif self.IsPlayed[5] == false and self.playCondition[5] == 1 then
+				self:PlayGuide(5)
+			end
+			
+			
+		elseif EnteredMapType == "Mine" then
+			if self.IsPlayed[5] == false then
+				self.playCondition[5] = 1
+			end
+		end
+		
+		if _UserService.LocalPlayer.CurrentMapName == "Mine1_2" then
+			self.playCondition[3] = 1
+		elseif _UserService.LocalPlayer.CurrentMapName == "Mine1_3" then
+			self.playCondition[4] = 1
+		end
+	end
+
+end

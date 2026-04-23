@@ -1,0 +1,90 @@
+@Logic
+script MonsterWaveManageLogic extends Logic
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 몬스터 웨이브 관리 초기화
+		self._T.modelSpawnedCount = {}
+		self._T.modelNeedCount = {}
+		self._T.pendingList = {}
+		self._T.buffer = {}
+	end
+
+	method void InitWaveStart(string modelId, number count)
+		-- 웨이브 시작 시 필요한 모델 수 설정
+		local t = self._T.modelNeedCount
+		if t[modelId] == nil then
+			t[modelId] = count
+		else
+			t[modelId] += count
+		end
+	end
+
+	method void AfterWaveStart()
+		-- 웨이브 시작 후 부족한 모델 대기열에 추가
+		local pending = self._T.pendingList
+		local needTable = self._T.modelNeedCount
+		local spawnedTable = self._T.modelSpawnedCount
+		
+		for modelId, count in pairs(needTable) do
+			local spawnedCount = spawnedTable[modelId]
+			if spawnedCount == nil then
+				pending[#pending + 1] = {modelId = modelId, count = count}
+			elseif spawnedCount < count then
+				pending[#pending + 1] = {modelId = modelId, count = count - spawnedCount}
+			end
+		end
+		
+		table.clear(needTable)
+	end
+
+	method void Clear()
+		-- 모든 웨이브 데이터 초기화
+		table.clear(self._T.modelSpawnedCount)
+		table.clear(self._T.modelNeedCount)
+		table.clear(self._T.pendingList)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 대기 중인 모델들을 프리로드
+		local pending = self._T.pendingList
+		if #pending == 0 then
+			return
+		end
+		
+		local mapEntity = self._T.mapEntity
+		
+		if mapEntity == nil then
+			return
+		end
+		
+		local buffer = self._T.buffer
+		for i = 1, #pending do
+			if pending[i].count > 0 then
+				_PoolingLogic:PreLoadOneForce(pending[i].modelId, mapEntity)
+			else
+				buffer[#buffer + 1] = i
+			end
+			pending[i].count -= 1
+		end
+		
+		for i = #buffer, 1, -1 do
+			table.remove(pending, buffer[i])
+		end
+		
+		table.clear(buffer)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 맵 변경 시 데이터 초기화
+		
+		local NewMap = event.NewMap
+		self._T.mapEntity = NewMap
+		
+		self:Clear()
+	end
+
+end

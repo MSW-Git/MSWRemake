@@ -1,0 +1,430 @@
+@Component
+script UIShop extends Component
+
+	property EntityRef ProductLayoutEntity = nil
+
+	property EntityRef ShopMenuLayoutEntity = nil
+
+	property string CurrentActiveShopId = ""
+
+	property integer shopNextResetTime = 0
+
+	property boolean canRequestReset = true
+
+	property EntityRef resetButtonEntity = nil
+
+	property Entity ResetRemainTextEntity = nil
+
+	property Entity SubscriptionInfoEntity = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 컴포넌트 초기화 및 이벤트 연결 설정
+		self.ShopMenuLayoutEntity = self.Entity:GetChildByName("TabMenu"):GetChildByName("Menu")
+		self.ProductLayoutEntity = self.Entity:GetChildByName("ContextMenu"):GetChildByName("Context")
+		self.SubscriptionInfoEntity = self.Entity:GetChildByName("ContextMenu"):GetChildByName("SubscriptionInfo")
+		self._T.subscriptionSlots = {}
+		for i, child in pairs(self.SubscriptionInfoEntity:GetChildByName("SubscriptionList").Children) do
+			self._T.subscriptionSlots[i] = child
+		end
+		
+		local closeButton = self.Entity:GetChildByName("TopMenu"):GetChildByName("CloseButton")
+		closeButton:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end	
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+			self:Close()
+		end)
+		
+		self.resetButtonEntity = self.Entity:GetChildByName("ResetButton", true)
+		self.resetButtonEntity:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			self:OnResetButtonClicked()
+		end)
+		
+		self.ResetRemainTextEntity = self.Entity:GetChildByName("RemainResetTime", true) 
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string shopGroupId, string openShopId)
+		-- 상점 그룹을 열고 접근 가능한 상점들을 표시
+		self:ClearData()	
+		self.Entity.Parent.Enable = true
+		
+		local shopIds = _ShopDataLogic:GetShopIdsByShopGroup(shopGroupId)
+		if shopIds == nil or #shopIds == 0 then
+			self:Close()
+			return
+		
+		end
+		
+		local player = _UserService.LocalPlayer
+		local canOpenIds = {}
+		for i, shopId in ipairs(shopIds) do
+			if _ShopDataLogic:CheckCanOpenShop(shopId, player) then
+				table.insert(canOpenIds, shopId)
+			end
+		end
+		
+		table.sort(canOpenIds, function(a, b) 
+			return tonumber(a) > tonumber(b)
+		end)
+		
+		local openIndex
+		for i, shopId in pairs(canOpenIds) do
+			local menuRenderer = self:GetOrCreateMenuRenderer(i)
+			menuRenderer.UIShopMenuRenderer:Init(shopId)
+			
+			
+			if shopId == openShopId then
+				openIndex = i
+			end
+		end
+		
+		
+		if canOpenIds == nil or #canOpenIds == 0 then
+			self:Close()
+			return
+		end
+		
+		_UIGroupManager:EnableMoneyBarGroup(nil)
+		_UIGroupManager:EnableBackToLobbyBtn(true)
+		
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)
+		
+		if openIndex == nil then 
+			openIndex = 1
+		end
+		
+		_MainMenuRedDotManager:EnableShopRedDot(false)
+		self:OnShopSelected(canOpenIds[openIndex], self:GetOrCreateMenuRenderer(openIndex))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 상점 UI를 닫고 관련 팝업들도 정리
+		self.Entity.Parent.Enable = false
+		_UILobbyManager.UIShopPurchaePopup.UIShopPurchasePopup:PopDown()
+		self.CurrentActiveShopId = ""
+		self.shopNextResetTime = 0
+		self.canRequestReset = true
+		_UserService.LocalPlayer.TimeManager:RequestTimeFlowClient()
+		_UIGroupManager:EnableMoneyBarGroup(nil)
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearData()
+		-- 상점 메뉴와 상품 데이터를 초기화
+		local menuGroupRenderers = self.ShopMenuLayoutEntity.Children
+		for i, entity in ipairs(menuGroupRenderers) do
+			entity.Enable = false
+		end
+		
+		self:ClearProductRenderer()
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity GetOrCreateMenuRenderer(integer index)
+		-- 상점 메뉴 렌더러를 가져오거나 새로 생성
+		local entityName = "ShopMenuRenderer" .. tostring(index)
+		local entity = self.Entity:GetChildByName(entityName, true)
+		if entity == nil then
+			local rendererModel = _EntryService:GetModelIdByName("Model_UIShopMenuRenderer")
+			local parent = self.ShopMenuLayoutEntity
+			local newEntity = _SpawnService:SpawnByModelId(rendererModel, entityName, Vector3.zero, parent)
+			return newEntity
+		end
+		entity.Enable = true
+		return entity
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity GetOrCreateProductRenderer(integer index)
+		-- 상품 렌더러를 가져오거나 새로 생성
+		local entityName = "ShopProductRenderer" .. tostring(index)
+		local entity = self.Entity:GetChildByName(entityName, true)
+		if entity == nil then
+			local rendererModel = _EntryService:GetModelIdByName("Model_UIShopProductRenderer")
+			local parent = self.ProductLayoutEntity
+			local newEntity = _SpawnService:SpawnByModelId(rendererModel, entityName, Vector3.zero, parent)
+			return newEntity
+		end
+		entity.Enable = true
+		return entity
+	end
+
+	method void ClearProductRenderer()
+		-- 상품 렌더러들을 비활성화하여 숨김
+		local productGroupRenderers = self.ProductLayoutEntity.Children
+		for i, entity in ipairs(productGroupRenderers) do
+			entity.Enable = false
+		end
+	end
+
+	method void OnShopSelected(string shopId, Entity menuRenderer)
+		-- 선택된 상점의 상품들을 로드하고 UI 업데이트
+		local products = _ShopDataLogic:GetProductIdsByShopId(shopId)
+		if products == nil or #products == 0 then
+			return
+		end
+		
+		self.CurrentActiveShopId = shopId
+		local menuGroupRenderers = self.ShopMenuLayoutEntity.Children
+		for i, entity in ipairs(menuGroupRenderers) do
+			if entity == menuRenderer then
+				entity.UIShopMenuRenderer:OnUpdateBallonSprite(true)
+				entity.UIShopMenuRenderer:OnUpdateTextColor(true)
+				entity.UIShopMenuRenderer:OnUpdateIconSprite(true)
+			else
+				entity.UIShopMenuRenderer:OnUpdateBallonSprite(false)
+				entity.UIShopMenuRenderer:OnUpdateTextColor(false)
+				entity.UIShopMenuRenderer:OnUpdateIconSprite(false)
+			end	
+		end
+		
+		self.canRequestReset = true	
+		self:RefreshShop()
+	end
+
+	method void RefreshShop()
+		-- 상점 UI를 새로고침하여 최신 상태 반영
+		local categoryText = self.Entity:GetChildByName("ContextMenu"):GetChildByName("CategoryText").TextComponent
+		local shopData = _ShopDataLogic:GetShopData(self.CurrentActiveShopId)
+		if shopData == nil then return end
+		categoryText.Text = _GetLocalizationTextLogic:GetText(shopData.CategoryNameKey)
+		
+		
+		
+		self:RefreshProducts(self.CurrentActiveShopId)
+		self:RefreshResetPrice()
+		
+		local playerShop = _UserService.LocalPlayer.PlayerPrivateShop
+		self.shopNextResetTime = playerShop:GetNextSystemResetTime(self.CurrentActiveShopId)
+	end
+
+	method void OnResetedShop()
+		-- 상점이 리셋되었을 때 UI 새로고침 처리
+		if self.Entity.Parent.Enable == false then
+			return
+		end
+		
+		
+		self:RefreshShop()
+	end
+
+	method void RefreshProducts(string shopId)
+		-- 선택된 상점의 상품 목록을 새로고침하여 표시
+		
+		local products = _UserService.LocalPlayer.PlayerPrivateShop.productPurchaseCount
+		---@type table<ShopProductData>
+		local sortingProduct = {}
+		local isSubscription = false
+		for k,v in pairs(products) do
+			local productData = _ShopDataLogic:GetShopProductData(k)
+			if productData.LinkedShopId == shopId and _ShopDataLogic:CheckProductUnlock(k, _UserService.LocalPlayer) then
+				if string.sub(productData.ItemId, 1, 1) == "S" then
+					isSubscription = true
+				end
+				table.insert(sortingProduct, productData)
+			end
+		end
+		
+		self.SubscriptionInfoEntity.Enable = isSubscription
+		if isSubscription then
+		
+			self:RefreshSubscriptionInfo()
+		end
+		
+		table.sort(sortingProduct, function(a,b) return a.SortingOrder > b.SortingOrder end)
+		
+		self:ClearProductRenderer()
+		for i, productData in ipairs(sortingProduct) do
+			local productRenderer = self:GetOrCreateProductRenderer(i)
+			productRenderer.UIShopProductRenderer:Init(productData.ProductId)
+		end
+		
+		self.ProductLayoutEntity.ScrollLayoutGroupComponent:SetScrollPositionByItemIndex(1)
+	end
+
+	method void RefreshResetPrice()
+		-- 상점 리셋 가격을 계산하고 UI에 표시
+		local shopId = self.CurrentActiveShopId 
+		local shopData = _ShopDataLogic:GetShopData(self.CurrentActiveShopId)
+		local resetCount = _UserService.LocalPlayer.PlayerPrivateShop.shopReset[shopId]
+		if resetCount == nil then
+			resetCount = 0
+		end
+		
+		local resetPrice = shopData.CustomResetCost + (shopData.CustomResetCostAdd * resetCount)
+		
+		local resetPriceText = self.resetButtonEntity:GetChildByName("ResetPriceText").TextComponent
+		resetPriceText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(resetPrice)
+		
+		local ownMoney = _UserService.LocalPlayer.PlayerInventory.Money
+		if ownMoney < resetPrice then
+			resetPriceText.FontColor = _ColorCodeEnum:GetColor("#fa5246")
+		else
+			resetPriceText.FontColor = _ColorCodeEnum:GetColor("#ffffff")
+		end
+		
+		if resetPrice == -1 then
+			self.resetButtonEntity.Enable = false
+			self.ResetRemainTextEntity.Enable = false
+		else
+			self.resetButtonEntity.Enable = true
+			self.ResetRemainTextEntity.Enable = true
+		end
+	end
+
+	method boolean DisplayRemainResetTime()
+		-- 남은 리셋 시간을 계산하고 표시
+		if self.shopNextResetTime == nil then
+			return false
+		end
+		
+		local resetRemainText = self.ResetRemainTextEntity.TextComponent
+		local resetDate = DateTime(self.shopNextResetTime)
+		local utcNow = _DateTimeLogic:GetUtcNow()
+		if self.shopNextResetTime == 0 or utcNow > resetDate then
+			resetRemainText.Text = "0"
+			return true
+		end
+		
+		local timeSpan = resetDate - utcNow
+		local remainText = ""
+		if timeSpan.Days > 0 then
+			remainText ..= _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopResetTextDay", timeSpan.Days, timeSpan.Hours)
+		elseif timeSpan.Hours > 0 then
+			remainText ..= _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopResetTextHour", timeSpan.Hours, timeSpan.Minutes)
+		elseif timeSpan.Minutes > 0 then
+			remainText ..= _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopResetTextMinute", timeSpan.Minutes, timeSpan.Seconds)
+		else
+			remainText ..= _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopResetTextSecond", tostring(timeSpan.Seconds))
+		end
+		
+		resetRemainText.Text = remainText
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 리셋 시간을 확인하고 필요시 자동 리셋 요청
+		if _UtilLogic:IsNilorEmptyString(self.CurrentActiveShopId)  == true then
+			return
+		end
+		
+		local isNeedUpdate = self:DisplayRemainResetTime()
+		if isNeedUpdate then
+			if self.canRequestReset == true then
+				_UserService.LocalPlayer.PlayerPrivateShop:RequestSystemResetShop(self.CurrentActiveShopId)
+				self.canRequestReset = false	
+			end
+		end
+	end
+
+	method void OnResetButtonClicked()
+		-- 리셋 버튼 클릭 시 돈으로 상점 리셋 요청
+		local privateShop = _UserService.LocalPlayer.PlayerPrivateShop
+		privateShop:RequestResetShopByMoney(self.CurrentActiveShopId)
+	end
+
+	method void RefreshSubscriptionInfo()
+		-- 구독 상품 정보를 새로고침하여 UI에 표시
+		local player = _UserService.LocalPlayer
+		
+		local itemIdBase = "B000"
+		for i, child in pairs(self._T.subscriptionSlots) do
+			---@type Entity
+			local entity = child
+			local itemId = itemIdBase..i
+			local leftCount = player.PlayerUpgrade.Subscriptions[itemId]
+			if isvalid(leftCount) then
+				if leftCount <= 0 then
+					entity.UISubscriptionProgressSlot:Disable(itemId)
+				else
+					entity.UISubscriptionProgressSlot:Refresh(itemId, leftCount)
+				end		
+			else
+				entity.UISubscriptionProgressSlot:Disable(itemId)
+			end
+		end
+	end
+
+	@EventSender("Entity", "8dab0a8c-9d39-42aa-a33f-e7ecf5539c7b")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 일반 상점 열기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open("GeneralShop", nil)
+	end
+
+	@EventSender("Entity", "187358f2-9c79-4918-9b4a-ddd9ce89a4a6")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 직원 업그레이드 상점 열기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if _TutorialManager.target == _EmployeeUpgradeUIServcie.UIEmployeeUpgradeCompo.LevelUpBtn then 
+			return
+		end
+		
+		local uiUpgrade = _EmployeeUpgradeUIServcie.EmployeeUpgrade.UIEmployeeUpgrade
+		local openId = nil
+		if uiUpgrade.UIOverLimitGroup.Enable == true then
+			openId = "5"
+		else
+			local empData = _EmployeeService:GetData(uiUpgrade.EmployeeID)
+			if isvalid(empData) then
+				if empData.Type == _EmployeeTypeEnum.Cook then
+					openId = "7"
+				elseif empData.Type == _EmployeeTypeEnum.Serving then
+					openId = "6"
+				end	
+			end
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open("GeneralShop", openId)
+	end
+
+	@EventSender("Entity", "c215c0be-39ef-4ce6-aded-c62bf7a0f013")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 구독 상점 열기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if #table.keys(_UserService.LocalPlayer.PlayerUpgrade.Subscriptions) <= 0 then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open("GeneralShop", "4")
+	end
+
+	@EventSender("Entity", "dde7cec6-26af-49e1-8bda-a32473f5376f")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 네 번째 일반 상점 열기 버튼 클릭 이벤트 처리
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open("GeneralShop", nil)
+	end
+
+end

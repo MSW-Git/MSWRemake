@@ -1,0 +1,257 @@
+@Component
+script UINewMergeItem extends Component
+
+	property string originalId = ""
+
+	property boolean selected = false
+
+	property string uniqueKey = ""
+
+	property table itemData = {}
+
+	property table weaponSpec = {}
+
+	property boolean enableMergeState = false
+
+	property boolean isEgg = false
+
+	property number randomTime = 0
+
+	property table storageData = {}
+
+	property number count = 0
+
+	property number lastTouchTime = 0
+
+	property integer x = -1
+
+	property integer y = -1
+
+	property boolean mergeEnableNoti = false
+
+	property Entity itemEntity = nil
+
+	property number glowTime = 0
+
+	property Entity expEntity = nil
+
+	property boolean isTweening = false
+
+	property TextComponent mergeLvTag = nil
+
+	property UIMergePopup mergePopup = "51164ab4-12fd-4a18-80da-1d716e6fb756"
+
+	property Entity mergeEnableItem = nil
+
+	property Entity equipIcon = nil
+
+	property number equipSlot = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 시작 시 랜덤 값 초기화
+		
+		self.randomTime = _UtilLogic:RandomDouble()*10
+		self.glowTime = _UtilLogic:RandomDouble()*10
+		
+	end
+
+	method void SetWeaponID(string uniqueKey, table storageData)
+		-- 무기 데이터로 UI 아이템 설정
+		
+		if storageData == nil then
+			self.uniqueKey = ""
+			self:InitSprite()
+			return
+		end
+		local weaponId= storageData.originalId
+		
+		self.Entity.Visible = true
+		self.isEgg = false
+		self.storageData = storageData
+		
+		
+		
+		self.originalId = weaponId
+		self.uniqueKey = uniqueKey
+		local weaponSpec = _WeaponSpecLogic.weaponData[weaponId] 
+		if weaponSpec == nil then
+			return
+		end
+		local equipmentData = _ItemDataLogic.equipmentData[weaponId]
+		self.itemData = equipmentData
+		
+		local type = self.itemData.category
+		local pos = _NewMergeLogic:ConvertSnapPosition(Vector3(storageData.posX,storageData.posY,0))
+		
+		self.weaponSpec = weaponSpec
+		
+		
+		self.mergeLvTag = self.Entity:GetChildByName("text",true).TextComponent
+		self.mergeLvTag.Entity.Enable = true
+		
+		self:SetGrowColor()
+		
+		local spriteGUI = self.itemEntity.SpriteGUIRendererComponent
+		
+		spriteGUI.ImageRUID = ""
+		if _UtilLogic:IsNilorEmptyString(equipmentData.ruid) == true then
+			spriteGUI.ImageRUID = weaponSpec.ruid
+		else
+			spriteGUI.ImageRUID = equipmentData.ruid
+		end
+		self.mergeLvTag.Text = string.format("%d",self.storageData.level)
+		self.itemEntity.Enable = true
+		if isvalid(self.equipIcon) then
+			self.equipIcon.Enable = storageData.equippedSlotNum > 0
+		end
+		
+		if isvalid(self._T.categoryIcon) then
+			self._T.categoryIcon.SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic:GetWeaponCategoryIcon(weaponSpec.type)
+		end
+		
+	end
+
+	method void OnDragSelected(boolean selected)
+		-- 드래그 선택 상태에서 UI 가시성 설정
+		self.selected = selected
+		self.Entity.Visible = not selected
+		
+		if selected then
+			self.mergePopup.dragItem.Enable = true
+			self.mergePopup.guideItem.Enable = true
+			local ruid = self.itemEntity.SpriteGUIRendererComponent.ImageRUID
+			self.mergePopup.guideItem.SpriteGUIRendererComponent.ImageRUID = ruid
+			self.mergePopup.dragItem.SpriteGUIRendererComponent.ImageRUID = ruid
+		else
+			self.mergePopup.dragItem.Enable = false
+			self.mergePopup.guideItem.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 업데이트 루프 (현재 비어있음)
+		
+	end
+
+	method void SetGrowColor()
+		-- 아이템 등급과 경험치에 따른 UI 설정
+		
+		local star =  tonumber(self.itemData.star)
+		local grade = self.itemData.grade
+		self.expEntity = self.Entity:GetChildByName("exp",true)
+		self:SetGradeUI(grade)
+		if isvalid(self.expEntity) then
+			local expSprite = self.expEntity.SpriteGUIRendererComponent
+			expSprite.FillAmount= _WeaponSpecLogic:GetEXPAmount(self.storageData)
+			
+		end
+			
+		
+		
+		
+	end
+
+	method void InitSprite()
+		-- UI 스프라이트 컴포넌트 초기화
+		self.itemEntity = self.Entity:GetChildByName("item",true)
+		
+		if isvalid(self.equipIcon) == false then
+			self.equipIcon = self.Entity:GetChildByName("equip")
+			if isvalid(self.equipIcon) then
+				self.equipIcon.Enable = false
+			end
+		end
+		self.mergeLvTag = self.Entity:GetChildByName("text",true).TextComponent
+		
+		if isvalid(self._T.categoryIcon) == false then
+			self._T.categoryIcon = self.Entity:GetChildByName("icon_category",true)
+		end
+		
+		if isvalid(self._T.categoryPanel) == false then
+			self._T.categoryPanel = self.Entity:GetChildByName("panel_category",true)
+		end
+		
+	end
+
+	method void RefreshEggCount()
+		-- 알 아이템의 개수 UI 업데이트
+		
+		self.count = self.storageData.count
+		
+		self.itemEntity:GetChildByName("text").TextComponent.Text = string.format("%d",self.count)
+	end
+
+	method void CheckMergeEnable()
+		-- 다른 아이템과의 머지 가능 여부 확인
+		
+		self.mergeEnableNoti = false
+		for k,v in pairs(self.mergePopup.mergeItems) do
+			---@type Entity
+			local item = v
+			if isvalid(item) then
+				if item ~= self.Entity then
+						if self.itemData.mergeId ==	item.UINewMergeItem.itemData.mergeId then
+							self.mergeEnableNoti = true
+							item.UINewMergeItem.mergeEnableNoti = true
+						end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 컴포넌트 삭제 시 정리 작업
+		
+	end
+
+	method void SetPosition(number x, number y)
+		-- UI 아이템의 그리드 위치 설정
+		self.x = x
+		self.y = y
+		
+		
+		self.Entity.UITransformComponent.anchoredPosition = self:ToAnchoredPosition(x,y)
+		self.Entity.Enable = true
+		self.Entity.Visible = true
+	end
+
+	method Vector2 ConvertPosition()
+		-- UI 좌표를 그리드 좌표로 변환
+		local pos = self.Entity.UITransformComponent.anchoredPosition:Clone()
+		local width = self.mergePopup.gridSize.x + self.mergePopup.gridSpace
+		local height = self.mergePopup.gridSize.y + self.mergePopup.gridSpace
+		
+		pos = (Vector2(pos.x,-pos.y) + self.mergePopup.gridOffset) 
+		pos.x = pos.x / width
+		pos.y = pos.y / height
+		return Vector2(math.floor(pos.x + 0.5),math.floor(pos.y+ 0.5))
+	end
+
+	method Vector2 ToAnchoredPosition(number x, number y)
+		-- 그리드 좌표를 UI 앵커 좌표로 변환
+		x = math.min(_NewMergeLogic.gridWidth, math.max(0,math.floor(x + 0.5)))
+		y = math.min(_NewMergeLogic.gridHeight, math.max(0,math.floor(y + 0.5)))
+		local width = self.mergePopup.gridSize.x + self.mergePopup.gridSpace
+		local height = self.mergePopup.gridSize.y + self.mergePopup.gridSpace
+		local pos = Vector2(x* width,y* height)  - self.mergePopup.gridOffset
+		return  Vector2(pos.x,pos.y * -1)
+	end
+
+	method void SetGradeUI(string grade)
+		-- 아이템 등급에 따른 UI 스타일 설정
+		
+		if isvalid(self._T.categoryPanel) then
+			self._T.categoryPanel.SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic:GetWeaponLevelSlotRUIDByGrade(grade)
+		end
+		if isvalid(self._T.weaponSlot) == false then
+			self._T.weaponSlot = self.Entity:GetChildByName("type_weapon")
+		end
+		if isvalid(self._T.weaponSlot) then
+			self._T.weaponSlot.SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic:GetWeaponSlotRUIDByGrade(grade)	
+		end
+	end
+
+end

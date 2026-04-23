@@ -1,0 +1,217 @@
+@Component
+script C30021_BearicTheWhite_Skill extends Component
+
+	@Sync
+	property number skillAnimLength = 1.5
+
+	property string attackEffectRUID = "61ecd4fd00b242ca83006d2d99cfd9f5"
+
+	property string hitEffectRUID = "5c6b47d95e564482a33e55ed037a121a"
+
+	property boolean flipX = false
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+		local target = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Farthest")
+		
+		local targetInfo = target.UnitInfo
+		local targetStatus = target.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", target, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		self:SetAttackEffect(targetInfo.setTile, unitInfo.OwnerId)
+		
+		local function hitSkill()
+			self:SetSkillDamage(target)
+		end
+		
+		_TimerService:SetTimerOnce(hitSkill, 0.3 / skillRate)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		self:HitEffect(targetUnit, unitInfo.OwnerId)
+		
+		local magicalDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C30021_Active_SDamage_Magic[unitInfo.level]
+		
+		-- 공중 에어본
+		-- 저지불가 상태가 아니면 기절 및 모션 실행
+		if targetStatus.StatusEffect["SE0016"] == false then
+			self:SetTargetMotion(targetUnit)
+		end
+		
+		-- 데미지
+		local damageInfo = _StatusChangeLogic:CheckDamage(magicalDamage, myUnit, targetUnit, 0, "Magical")
+		_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect(Entity targetTile)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Attack Effect
+		local options = {["FlipX"] = self.flipX, ["PlayRate"] = 1, ["Color"]=Color(1,1,1,(_ESCMenuService.skillEffectAlpha-10)/100)}
+		
+		_EffectService:PlayEffectAttached(self.attackEffectRUID, targetTile, Vector3.zero, 0, Vector3.one * 1.5, false, options)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0126")
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one * 0.8, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetTargetMotion(Entity targetUnit)
+		if isvalid(targetUnit) then
+			---------------------------------------------------------------
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			local unitSprite = unitInfo.spriteRenderer
+			local unitTile = unitInfo.setTile
+			---------------------------------------------------------------
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local targetTile = targetInfo.setTile
+			---------------------------------------------------------------
+			local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId) 
+			local teamManger = user.TeamManager
+			---------------------------------------------------------------
+			local debuffTime = tonumber(_S01_SkillDescLogic.C30021_Active_DebuffTime_Int[unitInfo.level])
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0004", debuffTime)
+			---------------------------------------------------------------
+			-- 이동 타일 체크
+			-- 바로 앞 타일에 유닛이 있으면 제자리 점프 / 비어있으면 뒤로 밀림
+			---------------------------------------------------------------
+			---@type Entity
+			local moveTile
+			local tileGap = {{1, 1}, {2, 0}, {1, -1}, {-1, -1}, {-2, 0}, {-1, 1}, {1, 1}, {2, 0}}
+			local tiles = user.GameManager.RoomTile
+			
+			if isvalid(targetTile) and isvalid(unitTile) then
+				local gapX = targetTile.TransformComponent.WorldPosition.x - unitTile.TransformComponent.WorldPosition.x
+				local gapY = targetTile.TransformComponent.WorldPosition.y - unitTile.TransformComponent.WorldPosition.y 
+				
+				local targetRightAngle = Vector2.right:Angle(Vector2(gapX, gapY))
+				local targetUpAngle = Vector2.up:Angle(Vector2(gapX, gapY))
+				local targetAngle = 0
+				
+				if targetUpAngle <= 90 then
+				targetAngle = targetRightAngle
+				else
+				targetAngle = 360 - targetRightAngle
+				end
+				local vecNum = math.floor( (targetAngle + 30) / 60 ) + 2
+				
+				
+				local tileVerticalNode = targetTile.TileComponent_New.verticalNum
+				local tileHorizontalNode = targetTile.TileComponent_New.horizontalNum * 2 - (tileVerticalNode%2)
+				
+				
+				local hNode = tileHorizontalNode - tileGap[vecNum][1]
+				local vNode = tileVerticalNode - tileGap[vecNum][2]
+								
+				moveTile = tiles[math.floor(hNode) .. "," .. math.floor(vNode)]
+				
+				if isvalid(moveTile) and vNode > 0 then
+					if teamManger.EntityOnTile[moveTile] then
+						moveTile = targetTile
+					end
+				else
+					moveTile = targetTile
+				end
+				---------------------------------------------------------------
+				-- 이동하기
+				-- 기절 1초 중 0.5초 정도 사용
+				---------------------------------------------------------------
+				targetInfo:SetPropertyToServer("setTile", moveTile, "OnlySetTile", true)
+				
+				local selfVec2 = targetStatus.SetPos
+				local targetVec2 = moveTile.TransformComponent.WorldPosition:ToVector2()
+				
+				local setPos = selfVec2
+				local setVec = targetVec2 - selfVec2
+				
+				local callbackCount = 0
+				local function ActionFnc()
+					local posX = 0
+					local posY = 0
+					
+					selfVec2 = setPos
+					
+					callbackCount += 0.01
+					if callbackCount <= 0.3 then
+						posX = selfVec2.x + setVec.x * 0.01 * (1 / 0.3)
+						posY = selfVec2.y + setVec.y * 0.02 * (1 / 0.3) + ( (0.15 - callbackCount) * 0.5 )
+					else
+						posX = targetVec2.x
+						posY = targetVec2.y
+						if targetStatus.ActionType == "BearicTheWhite_Skill_Attacked" then
+							targetStatus:SetActionType("Idle")
+							_TimerService:ClearTimer(targetStatus.ActionTimer)
+							targetStatus.ActionTimer = 0
+						end
+					end
+					
+					setPos = Vector2(posX, posY)
+					
+					self:SetPosition(targetUnit, posX, posY, 0)
+					targetStatus.SetPos = Vector2(posX, posY)
+				end
+				
+				_TimerService:ClearTimer(targetStatus.ActionTimer)
+				targetStatus.ActionType = "BearicTheWhite_Skill_Attacked"
+				targetStatus.ActionTimer = _TimerService:SetTimerRepeat(ActionFnc, 0.01, 0)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetPosition(Entity unit, number x, number y, number zR)
+		unit.TransformComponent.WorldPosition = Vector3(x,y,0)
+		unit.TransformComponent.WorldZRotation = zR
+	end
+
+end

@@ -1,0 +1,200 @@
+@Component
+script C00005_Mir_Skill extends Component
+
+	@Sync
+	property number skillAnimLength = 1.17
+
+	property string attackEffectRUID = "a1e82cf522604ce79ae968da514ed6d9"
+
+	property string hitEffectRUID = "09a4878dec8643f7b1da2bebfc94ee95"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength  * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local function skillMotionFnc()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetSkillMotion(targetUnit)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(skillMotionFnc, 0.3 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0153",self.Entity.UnitInfo.OwnerId)
+		
+		--그림자
+		self:SetShadow(1.17,self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillMotion(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local unitSprite = unitInfo.spriteRenderer
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		local enemies = {}
+		if unitInfo.TeamType == "User" then
+			enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+		end
+		
+		local moveTileInfo = _BTLogic_New:getTile(myUnit, enemies, "EmptyTileWithMostEnemies_All_2")
+		
+		---@type Entity
+		local moveTile = moveTileInfo[1]
+		
+		unitInfo:SetPropertyToServer("setTile", moveTile, "All", true)
+		
+		-- 레이어 설정
+		myUnit.UnitAnimationComponent:SetLayerOrder(moveTileInfo[2], unitInfo.OwnerId)
+		
+		
+		local function skillDamageFnc()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetAttackEffect(unitInfo.OwnerId)
+				local attackEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				attackEnemies = _BTLogic_New:getTargets(moveTile, attackEnemies, "Around_1_2")
+				
+				if isvalid(attackEnemies) then
+					for _, enemy in pairs(attackEnemies) do
+						if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+							self:SetSkillDamage(enemy)
+						end
+					end
+				end
+			end
+		end
+		
+		local skillRate = self.skillAnimLength  * _BTLogic_New.SSpeedValue
+		_TimerService:SetTimerOnce(skillDamageFnc, 0.05 / skillRate)
+		
+		--범위 연출
+		self:PlaySkillEffect(0.05 / skillRate,moveTile,unitInfo.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.attackEffectRUID, myUnit, Vector3(0, 0, 0), 0, Vector3(2, 2, 2), false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		self:HitEffect(targetUnit, unitInfo.OwnerId)
+		
+		local magicalDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C00005_Active_SDamage_Magic[unitInfo.level]
+		
+		local damageInfo = _StatusChangeLogic:CheckDamage(magicalDamage, myUnit, targetUnit, 0, "Magical")
+		_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+		
+		local stunTime = tonumber(_S01_SkillDescLogic.C00005_Active_StunTime_Int[unitInfo.level])
+		_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0004", stunTime)
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SetPosition(number x, number y)
+		self.Entity.TransformComponent.WorldPosition = Vector3(x,y,0)
+	end
+
+	@ExecSpace("Client")
+	method void PlaySkillEffect(number time, Entity targetTile)
+		local tiles = {}
+		if self.Entity.UnitInfo.TeamType == "User" then
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("User_Skill", 2, targetTile)
+		else
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("Enemy_Skill", 2, targetTile)
+		end
+		
+		local removetile = function()
+			for i = 1, #tiles do
+				tiles[i].Enable = false
+				_GeneralDirectorLogic:InsertRangeEntity(tiles[i])
+			end
+		end
+		
+		_TimerService:SetTimerOnce(removetile, time)
+	end
+
+	@ExecSpace("Client")
+	method void SetShadow(number time)
+		--그림자가 점점 작아집니다
+		local scale = Vector3.one
+		local setscale = function()
+			self.Entity:GetChildByName("Shadow").TransformComponent.Scale = scale 
+			scale.x -= 1/30
+			scale.y -= 1/30
+			
+			if self.Entity.UnitAnimationComponent.SetAnimType ~= "Skill" then
+				self.Entity:GetChildByName("Shadow").TransformComponent.Scale = Vector3.one 
+			end
+		end
+		
+		for i = 1, 30 do
+			_TimerService:SetTimerOnce(setscale, 0.3 / time)
+		end
+		
+		--그림자 원상복구
+		local scale2 = Vector3.zero
+		local init = function()
+			self.Entity:GetChildByName("Shadow").TransformComponent.Scale = scale2
+			scale2.x += 1/30
+			scale2.y += 1/30
+		end
+		
+		for i = 1, 30 do
+			_TimerService:SetTimerOnce(init, 0.35 / time)
+		end
+	end
+
+end

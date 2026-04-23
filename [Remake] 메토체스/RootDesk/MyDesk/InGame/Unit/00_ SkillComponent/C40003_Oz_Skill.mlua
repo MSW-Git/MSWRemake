@@ -1,0 +1,130 @@
+@Component
+script C40003_Oz_Skill extends Component
+
+	property number skillAnimLength = 1.54
+
+	property string SkillEffectRUID = "0e47b0deaa0f434da37902e7c9367e57"
+
+	property string HitEffectRUID = "9336ae65126c45768938d68752305c1c"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		self:SkillEffect(unitInfo.OwnerId)
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		local function hitSkill()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetSkillDamage(targetUnit)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(hitSkill, 0.6 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0118",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C40003_Active_SDamage_Magic[unitInfo.level]
+			
+			-- 상대 남은 체력에 비례해 최대 2배의 데미지를 입힘 (상대 남은 체력이 20%일 때, 최대)
+			local nowHPper = targetStatus.HP / targetStatus.MaxHP
+			skillSetDamage = skillSetDamage * (1 + (math.min(0.8, 1 - nowHPper) / 0.8) )
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0010", 6)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.HitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SkillEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.SkillEffectRUID, myUnit, Vector3(0, 0, 0), 0, Vector3.one * 0.8, false, options)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleKillUnit(KillUnit event)
+		-- Parameters
+		local Attacker = event.Attacker
+		-- local Target = event.Target
+		-- local DeadTile = event.DeadTile
+		local AttackType = event.AttackType
+		---------------------------------------------------------
+		if Attacker == self.Entity and AttackType == "skill" then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			-- 영구 스탯 획득
+			_StatusChangeLogic:SetStack(myUnit, "Add_MagicalAttack", _S01_SkillDescLogic.C40003_Passive_GetMagicalAttack_Int[unitInfo.level])
+				
+			--버프연출
+			_GeneralDirectorLogic:BattleBuffEffect(self.Entity, _RuneCardDirectEnum.MagicalAttack, unitInfo.OwnerId)
+		end
+	end
+
+end

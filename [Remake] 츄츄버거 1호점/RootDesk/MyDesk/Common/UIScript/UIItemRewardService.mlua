@@ -1,0 +1,418 @@
+@Logic
+script UIItemRewardService extends Logic
+
+	property integer ConstraintLimit = 10
+
+	property SyncTable<string, integer> RewardQueue
+
+	property number ReputationRewardAmount = 0
+
+	property string ReputationRewardSource = "Training"
+
+	property table ReputationRewardData = {}
+
+	property any CloseUICallback = nil
+
+	property TextComponent TitleText = "b7c34ec2-c307-4b2c-aaa8-bad8ca1eb80a"
+
+	property Entity TouchToCloseText = "b41f7534-21ab-40f5-b3a4-c938661de7c4"
+
+	property Entity Left = "4dc7ced3-9f27-46bb-8f9e-1d68c884fbee"
+
+	property Entity Right = "9b1f73c4-78eb-44db-9ecf-a62aa42f9cc9"
+
+	property Entity RewardListSeperated = "5e249d8c-3a77-4717-b38e-a7a35736eee7"
+
+	property integer ItemRewardTimer = 0
+
+	property integer ReputationRewardTimer = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 로직 시작 시 배경 원본 크기를 저장하고 보상 리스트를 초기화
+		self._T.bgOriginSizeY = self.Left.UITransformComponent.RectSize.y
+		
+		self:ClearSeperatedList()
+	end
+
+	@ExecSpace("Client")
+	method void SetItemRewardUI(SyncTable<string, integer> items, string source)
+		-- 아이템 보상 UI를 설정하고 애니메이션과 함께 표시
+		self._T.phase = -1
+		self.TouchToCloseText.Enable = false
+		
+		if source == "EmployeeUpgradeRefund" then
+			self.TitleText.Text = _GetLocalizationTextLogic:GetText("RewardEXPTitleText")
+		elseif source == "Transfer" then
+			self.TitleText.Text = _GetLocalizationTextLogic:GetText("RewardTransferTitleText")
+		else
+			self.TitleText.Text = _GetLocalizationTextLogic:GetText("RewardTitleText")
+		end
+		
+		self._T.items = {}
+		table.initialize(self._T.items, items)
+		
+		local drawKeys = {}
+		local isReputationContained = false
+		for k, v in pairs(self._T.items) do
+			if k == "G0006" then 
+				isReputationContained = true
+				
+				table.insert(self.ReputationRewardData, {source, v})
+					
+				self.ReputationRewardSource = source		
+				self.ReputationRewardAmount = v
+				continue
+			else
+				table.insert(drawKeys, k)
+			end
+		end
+		
+		table.sort(drawKeys, function(a, b)
+			return a < b	
+		end)
+		
+		_UIGroupManager:EnableRewardGroup(true)
+		_UIGroupManager:EnableBackToLobbyBtn(false)
+		
+		if _UIGroupManager.VIPOrderGroup.Enable then
+			if isReputationContained == true then
+				_VIPOrderDataSetLogic.UIVIPOrderPanel:StartWaitRefresh()
+			end	
+		end
+		
+		local duration = self:OpenAnim()
+		
+		self.ItemRewardTimer = _TimerService:SetTimerOnce(function()
+			if self._T.phase == 0 then
+				self:EndAnim()
+			end
+			self:CloseUI()
+		end, 10)
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Open_Reward"], 1)
+		_TimerService:SetTimerOnce(function()
+			self._T.phase = 0
+			self._T.slots = {}
+			
+			self:DrawSeperatedList(drawKeys)
+		end, duration)
+	end
+
+	@ExecSpace("Client")
+	method void AddItemToRewardQueue(string itemId, integer itemCount)
+		-- 아이템을 보상 대기열에 추가하여 나중에 일괄 표시할 수 있도록 준비
+		if _ItemDataSetLogic.ItemData[itemId] == nil then
+			return
+		end
+		
+		if self.RewardQueue[itemId] == nil then
+			self.RewardQueue[itemId] = 0
+		end
+		
+		self.RewardQueue[itemId] = self.RewardQueue[itemId] + itemCount
+	end
+
+	@ExecSpace("Client")
+	method void RequestSetQueueToUI(string source)
+		-- 대기열에 저장된 보상 아이템들을 UI로 표시하고 대기열을 초기화
+		if #table.keys(self.RewardQueue) == 0 then
+			return
+		end
+		
+		self:SetItemRewardUI(self.RewardQueue, source)
+		table.clear(self.RewardQueue)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseUI()
+		-- 보상 UI를 닫고 관련 데이터를 정리한 후 평판 보상이 있으면 표시
+		self:ClearSeperatedList()
+		
+		_UIGroupManager:EnableRewardGroup(false)
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+		_UserService.LocalPlayer.PlayerIngredient:ChangeConnectingStatus(false)
+		
+		self._T.items = {}
+		_TimerService:ClearTimer(self.ItemRewardTimer)
+		
+		if self.ReputationRewardAmount > 0 then
+				self:SetReputationRewardUI()
+		end
+		
+		if self.CloseUICallback ~= nil then
+			self.CloseUICallback()
+			self.CloseUICallback = nil
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetReputationRewardUI()
+		-- 평판 보상 UI를 설정하고 표시
+		if #self.ReputationRewardData <= 0 then
+			return
+		end
+		
+		local totalAmount = 0
+		local sources = {}
+		for i = 1, #self.ReputationRewardData do
+			local data = self.ReputationRewardData[i]
+			local source = data[1]
+			local amount = data[2]
+			
+			totalAmount += amount
+			
+			local isContained = false
+			for j = 1, #sources do
+				if sources[j] == source then
+					isContained = true
+					break
+				end
+			end
+			if isContained == false then
+				table.insert(sources, source)
+			end	
+		end
+		
+		local source = self.ReputationRewardSource
+		local amount = self.ReputationRewardAmount
+		
+		local title = _LocalizationService:GetText("ReputationRewardTitleText") 
+		
+		local amountText = "(".._StringUtilLogic:NumToString(amount)..")" 
+		local msg = _LocalizationService:GetText(string.format("%sReputationDescText", source))
+		
+		_UIGroupManager.ReputationRewardGroup:GetChildByName("TitleText").TextComponent.Text = title
+		_UIGroupManager.ReputationRewardGroup:GetChildByName("DescText").TextComponent.Text = msg
+		
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Open_Reputation"], 1)
+		_UIGroupManager:EnableReputationRewardGroup(true)
+		_UIGroupManager:EnableBackToLobbyBtn(false)
+		
+		self.ReputationRewardTimer = _TimerService:SetTimerOnce(function()
+			self:CloseReputationRewardUI()
+		end, 10)
+		
+		self.ReputationRewardAmount = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseReputationRewardUI()
+		-- 평판 보상 UI를 닫고 관련 데이터를 정리하는 함수
+		_UIGroupManager:EnableReputationRewardGroup(false)
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+		
+		table.clear(self.ReputationRewardData)
+		self.ReputationRewardSource = ""
+		self.ReputationRewardAmount = 0
+		
+		if _UIGroupManager.VIPOrderGroup.Enable then
+			_VIPOrderDataSetLogic.UIVIPOrderPanel:EndWaitRefresh()
+		end
+		
+		_TimerService:ClearTimer(self.ReputationRewardTimer)
+	end
+
+	@ExecSpace("Client")
+	method void SetCloseUICallback(any func)
+		-- UI 닫기 콜백 함수를 설정하는 함수
+		self.CloseUICallback = func
+	end
+
+	@ExecSpace("Client")
+	method void SetSideMenuRewardUI(integer rewardId, integer stageId)
+		-- 사이드 메뉴 보상 UI를 설정하는 함수
+		_UIGroupManager.StageClearRewardGroup.UIStageClearRewardGroup:Open(stageId, 3, rewardId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndAnim()
+		-- 보상 애니메이션을 종료하고 UI를 활성화하는 함수
+		local slotCount = #self._T.slots
+		local rowCount = math.ceil(slotCount/self.ConstraintLimit)
+		
+		for i = 1, rowCount do
+			local row = self.RewardListSeperated.Children[i]
+			row.Enable = true
+		end
+		
+		for _, entity in pairs(self._T.slots) do
+			if isvalid(entity.CanvasGroupComponent) then
+				entity.CanvasGroupComponent.Interactable = true
+			end
+			_UIEntityService:ClearUIOpenAnim(entity)
+		end
+		
+		self._T.phase = 1
+		self.TouchToCloseText.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method number OpenAnim()
+		-- 보상 UI 열기 애니메이션을 재생하고 지속 시간을 반환하는 함수
+		local duration = 0.4
+		
+		self.Left.UITransformComponent.RectSize.y = 0
+		self.Right.UITransformComponent.RectSize.y = 0
+		self.TitleText.Entity.CanvasGroupComponent.GroupAlpha = 0
+		self.RewardListSeperated.Enable = false
+		
+		_TweenLogic:PlayTween(0, self._T.bgOriginSizeY, duration, EaseType.CubicEaseOut, function(t)
+			self.Left.UITransformComponent.RectSize.y = t
+			self.Right.UITransformComponent.RectSize.y = t
+		end)
+		
+		_TimerService:SetTimerOnce(function()
+			_TweenLogic:PlayTween(0, 1, duration, EaseType.Linear, function(t)
+				self.TitleText.Entity.CanvasGroupComponent.GroupAlpha = t
+			end)
+		end, duration * 0.6)
+		
+		_TimerService:SetTimerOnce(function()
+		end, duration)
+		
+		return duration
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DrawSeperatedList(table itemKeys)
+		-- 보상 아이템 목록을 분리된 리스트로 그리는 함수
+		self._T.slots = {}
+		
+		self.RewardListSeperated.Enable = true
+		
+		local rowCount = math.ceil(#itemKeys/self.ConstraintLimit)
+		
+		if rowCount == 1 then 
+			local firstRow = _UIEntityService:GetOrCreateEntityOfModel("Model_RewardListOrigin", 1, self.RewardListSeperated)
+			firstRow.ScrollLayoutGroupComponent.ChildAlignment = ChildAlignmentType.LowerCenter
+			firstRow.ScrollLayoutGroupComponent.UseScroll = false
+			firstRow.Enable = true
+			
+			if #firstRow.Children < self.ConstraintLimit then
+				for i = self.ConstraintLimit, 1, -1 do
+					local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_UIItemRewardSlot", i, firstRow)
+					slot.Enable = false
+					slot.CanvasGroupComponent.GroupAlpha = 0
+				end
+			end
+			
+			for i = #itemKeys, 1, -1 do 
+				local itemId = itemKeys[i]
+				local itemCount = self._T.items[itemId]
+				
+				local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_UIItemRewardSlot", i, firstRow)
+				slot.Enable = true
+				slot.UIItemRewardSlot:SetItem(itemId, itemCount)
+				slot.CanvasGroupComponent.GroupAlpha = 0
+				
+				_UIEntityService:PlayUIOpenAnim(slot, slot.UITransformComponent.anchoredPosition, Vector2.zero, 0.3, 0.1 * (i-1), nil, nil, function()
+					if i >= #itemKeys then
+						self._T.phase = 1
+						self.TouchToCloseText.Enable = true
+					end
+				end)
+				
+				table.insert(self._T.slots, slot)
+			end
+			
+		elseif rowCount > 1 then 
+			
+			for i = 1, rowCount do
+				local row = _UIEntityService:GetOrCreateEntityOfModel("Model_RewardListOrigin", i, self.RewardListSeperated)
+				row.ScrollLayoutGroupComponent.ChildAlignment = ChildAlignmentType.LowerLeft
+				row.ScrollLayoutGroupComponent.UseScroll = false
+				row.Enable = true
+						
+				if #row.Children < self.ConstraintLimit then
+					for i = self.ConstraintLimit, 1, -1 do
+						local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_UIItemRewardSlot", i, row)
+						slot.Enable = false
+						slot.CanvasGroupComponent.GroupAlpha = 0
+					end
+				end
+				
+				local rowItemCounts = self.ConstraintLimit
+				if i == rowCount then 
+					rowItemCounts = #itemKeys - self.ConstraintLimit*(i-1)
+				end
+				
+				for j = rowItemCounts, 1, -1 do 
+					local totalIdx = self.ConstraintLimit * (i-1) + j
+					
+					local itemId = itemKeys[totalIdx]
+					local itemCount = self._T.items[itemId]
+					
+					local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_UIItemRewardSlot", j, row)
+					slot.Enable = true
+					slot.UIItemRewardSlot:SetItem(itemId, itemCount)
+					slot.CanvasGroupComponent.GroupAlpha = 0
+					
+					_UIEntityService:PlayUIOpenAnim(slot, slot.UITransformComponent.anchoredPosition, Vector2.zero, 0.3, 0.1 * (totalIdx-1), nil, nil, function()
+						if totalIdx >= #itemKeys then
+							self._T.phase = 1
+							self.TouchToCloseText.Enable = true
+						end
+					end)
+					
+					table.insert(self._T.slots, slot)
+				end
+			end
+			
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearSeperatedList()
+		-- 분리된 보상 리스트를 초기화하는 함수
+		for _, list in pairs(self.RewardListSeperated.Children) do
+			list.Enable = false
+			for _, slot in pairs(list.Children) do
+				slot.Enable = false
+				if isvalid(slot.CanvasGroupComponent) then
+					slot.CanvasGroupComponent.GroupAlpha = 0
+				end
+				slot.UIItemRewardSlot:ResetItemRUID()
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "3bc954d4-22a7-432f-8506-b1638973cc5e")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 보상 UI 터치 또는 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if self._T.phase == 0 then
+			self:EndAnim()	
+		elseif self._T.phase == -1 then
+			return
+		
+		else
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+			self:CloseUI()
+		end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "5af78b04-1375-49cc-808a-1b011c634c3c")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 평판 보상 UI 터치 또는 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:CloseReputationRewardUI()
+	end
+
+end

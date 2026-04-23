@@ -1,0 +1,339 @@
+@Component
+script EmployeeMoveScript extends Component
+
+	property Vector3 targetPosition = Vector3(0,0,0)
+
+	property boolean CanMove = false
+
+	property table graph = {}
+
+	property boolean useAstar = false
+
+	property string Type = ""
+
+	@ExecSpace("ClientOnly")
+	method void InitForAstar()
+		-- A* 알고리즘을 위한 초기화 및 경로 갱신 함수 설정
+		self._T.targetPos = self.Entity.TransformComponent.Position
+		self._T.path = nil
+		self._T.arriveLastNode = false
+		self._T.currentNode = 1
+		self._T.flipCoolTime = 0.5
+		self._T.needToRefreshPath = false
+		
+			
+		self._T.refreshPath = function()
+			self._T.needToRefreshPath = false
+			local maxDist = 9999
+			local pos = self.Entity.TransformComponent.Position
+		
+			if isvalid(self.targetPosition) then		
+				
+				local targetPos = self.targetPosition
+				self._T.targetPos = targetPos		
+				local monsterPos = self.Entity.TransformComponent.Position
+				self._T.preTargetPos = targetPos:Clone()
+				local maxMonster = 9999
+				local maxTarget = 9999
+				local startIndex = 1
+				local goalIndex = 1
+				
+				for k, v in pairs(self.graph) do
+					local dist = (v.x - monsterPos.x) * (v.x - monsterPos.x) + (v.y - monsterPos.y) * (v.y - monsterPos.y)
+					if dist < maxMonster then
+						maxMonster = dist
+						startIndex = v.id
+					end
+					local distTarget = (v.x - targetPos.x) * (v.x - targetPos.x) + (v.y - targetPos.y) * (v.y - targetPos.y)
+					if distTarget < maxTarget then
+						maxTarget = distTarget
+						goalIndex = v.id
+					end
+				end
+				
+				local newPath =  _PathFinder:path( self.graph [startIndex], self.graph [goalIndex], self.graph, false )
+		
+				if newPath ~= nil then
+					
+					self._T.path = newPath
+					self._T.arriveLastNode = false
+					self._T.currentNode = 1
+					
+					local length = #newPath
+					if #newPath > 2 then
+						self._T.currentNode = 2
+					elseif #newPath <= 2 then
+						self._T.arriveLastNode = true
+					end
+				else
+				end
+			else
+			end
+		end
+		
+		if self:InitGraph() then
+			self._T.refreshPath()
+			self.useAstar = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임마다 직원의 이동 로직 처리
+		if not _UserService.LocalPlayer.TimeManager:CheckCanTimeFlows() then 
+			self.Entity.MovementComponent:Stop()	
+			return
+		end
+		
+		if not self.CanMove then 
+			return
+		end 
+		
+		if not isvalid(self.targetPosition) then
+			return
+		end
+		
+		
+		if self.useAstar then
+			self:MoveByAstar(delta)
+		else
+			self:MoveByLinear(delta)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void ChangeTarget(string location)
+		-- 타겟 위치를 변경하고 직원 타입에 따라 목적지 설정
+		
+		if string.find(self.Entity.Name,"Customer") then 
+			self.targetPosition = _EntityService:GetEntityByPath(_UserService.LocalPlayer.CurrentMap.Path.."/SpawnPosGroup/Customer/CustomerCreate".._UtilLogic:RandomIntegerRange(1,3)).TransformComponent.Position
+		elseif isvalid(self.Entity.CookEmployeeAIScript) or isvalid(self.Entity.ServingEmployeeAIScript)  then
+			self.targetPosition = _LobbyEntityLogic:GetEmployeeSpawnPostion(location).TransformComponent.Position
+			self:InitForAstar() 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean InitGraph()
+		-- 네비게이션 그래프를 초기화하고 경로 찾기용 노드 데이터 구성
+		if #self.graph > 0 then
+			table.clear(self.graph)
+		end
+		
+		if _PathFinder.nowLevel < 3 then
+			return false
+		end
+		
+		if isvalid(self.Entity.ServingEmployeeAIScript) then
+			return false
+		end
+		
+		local i = 1
+		for k,v in pairs(_PathFinder.mapData) do
+			self.graph [ i ] = {}
+			self.graph [ i ].id = i
+			self.graph [ i ].x = v.x
+			self.graph [ i ].y = v.y
+			self.graph [ i ].jump = v.jump
+			i = i + 1
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveByAstar(number delta)
+		-- A* 알고리즘을 사용한 경로 기반 이동 처리
+		if self._T.needToRefreshPath then
+			self._T.refreshPath()
+		end
+		
+		local path = self._T.path
+		if path == nil or #path < 1 then
+			self:MoveByLinear(delta)
+			return
+		end
+		
+		if not isvalid(self.targetPosition) then
+			return
+		end
+		
+		
+		local targetPosition = self.targetPosition
+		if self._T.arriveLastNode == false then
+			targetPosition = Vector3(path[self._T.currentNode].x,path[self._T.currentNode].y,0)
+		end
+		
+		local selfPosition = self.Entity.TransformComponent.Position
+		local targetDiff = targetPosition - selfPosition
+		targetDiff.z = 0
+		
+		self:MoveByDir(targetDiff, delta)
+		
+		local IsArrived = self:CheckArrival(targetDiff, targetPosition, delta)
+		if IsArrived == false then
+			return
+		end
+		
+		if self._T.arriveLastNode then
+			self:MoveFinished(targetPosition)
+		else
+			if  self._T.currentNode  < #path then
+				self._T.currentNode  = self._T.currentNode  + 1
+			else
+				self._T.arriveLastNode = true
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveByLinear(number delta)
+		-- 직선 경로로 목표 지점까지 이동 처리
+		local targetPosition = self.targetPosition
+		local selfPosition = self.Entity.TransformComponent.Position
+		local targetDiff = targetPosition - selfPosition
+		targetDiff.z = 0
+		
+		self:MoveByDir(targetDiff, delta)
+		
+		local IsArrived = self:CheckArrival(targetDiff, targetPosition, delta)
+		if IsArrived then
+			self:MoveFinished(targetPosition)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveByDir(Vector3 targetDiff, number delta)
+		-- 방향 벡터에 따른 실제 이동 및 캐릭터 방향 설정
+		local dir = Vector2.Normalize(Vector2(targetDiff.x, targetDiff.y))
+		self.Entity.MovementComponent:MoveToDirection(dir, delta)
+		
+		self:ChangeRendererLookDirection(dir.x < 0 or math.abs(dir.x) < 0.2)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CheckArrival(Vector3 targetDiff, Vector3 targetPosition, number delta)
+		-- 목표 지점 도착 여부를 거리 계산으로 확인
+		local speed = self.Entity.MovementComponent.InputSpeed
+		local displacement = speed * delta
+		
+		if Vector3.Magnitude(targetDiff) < displacement then
+			return true
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveFinished(Vector3 targetPosition)
+		-- 이동 완료 시 최종 위치 설정 및 이동 완료 이벤트 발송
+		self.Entity.MovementComponent:SetPosition(Vector2(targetPosition.x, targetPosition.y))
+		
+		self.Entity.MovementComponent:Stop()
+		
+		local moveChangedEvent = EmployeeMoveChangedEvent()
+		moveChangedEvent:Init(true, nil, self.Type)
+		self.Entity:SendEvent(moveChangedEvent)
+		
+		self:ChangeRendererLookDirection(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeRendererLookDirection(boolean isLeft)
+		-- 캐릭터의 좌우 방향에 따른 스프라이트 플립 처리
+		if isLeft then
+			local prevScaleX = self.Entity.TransformComponent.Scale.x
+			if prevScaleX < 0 then
+				self.Entity.TransformComponent.Scale.x *= -1
+			end
+		else
+			local prevScaleX = self.Entity.TransformComponent.Scale.x
+			if prevScaleX > 0 then
+				self.Entity.TransformComponent.Scale.x *= -1
+			end
+		end
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 디버그용 키보드 입력으로 네비게이션 링크 시각화 처리
+		
+		local key = event.key
+		
+		if self._T.linkId == nil then
+			self._T.linkId = 1
+		end
+		
+		if key == KeyboardKey.Alpha1 then
+			for i = 1, self._T.linkId do
+				_EditorGUIService:RemoveLink(string.format("link_%d",i))
+			end
+			self._T.linkId = 1
+			for k1,v1 in pairs(self.Entity.CurrentMap:GetChildByName("NaviGroup").Children) do
+				if v1.NaviPoint ~=nil then
+					
+					for k2,v2 in pairs(self.Entity.CurrentMap:GetChildByName("NaviGroup").Children) do
+						if  v2.NaviPoint ~=nil then
+							if v1.Id ~= v2.Id then
+								local pos1 = v1.TransformComponent.Position
+								local pos2 = v2.TransformComponent.Position
+								
+								if (math.abs(pos1.x - pos2.x) <  _PathFinder.horizontalSize.x and math.abs(pos1.y - pos2.y) <  _PathFinder.horizontalSize.y)
+									or (math.abs(pos1.x - pos2.x) < _PathFinder.verticalSize.x and math.abs(pos1.y - pos2.y) < _PathFinder.verticalSize.y)  then
+									_EditorGUIService:AddLink(string.format("link_%d",self._T.linkId),v1,v2)
+									self._T.linkId = self._T.linkId + 1
+								end
+							end
+						end
+					end
+				end
+			end
+		elseif key == KeyboardKey.O then
+			for i = 1, self._T.linkId do
+				_EditorGUIService:RemoveLink(string.format("link_%d",i))
+			end
+			self._T.linkId = 1
+		
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleEmployeeMoveChangedEvent(EmployeeMoveChangedEvent event)
+		-- 직원 이동 상태 변경 이벤트 처리 및 타겟 위치 업데이트
+		self.Type = event.Type
+		self.CanMove = not event.IsArrive
+		
+		if _MathUtilLogic:Vector3AlmostEquals(self.targetPosition, event.Target) then
+			return
+		end
+		
+		self.targetPosition = event.Target
+		
+		if self.targetPosition == nil then
+			self.CanMove = false
+			return
+		end
+		
+		if self.useAstar then
+			self._T.needToRefreshPath = true
+		end
+		
+	end
+
+	@EventSender("Logic", "PathFinder")
+	handler HandleRefreshPathEvent(RefreshPathEvent event)
+		-- 패스파인더에서 경로 갱신 요청 시 그래프 재초기화 처리
+		if self._T.refreshPath == nil then
+			return
+		end
+		
+		if self:InitGraph() then
+			self.useAstar = true
+			self._T.refreshPath()
+		else
+			self.useAstar = false
+		end
+	end
+
+end

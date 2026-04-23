@@ -1,0 +1,488 @@
+@Component
+script MultiMonsterObject extends MonsterObject
+
+	property MultiMonsterWrapper monsterWrapper = nil
+
+	property number lastUpdateSeconds = 0
+
+	property boolean firstMove = true
+
+	property number aliveCoolTime = 10
+
+	property Vector2 keyPos = Vector2(0,0)
+
+	property boolean isFieldBoss = false
+
+	method void Dead(boolean dropExp)
+		-- 멀티 몬스터 사망 처리 (현재 비어있음)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 클라이언트에서 몬스터 상태 업데이트
+		local _T = self._T
+		
+		
+		
+		
+		
+		
+		
+		local width = _GameConfig:GetConfig().FIELD_AREA_WIDTH
+		local height = _GameConfig:GetConfig().FIELD_AREA_HEIGHT
+		
+		
+		local keyPos =  _UserService.LocalPlayer.MultiBattlePlayer.keyPos
+		_T.transform.Position = Vector3.zero
+		
+		local pos = _T.transform.WorldPosition
+		local px = pos.x
+		local py = pos.y
+		
+		_T.position = pos
+		_T.position.x = px
+		_T.position.y = py
+		
+		_T.position.z = (py + _T.mapBoundOffset.y) * _T.orderYRatio
+		
+		_T.cachedPos.x = px
+		_T.cachedPos.y = py
+		
+		self.keyPos.x = math.tointeger(_T.transform.WorldPosition.x / width)
+		self.keyPos.y = math.tointeger(_T.transform.WorldPosition.y / height)
+		
+		local diffX = math.abs(self.keyPos.x - keyPos.x)
+		local diffY = math.abs(self.keyPos.y - keyPos.y)
+		
+		self.aliveCoolTime = self.aliveCoolTime - delta
+		
+		
+		
+		if isvalid(self.monsterWrapper) and self.monsterWrapper.update then
+			
+			if self.isFieldBoss then
+				_MultiHUDManager.minimap.MinimapComponent:SetMinimapInfo("boss",self.Entity.Id,self.Entity.TransformComponent)
+			end
+			self.hp = math.min(self.hp, self.monsterWrapper.hp)
+			self.monsterWrapper.update = false
+			self:OnCheckState(self.monsterWrapper.state)
+			if self.monsterWrapper.hp <= 0 then
+				
+				self:DeadAlphaAnimation()
+				return
+			end
+			self:RefreshHp()
+		
+			
+		else
+		
+		end
+	end
+
+	method void SetKnockback(Vector2 knockback, number duration, boolean force)
+		-- 넉백 효과 설정 (현재 비어있음)
+	end
+
+	method void OnBeginPlay()
+		-- 멀티 몬스터 객체 초기화
+		__base:OnBeginPlay()
+		
+		self.lastUpdateSeconds = _UtilLogic.ServerElapsedSeconds
+		self._T.transform = self.Entity.TransformComponent
+		self:InitHp()
+		
+		
+		
+		if self:IsClient() then
+				
+			local shadow = self.Entity:GetChildByName("shadow")
+			if isvalid(shadow) then
+				self._T.shadow = shadow.SpriteRendererComponent
+			end
+			
+		end
+	end
+
+	method void SetDamage(number damage, Vector2 knockback, boolean isCritical, string weaponUniqueKey)
+		-- 몬스터 데미지 처리 및 버프 적용
+		
+		local _T = self._T
+		damage *= (1 + _UserService.LocalPlayer.MultiBattlePlayer:GetBuffValue("Atk"))
+		
+		__base:SetDamage(damage,knockback,isCritical,weaponUniqueKey)
+		
+		
+		if self.isFieldBoss == true then
+			local bossDamageRatio = _BuffLogic:GetBossDamage()
+			if bossDamageRatio == 0 then
+				bossDamageRatio = 1
+			end
+			damage *= bossDamageRatio
+		end
+		
+		if isvalid(self.monsterWrapper) and damage > 0 then
+			self.monsterWrapper:SetDamage(damage,self:GetPosition(),"",weaponUniqueKey,isCritical)
+			self:RefreshHp()
+			
+			local penalty = _FieldDropItemLogic:GetPenalties(_MonsterLogic.monsterData[self.monsterId].fieldData.level, _UserService.LocalPlayer.PlayerComponent.UserId)
+			_T.damageTable[1] = damage * penalty.damageRate
+			
+			if _T.damageTable[1] == 0 then
+				_DamageSkinService:PlayTextDamage(self.Entity, _T.damageSkin, DamageSkinTextType.Miss, DamageSkinTweenType.Volcano, _T.vectorTwoZero)
+			else
+				_DamageSkinService:Play(self.Entity, _T.damageSkin, 0, _T.damageTable,DamageSkinTweenType.Volcano,isCritical, _T.vectorTwoZero)	
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DeadAlphaAnimation()
+		-- 사망 시 알파 애니메이션 및 엔티티 제거
+		self._T.hpBar.Enable = false
+		if self._T.alphaTween  ~= nil then
+			self._T.alphaTween:Destroy()
+		end
+		
+		local sprite = self.Entity.SpriteRendererComponent
+		sprite.SpriteRUID = self.die
+		self:OnChangedSpriteRUID(sprite.SpriteRUID)
+		self.Entity.TriggerComponent.Enable = false
+		
+		local tween = _TweenLogic:PlayTween(1,0,self:GetDieTime(),EaseType.Linear,function(value) 
+			sprite.Color.a = value
+		end)
+		self._T.alphaTween = tween
+		
+		tween:SetOnEndCallback(function() 
+			self.Entity.TriggerComponent.Enable = true
+			sprite.SpriteRUID  = self.move
+			self:OnChangedSpriteRUID(sprite.SpriteRUID)
+			sprite.Color.a = 0
+			_PoolingLogic:DestroyEntity(self.Entity)
+			self:ClearMonsterWrapper()
+			self._T.alphaTween = nil
+			self.Entity.Visible = false
+		end)
+	end
+
+	method void Init(string monsterId, boolean isAfterMonster, boolean respawn, number life)
+		-- 멀티 몬스터 초기화 및 HP 설정
+		__base:Init(monsterId,isAfterMonster,respawn,life)
+		
+		local fieldHp = self._T.monsterData.fieldData.hp
+		local lv = self._T.monsterData.fieldData.level
+		local name = _LocalizeLogic:GetMonsterName(monsterId) 
+		
+		self._T.maxHp = fieldHp
+		self.hp = fieldHp
+		self._T.hpRatio = nil
+		self:SpawnTween()
+		self.damageRatio = self._T.monsterData.fieldData.attack
+		
+		local scale = self.Entity.TransformComponent.Scale.x
+		self._T.hpBar.TransformComponent.Scale = Vector3(1/scale * 2.3,1/scale,1)
+		self._T.hpBar.TransformComponent.Position.x =  -0.33 / scale
+		self._T.hpBar.TransformComponent.Position.y =  -0.3 / scale
+		
+		self.isFieldBoss = self._T.monsterData.fieldData.type == "boss"
+		if self.isFieldBoss == false then
+			if self._T.transform.Scale:Magnitude() < 1 then
+				self._T.transform.Scale = Vector3.one
+			end
+		end
+		self.Entity.NameTagComponent.Name = string.format("LV %d %s",lv,name)
+	end
+
+	method void ClearMonsterWrapper()
+		-- 몬스터 래퍼 참조 정리 및 생존 시간 재설정
+		if isvalid(self.monsterWrapper) then
+			self.monsterWrapper.inited = false
+			self.monsterWrapper.monsterObject = nil
+		end
+		self.monsterWrapper = nil
+		
+		self.aliveCoolTime = _GameConfig:GetConfig().FIELD_MONSTER_ALIVE_TIME
+	end
+
+	method void SpawnTween()
+		-- 스폰 시 알파 애니메이션 및 트리거 활성화
+		if self._T.alphaTween  ~= nil then
+			self._T.alphaTween:Destroy()
+		end
+		local sprite = self.Entity.SpriteRendererComponent
+		self.Entity.TriggerComponent.Enable = false
+		sprite.SpriteRUID = self.stand
+		sprite.Color.a = 0
+		local tween = _TweenLogic:PlayTween(0,1,0.5,EaseType.Linear,function(value) 
+			sprite.Color.a = value
+		end)
+		self._T.alphaTween = tween
+		
+		self.Entity.Enable = true
+		self.Entity.Visible = true
+		
+		tween:SetOnEndCallback(function() 
+			self.Entity.TriggerComponent.Enable = true
+			self.Entity.Enable = true
+			self._T.alphaTween  = nil
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyPosionEffect(number damageRatio, number duration)
+		-- 독 효과 적용 (현재 비어있음)
+	end
+
+	@ExecSpace("Client")
+	method void ApplyStun(number duration)
+		-- 스턴 효과 적용 (필드 보스 제외)
+		if self._T.isStunned then
+			return
+		end
+		
+		if isvalid(self.monsterWrapper) == false then
+			return
+		end
+		if self.isFieldBoss then
+			return
+		end
+		self.monsterWrapper:SetStun(duration)
+	end
+
+	@ExecSpace("Client")
+	method void ApplyBurnEffect(number damage, number duration, string weaponUniqueKey)
+		-- 화상 효과 적용 (현재 비어있음)
+	end
+
+	@ExecSpace("Client")
+	method void ApplyFlat(number duration)
+		-- 넘어뜨리기 효과 적용 (현재 비어있음)
+	end
+
+	@ExecSpace("Client")
+	method void ApplyAttract(Entity bullet, number duration, number effectScale, string effectID)
+		-- 끌어당기기 효과 적용 (필드 보스 제외)
+		if self._T.attractEffect ~= 0 then
+			return
+		end
+		
+		if isvalid(self.monsterWrapper) == false then
+			return
+		end
+		if self.isFieldBoss then
+			return
+		end
+		self.monsterWrapper:SetAttract(duration)
+	end
+
+	@ExecSpace("Client")
+	method void ApplyStorm(Entity storm)
+		-- 폭풍 효과 적용 (필드 보스 제외)
+		if self.isFieldBoss then
+			return
+		end
+		self:ApplyStun(1)
+	end
+
+	@ExecSpace("Client")
+	method void ApplySpeedBuff(number ratio, number duration)
+		-- 속도 버프 적용 (현재 비어있음)
+	end
+
+	@ExecSpace("Client")
+	method void ApplySlowSpeed(number ratio, boolean slow)
+		-- 속도 감소 효과 적용 (현재 비어있음)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyScaledBuff(integer wave)
+		-- 웨이브별 스케일 버프 적용 (현재 비어있음)
+	end
+
+	method void ApplySpeedFactorByKey(string key, number ratio)
+		-- 키별 속도 계수 적용 (현재 비어있음)
+	end
+
+	method void RefreshHp()
+		-- HP 바 UI 새로고침
+		if self._T.updateHpBar == nil then
+			return
+		end
+		self._T.updateHpBar()
+	end
+
+	method void InitHp()
+		-- HP 바 UI 초기화 및 업데이트 함수 설정
+		local offset = -0.33
+		
+		self._T.hpBar = _SpawnService:SpawnByModelId("model://5b35716b-342c-4aec-bc0c-f041e395b4a1","hp",Vector3(offset,-0.3,0),self.Entity)
+		self._T.hpBar:GetChildByName("gauge_shield", true):SetEnable(false)
+		
+		local transform = self.Entity.TransformComponent
+		---@type SpriteRendererComponent
+		local hpBarSprite = self._T.hpBar.SpriteRendererComponent
+		hpBarSprite.SortingLayer = "Foreground"
+		
+		---@type SpriteRendererComponent
+		local back = self._T.hpBar:GetChildByName("exp_back", true).SpriteRendererComponent
+		back.SortingLayer = "Foreground"
+		
+		
+		self._T.updateHpBar = function()
+			
+				local hp = self.monsterWrapper.hp
+				local maxHp = self.monsterWrapper.maxHp
+			
+				if self._T.hpRatio == nil then
+					self._T.hpRatio = 1
+				end
+				self._T.hpRatio = math.max(0.05, math.min(self._T.hpRatio, hp / maxHp))
+			
+				self._T.hpBar.Enable = true
+			
+				if hpBarSprite.TiledSize.x < 0.1 and hp > 0 then
+					hpBarSprite.TiledSize.x = 0.1
+					self._T.hpBar.SpriteRendererComponent.DrawMode = SpriteDrawMode.Simple
+					_TimerLogic:SetTimerOnce(function() 
+						if not isvalid(self) then return end
+						self._T.hpBar.SpriteRendererComponent.DrawMode = SpriteDrawMode.Tiled
+					
+					end, 0.02, "Update Hp Bar")
+				end
+			
+				hpBarSprite.TiledSize.x = 8 * self._T.hpRatio
+		end
+	end
+
+	method void OnCheckState(number state)
+		-- 몰스터 상태 변경에 따른 이팩트 처리 (스턴, 화상, 끌어당기기)
+		local _T = self._T
+		local isStun = state%2 == 1
+		
+		if isStun then
+			if _T.stunEffectMulti == nil then
+				_T.stunEffectMulti = _EffectService:PlayEffectAttached("fb4b39c50f0f4106af1d5b8f5d20ae4b", self.Entity, Vector3(0, 1, 0), 0, Vector3.one, true)
+			end
+		else
+			if _T.stunEffectMulti ~= nil then
+				_EffectService:RemoveEffect(_T.stunEffectMulti)	
+				_T.stunEffectMulti = nil
+			end
+		end
+		
+		
+		
+		local isIgnited = (math.floor(state/10))%2 == 1
+		
+		if isIgnited then
+			if _T.burnEffectMulti == nil then
+				_T.burnEffectMulti = _EffectService:PlayEffectAttached("8778c55a35134503a0bae82de379b0f0", self.Entity, Vector3(0, 0, 0), 0, Vector3.one, true)
+			end
+		else
+			if _T.burnEffectMulti ~= nil then
+				_EffectService:RemoveEffect(_T.burnEffectMulti)	
+				_T.burnEffectMulti = nil
+			end
+		end
+			
+			
+		local isAttracted = (math.floor(state/100))%2 == 1
+		if isAttracted then
+			if _T.attractEffectMulti == nil then
+				_T.attractEffectMulti = _EffectService:PlayEffectAttached("821cc70132a944678a13f8eb09032a44", self.Entity, Vector3(0, 0, 0), 0, Vector3.one, true)
+			end
+		else
+			if _T.attractEffectMulti ~= nil then
+				_EffectService:RemoveEffect(_T.attractEffectMulti)	
+				_T.attractEffectMulti = nil
+			end
+		end
+			
+		
+	end
+
+	method void PlayDamageSkin(boolean isCritical)
+		-- 데미지 스킨 재생 (미구현)
+	end
+
+	method void OnHit(Vector2 knockback)
+		-- 피격 시 애니메이션 처리 (필드 보스 제외)
+		if self.isFieldBoss then
+			return
+		end
+		local _T = self._T
+		
+		local hit = self.hit
+		_T.spriteRenderer.SpriteRUID = hit
+		
+		_TimerService:SetTimerOnce(function() 
+			self._T.spriteRenderer.SpriteRUID = self.move
+		end,0.2)
+	end
+
+	method Vector3 GetPosition()
+		-- 몰스터의 3D 위치 반환
+		return self._T.transform.WorldPosition
+	end
+
+	method Vector2 GetPositionVec2()
+		-- 몰스터의 2D 위치 반환
+		return self._T.transform.WorldPosition:ToVector2()
+	end
+
+	method void OnChangedSpriteRUID(string ruid)
+		-- 스프라이트 RUID 변경 시 그림자 동기화
+		if isvalid(self._T.shadow ) then
+			self._T.shadow.SpriteRUID = ruid 
+		end
+	end
+
+	method void OnChangedSpriteFlipX(boolean flip)
+		-- 스프라이트 좌우 반전 시 그림자 및 방향 동기화
+		if isvalid(self._T.shadow ) then
+			self._T.shadow.FlipX = flip 
+		end
+		self._T.isFaceLeft = not flip
+	end
+
+	method void UpdateMove()
+		-- 이동 업데이트 (미구현)
+	end
+
+	method void UpdateAttack()
+		-- 공격 업데이트 (미구현)
+	end
+
+	method void SetEnableShadow(boolean enable)
+		-- 그림자 이팩트 활성화/비활성화
+		if enable then
+			if self._T.shadowEffectSerial == nil then
+				local option = { ["SortingLayer"] = _UserService.LocalPlayer.AvatarRendererComponent.SortingLayer, ["OrderInLayer"] = -1 ,["PlayRate"] = 0.5 }
+				self._T.shadowEffectSerial = _EffectService:PlayEffectAttached("f2a50a3dc03242e5853c05aaaac3f761",self.Entity,Vector3.zero,0,Vector3.one,true,option)
+			
+			end
+		else
+			if self._T.shadowEffectSerial ~= nil then
+				_EffectService:RemoveEffect(self._T.shadowEffectSerial)
+				self._T.shadowEffectSerial  = nil
+			end
+		end	
+	end
+
+	method void ChangeAttackAnim(table skillData)
+		-- 스킬 데이터에 따른 공격 애니메이션 변경
+		local _T = self._T
+		
+		if _UtilLogic:IsNilorEmptyString(skillData.monsterRUID) == false then
+			_T.spriteRenderer.SpriteRUID = skillData.monsterRUID
+		else
+			_T.spriteRenderer.SpriteRUID = self.attack
+		end 
+		
+		_TimerService:SetTimerOnce(function()		
+				_T.spriteRenderer.SpriteRUID = self.move		
+		 end,skillData.duration)
+	end
+
+end

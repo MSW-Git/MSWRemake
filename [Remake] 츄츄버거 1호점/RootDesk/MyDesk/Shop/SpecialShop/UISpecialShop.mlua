@@ -1,0 +1,300 @@
+@Component
+script UISpecialShop extends Component
+
+	property EntityRef ShopMenuLayoutEntity = "e438ec12-7755-404f-95b4-541ca035eeea"
+
+	property EntityRef ProductLayoutEntity = "116a529d-b035-4427-bffd-7011b5cb36d8"
+
+	property EntityRef CategoryTextEntity = "499d8bc3-8672-499a-8aac-2fa2cac94b3a"
+
+	property table sortingTable = {}
+
+	property Entity ItemDescToolTip = "708423c0-583e-4cf0-9d5a-71dafb2c2fce"
+
+	property string SelectedShopId = ""
+
+	property EntityRef RewardInfoPopup = "dc55d4bc-5d75-44ab-8f92-95b1102f4fe8"
+
+	@ExecSpace("ClientOnly")
+	method void Open(string openId)
+		-- 특별 상점 UI를 열고 상점 메뉴와 상품들을 정렬하여 표시
+		_UIGroupManager:EnableSpecialShopGroup(true)
+		
+		if not _UtilLogic:IsNilorEmptyString(self.SelectedShopId) and self.SelectedShopId == openId then
+		    return
+		end
+		
+		self:ClearData()
+		
+		for id, data in pairs(_SpecialShopDataLogic.SpecialShopData) do
+			---@type SpecialShopData
+			local specialShopData = data
+			table.insert(self.sortingTable, specialShopData)
+		end
+		
+		
+		if #self.sortingTable == 0 then
+			_SpecialShopDataLogic:CommonLog('Empty SpecialShopData')
+			return
+		end
+		
+		
+		table.sort(self.sortingTable, function(a, b)
+			if not self:HasRemainingProduct(a.Id) then
+				return false
+			end
+			
+			if not self:HasRemainingProduct(b.Id) then
+				return true
+			end
+			
+			return a.SortingOrder > b.SortingOrder
+		end)
+		
+		if openId == nil then
+			openId = self.sortingTable[1].Id
+		end
+		
+		self.SelectedShopId = openId
+		
+		---@type Entity
+		local openMenuEntity = nil
+		---@type SpecialShopData
+		local openSpecialShopData = nil
+		
+		for i, data in pairs(self.sortingTable) do
+			---@type SpecialShopData
+			local specialShopData = data
+			local menuRenderer = self:GetOrCreateMenuRenderer(i)
+			menuRenderer.UIShopMenuRenderer:SetColorAndRuidForSpecialShop()
+			menuRenderer.UIShopMenuRenderer:InitUI(specialShopData.Id, specialShopData.CategoryNameKey, specialShopData.ShopIconRUID)
+			menuRenderer.UIShopMenuRenderer.IconSprite.PreserveSprite = PreserveSpriteType.None
+			
+			if specialShopData.Id == self.SelectedShopId then
+				openMenuEntity = menuRenderer
+				openSpecialShopData = specialShopData
+			end
+		end
+		
+		self:OnShopSelected(openMenuEntity, self.SelectedShopId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 특별 상점 UI를 닫고 관련 팝업들도 닫기
+		self.SelectedShopId = nil
+		_UILobbyManager.UISpecialShopPurchasePopup.UIShopPurchasePopup:PopDown()
+		self.RewardInfoPopup.UIRewardInfo:OnClickCloseButton()
+		_UIGroupManager:EnableSpecialShopGroup(false)
+	end
+
+	method void ClearData()
+		-- 상점 메뉴와 상품 데이터를 초기화
+		local menuGroupRenderers = self.ShopMenuLayoutEntity.Children
+		for i, entity in ipairs(menuGroupRenderers) do
+			entity.Enable = false
+		end
+		
+		self:ClearProductRenderer()
+		table.clear(self.sortingTable)
+	end
+
+	method void ClearProductRenderer()
+		-- 상품 렌더러들을 비활성화하여 화면에서 숨김
+		local productGroupRenderers = self.ProductLayoutEntity.Children
+		for i, entity in ipairs(productGroupRenderers) do
+			entity.Enable = false
+		end
+	end
+
+	method Entity GetOrCreateMenuRenderer(integer index)
+		-- 상점 메뉴 렌더러를 가져오거나 새로 생성
+		local entityName = "ShopMenuRenderer" .. tostring(index)
+		local entity = self.ShopMenuLayoutEntity:GetChildByName(entityName, true)
+		if entity == nil then
+			local rendererModel = _EntryService:GetModelIdByName("Model_UIShopMenuRenderer")
+			local parent = self.ShopMenuLayoutEntity
+			local newEntity = _SpawnService:SpawnByModelId(rendererModel, entityName, Vector3.zero, parent)
+			return newEntity
+		end
+		entity.Enable = true
+		return entity
+	end
+
+	method void OnShopSelected(Entity menuRenderer, string shopId)
+		-- 선택된 상점의 상품들을 로드하고 UI 업데이트
+		self.SelectedShopId = shopId
+		self.ProductLayoutEntity.ScrollLayoutGroupComponent:ResetScrollPosition(UITransformAxis.Vertical)
+		
+		local menuGroupRenderers = self.ShopMenuLayoutEntity.Children
+		for i, entity in ipairs(menuGroupRenderers) do
+			if entity == menuRenderer then
+				entity.UIShopMenuRenderer:OnUpdateBallonSprite(true)
+				entity.UIShopMenuRenderer:OnUpdateTextColor(true)
+				entity.UIShopMenuRenderer:OnUpdateIconSprite(true)
+			else
+				entity.UIShopMenuRenderer:OnUpdateBallonSprite(false)
+				entity.UIShopMenuRenderer:OnUpdateTextColor(false)
+				entity.UIShopMenuRenderer:OnUpdateIconSprite(false)
+			end	
+		end
+		
+		---@type SpecialShopData
+		local shopData = _SpecialShopDataLogic.SpecialShopData[shopId]
+		self.CategoryTextEntity.TextComponent.Text = menuRenderer.UIShopMenuRenderer.TitleText.Text
+		
+		
+		local productResult = self:GetProductsByUserPurchaseCount(shopData.Id)
+		local displayedProducts = productResult.products
+		local productCount = productResult.count
+		for i=1, productCount do
+			self:OnUpdateCallback(i, displayedProducts[productCount - i + 1])
+		end
+		
+		for i=productCount+1, 6 do
+			self.ProductLayoutEntity.Children[i]:SetEnable(false)
+		end
+	end
+
+	method table GetProductsByUserPurchaseCount(string shopId)
+		-- 사용자 구매 횟수에 따라 표시할 상품들을 필터링
+		local products = _SpecialShopDataLogic.SpecialShopProductDataByLinkedShopId[shopId]
+		local productsByProductLevel = {}
+		local result = {} 
+		local resultCount = 0
+		for i, d in pairs(products) do
+			---@type SpecialShopProductData
+			local data = d
+			
+			if data.ProductLevel == 0 then
+				result[data.SlotNum] = data
+				resultCount += 1
+			else
+				if result[data.SlotNum] ~= nil then
+					continue
+				end
+				
+				local purchaseCount = _UserService.LocalPlayer.PlayerOutgameManager:GetPurchaseCount(data.Id)
+				
+				if _SpecialShopDataLogic:HasRemainingStock(data.Id, purchaseCount) == false then
+					continue
+				end
+				
+				result[data.SlotNum] = data
+				resultCount += 1
+			end
+		end
+		
+		return {products = result, count = resultCount}
+	end
+
+	method boolean HasRemainingProduct(string shopId)
+		-- 해당 상점에 구매 가능한 상품이 남아있는지 확인
+		for _, d in pairs(_SpecialShopDataLogic.SpecialShopProductData) do
+			---@type SpecialShopProductData
+			local data = d
+			if data.LinkedShopId == shopId then
+				local purchaseCount = _UserService.LocalPlayer.PlayerOutgameManager:GetPurchaseCount(data.Id)
+				if _SpecialShopDataLogic:HasRemainingStock(data.Id, purchaseCount) then
+					return true
+				end
+			end
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenPurchasePopup(string itemId)
+		-- 특정 아이템 ID에 대한 구매 팝업을 열기
+		for i, e in pairs(self.ProductLayoutEntity.Children) do
+			if e.Enable == false or e.UISpecialShopProduct == nil then
+				continue
+			end
+			
+			local productId = e.UISpecialShopProduct.ProductId
+			if _UtilLogic:IsNilorEmptyString(productId) then
+				break
+			end
+			---@type SpecialShopProductData
+			local productData = _SpecialShopDataLogic.SpecialShopProductData[productId]
+			if itemId == productData.ItemId then
+				e:SendEvent(ButtonClickEvent())
+				break
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdateCallback(integer index, SpecialShopProductData productData)
+		-- 상품 렌더러를 업데이트하여 상품 정보 표시
+		local entity = self.ProductLayoutEntity.Children[index]
+		if entity == nil then
+			return
+		end
+		entity.UISpecialShopProduct:Init(productData)
+		
+		
+		---@type SpecialShopData
+		local shopData = _SpecialShopDataLogic.SpecialShopData[self.SelectedShopId]
+		
+		entity.UIShopProductRenderer:InitSpecialShopItem(productData, shopData)
+		entity:SetEnable(true)
+	end
+
+	@EventSender("Entity", "b94d7202-9f7a-4097-85af-30ba51d01b68")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 특별 상점 열기 버튼 클릭 이벤트 처리
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["System_BlackMarket_Ready_01"], 1)
+		self:Open(nil)
+	end
+
+	@EventSender("Entity", "f7d1eda9-d180-4a41-a3b6-402517f2c609")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 특별 상점 닫기 버튼 클릭 이벤트 처리
+		
+		self:Close()
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+	end
+
+	@EventSender("Entity", "b95f52b1-9e05-486d-a7d0-137e7901ae86")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 출금 안내 팝업 열기 버튼 클릭 이벤트 처리
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIPurchasePopupLogic:OpenWithdrawalNoticePopup()
+		
+	end
+
+	@EventSender("Entity", "b4417aac-2d89-45e0-8090-bb497e4d4c3d")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 두 번째 특별 상점 열기 버튼 클릭 이벤트 처리
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["System_BlackMarket_Ready_01"], 1)
+		self:Open(nil)
+		
+	end
+
+	@EventSender("Entity", "6dba7b04-b8ea-495c-94bb-828d58b6b298")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 두 번째 출금 안내 팝업 열기 버튼 클릭 이벤트 처리
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIPurchasePopupLogic:OpenWithdrawalNoticePopup()
+	end
+
+end

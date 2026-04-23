@@ -1,0 +1,180 @@
+@Component
+script PartyInfoUIComponent extends UICommonPopup
+
+	property integer partyId = 0
+
+	property Entity originalSlot = nil
+
+	property Entity editButton = nil
+
+	property Entity leaveButton = nil
+
+	property integer destroyTimer = 0
+
+	property table requestedTable = {}
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 파티 정보 UI 초기화 및 버튼 이벤트 연결
+		__base:OnBeginPlay()
+		self.canvasGroup = nil
+		
+		local topPanel = self.Entity:GetChildByName("TopPanel")
+		local contentPanel = self.Entity:GetChildByName("ContentPanel")
+		local bottomPanel = self.Entity:GetChildByName("BottomPanel")
+		self.editButton = bottomPanel:GetChildByName("EditButton")
+		self.leaveButton = bottomPanel:GetChildByName("LeaveButton")
+		
+		topPanel:GetChildByName("ExitButton"):ConnectEvent(ButtonClickEvent, function()
+			self:Hide()
+		end)
+		
+		if Environment:IsPCPlatform() then
+			self.Entity.MoveableUIComponent:SetTouchEntity(topPanel, self.Entity)
+		end
+		
+		self.editButton:ConnectEvent(ButtonClickEvent, function()
+			self:OnClickEditButton()
+		end)
+		
+		self.leaveButton:ConnectEvent(ButtonClickEvent, function()
+			self:Leave()
+		end)
+		
+		self.originalSlot = contentPanel:GetChildByName("PartyInfoSlot")
+		self.originalSlot.Enable = false
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPartyId(integer id)
+		-- 파티 ID를 설정하고 유효성 검사 후 UI 갱신
+		if id == 0 or not isvalid(_PartyLogic.partyTable[id]) then 
+			if self.Entity.Enable then
+				self:Hide()
+			end
+			
+			return 
+		end
+		
+		if self.Entity.Enable and self.partyId ~= id then
+			return
+		end 
+		
+		self.partyId = id
+		self.Entity:GetChildByName("TopPanel").TextComponent.Text = _PartyLogic.partyTable[self.partyId].name
+		
+		if self.Entity.Enable then
+			self:Refresh()
+		end 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 파티 멤버 슬롯들을 생성하고 버튼 상태 설정
+		local contentPanel = self.Entity:GetChildByName("ContentPanel")
+		local scrollLayout = contentPanel.ScrollLayoutGroupComponent
+		local userId = _UserService.LocalPlayer.PlayerComponent.UserId
+		
+		for _, entity in pairs(contentPanel.Children) do
+			if entity ~= self.originalSlot then
+				entity:Destroy()
+			end
+		end
+		
+		for i = 1, 4 do
+			local entityName = string.format("PartyInfoSlot_%d", i)
+			local entity = self.originalSlot.Parent:GetChildByName(entityName)
+		
+			if not isvalid(entity) then
+				entity = self.originalSlot:Clone(entityName)
+			end
+			
+			entity.PartyInfoSlotComponent:SetSlot(i, self.partyId)
+		end
+		
+		if self.partyId ~= _UserService.LocalPlayer.PlayerFieldMapComponent.partyIndex then
+			self.editButton.TextComponent.Text = _LocalizeLogic:GetText("popup19")
+			self.editButton.Enable = true
+			self.leaveButton.Enable = false
+		else
+			if _PartyLogic:IsLeader(userId, self.partyId) then
+				self.editButton.Enable = true
+			else
+				self.editButton.Enable = false
+			end
+			
+			self.editButton.TextComponent.Text = _LocalizeLogic:GetText("partyStr6")
+			self.leaveButton.Enable = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickEditButton()
+		-- 편집 버튼 클릭 시 가입 요청 또는 파티 설정 처리
+		local userId = _UserService.LocalPlayer.PlayerComponent.UserId
+		local partyId = self.partyId
+		
+		if partyId ~= _UserService.LocalPlayer.PlayerFieldMapComponent.partyIndex then
+			if _PartyLogic:IsInParty(userId) then
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast188"))
+				
+				return
+			end
+			
+			if isvalid(self.requestedTable[partyId]) then
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast187"))
+			else
+				if not isvalid(_PartyLogic.partyTable[partyId]) then
+					_UIToast:ShowMessage(_LocalizeLogic:GetText("toast186"))
+					
+					self:Hide()
+				else
+					local str = string.format(_LocalizeLogic:GetText("popup20"), _PartyLogic.partyTable[partyId].name)
+					_UIPopup:Open(_LocalizeLogic:GetText("popup19"), str, function() 
+						self.requestedTable[partyId] = 1
+						_PartyLogic:RequestJoinParty(partyId) 
+					end, nil)
+					
+				end
+			end
+		else
+			if _PartyLogic:IsLeader(userId, partyId) then
+				local partyCreateUI = _PartyUILogic:GetPartyCreateUI().PartyCreateUIComponent
+				partyCreateUI:Show(false)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Leave()
+		-- 파티 탈퇴 요청 및 UI 닫기
+		if self.partyId ~= 0 then
+			self.partyId = 0
+			_PartyLogic:RequestLeaveParty()
+			self:Hide()
+		
+		end
+	end
+
+	method void Show()
+		-- 파티 정보 UI를 표시하고 배경 활성화
+		self:Refresh()
+		__base:Show()
+		_PartyUILogic.bg.Enable = true
+		_TimerService:ClearTimer(self.destroyTimer)
+	end
+
+	method void Hide()
+		-- 파티 정보 UI를 숨기고 배경 비활성화
+		__base:Hide()
+		_PartyUILogic:HideBg()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearRequestedTable()
+		-- 가입 요청 테이블 초기화
+		self.requestedTable = {}
+	end
+
+end

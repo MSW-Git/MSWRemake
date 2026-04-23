@@ -1,0 +1,386 @@
+@Component
+script PlayerFieldMapComponent extends Component
+
+	property table fieldMapData = {}
+
+	property integer partyIndex = 0
+
+	property number requestedPartyBehaviourTime = 0
+
+	property table barricadeData = {}
+
+	@TargetUserSync
+	property number currentChapter = 0
+
+	property number partyJoinedTime = 0
+
+	@ExecSpace("Server")
+	method void InitData()
+		-- 플레이어 필드맵 데이터 초기화
+		if _GameConfig:GetConfig().FIELD_AVAILABLE == false then return end
+		
+		if #self.fieldMapData == 0 then
+			for mapName, data in pairs(_MultiMapDataLogic.multiMapData) do 
+			    local mapData = {}
+			        
+			    for i=0, data.sectionNum do
+			        mapData[i] = 0
+			    end
+			
+			    self.fieldMapData[data.mapNum] = mapData
+		
+			    self:SyncDataInClient(data.mapNum,mapData,self.Entity.PlayerComponent.UserId)
+			end
+			self:SetPlayerFieldMapData()
+		end
+		
+		if #self.barricadeData == 0 then
+		
+			for i=1,#table.keys(self.fieldMapData) - 1 do
+				local statusData = {}
+				
+				for k=1,4 do
+					statusData[k] = 0
+				end
+				
+				self.barricadeData[i] = statusData
+				self:SyncBarricadeDataInClient(i,statusData,self.Entity.PlayerComponent.UserId)
+			end
+			self:SetPlayerBarricadeData()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetPlayerFieldMapData()
+		-- 필드맵 데이터를 DB에 저장
+		if _GameConfig:GetConfig().FIELD_AVAILABLE == false then return end
+		
+		if self.Entity.PlayerDBComponent.dbInited == false then
+		    return
+		end
+		
+		
+		local fieldMapData = {}
+		
+		for key, value in pairs(self.fieldMapData) do
+			fieldMapData[key] = _HttpService:JSONEncode(value)
+		end
+		
+		fieldMapData = _HttpService:JSONEncode(fieldMapData)
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["fieldMapData"] = fieldMapData
+	end
+
+	@ExecSpace("Client")
+	method void SyncDataInClient(number mapNum, table mapData)
+		-- 클라이언트에서 필드맵 데이터 동기화
+		if _GameConfig:GetConfig().FIELD_AVAILABLE == false then return end
+		
+		self.fieldMapData[mapNum] = mapData
+	end
+
+	@ExecSpace("Server")
+	method void UpdateData(number mapNum, number sectionNum, number state)
+		-- 필드맵 섹션 상태 업데이트
+		if sectionNum == 0 then
+			self.fieldMapData[mapNum][sectionNum] = state
+		else
+			if self.fieldMapData[mapNum][sectionNum] < state then
+				self.fieldMapData[mapNum][sectionNum] = state
+			end
+		end
+		
+		self:SetPlayerFieldMapData()
+		self:SyncDataInClient(mapNum,self.fieldMapData[mapNum],self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void CheckFieldMapDataIsValid()
+		-- 필드맵 데이터 유효성 검사 및 초기화
+		if _GameConfig:GetConfig().FIELD_AVAILABLE == false then return end
+		
+		if #self.fieldMapData == 0 or #self.barricadeData == 0 then
+		    self:InitData()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GiveRewardCheck(number mapNum, number sectionNum)
+		-- 필드맵 섹션 클리어 보상 지급 처리
+		if self.fieldMapData[mapNum][sectionNum] == 0 then 
+			_LocalizeLogic:ShowToast("toast163", self.Entity.PlayerComponent.UserId)
+			return
+		end
+		if self.fieldMapData[mapNum][sectionNum] == 2 then 
+			_LocalizeLogic:ShowToast("toast161", self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		
+		if self.fieldMapData[mapNum][sectionNum] == 1 then
+		    self:UpdateData(mapNum,sectionNum,2)
+			local rewardGem = 100 + 10 * (mapNum - 1)
+			self:RewardToast(rewardGem)
+			_SoundService:PlaySound("d879b6be959b4586b3a428b626605605",1,self.Entity.PlayerComponent.UserId)
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_FIELDGEM,rewardGem,self.Entity.PlayerComponent.UserId,"MapOpen",math.floor(mapNum).."_"..math.floor(sectionNum))
+		end
+	end
+
+	@ExecSpace("Multicast")
+	method void SetPartyIndex(integer partyIndex)
+		-- 파티 인덱스 설정 및 UI 업데이트
+		self.partyIndex = partyIndex
+		
+		if self:IsClient() then
+			if partyIndex <= 0 then
+				_PartyUILogic:GetPartyHUD().PartyHUDComponent:Hide()
+			end
+			
+			_PartyUILogic:Refresh()
+			_PartyUILogic.partyInfoUI.PartyInfoUIComponent:ClearRequestedTable()
+		else
+			self.partyJoinedTime = _UtilLogic.ServerElapsedSeconds
+		end
+	end
+
+	@ExecSpace("Server")
+	method void EnterField(number enteringMapNum, boolean usedItem)
+		-- 필드 맵 입장 처리 및 텔레포트 실행
+		if _GameConfig:GetConfig().FIELD_AVAILABLE == false then return end
+		
+		if enteringMapNum == 0 then
+			local mapNum = 1
+			for i=1,#table.keys(self.fieldMapData) - 1 do
+				if self.fieldMapData[i][0] == 2 then
+					mapNum = i
+					break
+				end
+			end
+			
+			local showLoading = math.floor(self.currentChapter) ~= mapNum
+			self.currentChapter = mapNum
+			local mapName = _MultiMapDataLogic:GetMapNameByNum(mapNum)
+			local campfire = _EntityService:GetEntityByPath(_MultiMapDataLogic.multiMapData[mapName].destinationPath)
+			
+			local destinationPath = _MultiMapDataLogic.multiMapData[mapName].destinationPath
+			local destination = _EntityService:GetEntityByPath(destinationPath)
+			
+			local destinationMapName = _MultiMapDataLogic:GetMapNameByNum(enteringMapNum)
+			if self.fieldMapData[mapNum][0] == 0 then
+				self:UpdateData(mapNum,0,2)
+			end
+			
+			_TeleportService:TeleportToEntity(self.Entity,destination)
+			if showLoading then
+				self:ShowLoading(0,self.Entity.PlayerComponent.UserId)
+			end
+			self:OffStagePopup(self.Entity.PlayerComponent.UserId)
+		else
+			local showLoading = math.floor(self.currentChapter) ~= enteringMapNum
+			
+			local user = self.Entity
+			local destinationMapName = _MultiMapDataLogic:GetMapNameByNum(enteringMapNum)
+			local currentMapNum = 1
+			for i=1, #table.keys(self.fieldMapData) - 1 do
+				if self.fieldMapData[i][0] == 2 then
+					currentMapNum = i
+					break
+				end
+			end
+			local price = self:GetPrice(currentMapNum,enteringMapNum)
+			local destinationPath = _MultiMapDataLogic.multiMapData[destinationMapName].destinationPath
+			local destination = _EntityService:GetEntityByPath(destinationPath)
+			
+			local playerMeso = user.PlayerCurrencyData.currencyTable["Gold"].amount
+			if usedItem then
+				self.currentChapter = enteringMapNum
+				self:UpdateData(currentMapNum,0,1)
+				self:UpdateData(_MultiMapDataLogic.multiMapData[destinationMapName].mapNum,0,2)
+				_TeleportService:TeleportToEntity(user,destination)
+				if showLoading then
+					self:ShowLoading(0,user.PlayerComponent.UserId)
+				end
+			elseif playerMeso >= price then
+				self.currentChapter = enteringMapNum
+				self:UpdateData(currentMapNum,0,1)
+				self:UpdateData(_MultiMapDataLogic.multiMapData[destinationMapName].mapNum,0,2)
+				_TeleportService:TeleportToEntity(user,destination)
+				if showLoading then
+					self:ShowLoading(0,user.PlayerComponent.UserId)
+					_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, price, senderUserId, "MultiMapTeleportInTown")
+				end
+						
+				self:OffStagePopup(self.Entity.PlayerComponent.UserId)
+			elseif playerMeso < price then
+				_LocalizeLogic:ShowToast("toast159", user.PlayerComponent.UserId)
+				return
+			end
+		end
+		
+		local gameKey = self.Entity.MyPlayer:SetGameInfo(_GameConfig:GetConfig().GAMEMODE_FIELD,_MultiMapDataLogic:GetMapNameByNum(enteringMapNum))
+		_WorldLog:LogPlayFlow(self.Entity.PlayerComponent.UserId,_WorldLog.FlowType_PlayFlow_Enter,"")
+	end
+
+	@ExecSpace("Server")
+	method void TeleportToTown()
+		-- 마을로 텔레포트 처리
+		self.currentChapter = 0
+		self:UpdateData(_MultiMapDataLogic.multiMapData[self.Entity.CurrentMapName].mapNum,0,2)
+		self:ShowLoading(2,self.Entity.PlayerComponent.UserId)
+		_TeleportService:TeleportToEntity(self.Entity,_EntityService:GetEntityByPath("/maps/Town/SpawnLocation"))
+		self:OffStagePopup(self.Entity.PlayerComponent.UserId)
+		
+		
+		_WorldLog:LogPlayFlow(self.Entity.PlayerComponent.UserId,_WorldLog.FlowType_PlayFlow_Exit,"")
+	end
+
+	@ExecSpace("Server")
+	method void TeleportByPilot(string destinationMapName)
+		-- 파일럿을 통한 맵 간 텔레포트 처리
+		local user = self.Entity
+		local currentMapName = user.CurrentMapName
+		local currentMapNum = 1
+		for i=1,#table.keys(self.fieldMapData) - 1 do
+			if self.fieldMapData[i][0] == 2 then
+				currentMapNum = i
+				break
+			end
+		end
+		local price = self:GetPrice(currentMapNum,_MultiMapDataLogic.multiMapData[destinationMapName].mapNum)
+		local destinationPath = _MultiMapDataLogic.multiMapData[destinationMapName].destinationPath
+		local destination = _EntityService:GetEntityByPath(destinationPath)
+		
+		
+		local playerMeso = user.PlayerCurrencyData.currencyTable["Gold"].amount
+		if playerMeso < price then
+			_LocalizeLogic:ShowToast("toast159", user.PlayerComponent.UserId)
+			return
+		elseif user.CurrentMapName ~= destinationMapName and playerMeso >= price then
+			self.currentChapter = _MultiMapDataLogic.multiMapData[destinationMapName].mapNum
+			self:UpdateData(_MultiMapDataLogic.multiMapData[user.CurrentMapName].mapNum,0,1)
+			self:UpdateData(_MultiMapDataLogic.multiMapData[destinationMapName].mapNum,0,2)
+			self:ShowLoading(1,user.PlayerComponent.UserId)
+			_TeleportService:TeleportToEntity(user,destination)
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, price, senderUserId, "MultiMapTeleportInField")
+		elseif user.CurrentMapName == destinationMapName then
+			self.currentChapter = _MultiMapDataLogic.multiMapData[user.CurrentMapName].mapNum
+			_EffectService:PlayEffectAttached("4c0b6c384cf14ff08bd09502c372e491",user,Vector3(0,0.3,0),0,Vector3.one)
+			_TeleportService:TeleportToEntity(user,destination)
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, price, senderUserId, "MultiMapTeleportInField")
+		end
+		
+		self.Entity.MyPlayer.currentStage = destinationMapName
+		_WorldLog:LogPlayFlow(self.Entity.PlayerComponent.UserId,_WorldLog.FlowType_PlayFlow_Move,"")
+	end
+
+	@ExecSpace("Server")
+	method void TeleportByPortal(Entity portal)
+		-- 포탈을 통한 맵 이동 처리
+		if portal.MultiPortalComponent.destination.CurrentMapName == "Town" then
+			self.currentChapter = 0
+			self:TeleportToTown()
+			
+			_WorldLog:LogPlayFlow(self.Entity.PlayerComponent.UserId,_WorldLog.FlowType_PlayFlow_Exit,"")
+		else
+			self.currentChapter = _MultiMapDataLogic.multiMapData[portal.MultiPortalComponent.destination.CurrentMapName].mapNum
+			self:UpdateData(_MultiMapDataLogic.multiMapData[self.Entity.CurrentMapName].mapNum,0,1)
+			self:UpdateData(_MultiMapDataLogic.multiMapData[portal.MultiPortalComponent.destination.CurrentMapName].mapNum,0,2)
+			self:ShowLoading(1,self.Entity.PlayerComponent.UserId)
+			_TeleportService:TeleportToEntity(self.Entity, portal.MultiPortalComponent.destination)
+			
+			self.Entity.MyPlayer.currentStage = portal.MultiPortalComponent.destination.CurrentMapName
+			_WorldLog:LogPlayFlow(self.Entity.PlayerComponent.UserId,_WorldLog.FlowType_PlayFlow_Portal,"")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowLoading(number setSpeed)
+		-- 로딩 화면 표시 및 맵 전환 UI 설정
+		_BattleUIManager.loadingUI:Show()
+		
+		if setSpeed == 0 then
+			_MultiHUDManager:SetEnable(true)
+			_MultiHUDManager:Init()
+		elseif setSpeed == 1 then
+			_MultiHUDManager:SetEnable(true)
+			_MultiHUDManager:Init()
+			self.Entity.MultiBattlePlayer:CampfireHeal(false)
+			self.Entity:SendEvent(OnEnterCampFire(false))
+			
+		elseif setSpeed == 2 then
+			self.Entity.MultiBattlePlayer:CampfireHeal(false)
+			self.Entity:SendEvent(OnEnterCampFire(false))
+			
+			_MultiHUDManager:OffAll()
+			_WaveLogic:SetChapter(1)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OffStagePopup()
+		-- 스테이지 이동 팝업 끄기
+		_UIGroupManager.uiStageMovePopup:OffAll()
+		_UIGroupManager.uiStageMovePopup:Hide()
+	end
+
+	method number GetPrice(number currentMapNum, number destinationMapNum)
+		-- 맵 이동 비용 계산
+		if currentMapNum == destinationMapNum then
+			return currentMapNum * 1000
+		else
+			return (currentMapNum + destinationMapNum) * math.abs(currentMapNum - destinationMapNum) * 1000
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncBarricadeDataInClient(number mapNum, table barricadeData)
+		-- 클라이언트에서 바리케이드 데이터 동기화
+		if _GameConfig:GetConfig().FIELD_AVAILABLE == false then return end
+		
+		self.barricadeData[mapNum] = barricadeData
+	end
+
+	@ExecSpace("Server")
+	method void SetPlayerBarricadeData()
+		-- 바리케이드 데이터를 DB에 저장
+		if _GameConfig:GetConfig().FIELD_AVAILABLE == false then return end
+		
+		if self.Entity.PlayerDBComponent.dbInited == false then
+		    return
+		end
+		
+		
+		local barricadeData = {}
+		
+		for key, value in pairs(self.barricadeData) do
+			barricadeData[key] = _HttpService:JSONEncode(value)
+		end
+		
+		barricadeData = _HttpService:JSONEncode(barricadeData)
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["barricadeData"] = barricadeData
+	end
+
+	@ExecSpace("Server")
+	method void UpdateBarricadeData(number mapNum, number barricadeNum)
+		-- 바리케이드 상태 업데이트
+		self.barricadeData[mapNum][barricadeNum] = 1
+		self:SetPlayerBarricadeData()
+		self:SyncBarricadeDataInClient(mapNum,self.barricadeData[mapNum],self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void RespawnCurrentMap()
+		-- 현재 맵에서 리스폰
+		self:EnterField(self.currentChapter,true)
+	end
+
+	@ExecSpace("Client")
+	method void RewardToast(number rewardGem)
+		-- 보상 젬 획득 토스트 메시지 표시
+		local str = string.format(_LocalizeLogic:GetText("toast162"), math.floor(rewardGem))
+		_UIToast:ShowMessage(str)
+	end
+
+end

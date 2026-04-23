@@ -1,0 +1,194 @@
+@Component
+script BarricadeComponent extends Component
+
+	property number barricadeNum = 0
+
+	property table originTile = {}
+
+	@ExecSpace("Server")
+	method void Open(Entity user)
+		-- 바리케이드 열기 (아이템 소모 후 제거)
+		local itemAmount = user.PlayerStorageComponent:GetItemCount(self._T.needItemId)
+		
+		if self._T.price <= itemAmount then
+			self:DestroyStatue(user.PlayerComponent.UserId)
+			local barricadeNum = 4
+			if self.barricadeNum % 4 ~= 0 then
+				barricadeNum = self.barricadeNum % 4
+			end
+			user.PlayerFieldMapComponent:UpdateBarricadeData(_MultiMapDataLogic.multiMapData[self.Entity.CurrentMapName].mapNum,barricadeNum)
+			user.PlayerStorageComponent:RemoveItemById(self._T.needItemId,self._T.price,"fieldBarricadeOpen")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DestroyStatue()
+		-- 바리케이드 상 파괴 애니메이션
+		for i, child in pairs(self.Entity.Children) do
+			if isvalid(child.SpriteRendererComponent) and child.SpriteRendererComponent.SpriteRUID == "3c97952d3bfd4a15ab29b3c22393b619" then
+				child.SpriteRendererComponent.SpriteRUID = "7cdafb7b1dff47d3bb3bb08ec600a7c7"
+				_SoundService:PlaySound("28ed250067b444e4b6f848439c307a94",1)
+			else
+				child.Enable = false
+			end
+		end
+		_TimerService:SetTimerOnce(function()
+			self.Entity.Enable = false
+			self:TileOnOff(false)
+		end,1.3)
+	end
+
+	method void OnBeginPlay()
+		-- 바리케이드 컴포넌트 초기화
+		
+		if self:IsServer() then
+			local currentMapNum = _MultiMapDataLogic.multiMapData[self.Entity.CurrentMapName].mapNum
+			local type = (currentMapNum - 1) * 2 + math.floor(((self.barricadeNum-1) % 4) / 2) + 1
+			self._T.price = _MultiMapDataLogic.barricadeData[type].price 
+			self._T.needItemId = _MultiMapDataLogic.barricadeData[type].itemId
+		else
+			local currentMapNum = _MultiMapDataLogic.multiMapData[self.Entity.CurrentMapName].mapNum
+			local type = (currentMapNum - 1) * 2 + math.floor(((self.barricadeNum-1) % 4) / 2) + 1
+			self.Entity.NameTagComponent.Name = _LocalizationService:GetText("barricadeData_Name"..tostring(math.floor(type)))
+			self._T.price = _MultiMapDataLogic.barricadeData[type].price 
+			self._T.needItemId = _MultiMapDataLogic.barricadeData[type].itemId
+			if self.Entity.Enable then
+				_MultiHUDManager.minimap.MinimapComponent:SetMinimapInfo("open",self.Entity.Id,self.Entity.TransformComponent)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void TileOnOff(boolean onoff)
+		-- 바리케이드 영역의 타일 상태 변경
+		if onoff then
+			if #table.keys(self.originTile) ~= 0 then return end
+			
+			local trigger = self.Entity.TriggerComponent
+			local tileMap = self.Entity.CurrentMap:GetChildByName("RectTileMap_3").RectTileMapComponent
+			local triggerX = trigger.BoxSize.x
+			local triggerY = trigger.BoxSize.y
+			local worldPos = self.Entity.TransformComponent.Position
+			local count = 0
+			for x = math.floor((worldPos.x+trigger.BoxOffset.x-triggerX/2)*2), math.floor((worldPos.x+trigger.BoxOffset.x+triggerX/2)*2) do
+				for y = math.floor((worldPos.y+trigger.BoxOffset.y-triggerY/2)*2)+1, math.floor((worldPos.y+trigger.BoxOffset.x+triggerY/2)*2)+1 do
+					local currentTile = tileMap:GetTile(Vector2Int(x,y))
+					if currentTile.Name ~= "Name2" then
+						local originTileIdx = currentTile.Index
+						tileMap:SetTile(3, Vector2Int(x,y))
+						count += 1
+						self.originTile[count] = {}
+						self.originTile[count].x = x
+						self.originTile[count].y = y
+						self.originTile[count].tileIdx = originTileIdx
+					end
+				end
+			end
+		else
+			for i, data in pairs(self.originTile) do
+				local tileMap = self.Entity.CurrentMap:GetChildByName("RectTileMap_3").RectTileMapComponent
+				tileMap:SetTile(data.tileIdx,Vector2Int(data.x,data.y))
+			end
+			table.clear(self.originTile)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 바리케이드 상호작용 시 열기 팝업 표시
+		
+		local InteractionEntity = event.InteractionEntity
+		if _UIGroupManager.fieldUnlockPopup.Entity.Enable == true then return end
+		
+		local itemData = _ItemDataLogic:GetItemData(self._T.needItemId)
+		local itemName = "<b>".._LocalizeLogic:GetItemName(self._T.needItemId).."</b>"
+		local itemAmount = InteractionEntity.PlayerStorageComponent:GetItemCount(self._T.needItemId)
+		local currentMapNum = _MultiMapDataLogic.multiMapData[self.Entity.CurrentMapName].mapNum
+		local type = (currentMapNum - 1) * 2 + math.floor(((self.barricadeNum-1) % 4) / 2) + 1
+		
+		local isEnable = itemAmount >= self._T.price
+		local costText = string.format("%d/%d",itemAmount,self._T.price)
+		
+		if isvalid(self._T.uiGroups) == false then 
+			self._T.uiGroups = {}
+		end
+		for _, uiGroup in pairs(_EntityService:GetEntityByPath("/ui").Children) do
+			if uiGroup.Enable == true and uiGroup ~= _UIGroupManager.fieldUnlockPopup.Entity then
+				table.insert(self._T.uiGroups,uiGroup)
+			end
+		end
+		for _, uiGroup in pairs(self._T.uiGroups) do
+			uiGroup.Enable = false
+		end
+		
+		local uiOn = function()
+			for _, uiGroup in pairs(self._T.uiGroups) do
+				uiGroup.Enable = true
+			end
+			table.clear(self._T.uiGroups)
+			_UserService.LocalPlayer.PlayerControllerComponent.Enable = true
+		end
+		
+		_UserService.LocalPlayer.PlayerControllerComponent.Enable = false
+		
+		local mapNum = _MultiMapDataLogic.barricadeData[type].name
+		local mapName = ""
+		
+		if mapNum == 0 then
+			mapName = _LocalizeLogic:GetText("confirmPopup28")
+		elseif mapNum == 1 then
+			mapName = _LocalizeLogic:GetText("confirmPopup5")
+		elseif mapNum == 2 then
+			mapName = _LocalizeLogic:GetText("confirmPopup6")
+		elseif mapNum == 3 then
+			mapName = _LocalizeLogic:GetText("confirmPopup7")
+		elseif mapNum == 4 then
+			mapName = _LocalizeLogic:GetText("confirmPopup8")
+		elseif mapNum == 5 then
+			mapName = _LocalizeLogic:GetText("confirmPopup9")
+		elseif mapNum == 6 then
+			mapName = _LocalizeLogic:GetText("confirmPopup10")
+		elseif mapNum == 7 then
+			mapName = _LocalizeLogic:GetText("confirmPopup11")
+		elseif mapNum == 8 then
+			mapName = _LocalizeLogic:GetText("confirmPopup12")
+		end
+		
+		local str = string.format(_LocalizeLogic:GetText("etcStr206"), itemName)
+		_UIGroupManager.fieldUnlockPopup:Open(_LocalizeLogic:GetBarricadeName(type), str, itemData.ruid,isEnable, costText,
+		function() 
+			self:Open(_UserService.LocalPlayer)
+			self.Entity.InteractionComponent.Enable = false
+			uiOn()
+		end,
+		function()
+			uiOn()
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 맵 변경 시 바리케이드 상태 업데이트
+		
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		if NewMap ~= self.Entity.CurrentMap then return end
+		local fieldMapCompo = Entity.PlayerFieldMapComponent
+		local currentMapNum = _MultiMapDataLogic.multiMapData[NewMap.Name].mapNum
+		local barricadeNum = 4
+		if self.barricadeNum % 4 ~= 0 then
+			barricadeNum = self.barricadeNum % 4
+		end
+		if fieldMapCompo.barricadeData[currentMapNum][barricadeNum] == 1 then
+			self.Entity.Enable = false
+		else
+			self.Entity.Enable = true
+			self:TileOnOff(true)
+			_MultiHUDManager.minimap.MinimapComponent:SetMinimapInfo("open",self.Entity.Id,self.Entity.TransformComponent)
+		end
+	end
+
+end

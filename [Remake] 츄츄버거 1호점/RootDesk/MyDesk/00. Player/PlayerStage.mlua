@@ -1,0 +1,545 @@
+@Component
+script PlayerStage extends Component
+
+	@TargetUserSync
+	property integer NowStage = 0
+
+	@TargetUserSync
+	property SyncTable<integer, integer> StageProgress
+
+	property SyncTable<integer> TempStageIngredient
+
+	property SyncTable<string> TempStageStartingEmployee
+
+	property SyncTable<integer, integer> TempStageStrategy
+
+	property integer TempStageSideMenu = 0
+
+	property boolean IsNewStageEnter = false
+
+	@TargetUserSync
+	property SyncTable<string, integer> StageRewardQueue
+
+	@TargetUserSync
+	property SyncTable<integer, string> StageSettingData
+
+	@TargetUserSync
+	property SyncTable<integer, boolean> ClearedStageData
+
+	property integer TempMoveToStage = 0
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 스테이지 관련 데이터를 데이터베이스에 저장
+		local dbTable = {}
+		
+		dbTable["StageProgress"] = _UtilLogic:TableToString(self.StageProgress)
+		dbTable["NowStage"] = self.NowStage
+		dbTable["StageRewardQueue"] = _UtilLogic:TableToString(self.StageRewardQueue)
+		dbTable["StageSettingData"] = _UtilLogic:TableToString(self.StageSettingData)
+		dbTable["ClearedStageData"] = _UtilLogic:TableToString(self.ClearedStageData)
+		
+		saveData["StageData"] = dbTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 스테이지 데이터를 로드하여 초기화
+		local dbTable = loadedData["StageData"]
+		if dbTable == nil then
+			dbTable = {}
+		end
+		
+		if #table.keys(dbTable) > 0 then
+			self.NowStage = tonumber(dbTable["NowStage"])
+			
+			if dbTable["StageProgress"] then
+				table.initialize(self.StageProgress, _UtilLogic:StringToTable(dbTable["StageProgress"]))
+			end
+			
+			if dbTable["StageRewardQueue"] then
+				table.initialize(self.StageRewardQueue, _UtilLogic:StringToTable(dbTable["StageRewardQueue"]))
+			end
+			
+			if dbTable["StageSettingData"] then
+				table.initialize(self.StageSettingData, _UtilLogic:StringToTable(dbTable["StageSettingData"]))
+			end
+			
+			if dbTable["ClearedStageData"] then
+				table.initialize(self.ClearedStageData, _UtilLogic:StringToTable(dbTable["ClearedStageData"]))
+			end
+		else
+		
+			self.NowStage = 1
+			
+			table.clear(self.StageProgress)
+			table.clear(self.StageRewardQueue)
+			table.clear(self.StageSettingData)
+			table.clear(self.ClearedStageData)
+			
+			self.StageProgress[1] = 0
+			self:SetStageProgress(self.NowStage, 0)	
+			
+			self:StageEnterLog(self.NowStage, "1")	
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedStage(integer stageId)
+		-- 스테이지 로드 완료 시 초기 설정 및 UI 업데이트 수행
+		if self.StageProgress[stageId] == nil then
+			self:SetStageProgress(stageId, 0)
+		end
+		
+		self.Entity.PlayerTrial:SetOfficialTrials()
+		if self.IsNewStageEnter == true then
+			_LobbyHUDService:OpenStartStageToast(self.NowStage, self.Entity.PlayerComponent.UserId)
+			self.IsNewStageEnter = false
+			
+			_TimerService:SetTimerOnce(function()
+				self:RequestMakeDialog(self.NowStage, self.Entity.PlayerComponent.UserId)
+			end, 5)
+			
+		end
+		
+		self.Entity.CustomerManager:SetTurialTagByOrderByNowStage(self.NowStage)
+		self.Entity.CustomerManager:CalcMyAttractive()
+		
+		_ReputationDataSetLogic:SetReputationDownServingTimeMin(self.Entity, self.Entity.PlayerComponent.UserId)
+		
+		_CustomerAvatarService:ResetCustomerAvatarResources(self.NowStage, self.Entity.PlayerComponent.UserId)
+		
+		_UIGroupManager:EnableStageLoadingGroup(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void OnStartNewStage(integer stageId, table datas)
+		-- 새로운 스테이지를 시작하기 위한 설정 데이터를 준비하고 DB 초기화
+		
+		self._T.stageIngredient = {}
+		self._T.stageStartingEmployee = {}
+		self._T.stageStrategy = {}
+		self._T.stageSideMenu = 0
+		
+		self.TempMoveToStage = stageId
+		self._T.resetDB = true
+		
+		local ingreData = datas[_StageSettingEnum.Ingredient]
+		local empData = datas[_StageSettingEnum.Employee]
+		local strategyData = datas[_StageSettingEnum.Strategy]
+		local sideMenu = datas[_StageSettingEnum.SideMenu]
+		
+		if isvalid(ingreData) then
+			table.initialize(self._T.stageIngredient, ingreData)
+		end
+		
+		if isvalid(empData) then
+			table.initialize(self._T.stageStartingEmployee, empData)
+		end
+		
+		if isvalid(strategyData) then
+			table.initialize(self._T.stageStrategy, strategyData)
+		end
+		
+		if isvalid(sideMenu) then
+			self._T.stageSideMenu = sideMenu
+		end
+		
+		self.Entity.PlayerOutgameManager:SetBoosterPack1Purchased(stageId, false)
+		
+		self.Entity.PlayerDBManager:SaveToDB(true)
+		self.Entity.PlayerDBManager.IsOnStage = false 
+		
+		_FadeService:ShowFade("StageStart", self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void OnContinueStage(integer stageId)
+		-- 기존 스테이지를 계속 플레이하기 위한 준비 작업
+		self.TempMoveToStage = stageId
+		self._T.resetDB = false
+		
+		self.Entity.PlayerDBManager:SaveToDB(true)
+		self.Entity.PlayerDBManager.IsOnStage = false 
+		
+		_FadeService:ShowFade("StageStart", self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void SetStageProgress(integer stageId, integer progress)
+		-- 스테이지 진행도를 설정하고 클리어 조건 달성 시 보상 지급
+		if isvalid(_StageDataSetLogic:GetStageData(stageId)) == false then
+			return
+		end
+		
+		if self.StageProgress[stageId] == progress then
+			return
+		end
+		
+		if progress < 0 then
+			progress = 0
+		elseif progress > 6 then
+			progress = 6
+		end
+		
+		self.StageProgress[stageId] = progress
+		
+		local enum = tonumber(string.format("1000%d", stageId))
+		self.Entity.PlayerBadge:ChangeProgress(enum, progress)
+		
+		if progress >= _StageDataSetLogic:GetStageClearProgress(stageId) then
+			self:GetStageClearReward(stageId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void MoveToLoadingMap()
+		-- 로딩 맵으로 이동하여 스테이지 전환 준비
+		self._T.isProcessing = true
+		self._T.exStage = self.NowStage
+		
+		self:ClearUI(self.Entity.PlayerComponent.UserId)
+		_UIGroupManager:EnableStageLoadingGroup(true, self.Entity.PlayerComponent.UserId)
+		
+		wait(0.2)
+		
+		_TeleportService:TeleportToEntityPath(self.Entity, "/maps/DataLoading/TeleportPoint")
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 맵 진입 시 스테이지 전환 처리 및 로그 기록
+		if enteredMap.Name == "DataLoading" then
+			
+			local mapName = self:ReturnMapName(self.TempMoveToStage)
+			local targetEntityPath = string.format("/maps/%s/SpawnPosGroup", mapName)
+			
+			if self._T.isProcessing then				
+				if self._T.resetDB == true then
+					self.Entity.PlayerDBManager:ClearStageDB(self.TempMoveToStage)
+					
+					if isvalid(self._T.stageIngredient) then
+						table.initialize(self.TempStageIngredient, self._T.stageIngredient)
+					else
+						table.clear(self.TempStageIngredient)
+					end
+					
+					if isvalid(self._T.stageStartingEmployee) then
+						table.initialize(self.TempStageStartingEmployee, self._T.stageStartingEmployee)
+					else
+						table.clear(self.TempStageStartingEmployee)
+					end
+					
+					if isvalid(self._T.stageSideMenu) then
+						self.TempStageSideMenu = self._T.stageSideMenu
+					else
+						self.TempStageSideMenu = nil
+					end
+					
+					if isvalid(self._T.stageStrategy) then
+						table.initialize(self.TempStageStrategy, self._T.stageStrategy)
+					else
+						table.clear(self.TempStageStrategy)
+					end
+										
+					self._T.stageIngredient = nil
+					self._T.stageStartingEmployee = nil
+					self._T.stageStrategy = nil
+					self._T.stageSideMenu = nil
+					
+				else
+					
+				end
+				
+				local flowType = "empty"
+				
+				if self.StageProgress[self.TempMoveToStage] == nil then
+					flowType = "1" 
+				else
+					if self._T.resetDB == true then
+						flowType = "3" 
+					else
+						flowType = "2" 
+					end
+				end
+				
+				self.IsNewStageEnter = self._T.resetDB
+				self._T.resetDB = false
+				
+				self:StageEnterLog(self.TempMoveToStage, flowType)
+				
+				_TeleportService:TeleportToEntityPath(self.Entity, targetEntityPath)		
+				_FadeService:HideFade(self.Entity.PlayerComponent.UserId)
+				
+				self._T.isProcessing = false
+				
+			else
+				_TeleportService:TeleportToEntityPath(self.Entity, targetEntityPath)
+			end
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ClearUI()
+		-- 모든 UI를 정리하고 로비 관련 요소들을 비활성화
+		_UIGroupManager:ClearAllUI()
+		_LobbyHUDService:ClearLobbyHUD()
+		_UILobbyManager.MainMenuPanel:SetEnable(false)
+		_UIGroupManager:EnableToastLobbyGroup(false)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성에 따라 관련 이벤트 발생 및 UI 업데이트
+		if name == "NowStage" then
+			_LobbyHUDService:UpdateMoveNextStageBtn()
+			local e = PlayerNowStageChangedEvent()
+			self.Entity:SendEvent(e)
+		elseif name == "StageProgress" then
+			_LobbyHUDService:UpdateMoveNextStageBtn()
+			local e = playerStageProgressChangedEvent()
+			self.Entity:SendEvent(e)
+		end
+	end
+
+	method integer GetChustarLevel()
+		-- 클리어한 스테이지 수를 기반으로 춤스타 레벨을 계산하여 반환
+		local level = 0
+		
+		for id, progress in pairs(self.StageProgress) do	
+			if progress >= _StageDataSetLogic:GetStageClearProgress(id) then
+				level += 1
+			end
+		end
+		
+		
+		if level == 0 then
+			level = 1
+		end
+		
+		return level
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetStageClearReward(integer stageId)
+		-- 스테이지 클리어 보상을 지급하고 컴렉션 아이템 해제 및 보상 대기열에 추가
+		local stageData = _StageDataSetLogic:GetStageData(stageId)
+		if stageData == nil then
+			return
+		end
+		
+		local isFirstClear = false
+		
+		self.Entity.PlayerOutgameManager:ModifyDiamond(stageData.StageClearRewardDiamond, false, "Stage clear reward", "Stage clear reward popup")
+		
+		local spAmount = _GetConfigDataLogic:GetConfigNumDataByKey("StageClearRewardSP")
+		self.Entity.PlayerOutgameManager:ModifyStrategyPoint(spAmount, "Stage clear reward", "Stage clear reward popup")
+		
+		for id, data in pairs(_StrategyDataSetLogic.SideMenuData) do
+			local smData = _StrategyDataSetLogic:GetSideMenuData(id)
+			if smData.GetCondition == "StageClear" and tonumber(smData.GetConditionValue) == stageId then
+				local result = self.Entity.PlayerCollection:RequestAddSideMenuCollection(id, stageId)
+				if result == true then
+					self.Entity.PlayerCollection:RequestSetSideMenuChecked(id, false)
+					isFirstClear = true	
+				end		
+				
+				if _UtilLogic:IsNilorEmptyString(smData.OpenCondition) == false then
+					if smData.OpenCondition == "StageClear" and tonumber(smData.OpenConditionValue) == stageId then
+						self.Entity.PlayerCollection:RequestSetSideMenuChecked(id, false)
+					end
+				end
+			end
+		end
+		
+		for id, data in pairs(_StrategyDataSetLogic.StrategyData) do
+			local stData = _StrategyDataSetLogic:GetStrategyData(id)
+			if stData.UnlockStage == stageId then
+				self.Entity.PlayerCollection:RequestAddStrategyCollection(id)
+			end
+		end
+		
+		local reward = {}
+		if stageData.StageClearRewardDiamond > 0 then
+			reward["G1001"] = stageData.StageClearRewardDiamond
+		end
+		reward["G0008"] = spAmount
+		
+		table.initialize(self.StageRewardQueue, reward)
+		
+		self.ClearedStageData[stageId] = isFirstClear
+	end
+
+	method boolean IsAchieveStageProgress(integer stageId, integer stageProgress)
+		-- 지정된 스테이지의 진행도가 요구 수준에 도달했는지 확인
+		local myProgress = self.StageProgress[stageId]
+		return myProgress ~= nil and myProgress >= stageProgress
+	end
+
+	method table GetNextStageProgress(integer stageId, integer stageProgress)
+		-- 다음 스테이지 진행도를 계산하여 스테이지 ID와 진행도를 반환
+		if stageProgress >= 6 then
+			return {stageId + 1, 0}
+		end
+		
+		return {stageId, stageProgress + 1}
+	end
+
+	method string ReturnMapName(integer stageId)
+		-- 스테이지 ID를 기반으로 맵 이름을 생성하여 반환
+		local targetStage = "_Stage_"..stageId
+		local mapName = "Lobby"..targetStage
+		return mapName
+	end
+
+	method boolean IsStageOpened(integer stageId)
+		-- 지정된 스테이지가 해제되어 입장 가능한지 확인
+		if _StageDataSetLogic:GetStageData(stageId) == nil then
+			return false
+		end
+		
+		if stageId <= 1 then
+			return true
+		end
+		
+		local exStageId = stageId - 1
+		local exProgress = self.StageProgress[exStageId]
+		
+		if exProgress == nil then
+			return false
+		end
+		
+		return exProgress >= _StageDataSetLogic:GetStageClearProgress(exStageId)
+	end
+
+	@ExecSpace("Client")
+	method void RequestDrawStageClearRewardQueue()
+		-- 스테이지 클리어 보상 대기열에서 보상 UI를 표시하고 대기열을 정리
+		local clearedStageId = 0
+		
+		for stageId, bool in pairs(self.ClearedStageData) do
+			clearedStageId = stageId
+			_StageDataSetLogic:OpenStageClearRewardUI(clearedStageId)
+		end
+		
+		self:RequestClearStageRewardQueue()
+	end
+
+	@ExecSpace("Server")
+	method void RequestClearStageRewardQueue()
+		-- 스테이지 보상 대기열과 클리어 데이터를 초기화
+		table.clear(self.StageRewardQueue)
+		table.clear(self.ClearedStageData)
+	end
+
+	@ExecSpace("Client")
+	method void RequestMakeDialog(integer stageId)
+		-- 스테이지 진행 중 대화를 생성하고 조건에 따라 부스터 팩 UI를 열기
+		local stageData = _StageDataSetLogic:GetStageData(stageId)
+		local callback = function()
+			if stageId == 2 and self.Entity.PlayerEvent:IsEventOccured(_TutorialEventEnum.EnterStage2[1]) == false then
+				return
+			end
+			
+			_BoosterPackDataLogic.UIBoosterPack:Open()
+		end
+		_UIDialogLogic:MakeDialog(stageData.DialogInProgress[0], callback)
+	end
+
+	method string GetPlayerLastStageProgress()
+		-- 플레이어의 최신 스테이지 진행 상황을 문자열로 반환
+		local lastStage = 1
+		for id, _ in pairs(self.StageProgress) do
+			lastStage = math.max(lastStage, id)
+		end
+		if isvalid(self.StageProgress[lastStage]) then
+			return string.format("%d-%d", lastStage, self.StageProgress[lastStage])
+		else
+			return "empty"
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StageEnterLog(integer stageId, string flowType)
+		-- 스테이지 진입 로그를 기록하여 사용자 행동 분석용 데이터 수집
+		
+		local success,value = pcall(function()
+			local userId = self.Entity.PlayerComponent.UserId
+			local profileCode = self.Entity.PlayerComponent.ProfileCode
+			local stageData = _StageDataSetLogic:GetStageData(stageId)
+			
+		
+			
+			_LogStorageLogic:LogValue(
+				userId,
+				_LogEnumType.StageFlowEnter,
+				stageData.NameKey,
+				{
+					stageId = tostring(stageId),
+					flowType = flowType,
+					playerLevel = self:GetPlayerLastStageProgress(),
+					utc = _DateTimeLogic:GetUtcNowText(),
+					profileCode = profileCode
+				}
+			)
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StageSettingLog(integer stageId, string promotedIngre, string startingEmployee, integer usedSP, string strategy, string sideMenuId, string strategyArrayStr)
+		-- 스테이지 설정 로그를 기록하여 사용된 전략과 설정 데이터를 추적
+		local success,value = pcall(function()
+			local userId = self.Entity.PlayerComponent.UserId
+			local nickname = self.Entity.PlayerComponent.Nickname
+			local profileCode = self.Entity.PlayerComponent.ProfileCode
+			local stageData = _StageDataSetLogic:GetStageData(stageId)
+			
+		    _LogStorageLogic:LogValue(
+		        userId,
+		        _LogEnumType.StageFlowSetting,
+				_HttpService:JSONEncode({
+					stageName = stageData.NameKey,
+					promotedIngre = promotedIngre,
+					startingEmployee = startingEmployee,
+					strategy = strategy,
+					sideMenuId = sideMenuId			
+				}),
+		        {
+		            nickname = nickname,
+					stageId = tostring(stageId),
+					usedSP = tostring(usedSP),
+					utc = _DateTimeLogic:GetUtcNowText(),
+					profileCode = profileCode,
+					strategyArray = strategyArrayStr
+		        }
+		    )
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetStageSettingData(integer stageId, table settingData)
+		-- 스테이지 설정 데이터를 JSON 형태로 저장
+		local settingDataStr = _HttpService:JSONEncode(settingData)
+		self.StageSettingData[stageId] = settingDataStr 
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DrawStageClearRewardQueue()
+		-- 스테이지 클리어 보상 대기열을 처리하여 보상 UI를 표시하는 함수
+		local clearedStageId = 0
+		
+		for stageId, bool in pairs(self.ClearedStageData) do
+			clearedStageId = stageId
+			_StageDataSetLogic:OpenStageClearRewardUI(clearedStageId, self.Entity.PlayerComponent.UserId)
+		end
+		
+		self:RequestClearStageRewardQueue()
+	end
+
+end

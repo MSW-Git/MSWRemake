@@ -1,0 +1,358 @@
+@Logic
+script ReputationDataSetLogic extends Logic
+
+	property integer REPUTATION_LOG_LAST_DAY = 7
+
+	property integer REPUTATION_REVIEW_SECTION_COUNT = 6
+
+	property number ReputationDownServingTimeMin = 0
+
+	method void OnBeginPlay()
+		-- 클라이언트에서 이펙트 인덱스 초기화
+		if self:IsClient() then
+			self._T.effectIdx = 0
+		end
+	end
+
+	method number ReturnSpawnDelay(Entity player)
+		-- 플레이어의 평판도와 경영 레벨에 따른 손님 스폰 딜레이 계산
+		if self:IsServer() then
+			if isvalid(self._T.timer) then
+				_TimerService:ClearTimer(self._T.timer)
+			end
+		end
+		
+		local managementLevel = player.PlayerManagement.ManagementLevel
+		if managementLevel == nil then
+			if self:IsServer() then
+				self._T.timer = _TimerService:SetTimerOnce(function()
+					player.CustomerManager:SetCustomerSpawnDelay(nil)
+				end, 2)
+			end
+			return 10
+		end
+		
+		local reputation = player.PlayerInventory.Reputation
+		if reputation == nil then
+			if self:IsServer() then
+				self._T.timer = _TimerService:SetTimerOnce(function()
+					player.CustomerManager:SetCustomerSpawnDelay(nil)
+				end, 2)
+			end
+			return 10
+		end
+		
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local reputationManagementData = stageData:GetReputationManagementData(managementLevel)
+		if reputationManagementData == nil then
+			if self:IsServer() then
+				self._T.timer = _TimerService:SetTimerOnce(function()
+					player.CustomerManager:SetCustomerSpawnDelay(nil)
+				end, 2)
+			end
+			return 10
+		end
+		
+		local minSpawnDelay = reputationManagementData.MinSpawnDelay
+		local maxSpawnDelay = reputationManagementData.MaxSpawnDelay + minSpawnDelay
+		
+		local earningLevel = player.PlayerSettlement.EarningLevel
+		local stageEarningLevelData = stageData:GetStageEarningLevelData(player.PlayerSettlement.EarningLevel)
+		if stageEarningLevelData == nil then
+			if self:IsServer() then
+				_BalanceDataSetLogic:SetEarningLevelByEarningRecord(player) 
+				self._T.timer = _TimerService:SetTimerOnce(function()
+					player.CustomerManager:SetCustomerSpawnDelay(nil)
+				end, 2)
+			end
+			return 10
+		end
+		
+		local storeAttractiveData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+		if storeAttractiveData == nil then
+			if self:IsServer() then
+				self._T.timer = _TimerService:SetTimerOnce(function()
+					player.CustomerManager:SetCustomerSpawnDelay(nil)
+				end, 2)
+			end
+			return 10
+		end
+		
+		local maxReputation = storeAttractiveData.MaxReputation
+		local myReputationRate = reputation/maxReputation	
+		
+		local spawnDelay = maxSpawnDelay * (1 - myReputationRate) + minSpawnDelay
+		
+		
+		if spawnDelay < 0 then
+			spawnDelay = maxSpawnDelay
+			
+		elseif spawnDelay > maxSpawnDelay then
+			spawnDelay = maxSpawnDelay
+		end
+		return spawnDelay
+	end
+
+	@ExecSpace("Client")
+	method number ReturnReputationChangeByServingTime(number servingTime, Entity player)
+		-- 서빙 시간에 따른 평판도 변화량 계산
+		local configValue = function(e)
+			local stEffect = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.EaseCustomerDelay, player.PlayerStage.NowStage)
+			if e >= 4 then
+				stEffect = 0 
+			end
+			
+			if player.PlayerStage.NowStage == 6 then
+				return _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dDurationForStage6", e)) * (1 + stEffect)
+			else
+				return _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dDuration", e)) * (1 + stEffect)
+			end	
+		end
+		
+		local getStarGrade = function(e)
+			if e < configValue(5) then
+				return 6
+			elseif configValue(5) <= e and e < configValue(4) then
+				return 5
+			elseif configValue(4) <= e and e < configValue(3) then
+				return 4
+			elseif configValue(3) <= e and e < configValue(2) then
+				return 3
+			elseif configValue(2) <= e and e < configValue(1) then
+				return 2
+			elseif configValue(1) <= e then	
+				return 1
+			end
+		end
+		
+		local starGrade = getStarGrade(servingTime)
+		
+		if starGrade >= 5 then 
+			local achiValue = player.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.ReputationGoodReviewCount)
+			player.PlayerAchievement:RequestChangeProgress(_AchievementTypeEnum.ReputationGoodReviewCount, achiValue+1)
+		end
+		
+		local level = _UserService.LocalPlayer.PlayerManagement.ManagementLevel
+		local adjustRate = 1
+		if player.PlayerStage.NowStage == 6 then
+			adjustRate = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewScoreRateLevel%dForStage6", level))
+		else
+			adjustRate = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewScoreRateLevel%d", level))
+		end
+		
+		local reviewStarScore = 0
+		if player.PlayerStage.NowStage == 6 then
+			reviewStarScore = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dScoreForStage6", starGrade))
+		else
+			reviewStarScore = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dScore", starGrade))
+		end
+		
+		local reputationChange = reviewStarScore * adjustRate
+		if reputationChange < 0 then
+			reputationChange = reputationChange * (1 - _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.ReduceReputationDelayScore, player.PlayerStage.NowStage))			
+		end
+		
+		if self:IsClient() and _UserService.LocalPlayer.PlayerCheatComponent:HasAuthority() then
+			_UserService.LocalPlayer.PlayerDebugMonitor.StoreInfoMonitor:GetChildByName("InfoLayout").DebugMonitorUIStore:SetReputationChangeByReview(reputationChange)
+		end
+		
+		return reputationChange
+	end
+
+	@ExecSpace("Server")
+	method void RequestReputationChange(Entity player, number changeAmount, table logInfo, string logType, boolean isDaily)
+		-- 평판도 변경 요청 및 로그 기록
+		if not isDaily then
+			player.PlayerInventory:ModifyReputation(changeAmount)
+			self:PlayReputationChangeEffectHUD(changeAmount >= 0, player.PlayerComponent.UserId)
+		end
+		
+		local startDate = DateTime(player.TimeManager.Utc.Year, player.TimeManager.Utc.Month, player.TimeManager.Utc.Day)
+		local endDate = startDate + TimeSpan.FromDays(self.REPUTATION_LOG_LAST_DAY)
+		
+		local employeeId = logInfo[1]
+		local servingTime = logInfo[2]
+		local isCookDelayed = logInfo[3]
+		local endElapsed = endDate.Elapsed
+		
+		local sendLogInfo = {changeAmount, employeeId, servingTime, isCookDelayed, endElapsed, logType}
+		
+		player.PlayerManagement:AddReputationLog(sendLogInfo, isDaily)
+	end
+
+	@ExecSpace("Client")
+	method void PlayReputationChangeEffectHUD(boolean isUp)
+		-- HUD에서 평판도 변화 이펙트 재생
+		local effDuration = 0.8
+		local fadeTiming = 0.6
+		
+		local randDir = Vector2(_UtilLogic:RandomIntegerRange(-10, 10)/10, 2)
+		local moveAmount = 15
+		
+		local parent = _LobbyHUDService.ReputationUI
+		
+		self._T.effectIdx = self._T.effectIdx + 1
+		
+		local entity = _UIEntityService:GetOrCreateEntityOfModel("UISprite", self._T.effectIdx, parent)
+		entity.UITransformComponent.RectSize = Vector2(50, 50)
+		entity.UITransformComponent.anchoredPosition = Vector2(0, 10)
+		
+		if isUp then
+			entity.SpriteGUIRendererComponent.ImageRUID = "d9d9547d80954b18839f66db7674f3ed"
+		else
+			entity.SpriteGUIRendererComponent.ImageRUID = "c25f96f836ab40e38bd039e268600a8b"
+		end
+		
+		_TweenLogic:PlayTween(entity.UITransformComponent.anchoredPosition, randDir*moveAmount , effDuration, EaseType.CubicEaseOut, function(t)
+			if isvalid(entity) == false then return end
+			entity.UITransformComponent.anchoredPosition = t
+		end)
+		
+		_TimerService:SetTimerOnce(function()
+			_TweenLogic:PlayTween(1, 0, effDuration * (1-fadeTiming), EaseType.CubicEaseOut, function(t)
+				if isvalid(entity) == false then return end
+				entity.SpriteGUIRendererComponent.Color.a = t
+			end)
+		end, effDuration * fadeTiming)
+		
+		entity:Destroy(effDuration)
+	end
+
+	@ExecSpace("Client")
+	method void PlayReputationChangeEffectMap(boolean isUp, Entity parent)
+		-- 맵에서 평판도 변화 이펙트 재생
+		local effDuration = 0.8
+		local fadeTiming = 0.6
+		
+		local randDir = Vector3(_UtilLogic:RandomIntegerRange(-10, 10)/10, 1.5, 1)
+		local moveAmount = 0.2
+		
+		
+		local modelId = _EntryService:GetModelIdByName("UISprite")
+		local entity = _SpawnService:SpawnByModelId(modelId, "ReputationEffect", parent.TransformComponent.WorldPosition + Vector3(0, 0.3, 0), parent)
+		entity.UITransformComponent.RectSize = Vector2(75, 75)
+		
+		local parentPos = parent.TransformComponent.WorldPosition
+		entity.TransformComponent.WorldPosition = Vector3(parentPos.x, parentPos.y, parentPos.z)
+		local entityPos = entity.TransformComponent.WorldPosition
+		entity.TransformComponent.WorldPosition = Vector3(entityPos.x, entityPos.y + 0.8, entityPos.z)
+		
+		if isUp then
+			entity.SpriteGUIRendererComponent.ImageRUID = "d9d9547d80954b18839f66db7674f3ed"
+		else
+			entity.SpriteGUIRendererComponent.ImageRUID = "c25f96f836ab40e38bd039e268600a8b"
+		end
+		
+		local targetPos = entity.TransformComponent.WorldPosition + (randDir*moveAmount)
+		
+		_TweenLogic:PlayTween(entity.TransformComponent.WorldPosition, targetPos, effDuration, EaseType.CubicEaseOut, function(t)
+			if isvalid(entity) == false then return end
+			entity.TransformComponent.WorldPosition = t
+		end)
+		
+		_TimerService:SetTimerOnce(function()
+			_TweenLogic:PlayTween(1, 0, effDuration * (1-fadeTiming), EaseType.CubicEaseOut, function(t)
+				if isvalid(entity) == false then return end
+				entity.SpriteGUIRendererComponent.Color.a = t
+			end)
+		end, effDuration * fadeTiming)
+		
+		entity:Destroy(effDuration)
+	end
+
+	method number ReturnReputationReviewScore(Entity player)
+		-- 플레이어의 평판도를 기반으로 리뷰 점수 계산 (0-5점)
+		local earningLevel = player.PlayerSettlement.EarningLevel
+		
+		local reputation = player.PlayerInventory.Reputation
+		if reputation == nil then
+			return 0
+		end
+		
+		local stageEarningLevelData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage):GetStageEarningLevelData(player.PlayerSettlement.EarningLevel)
+		if stageEarningLevelData == nil then
+			return 0
+		end
+		
+		local storeAttractiveData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+		if storeAttractiveData == nil then
+			return 0
+		end
+		
+		local maxReputation = storeAttractiveData.MaxReputation
+		
+		local percent = reputation / maxReputation
+		
+		local score = 5 * percent
+		
+		if score < 0 then
+			score = 0
+		elseif score > 5 then
+			score = 5
+		end
+		
+		return math.floor(score*100)/100
+	end
+
+	method integer ReturnReviewStarCountByReputationAmount(number reputation, Entity player)
+		-- 평판도 변화량에 따른 별점 개수 반환
+		local level = _UserService.LocalPlayer.PlayerManagement.ManagementLevel
+		local adjustRate = 1
+		if player.PlayerStage.NowStage == 6 then
+			adjustRate = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewScoreRateLevel%dForStage6", level))
+		else
+			adjustRate = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewScoreRateLevel%d", level))
+		end
+		
+		local configValue = function(e)	
+			if player.PlayerStage.NowStage == 6 then
+				return _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dScoreForStage6", e)) * adjustRate
+			else
+				return _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dScore", e)) * adjustRate
+			end
+		end
+		
+		local getStarCount = function(e)
+			if e < configValue(2) then
+				return 1
+			elseif configValue(2) <= e and e < configValue(3) then
+				return 2
+			elseif configValue(3) <= e and e < configValue(4) then
+				return 3
+			elseif configValue(4) <= e and e < configValue(5) then
+				return 4
+			elseif configValue(5) <= e then
+				return 5
+			end
+			
+		end
+		return getStarCount(reputation)
+	end
+
+	@ExecSpace("Client")
+	method void SetReputationDownServingTimeMin(Entity player)
+		-- 평판도가 감소하는 최소 서빙 시간 설정
+		local rDownServingTimeMin = 9999
+		
+		for i = 1, _ReputationDataSetLogic.REPUTATION_REVIEW_SECTION_COUNT do
+			if player.PlayerStage.NowStage == 6 then
+				local rGradeReviewDuration = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dDurationForStage6", i))
+				local rGradeReviewScore = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dScoreForStage6", i))
+				
+				if rGradeReviewScore < 0 then
+					rDownServingTimeMin = math.min(rDownServingTimeMin, rGradeReviewDuration)
+				end
+			else
+				local rGradeReviewDuration = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dDuration", i))
+				local rGradeReviewScore = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("ReputationReviewStar%dScore", i))
+				
+				if rGradeReviewScore < 0 then
+					rDownServingTimeMin = math.min(rDownServingTimeMin, rGradeReviewDuration)
+				end
+			end
+		end
+		
+		_ReputationDataSetLogic.ReputationDownServingTimeMin = rDownServingTimeMin
+	end
+
+end

@@ -1,0 +1,176 @@
+@Component
+script UnitAnimationComponent extends Component
+
+	property any unitRUIDs = nil
+
+	property SyncTable<string, string> animRUID
+
+	property integer TimerID_HitDirection = 0
+
+	property Color SpriteColor = Color(1,1,1,1)
+
+	property string SetAnimType = ""
+
+	method void OnBeginPlay()
+		-- 클라이언트에서 캐릭터 정보 테이블을 로드
+		if self:IsClient() then
+			self.unitRUIDs = _DataService:GetTable("CharacterInfo")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetAnimRUID(string charID)
+		-- 캐릭터 ID에 따라 애니메이션 RUID를 설정
+		-- charID 바뀔때마다 호출
+		
+		---@type MODUserDataSet
+		local unitRUIDTable = self.unitRUIDs
+		local row = unitRUIDTable:FindRow("CharID", charID)
+		
+		self.animRUID["Idle"] = row:GetItem("IdleRUID")
+		self.animRUID["Move"] = row:GetItem("MoveRUID")
+		self.animRUID["Attack"] = row:GetItem("AttackRUID")
+		self.animRUID["Skill"] = row:GetItem("SkillRUID")
+		self.animRUID["Dead"] = row:GetItem("DeadRUID")
+		
+		local row2 = unitRUIDTable:FindRow("CharID", charID .. "_2")
+		
+		if isvalid(row2) then
+			self.animRUID["Idle2"] = row2:GetItem("IdleRUID")
+			self.animRUID["Move2"] = row2:GetItem("MoveRUID")
+			self.animRUID["Attack2"] = row2:GetItem("AttackRUID")
+			self.animRUID["Skill2"] = row2:GetItem("SkillRUID")
+			self.animRUID["Dead"] = row:GetItem("DeadRUID")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayAnimation(number playRate, string anim, Entity targetUnit)
+		-- 지정된 애니메이션을 재생하고 방향을 설정
+		local unitInfo = self.Entity.UnitInfo
+		local unitStatus = self.Entity.UnitStatus
+		local spriteRenderer = unitInfo.spriteRenderer
+		
+		if anim == "ForcedIdle" then
+			anim = "Idle"
+		else
+			if unitStatus.HP <= 0 and self.SetAnimType == "Dead" then
+				return
+			end
+		end
+		
+		
+		if isvalid(unitInfo.spriteRenderer) then
+			self.SetAnimType = anim
+			if unitInfo.unitPhaseNumber == 1 then
+				spriteRenderer.SpriteRendererComponent.PlayRate = playRate
+				spriteRenderer.SpriteRendererComponent.SpriteRUID = self.animRUID[anim]
+			elseif unitInfo.unitPhaseNumber == 2 then
+				spriteRenderer.SpriteRendererComponent.PlayRate = playRate
+				spriteRenderer.SpriteRendererComponent.SpriteRUID = self.animRUID[anim .."2"]
+			end
+		end
+		
+		if anim == "Dead" then 
+			self.Entity:GetChildByName("StatInfo").Enable = false
+			self.Entity:GetChildByName("Shadow").Visible = false
+		else
+			self.Entity:GetChildByName("StatInfo").Enable = true
+			self.Entity:GetChildByName("Shadow").Visible = true
+		end
+		
+		
+		
+		if isvalid(targetUnit) then
+			if targetUnit == self.Entity.Parent then -- 팀에 따라 바라보는 방향을 고정하려면 targetUnit을 부모로 지정
+				 if self.Entity.UnitInfo.TeamType == "User" then
+			        spriteRenderer.SpriteRendererComponent.FlipX = true
+			    else
+			        spriteRenderer.SpriteRendererComponent.FlipX = false
+			    end
+			else									-- 타겟을 향해 바라보도록
+				local targetPosX = targetUnit.TransformComponent.WorldPosition.x
+				local entityPosX = self.Entity.TransformComponent.WorldPosition.x
+				if targetPosX > entityPosX then
+					spriteRenderer.SpriteRendererComponent.FlipX = true
+				elseif targetPosX < entityPosX then
+					spriteRenderer.SpriteRendererComponent.FlipX = false
+				end
+				
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayHitDirection()
+		-- 피격 시 스프라이트를 빨간색으로 변경 후 원래 색으로 복원
+		-- 피격시 붉은색이 됐다가 원래 색으로 돌아갑니다.
+		if self.TimerID_HitDirection > 0 then
+			_TimerService:ClearTimer(self.TimerID_HitDirection)
+		end
+		
+		local sprite = self.Entity.UnitInfo.spriteRenderer
+		sprite.SpriteRendererComponent.Color = Color.red
+		
+		local timerID = 0 
+		local frame = 0
+		local setColorRed = function()
+			frame += 1/30
+			sprite.SpriteRendererComponent.Color = Color.Lerp(Color.red, self.SpriteColor, frame)
+			
+			if frame >= 1 then
+				_TimerService:ClearTimer(timerID)
+			end
+		end
+		timerID = _TimerService:SetTimerRepeat(setColorRed, 0.01, 0)
+		self.TimerID_HitDirection = timerID
+		
+		--[[--타격 효과음 테스트
+		local soundTable = {"c851626a9a604a8b90b1a9ea1fe0782d","2948e425d2744487ab2b7184e8bc62dd"}
+		local rand = _UtilLogic:RandomIntegerRange(1,2)
+		_SoundService:PlaySound(soundTable[rand], _UtilLogic:RandomDouble()+0.3)]]
+	end
+
+	@ExecSpace("Client")
+	method void SetDefaultColor(Color defaultColor)
+		-- 스프라이트의 기본 색상을 설정
+		self.SpriteColor = defaultColor
+		
+		local sprite = self.Entity.UnitInfo.spriteRenderer
+		sprite.SpriteRendererComponent.Color = defaultColor
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetStatusEffectLayerOrder()
+		-- 상태 이상 이펙트들의 레이어 순서를 설정
+		local effectParent = self.Entity:GetChildByName("StatusEffects")
+		for _, child in pairs(effectParent.Children) do
+			child.SpriteRendererComponent.SortingLayer = "Effect"
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetLayerOrder(integer order)
+		-- 스프라이트의 레이어 순서를 설정
+		if order == 0 then
+			self.Entity.UnitInfo.spriteRenderer.SpriteRendererComponent.OrderInLayer = 10
+		else
+			self.Entity.UnitInfo.spriteRenderer.SpriteRendererComponent.OrderInLayer = order
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetFlip(boolean xBool, boolean yBool)
+		-- 스프라이트의 X, Y축 반전 설정
+		if isvalid(xBool) then
+			self.Entity.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = xBool
+		end
+		
+		if isvalid(yBool) then
+			self.Entity.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipY = yBool
+		end
+	end
+
+end

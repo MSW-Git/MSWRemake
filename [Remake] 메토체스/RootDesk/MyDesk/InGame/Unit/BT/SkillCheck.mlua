@@ -1,0 +1,104 @@
+@BTNode
+script SkillCheck extends BTNode
+
+	property boolean Use = false
+
+	property number SkillTime = 0
+
+	method any OnBehave(number delta)
+		-- 스킬 사용 가능 여부를 확인하고 스킬을 실행하는 BT 노드
+		local pAI = self.ParentAI
+		local myUnit = self.ParentAI.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local target = unitStatus.Target
+		
+		-- 스킬 사용 중인지
+		if self.Use then
+			self.SkillTime += delta
+			
+			local checkTime = 1.1 / _BTLogic_New.SSpeedValue
+			if isvalid(unitInfo.SkillComponent.SkillTime) then
+				checkTime = 1.1 * unitInfo.SkillComponent.SkillTime
+			end
+			
+			if self.SkillTime > checkTime and unitStatus.ActionTimer == 0 then
+				self.ParentAI.running = false		-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+				self.Use = false
+				self.SkillTime = 0
+			end
+			
+			return BehaviourTreeStatus.Success
+		elseif self.ParentAI.running then		-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+			return BehaviourTreeStatus.Failure
+		end
+		
+		if not isvalid(target) then
+			return BehaviourTreeStatus.Failure
+		end
+		
+		local targetTile = target.UnitInfo.setTile
+		
+		if not isvalid(targetTile) then
+			return BehaviourTreeStatus.Failure
+		end
+		
+		-- 거리 측정
+		local setTile = unitInfo.setTile
+		
+		if not isvalid(setTile) then
+			return BehaviourTreeStatus.Failure
+		end
+		
+		
+		local tileCompo = setTile.TileComponent_New
+		
+		local setTileVerticalNum = tileCompo.verticalNum
+		local setTileHorizontalNum = tileCompo.horizontalNum
+		local setTileHorizontalNode = setTileHorizontalNum * 2 - (setTileVerticalNum%2)
+		
+		local targetCompo = targetTile.TileComponent_New
+		local targetVerticalNum = targetCompo.verticalNum
+		local targetHorizontalNum = targetCompo.horizontalNum
+		local targetHorizontalNode = targetHorizontalNum * 2 - (targetVerticalNum%2)
+		
+		local distanceInfo = _BTLogic_New:getDistance({setTileHorizontalNode, setTileVerticalNum}, {targetHorizontalNode, targetVerticalNum})
+		
+		local skillRange = unitStatus.SkillRange
+		if skillRange == 0 then
+			skillRange = unitStatus.AttackRange
+		end
+		
+		-- 마나가 가득 차있는지, CC기에 걸리지 않았는지, 스킬 사거리가 되는지
+		if unitStatus.MP < unitStatus.MaxMP then
+			return BehaviourTreeStatus.Failure
+		elseif unitStatus.MaxMP == 0 then
+			return BehaviourTreeStatus.Failure
+		elseif unitStatus.StatusEffect["SE0004"] then
+			return BehaviourTreeStatus.Failure
+		elseif unitStatus.StatusEffect["SE0003"] then
+			return BehaviourTreeStatus.Failure
+		elseif skillRange < distanceInfo[1] then
+			return BehaviourTreeStatus.Failure
+		end
+		
+		-- 스킬 사용
+		if isvalid(unitInfo.SkillComponent.UsedFirstSkill) and unitInfo.SkillComponent.UsedFirstSkill then
+			-- 특정 조건에 의해 스킬 사이클이 여러번 굴러가지만, 한 번의 스킬로 취급되는 경우, 첫 스킬 사용을 제외하고 이벤트를 호출하지 않습니다.
+		else
+			self.ParentAI.Entity:SendEvent(SkillUse(myUnit))		-- 에러 아님
+			_UserService:GetUserEntityByUserId(unitInfo.OwnerId):SendEvent(SkillUse(myUnit))		-- 에러 아님
+		end
+		
+		
+		self.ParentAI.running = true		-- Build Console에서 '찾을 수 없습니다' 로그는 에러 아님
+		self.Use = true
+		unitInfo.SkillComponent:Skill(target)
+		
+		_StatusChangeLogic:RemoveStatusEffect(self.ParentAI.Entity, "SE0013")
+		
+		return BehaviourTreeStatus.Success
+	end
+
+end

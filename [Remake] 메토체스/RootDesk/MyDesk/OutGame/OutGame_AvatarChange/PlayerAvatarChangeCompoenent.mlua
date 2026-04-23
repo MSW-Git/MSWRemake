@@ -1,0 +1,292 @@
+@Component
+script PlayerAvatarChangeCompoenent extends Component
+
+	@Sync
+	property boolean nowChanging = false
+
+	@Sync
+	property string nowChangeID = ""
+
+	@Sync
+	property Entity newAvatar = nil
+
+	@Sync
+	property Entity newAvatarEffect = nil
+
+	@Sync
+	property number transformMoveSpeed = 0
+
+	@Sync
+	property boolean isPossibleAttack = true
+
+	@Sync
+	property boolean isPossibleJump = true
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-----------------------------------
+		-- func: 플레이어가 접속할 때 1회 실행 됩니다. 다른 사람이 접속할 때에도 서버를 통해 1회 실행 됩니다.
+		-----------------------------------
+		
+		for st,entity in pairs(_UserService.UserEntities) do
+			
+			-- 본인 ----------------------------------
+			if entity == self.Entity then
+				self:Init_SpawnEntity(entity)
+			------------------------------------------
+			else
+			-- 타인(접속 중인 유저) -------------------
+				self:Init_OtherUser_Avatar(entity)
+			------------------------------------------
+			end
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void Init_SpawnEntity(Entity user)
+		-----------------------------------
+		-- func: '변신' 관련된 엔티티를 추가합니다
+		-----------------------------------
+		
+		
+		-- 엔티티가 없는 경우에만 초기화
+		if user.PlayerAvatarChangeCompoenent.newAvatar == nil then
+			-- 엔티티 생성
+			local newAvatar = _SpawnService:SpawnByModelId(_AvatarChangeDataLogic.newAvatarModel_ID, "NewAvatar", Vector3.zero, user)
+			local newAvatarEffect = _SpawnService:SpawnByModelId(_AvatarChangeDataLogic.newAvatarEffectModel_ID, "NewAvatar_Effect", Vector3(0,0.45,0), user)
+			
+			-- 변수에 입력
+			self.newAvatar = newAvatar
+			self.newAvatarEffect = newAvatarEffect
+			
+			-- 엔티티 꺼주기
+			self.newAvatar.Enable = false
+			self.newAvatarEffect.SpriteRendererComponent.Enable = false
+			
+			-- 엔티티 레이어 설정
+			newAvatar.SpriteRendererComponent.SortingLayer = "Default"
+			newAvatar.SpriteRendererComponent.OrderInLayer = 0
+			newAvatar:GetChildByName("Efct_kirakira").SpriteRendererComponent.SortingLayer = "Effect"
+			newAvatarEffect.SpriteRendererComponent.SortingLayer = "Effect"
+			
+			-- 클라이언트 변수에도 입력
+			self:ClientInitialize(newAvatar, newAvatarEffect)
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Init_OtherUser_Avatar(Entity user)
+		-----------------------------------
+		-- func: 접속해있는 다른 유저가 변신 중일 경우 데이터를 반영합니다
+		-----------------------------------
+		
+		-- 변신 상태일 때
+		if user.PlayerAvatarChangeCompoenent.nowChanging == true then
+			local newAvatar = user:GetFirstChildComponentByTypeName("NewPlayerAvatarComponent").Entity
+			newAvatar.NewPlayerAvatarComponent:ChangeCharacter_ON(user.PlayerAvatarChangeCompoenent.nowChangeID)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ClientInitialize(Entity newAvatar, Entity temp_Effect)
+		-- 클라이언트에서 변신 아바타와 이펙트 엔티티를 초기화
+		self.newAvatar = newAvatar
+		self.newAvatarEffect = temp_Effect
+	end
+
+	@ExecSpace("Server")
+	method void AvatarChange(string charID)
+		-- 변신 상태 스위칭
+		if self.nowChanging == false or self.nowChangeID == charID then
+			self.nowChanging = not self.nowChanging
+		end
+		
+		-----이펙트/사운드재생-----
+		self:SoundPlay_ForMap()
+		self:EffectPlay_ForServer()
+		---------------------------
+		
+		-- 상태에 따른 변화 주기
+			-- 1. 변신
+		if self.nowChanging == true then
+			self.Entity.AvatarRendererComponent.Enable = false
+			
+			self.newAvatar.Enable = true
+			
+			self.nowChangeID = charID
+			self.newAvatar.NewPlayerAvatarComponent:ChangeCharacter_ON(charID)
+			
+			-- 업적 AC001004:변신 스킬 사용하기 
+			_AchievementService:UpdateProgress_Graduate("AC001004",1,self.Entity)
+			-- 2. 변신 해제
+		else
+			self.Entity.AvatarRendererComponent.Enable = true
+			self.nowChangeID = ""
+			
+			self.newAvatar.Enable = false
+			
+			self:SetPossibleAction(1, true, true)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void False_change()
+		-- 변신 스위칭이 아닌 완전 해제만 다룰 때 사용하는 함수입니다.
+			-- 예를 들면 게임 시작으로 인해 강제 해제 될 때
+		
+		if self.nowChanging == false then return end
+		
+		------------
+		self:SoundPlay_ForMap()
+		self:EffectPlay_ForServer()
+		------------
+		
+		self.nowChanging = false
+		self.nowChangeID = "" 
+		
+		
+		self.Entity.AvatarRendererComponent.Enable = true
+			
+		self.newAvatar.Enable = false
+			
+		self:SetPossibleAction(1, true, true)
+	end
+
+	@ExecSpace("Client")
+	method void SetPossibleAction(number moveSpeed, boolean jump, boolean attack)
+		-- 변신 상태에서 플레이어의 행동 가능 여부와 이동속도를 설정
+		self.transformMoveSpeed = moveSpeed
+		self.isPossibleJump = jump
+		self.isPossibleAttack = attack
+		
+		self.Entity.MovementComponent.InputSpeed = self.transformMoveSpeed
+		
+		--[[if self.transformMoveSpeed == false then
+			self.Entity.MovementComponent.InputSpeed = 0
+		else
+			self.Entity.MovementComponent.InputSpeed = 1
+		end]]
+	end
+
+	@ExecSpace("Server")
+	method void ManualAttackEnd()
+		-- 수동으로 공격 상태를 종료하고 대기 상태로 전환
+		self.Entity.StateComponent:ChangeState("ATTACK_WAIT")
+	end
+
+	@ExecSpace("Server")
+	method void AvatarFlip_forServer()
+		-- 변신 아바타의 좌우 반전을 플레이어의 방향에 맞춰 설정
+		self.newAvatar.SpriteRendererComponent.FlipX = not self.Entity.MovementComponent:IsFaceLeft()
+	end
+
+	@ExecSpace("Client")
+	method void SoundPlay_ForMap()
+		-- 변신 시 사운드를 재생하고 이펙트를 활성화
+		for st, entity in pairs(_UserService.UserEntities) do
+			_PlaySoundLogic:PlaySound("M0166")
+			self.newAvatarEffect.SpriteRendererComponent.Enable = true
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EffectPlay_ForServer()
+		-- 서버에서 변신 이펙트를 활성화
+		--[[local effectRuid = self.newAvatarEffect.SpriteRendererComponent.SpriteRUID
+		self.newAvatarEffect.SpriteRendererComponent.SpriteRUID = ""
+		self.newAvatarEffect.Enable = true]]
+		self.newAvatarEffect.SpriteRendererComponent.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyHoldEvent(KeyHoldEvent event)
+		-- 키 홀드 시 변신 아바타의 방향을 플레이어 이동 방향에 맞춰 조정
+		if _UserService.LocalPlayer ~= self.Entity then return end
+		if not self.nowChanging then return end
+		
+		local key = event.key
+		
+		if key == KeyboardKey.LeftArrow or key == KeyboardKey.A or key == KeyboardKey.RightArrow or key == KeyboardKey.D then
+			self.newAvatar.SpriteRendererComponent.FlipX = not self.Entity.MovementComponent:IsFaceLeft()
+			self:AvatarFlip_forServer()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleStateChangeEvent(StateChangeEvent event)
+		-- 플레이어 상태 변화를 감지하여 변신 아바타의 상태를 동기화
+		local CurrentStateName = event.CurrentStateName
+		local PrevStateName = event.PrevStateName
+		
+		--log("이전 상태: ", PrevStateName, " 현재 상태: ", CurrentStateName)
+		
+		if self.newAvatar == nil then return end
+		if self.nowChanging == false then return end
+		
+		
+		
+		if self.newAvatar.NewPlayerAvatarComponent.type == "ATTACK" then
+		
+		elseif CurrentStateName == "ATTACK_WAIT" then
+			if PrevStateName ~= "ATTACK" then
+				self.newAvatar.NewPlayerAvatarComponent:StateChange(PrevStateName)
+			end
+		elseif PrevStateName ~= "ATTACK_WAIT" then
+			self.newAvatar.NewPlayerAvatarComponent:StateChange(CurrentStateName)
+		end
+		
+		self:AvatarFlip_forServer()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 키 다운 시 변신 아바타의 방향을 플레이어 이동 방향에 맞춰 조정
+		if _UserService.LocalPlayer ~= self.Entity then return end
+		
+		local key = event.key
+		
+		if key == KeyboardKey.LeftArrow or key == KeyboardKey.A or key == KeyboardKey.RightArrow or key == KeyboardKey.D then
+			self.newAvatar.SpriteRendererComponent.FlipX = not self.Entity.MovementComponent:IsFaceLeft()
+			self:AvatarFlip_forServer()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 맵 변경 시 로비로 이동한 경우 다른 유저들의 변신 상태를 초기화
+		--------------- Native Event Sender Info ----------------
+		-- Sender: MODEntity
+		-- Space: Server, Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		---------------------------------------------------------
+		
+		local lobby = _EntityService:GetEntityByPath("/maps/Lobby")
+		
+		if isvalid(OldMap) and NewMap == lobby then
+			
+			for st,entity in pairs(_UserService.UserEntities) do
+				
+				-- 타인(접속 중인 유저) -------------------
+				if entity ~= self.Entity then
+					self:Init_OtherUser_Avatar(entity)
+				------------------------------------------
+				end
+			
+			end
+			
+		end
+	end
+
+end

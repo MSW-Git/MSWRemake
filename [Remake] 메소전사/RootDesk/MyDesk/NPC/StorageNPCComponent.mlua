@@ -1,0 +1,147 @@
+@Component
+script StorageNPCComponent extends Component
+
+	@HideFromInspector
+	property boolean isEnterLocalPlayer = false
+
+	property EntityRef storage = "f26481be-58f2-41ac-8649-674e4fef0632"
+
+	property boolean isNew = false
+
+	@ExecSpace("Client")
+	method void OnInteraction()
+		-- NPC와의 상호작용 시 창고 이동 또는 UI 열기
+		if self.isNew then
+			_TeleportService:TeleportToEntity(_UserService.LocalPlayer,self.storage)
+			return
+		end
+		-- _StorageUIManager:Show(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Enter()
+		-- 창고에 입장 시 아이템 검증 및 카메라 전환
+		for _, entity in pairs(self.storage.Children) do
+			local item = entity.StorageItemComponent
+			if isvalid(item) then 
+				self:DestroyNotValidItem(entity.Id, item.uniqueKey, _UserService.LocalPlayer)
+			end
+		end
+		self:CehckNewItems(_UserService.LocalPlayer)
+		_CameraService:SwitchCameraTo(self.storage:GetChildByName("Camera").CameraComponent)
+		_UserService.LocalPlayer:SendEvent(EnterStorageEvent())
+	end
+
+	@ExecSpace("Server")
+	method void CehckNewItems(Entity playerEntity)
+		-- 새로운 아이템들을 확인하고 스폰
+		local playerStorage = playerEntity.PlayerStorageComponent
+		
+		for uniqueKey, inventoryItem in pairs(playerStorage.storage) do
+			if isvalid(inventoryItem) then
+				if inventoryItem.isNewItem then
+					playerStorage:SetOldItem(inventoryItem.uniqueKey)
+					self:SpawNewItem(inventoryItem.originalId, inventoryItem.uniqueKey, playerEntity.PlayerComponent.UserId)
+				end
+			end
+			
+			if not isvalid(inventoryItem) then
+			end
+			
+			wait(0.01)
+		end
+		
+		_StorageLogic:RefreshNameTag(playerEntity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SpawNewItem(string originalId, string uniqueKey)
+		-- 새로운 아이템을 창고에 스폰하고 물리 효과 적용
+		local data = _ItemDataLogic.equipmentData[originalId]
+		local modelId = _EntryService:GetModelIdByName("Model_Equipment")
+		if not isvalid(data) then
+			modelId = _EntryService:GetModelIdByName("Model_StorageEgg")
+			return
+		end
+		
+		local randX, randY = _UtilLogic:RandomIntegerRange(-10, -1), _UtilLogic:RandomIntegerRange(1, 10)
+		local item = _SpawnService:SpawnByModelId(modelId, uniqueKey, Vector3(1.5, -1.5, 0), self.storage)
+		item.StorageItemComponent:Init(originalId, uniqueKey)
+		item.KinematicbodyComponent.MoveVelocity = Vector2(randX, randY)
+		
+		_StorageLogic:InsertNewItemToStorageItemTable(item)
+	end
+
+	@ExecSpace("Client")
+	method void DestroyInClient(string entityId)
+		-- 클라이언트에서 엔티티를 삭제
+		local entity = _EntityService:GetEntity(entityId)
+		
+		if isvalid(entity) then
+			entity:Destroy()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void DestroyNotValidItem(string entityId, string uniqueKey, Entity playerEntity)
+		-- 유효하지 않은 아이템을 삭제하거나 초기화
+		local playerStorage = playerEntity.PlayerStorageComponent
+		
+		if not isvalid(playerStorage.storage[uniqueKey]) then
+			self:DestroyInClient(entityId, playerEntity.PlayerComponent.UserId)
+		else
+			self:InitStorageItem(entityId, playerStorage.storage[uniqueKey].originalId, uniqueKey, playerEntity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void InitStorageItem(string entityId, string originalId, string uniqueKey)
+		-- 창고 아이템을 초기화
+		local entity = _EntityService:GetEntity(entityId)
+		local item = entity.StorageItemComponent
+		
+		if isvalid(item) then
+			item:Init(originalId, uniqueKey)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 창고 NPC 영역 진입 시 상호작용 UI 표시
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		if TriggerBodyEntity == _UserService.LocalPlayer then
+			self.isEnterLocalPlayer = true
+			_InteractionUtil:ShowInteraction(self.Entity, "창고 입장", "E", 1)
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerLeaveEvent(TriggerLeaveEvent event)
+		-- 창고 NPC 영역 탈출 시 상호작용 UI 숨김
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		if TriggerBodyEntity == _UserService.LocalPlayer then
+			self.isEnterLocalPlayer = false
+			_InteractionUtil:HideInteraction(self.Entity)
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- E키 입력 시 창고 상호작용 실행
+		
+		local key = event.key
+		if not self.isEnterLocalPlayer then return end
+		
+		if key == KeyboardKey.E then
+			self:OnInteraction()
+		end
+	end
+
+end

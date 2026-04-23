@@ -1,0 +1,342 @@
+@Component
+script UINewMergeSlotItem extends UINewMergeItem
+
+	property boolean dragStarted = false
+
+	property boolean touchDown = false
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 드래그 상태와 머지 가능 상태에서 애니메이션 처리
+		__base:OnUpdate(delta)
+		
+		if isvalid(self.itemEntity) == false then
+			return
+		end
+		
+		if self.selected then
+			local pos = self:ConvertPosition()
+			local key = _NewMergeLogic:GetGridKey(pos.x,pos.y)
+			local item = self.mergePopup.itemGrid[key]
+			if item == self.Entity then
+				item = nil
+			end
+			self.mergeEnableItem = item
+			local anchoredPos = self:ToAnchoredPosition(pos.x,pos.y)
+			self.mergePopup.guideItem.UITransformComponent.anchoredPosition = anchoredPos
+			return
+		end
+		
+		if self.enableMergeState then
+			if isvalid(self.mergePopup) then
+				local diff = self.mergePopup.guideItem.UITransformComponent.anchoredPosition - self.Entity.UITransformComponent.anchoredPosition
+				
+				local dist = Vector2.Magnitude(diff)
+		
+				local speed = 10
+				if dist < 10 then
+					dist = 1
+				end	
+				if dist < 100 then
+					speed = 50
+				end
+				self.randomTime = self.randomTime + delta * speed
+				
+				self.itemEntity.TransformComponent.ZRotation = math.sin(self.randomTime) * 10
+			end
+		elseif self.mergeEnableNoti then
+			if isvalid(self.mergePopup.selectedDragItem) == false then
+				self.randomTime = self.randomTime + delta * 10
+				self.itemEntity.TransformComponent.ZRotation = math.sin(self.randomTime) * 3
+			end
+		else
+			self.itemEntity.TransformComponent.ZRotation = 0
+		end
+		
+	end
+
+	method void InitSprite()
+		-- 슬롯 아이템 UI 스프라이트 초기화 및 페이드인 애니메이션
+		__base:InitSprite()
+		self.itemEntity.Enable = true
+		self.enableMergeState = false
+		self.mergeLvTag.Entity.Enable = true
+		
+		self:OnSelected(false)
+		self:SetReddotVisible(false)
+		
+		local canvas = self.Entity.CanvasGroupComponent
+		if canvas ~= nil then
+			if self._T.tweener == nil then
+				canvas.BlocksRaycasts = false
+				local tweener = _TweenLogic:PlayTween(0,1,0.1,EaseType.Linear,function(value) 
+					canvas.GroupAlpha = value
+				end)
+				tweener:SetOnEndCallback(function() 
+					canvas.BlocksRaycasts = true
+				end)
+			end
+		end
+	end
+
+	method void SetReddotVisible(boolean visible)
+		-- 새 아이템 알림 레드닷 표시/숨김
+		if isvalid(self._T.reddot) == false then
+			self._T.reddot = self.Entity:GetChildByName("reddot")	
+		end
+		if isvalid(self._T.reddot) then
+			self._T.reddot.Enable = visible
+		end
+	end
+
+	method void SetGradeUI(string grade)
+		-- 아이템 등급에 따른 슬롯 UI 스타일 설정
+		__base:SetGradeUI(grade)
+		self.Entity.SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic:GetWeaponSlotRUIDByGrade(grade)
+	end
+
+	method void SetWeaponID(string uniqueKey, table storageData)
+		-- 무기 데이터로 슬롯 아이템 설정 및 잠금 상태 반영
+		__base:SetWeaponID(uniqueKey,storageData)
+		self:SetLockIconEnable(storageData.lock)
+	end
+
+	method void SetLockIconEnable(boolean enable)
+		-- 아이템 잠금 아이콘 표시/숨김
+		if isvalid(self._T.iconLock) == false then
+			self._T.iconLock = self.Entity:GetChildByName("lock", true)
+		end
+		self._T.iconLock.Enable = enable
+	end
+
+	method void OnSelected(boolean selected)
+		-- 아이템 선택 상태 UI 업데이트
+		if isvalid(self._T.selectedOutline) == false then
+			self._T.selectedOutline = self.Entity:GetChildByName("selectedOutline")
+		end
+		
+		self._T.selectedOutline.Enable = selected
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 시작 시 UI 입력 이벤트 연결
+		__base:OnBeginPlay()
+		self:OnSelected(false)
+		
+		self.mergePopup.Entity:ConnectEvent(OnPopupInputEnable,function(e) 
+			local enable = e.enable
+			if enable then
+				self.touchDown = false
+			end
+			self.Entity.UITouchReceiveComponent.Enable = enable
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 슬롯 아이템 제거 시 머지 그룹 상태 정리
+		__base:OnDestroy()
+		if _UtilLogic:IsNilorEmptyString(self.itemData.nextEquipment) then
+			return
+		end
+		local mergeGroup = {}
+		for k,v in pairs(self.mergePopup.mergeItems) do
+			---@type Entity
+			local item = v
+			if isvalid(item) then
+				if item ~= self.Entity then
+					if _UtilLogic:IsNilorEmptyString(item.UINewMergeItem.itemData.nextEquipment) == false then
+						if self.itemData.mergeId ==	item.UINewMergeItem.itemData.mergeId then
+							table.insert(mergeGroup,item)
+						end
+					end
+				end
+			end
+		end
+		
+		if #mergeGroup == 1 then
+			for k,v in pairs(mergeGroup) do
+				v.UINewMergeItem.mergeEnableNoti = false
+			end
+		end
+	end
+
+	@EventSender("Logic", "NewMergeLogic")
+	handler HandleOnSelectedNewMergeItem(OnSelectedNewMergeItem event)
+		-- 다른 아이템 선택 시 머지 가능 상태 업데이트
+		if self.Entity.Enable == false then
+			return
+		end
+		local type = event.type
+		local uniqueKey = event.uniqueKey
+		local selected = event.selected
+		local originalId = event.originalId
+		local dragStart = event.dragStart
+		
+		
+		if selected == false then
+			self.Entity.CanvasGroupComponent.GroupAlpha = 1
+		
+			return
+		end
+		
+		
+		self.enableMergeState = false
+		local itemStorage = _UserService.LocalPlayer.PlayerStorageComponent.storage[uniqueKey]
+		if itemStorage == nil then
+			return
+		end
+		
+		
+		local itemData = _ItemDataLogic.equipmentData[originalId]
+		if itemData == nil then
+			return
+		end
+		local mergeId = itemData.mergeId
+		
+		if dragStart == false then
+			self.Entity.CanvasGroupComponent.GroupAlpha = 1
+		else
+			if self.itemData.mergeId ~= mergeId  then
+				self.Entity.CanvasGroupComponent.GroupAlpha = 0.5
+			else
+				self.Entity.CanvasGroupComponent.GroupAlpha = 1
+			end
+		end
+		
+		if self.itemData.mergeId == mergeId  then
+		
+			if self.uniqueKey ~= uniqueKey then
+				if self.storageData.level < _GameConfig:GetConfig().MAX_ITEM_LEVEL then
+					self.enableMergeState = true
+				end
+			end
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleUITouchDragEvent(UITouchDragEvent event)
+		-- 아이템 드래그 중 위치 업데이트 및 머지 상태 처리
+		if self.touchDown == false then
+			return
+		end
+		
+		
+		
+		local Entity = event.Entity
+		local TouchDelta = event.TouchDelta
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		if self.dragStarted == false then
+			self.dragStarted = true
+			_NewMergeLogic:SendEvent(OnSelectedNewMergeItem("weapon",self.uniqueKey,true,self.originalId,true))
+		end
+		
+		local ratio = self.mergePopup.Entity.UITransformComponent.RectSize.y / (_UILogic.ScreenHeight * self.mergePopup.scaleFactor)
+		
+		self.Entity.UITransformComponent.anchoredPosition = self.Entity.UITransformComponent.anchoredPosition + TouchDelta * ratio
+		self.mergePopup.dragItem.UITransformComponent.anchoredPosition = self.Entity.UITransformComponent.anchoredPosition
+		self.mergePopup.canvasTip.WorldPosition = self.Entity.TransformComponent.WorldPosition
+	end
+
+	@EventSender("Self")
+	handler HandleUITouchUpEvent(UITouchUpEvent event)
+		-- 드래그 종료 시 머지 실행 또는 위치 복원
+		if self.touchDown == false then
+			return
+		end
+		self.touchDown = false 
+		
+		local Entity = event.Entity
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		
+		
+		if self.Entity ~= self.mergePopup.selectedDragItem then
+			return
+		end
+		
+		
+		
+		self.mergePopup.selectedDragItem = nil
+		
+		local pos = self:ConvertPosition()
+		local type = self.itemData.category
+		
+		local isMerge = false
+		
+		if self.mergePopup:CheckHoverEquipSlot() == false then
+			if isvalid(self.mergeEnableItem) and self.mergeEnableItem.Enable  then
+				if self.mergeEnableItem.UINewMergeSlotItem.itemData.mergeId == self.itemData.mergeId
+					and self.storageData.level < _GameConfig:GetConfig().MAX_ITEM_LEVEL 
+					and self.mergeEnableItem.UINewMergeSlotItem.storageData.level < _GameConfig:GetConfig().MAX_ITEM_LEVEL
+				
+					and (self.storageData.lock == false or self.mergeEnableItem.UINewMergeItem.storageData.lock == false)
+				 then
+					
+				
+					local mergePos = self.mergeEnableItem.TransformComponent.WorldPosition:ToVector2()
+					_NewMergeLogic:MergeItem(self.uniqueKey,self.mergeEnableItem.UINewMergeItem.uniqueKey,mergePos)	
+					isMerge = true
+					
+				end		
+			end
+			
+			if isMerge == false then
+				self.mergePopup:SetGridPosition(self.uniqueKey,pos.x,pos.y,true,true)
+			end
+			
+		else
+			
+		end
+		
+		
+		
+		self.mergeEnableItem = nil
+		_NewMergeLogic:SendEvent(OnSelectedNewMergeItem("","",false,"",false))
+		self:OnDragSelected(false)
+	end
+
+	@EventSender("Self")
+	handler HandleUITouchDownEvent(UITouchDownEvent event)
+		-- 아이템 터치 시작 시 드래그 준비 및 선택 상태 설정
+		
+		local Entity = event.Entity
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		
+		if isvalid(self.mergePopup.selectedDragItem) then
+			return
+		end
+		
+		self.touchDown = true
+		
+		self.dragStarted = false
+		
+		self.mergePopup.selectedDragItem = self.Entity
+		self.mergePopup.dragItem.UITransformComponent.anchoredPosition = self.Entity.UITransformComponent.anchoredPosition
+		self:OnDragSelected(true)
+		_NewMergeLogic:SendEvent(OnSelectedNewMergeItem("weapon",self.uniqueKey,true,self.originalId,false))
+		self.mergePopup.canvasTip.anchoredPosition = Vector2.zero
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleEquipEvent(EquipEvent event)
+		-- 아이템 장착/해제 시 장착 아이콘 표시 업데이트
+		local slotNum = event.slotNum
+		local isEquip = event.isEquip
+		local uniqueKey = event.uniqueKey
+		
+		if uniqueKey == self.uniqueKey then
+			self.equipIcon.Enable = isEquip	
+		end
+	end
+
+	@EventSender("Logic", "NewMergeLogic")
+	handler HandleMergeItemDeselectedEvent(MergeItemDeselectedEvent event)
+		-- 머지 아이템 선택 해제 시 머지 상태 비활성화
+		self.enableMergeState = false
+	end
+
+end

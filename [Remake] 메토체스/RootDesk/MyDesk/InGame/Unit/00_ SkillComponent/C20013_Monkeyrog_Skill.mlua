@@ -1,0 +1,262 @@
+@Component
+script C20013_Monkeyrog_Skill extends Component
+
+	property number skillAnimLength = 1.17
+
+	property string hitEffectRUID = "b06d6171a1f24846a7a832c39e7dd735"
+
+	property number skillCount = 0
+
+	property Entity TargetUnit = nil
+
+	property table pushVec = {}
+
+	property Entity TargetTile = nil
+
+	property Entity user = nil
+
+	property Entity nowTile = nil
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		-- self.skillCount += 1
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		local function hitSkill()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetSkillDamage(targetUnit)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(hitSkill, 0.85 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0078",self.Entity.UnitInfo.OwnerId)
+		
+		--그림자
+		self:SetShadow(self.skillAnimLength,self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			-- 기본 스킬 데미지
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C20013_Active_SDamage_Magic[unitInfo.level] +
+									unitStatus.MaxHP * _S01_SkillDescLogic.C20013_Active_SDamage_MaxHPPer[unitInfo.level]
+		
+			--[[
+			if self.skillCount == 3 then
+				-- 3타 추가 피해량
+				skillSetDamage += unitStatus.MaxHP * _S01_SkillDescLogic.C20013_Active_SDamage_MaxHPPer[unitInfo.level]
+				
+				local stunTime = tonumber(_S01_SkillDescLogic.C20013_Active_StunTime_Int[unitInfo.level])
+				self.skillCount = 0
+				_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0004", stunTime)
+				
+				---@type Entity
+				self.user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+				
+				local setTilehorizonNode = unitInfo.setTileHorizontalNum * 2 - (unitInfo.setTileVerticalNum%2)
+				
+				local targetTile = targetInfo.setTile
+				local targetTilehorizonNode = targetInfo.setTileHorizontalNum * 2 - (targetInfo.setTileVerticalNum%2)
+				local targetTileverticalNum = targetInfo.setTileVerticalNum
+				
+				self.pushVec = {targetTilehorizonNode - setTilehorizonNode, targetInfo.setTileVerticalNum - unitInfo.setTileVerticalNum}
+				
+				local checkHorizontalNode = targetTilehorizonNode
+				local checkVerticalNode = targetTileverticalNum
+				local lastTile = targetTile
+				local distanceCount = 0
+				while true do
+					checkHorizontalNode += self.pushVec[1]
+					checkVerticalNode += self.pushVec[2]
+					
+					local checkTile = _UnitSetLogic_New.RoomTile[math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)]
+					
+					if checkVerticalNode <= 0 or checkVerticalNode >= 8 or checkHorizontalNode <= 0 or checkHorizontalNode >= 18 then 
+						break
+					elseif not isvalid(checkTile) then
+						break
+					elseif self.user.TeamManager.EntityOnTile[checkTile] ~= nil then
+						break
+					else
+						lastTile = checkTile
+						distanceCount += 1
+					end
+				end
+				
+				self.TargetUnit = targetUnit
+				self.TargetTile = lastTile
+				self.nowTile = targetUnit.UnitInfo.setTile
+				
+				
+				targetUnit.UnitInfo:SetPropertyToServer("setTile", lastTile, "OnlySetTile", true)
+				
+				local pushSetTime = distanceCount * 0.07
+				local callbackCount = 0
+				local function ActionFnc()
+					callbackCount += 0.01
+					
+					if not (isvalid(self.nowTile) and isvalid(self.TargetTile)) then
+						if targetStatus.ActionType == "Monkeyrog_SkillAttacked" then
+							targetStatus:SetActionType("Idle")
+							_TimerService:ClearTimer(targetStatus.ActionTimer)
+							targetStatus.ActionTimer = 0
+						end
+						return
+					end
+					
+					
+					
+					local nowTileCompo = self.nowTile.TileComponent_New
+					local targetTileCompo = self.TargetTile.TileComponent_New
+					
+					local nowTilePos = self.nowTile.TransformComponent.WorldPosition
+					local moveTilePos = self.TargetTile.TransformComponent.WorldPosition 
+					
+					if pushSetTime >= callbackCount then
+						local setPosX = nowTilePos.x * (pushSetTime - callbackCount) / pushSetTime + moveTilePos.x * callbackCount / pushSetTime
+						local setPosY = nowTilePos.y * (pushSetTime - callbackCount) / pushSetTime + moveTilePos.y * callbackCount / pushSetTime
+						
+						targetInfo:SetPosition(setPosX, setPosY, self.user.OwnerId)
+						targetStatus.SetPos = Vector2(setPosX, setPosY)
+					elseif pushSetTime + 0.07 >= callbackCount then
+						-- 부딪힌 후 모션
+						-- 수정 필요
+						targetInfo:SetPosition(moveTilePos.x, moveTilePos.y, self.user.OwnerId)
+						targetStatus.SetPos = Vector2(moveTilePos.x, moveTilePos.y)
+					else
+						-- 마지막 모션 끝나고 마무리
+						targetInfo:SetPosition(moveTilePos.x, moveTilePos.y, self.user.OwnerId)
+						targetStatus.SetPos = Vector2(moveTilePos.x, moveTilePos.y)
+						
+						if targetStatus.ActionType == "Monkeyrog_SkillAttacked" then
+							targetStatus:SetActionType("Idle")
+							_TimerService:ClearTimer(targetStatus.ActionTimer)
+							targetStatus.ActionTimer = 0
+						end
+					end
+				end
+				
+				_TimerService:ClearTimer(targetStatus.ActionTimer)
+				targetStatus:SetActionType("Monkeyrog_SkillAttacked")
+				targetStatus.ActionTimer = _TimerService:SetTimerRepeat(ActionFnc, 0.01, 0)
+				
+				--연출
+				self:PlaySkillEffect(unitInfo.OwnerId)
+			end
+			]]--
+			
+			-- 데미지 계산
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		self.skillCount = 0
+	end
+
+	@ExecSpace("Client")
+	method void PlaySkillEffect()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		
+		local x=0.1
+		if filpX then
+			x=-0.1
+		end
+		
+		local particle=_ParticleService:PlayBasicParticleAttached(BasicParticleType.CircleBurst,self.Entity,Vector3(x,0.3,0),0,Vector3(0.4,0.4,1),false,{["SortingLayer"]="Default",["OrderInLayer"]=1,["PlaySpeed"]=2,["ParticleSize"]=2,["ParticleSpeed"]=1.5
+																		,["ParticleCount"]=2,["ParticleLifeTime"]=1,["Color"]=Color(164/255,153/255,130/255,_ESCMenuService.skillEffectAlpha/100)})
+			
+		_TimerService:SetTimerOnce(function() _ParticleService:RemoveParticle(particle) end,1)
+	end
+
+	@ExecSpace("Client")
+	method void SetShadow(number time)
+		--그림자가 점점 작아집니다
+		local scale = Vector3.one
+		local setscale = function()
+			self.Entity:GetChildByName("Shadow").TransformComponent.Scale = scale 
+			scale.x -= 1/30
+			scale.y -= 1/30
+			
+			if self.Entity.UnitAnimationComponent.SetAnimType ~= "Skill" then
+				self.Entity:GetChildByName("Shadow").TransformComponent.Scale = Vector3.one 
+			end
+		end
+		
+		for i = 1, 30 do
+			_TimerService:SetTimerOnce(setscale, ((i*time*0.6)/60) + time*0.05)
+		end
+		
+		--그림자 원상복구
+		local init = function()
+			self.Entity:GetChildByName("Shadow").TransformComponent.Scale = Vector3.one
+		end
+		
+		_TimerService:SetTimerOnce(init, 7.5*time/10)
+	end
+
+end

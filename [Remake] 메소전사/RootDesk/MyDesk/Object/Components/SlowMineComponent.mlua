@@ -1,0 +1,131 @@
+@Component
+script SlowMineComponent extends MineComponent
+
+	property number speedRatio = 0.5
+
+	@ExecSpace("ClientOnly")
+	method void Explode()
+		-- 슬로우 지뢰 폭발 효과 및 슬로우 디버프 적용
+		self.Entity.TriggerComponent.Enable = false
+		self.chasing = false
+		self.Entity.SpriteRendererComponent.SpriteRUID = "da7baa2dabdb4b0db16936d1b0edb9b1"
+		self.Entity.SpriteRendererComponent.PlayRate = 1
+		
+		self.explodeTimer = _TimerLogic:SetTimerOnce(function()
+				self.activate = true
+		
+			end, 0.48, "SlowMineComponent.Explode")
+		
+		_SoundService:PlaySound("c5ef54c702264bc9820e8bc6eacdc413", _SoundLogic.effectRatio)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 슬로우 지뢰의 활성화 상태 및 타겟 추적 업데이트
+		if self.activate then
+			local simulator = _CollisionService:GetSimulator(self.Entity)
+			local transform = self.Entity.TransformComponent
+			
+			local overlaps = simulator:OverlapCircleAll(tostring(CollisionGroups.PlayerSkill), transform.WorldPosition:ToVector2(), 3)
+			
+			for i = 1, #overlaps do
+				local entity = overlaps[i].Entity
+				
+				if isvalid(entity.MonsterObject) and entity.Enable then
+					entity.MonsterObject:ApplySpeedBuff(self.speedRatio, 10)
+				end
+			end
+			
+			self.activate = false
+			return
+		end
+		
+		if self.Entity.SpriteRendererComponent.SpriteRUID == "da7baa2dabdb4b0db16936d1b0edb9b1" then return end
+		
+		if (self.Entity.Enable or not isvalid(self.target) or not self.target.Enable) and self.detectTime + 1 < _UtilLogic.ServerElapsedSeconds then
+			self.chasing = false 
+			self:Init()
+			self:DetectTarget()
+			self.detectTime = _UtilLogic.ServerElapsedSeconds
+		end
+		
+		if self.chasing then
+			if isvalid(self.target) and not _TimerLogic.pause and self.target.MonsterObject.Enable then
+				if self.target.TransformComponent.WorldPosition.x > self._T.transform.Position.x then
+					if not self.Entity.SpriteRendererComponent.FlipX then
+						self.Entity.SpriteRendererComponent.FlipX = true
+					end
+				else
+					if self.Entity.SpriteRendererComponent.FlipX then
+						self.Entity.SpriteRendererComponent.FlipX = false
+					end
+				end
+				
+				local minePos = self.target.TransformComponent.WorldPosition:Clone()
+				local worldPos = self._T.transform.Position:Clone()
+				local distance = minePos:Distance(worldPos)
+				
+				if distance > 0 then
+					self._T.transform.Position = worldPos:Lerp(minePos, delta * self.speed)
+				end
+			end
+		else
+			self:Init()
+		end
+	end
+
+	method void Init()
+		-- 슬로우 지뢰를 초기 상태로 리셋
+		self.chasing = false
+		self.target = nil
+		self.activate = false
+		
+		self.Entity.SpriteRendererComponent.SpriteRUID = "48cd89e3c85c4370833fbf5c8bb369b9"
+		self.Entity.TriggerComponent.Enable = true
+		self.Entity.TransformComponent.Scale = Vector3.one
+		self.Entity.SpriteRendererComponent.PlayRate = 1
+		
+		_TimerLogic:ClearTimer(self.destroyTimer)
+		_TimerLogic:ClearTimer(self.explodeTimer)
+	end
+
+	@ExecSpace("Client")
+	method void SetSpeedRatio(number speedRatio)
+		-- 슬로우 디버프의 속도 비율을 설정
+		self.speedRatio = speedRatio
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DetectTarget()
+		-- 가장 가까운 몬스터를 탐지하여 추적 대상으로 설정
+		if isvalid(self.target) then return end
+		
+		__base:DetectTarget()
+		
+		if isvalid(self.target) then
+			self.Entity.SpriteRendererComponent.SpriteRUID = "3d94f394fb9a494c95ef1aac963d6c80"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleSpriteAnimPlayerEndFrameEvent(SpriteAnimPlayerEndFrameEvent event)
+		-- 스프라이트 애니메이션 종료 시 지뢰 삭제 처리
+		
+		local FrameIndex = event.FrameIndex
+		local ReversePlaying = event.ReversePlaying
+		local TotalFrameCount = event.TotalFrameCount
+		local AnimPlayer = event.AnimPlayer
+		if self.Entity.SpriteRendererComponent.SpriteRUID == "da7baa2dabdb4b0db16936d1b0edb9b1" then
+			self.destroyTimer = _TimerLogic:SetTimerOnce(function()
+					_PoolingLogic:DestroyEntity(self.Entity)
+					self:Init()
+				end, 0.48, "SlowMineComponent.SpriteAnimPlayerEndFrameEvent")
+			
+			local option = {["SortingLayer"] = "Effect"}
+			_EffectService:PlayEffect("e2b60e6aeadf4c6a8b9b14a057cadd7f", self.Entity.CurrentMap, self.Entity.TransformComponent.WorldPosition, 0, Vector3(2.5, 2.5, 1), false, option)
+			self.Entity.SpriteRendererComponent.PlayRate = 0
+		end
+	end
+
+end

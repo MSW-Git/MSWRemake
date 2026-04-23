@@ -1,0 +1,201 @@
+@Component
+script UnitAIWanderComponent extends AIWanderComponent
+
+	property boolean setBattle = false
+
+	property boolean running = false
+
+	property any TargetCheckNode = nil
+
+	property any SkillCheckNode = nil
+
+	property any MoveCheckNode = nil
+
+	property any AttackCheckNode = nil
+
+	property Entity MoveCheckedTarget = nil
+
+	property boolean stopUnit = false
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- AI 행동 트리 노드들을 초기화하고 루트 노드를 설정
+		local target = SelectorNode("Target")
+		
+		self.TargetCheckNode = self:CreateNode("TargetCheck")
+		
+		target:AttachChild(self.TargetCheckNode)
+		--------------------------------------------------
+		local behavior = SelectorNode("Behavior")
+		
+		self.SkillCheckNode = self:CreateNode("SkillCheck")
+		self.MoveCheckNode = self:CreateNode("MoveCheck")
+		self.AttackCheckNode = self:CreateNode("AttackCheck")
+		
+		behavior:AttachChild(self.SkillCheckNode)
+		behavior:AttachChild(self.MoveCheckNode)
+		behavior:AttachChild(self.AttackCheckNode)
+		--------------------------------------------------
+		-- 루트 노드 설정
+		
+		local root = SequenceNode("root")
+		root:AttachChild(target)
+		root:AttachChild(behavior)
+		
+		self:SetRootNode(root)
+		--------------------------------------------------
+	end
+
+	@ExecSpace("Server")
+	method void BattleEnd()
+		-- 전투 종료 시 모든 BT 관련 프로퍼티를 초기화
+		------------------------------------------
+		-- 전투 관련 BT 프로퍼티 초기화 필요
+		------------------------------------------
+		-- UnitAIWanderComponent
+		------------------------------------------
+		self.running = false
+		self.setBattle = false
+		self.MoveCheckedTarget = nil
+		------------------------------------------
+		-- TargetCheck
+		------------------------------------------
+		self.TargetCheckNode.Use = false
+		self.TargetCheckNode.CoolTime = 0
+		------------------------------------------
+		-- SkillCheck
+		------------------------------------------
+		self.SkillCheckNode.Use = false
+		self.SkillCheckNode.SkillTime = 0
+		------------------------------------------
+		-- MoveCheck
+		------------------------------------------
+		self.MoveCheckNode.Use = false
+		self.MoveCheckNode.NowTile = nil
+		self.MoveCheckNode.nextMoveTile = nil
+		self.MoveCheckNode.getPathTime = 0
+		------------------------------------------
+		-- AttackCheck
+		------------------------------------------
+		self.AttackCheckNode.Use = false
+		self.AttackCheckNode.attackTime = 0
+		------------------------------------------
+	end
+
+	@ExecSpace("Server")
+	method void Move(Entity nowTile, Entity nextMoveTile)
+		-- 유닛을 현재 타일에서 다음 타일로 이동시키는 함수
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local timerID = 0
+		local per = 0
+		local function moveFnc()
+			if not (self.setBattle) then
+				_TimerService:ClearTimer(unitStatus.ActionTimer)
+				unitStatus.ActionTimer = 0
+				return
+			end
+			
+			if isvalid(unitInfo) == false or _UserService:GetUserEntityByUserId(unitInfo.OwnerId) == false then
+				_TimerService:ClearTimer(timerID)
+			end 
+			
+			-- 이동 시간에 따라 실제로 이동 시키기
+			local nowTilePos = nowTile.TransformComponent.WorldPosition
+			local moveTilePos = nextMoveTile.TransformComponent.WorldPosition
+			
+			-- local realMoveSpeed = unitStatus.MoveSpeed * 2
+			local realMoveSpeed = unitStatus.MoveSpeed * 3
+			per += (realMoveSpeed * 0.01)
+			per = math.min(per, 1)
+			
+			local setPosX = nowTilePos.x * (1 - per) + moveTilePos.x * per
+			local setPosY = nowTilePos.y * (1 - per) + moveTilePos.y * per
+			
+			unitInfo:SetPosition(setPosX, setPosY, unitInfo.OwnerId)
+			unitStatus.SetPos = Vector2(setPosX, setPosY)
+			
+			if per >= 1 then
+				--------- 임시코드
+				local nextMoveTilePos = nextMoveTile.TransformComponent.WorldPosition
+				unitInfo:SetPosition(nextMoveTilePos.x, nextMoveTilePos.y, unitInfo.OwnerId) 
+				unitStatus.SetPos = Vector2(nextMoveTilePos.x, nextMoveTilePos.y)
+				
+				local animComponent = myUnit.UnitAnimationComponent
+				animComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+				unitStatus:SetProperty("state", "Idle", "")
+				
+				------------------
+				self.MoveCheckNode.Use = false
+				self.MoveCheckNode.getPathTime = 0
+				self.running = false
+				------------------
+				if unitStatus.ActionType == "Move" then
+					unitStatus:SetActionType("Idle")
+					_TimerService:ClearTimer(unitStatus.ActionTimer)
+					unitStatus.ActionTimer = 0
+				end
+			end
+		end
+		
+		_TimerService:ClearTimer(unitStatus.ActionTimer)
+		unitStatus:SetActionType("Move")
+		unitStatus.ActionTimer = _TimerService:SetTimerRepeat(moveFnc, 0.01, 0)
+		timerID = unitStatus.ActionTimer
+	end
+
+	@ExecSpace("Server")
+	method void YetiAndPePe(Entity nowTile, Entity nextMoveTile, number setTime)
+		-- 예티와 페페 특수 이동 (포물선 궤도로 날아가는 이동)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local fncTime = 0 
+		local function moveFnc()
+			fncTime += 0.01
+			if (fncTime / setTime) >= 1 then
+				_TimerService:ClearTimer(unitStatus.ActionTimer)
+			end
+			
+			-- 날리기
+			local nowTilePos = nowTile.TransformComponent.WorldPosition
+			local moveTilePos = nextMoveTile.TransformComponent.WorldPosition
+			local per = math.min(1, (fncTime / setTime) )
+				
+			local setPosX = nowTilePos.x * (1 - per) + moveTilePos.x * per
+			local setPosY = nowTilePos.y * (1 - per) + moveTilePos.y * per - 10 * (fncTime^2 - setTime*fncTime)
+			
+			unitInfo:SetPosition(setPosX, setPosY, unitInfo.OwnerId)
+			unitInfo.spriteRenderer.TransformComponent.ZRotation = fncTime * 720 / setTime
+			unitStatus.SetPos = Vector2(setPosX, setPosY)
+			
+			if (fncTime / setTime) >= 1 then
+				--------- 임시코드
+				local nextMoveTilePos = nextMoveTile.TransformComponent.WorldPosition
+				unitInfo:SetPosition(nextMoveTilePos.x, nextMoveTilePos.y, unitInfo.OwnerId)
+				
+				unitStatus.SetPos = Vector2(nextMoveTilePos.x, nextMoveTilePos.y)
+				myUnit.TransformComponent.ZRotation = 0
+				local animComponent = myUnit.UnitAnimationComponent
+				animComponent:PlayAnimation(1, "Idle", nil, unitInfo.OwnerId)
+				unitStatus:SetProperty("state", "Idle", "")
+				------------------
+				self.setBattle = true
+				_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0001", 0)
+				_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0002", 0)
+				unitStatus:SetActionType("Idle")
+				_TimerService:ClearTimer(unitStatus.ActionTimer)
+				unitStatus.ActionTimer = 0
+				
+			end
+		end
+		
+		_TimerService:ClearTimer(unitStatus.ActionTimer)
+		unitStatus:SetActionType("Move")
+		unitStatus.ActionTimer = _TimerService:SetTimerRepeat(moveFnc, 0.01, 0)
+	end
+
+end

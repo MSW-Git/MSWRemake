@@ -1,0 +1,3919 @@
+@Logic
+script UnitSetLogic_New extends Logic
+
+	property Entity ArenaMap = "62628397-c22b-4657-876e-e8ddede416f3"
+
+	property Entity UnitsSample = "9342d2fe-6d94-46d5-8942-219aaf25eb00"
+
+	property Entity ProjectilesSample = "77203f00-2b9b-4f14-bca4-cb0a5e14b4c4"
+
+	property SyncTable<string, Entity> UnitsParentEntity
+
+	property SyncTable<string, Entity> ProjectilesParentEntity
+
+	property SyncTable<string, Entity> RoomTile
+
+	property Entity DragSample = "a7814a29-0745-436c-85b1-309bf0d3b2e9"
+
+	property Entity SelectUnit = nil
+
+	property Entity SelectTile = nil
+
+	property any Handler = nil
+
+	property integer UnitSampleDestroyTimerID = 0
+
+	property integer ProjectileSampleDestroyTimerID = 0
+
+	@ExecSpace("Server")
+	method void SettingTile(Entity currentMap)
+		-- 맵의 모든 타일에 컴포넌트를 초기화하고 설정하는 함수
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		for i = 1, 7 do
+			local tileLine = currentMap:GetChildByName("Line_" .. math.floor(i))
+			local jMax = 8 + (i%2)
+		
+			for j = 1, jMax do
+				local tile = tileLine:GetChildByName("Tile_" .. math.floor(j))
+		
+				local jNum = j * 2 - (i%2)
+				--self.RoomTile[math.floor(jNum) .. "," .. math.floor(i)] = tile
+				user.GameManager.RoomTile[math.floor(jNum) .. "," .. math.floor(i)] = tile
+				-- 중립인 경우
+				if jMax == 9 and j == 5 then
+					tile.TileComponent_New:TileSet("Neutral", "Unit", j, i)
+				elseif j <= 4 then
+					tile.TileComponent_New:TileSet("User", "Unit", j, i)
+				elseif j >= 5 then
+					tile.TileComponent_New:TileSet("Enemy", "Unit", j, i)
+				end
+			end
+		end
+		
+		local waitingTileLine = currentMap:GetChildByName("WaitLine")
+		for i = 1, 9 do
+			local tile = waitingTileLine:GetChildByName("Tile_" .. math.floor(i))
+			user.GameManager.RoomTile[math.floor(i) .. ",0"] = tile
+			tile.TileComponent_New:TileSet("Waiting", "Unit", i, 0)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void DragUnit(Entity selectUnit, string selectUnitID)
+		-- Unit Info
+		local unitInfoDBrow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", selectUnitID)
+		
+		
+		if isvalid(self.SelectUnit) then
+			return	-- 무언가를 잡은 중에는 새로 잡기 불가
+		else
+			self.SelectUnit = selectUnit
+		end
+		
+		selectUnit.Visible = false
+		--self.DragSample.SpriteRendererComponent.SpriteRUID = unitInfoDBrow:GetItem("IdleRUID")
+		
+		if isvalid(self.DragSample) == false then
+			self.DragSample = _UserService.LocalPlayer.CurrentMap:GetChildByName("DragSample") --_EntityService:GetEntityByPath("/maps/Arena/DragSample")
+		end
+		self.DragSample.SpriteRendererComponent.SpriteRUID = selectUnit.UnitInfo.spriteRenderer.SpriteRendererComponent.SpriteRUID
+		self.DragSample.SpriteRendererComponent.FlipX = selectUnit.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		self.DragSample.TransformComponent.Scale = selectUnit.UnitInfo.spriteRenderer.TransformComponent.Scale
+		--log("DragUnit: " .. selectUnitID)
+		
+		-- drag Move
+		self.Handler = _InputService:ConnectEvent(ScreenTouchHoldEvent, self.Drag)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Drag(any screenholdEvent)
+		-- 유닛 드래그 중 화면 터치 이벤트를 처리하는 함수
+		if isvalid(self.SelectUnit) then
+			local touchId = screenholdEvent.TouchId
+			local touchPoint = screenholdEvent.TouchPoint
+			
+			if isvalid(self.DragSample) == false then
+				self.DragSample = _UserService.LocalPlayer.CurrentMap:GetChildByName("DragSample") --_EntityService:GetEntityByPath("/maps/Arena/DragSample")
+			end
+			
+			self.DragSample.TransformComponent.WorldPosition = _UILogic:ScreenToWorldPosition(touchPoint):ToVector3()
+			
+			if not self.DragSample.Visible then
+				self.DragSample.Visible = true
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void DragOff(Entity selectUnit)
+		_InputService:DisconnectEvent(ScreenTouchHoldEvent, self.Handler)
+		self.Handler = nil
+		
+		if isvalid(selectUnit) == true then
+			selectUnit.Visible = true
+		end
+		if isvalid(self.DragSample) == false then
+			self.DragSample = _UserService.LocalPlayer.CurrentMap:GetChildByName("DragSample") --_EntityService:GetEntityByPath("/maps/Arena/DragSample")
+		end
+		
+		self.DragSample.Visible = false
+		self.SelectUnit = nil
+		
+		self.SelectTile = nil
+		_UserService.LocalPlayer.CharacterShopManager_New:UI_ShowSellUI(true, 0)
+		_UserService.LocalPlayer.CharacterShopManager_New:UI_ShowSellUI(false, 0)
+		
+		--타일 표시 삭제
+		_GeneralDirectorLogic:SetTileDirection_Main("OnDragging",false)
+		
+		--유닛 놓을 연출
+		_GeneralDirectorLogic:UnitOnTileDirector(selectUnit,true)
+		
+		--전장 유닛 초과표시 체크
+		_GeneralDirectorLogic:ShowRedTile(_UserService.LocalPlayer.PlayerComponent.UserId)
+		
+	end
+
+	@ExecSpace("Server")
+	method void TouchRelease(string userID, Entity selectUnit, Entity selectTile)
+		-- selectUnit을 selectTile로 옮기는 함수입니다.
+		--------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local gameManager = user.GameManager
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		local synergyManager = user.SynergyManager_New
+		
+		local function timer()
+			if isvalid(selectUnit) then
+				if isvalid(selectTile) then
+					
+					-- 예외 처리 1) 움직일 수 없는 유닛인 경우
+					if selectUnit.UnitInfo.IsMovableByPlayer == false then
+						log_warning("이 유닛은 대기석에 배치할 수 없습니다.")
+						self:DragOff(selectUnit, userID)
+						return
+					end
+					--------------------------------------------------------------------------------
+					-- 예외 처리 2) 준비 단계가 아닌 경우
+					if gameManager.PhaseType ~= "Ready" then
+						_UIToast:ShowMessageByLocalizingKey("CannotDragUnit", userID)
+						self:DragOff(selectUnit, userID)
+						return
+					end
+					--------------------------------------------------------------------------------
+					local onUnit = teamManager.EntityOnTile[selectTile]
+					local setTile = selectUnit.UnitInfo.setTile
+					--------------------------------------------------------------------------------
+					-- 추가 예외 처리 _ setTile이 없는 경우
+					-- a. 합쳐질 때 타이밍 맞춰 드래그 하면 버그가 있음
+					if not isvalid(setTile) then
+						self:DragOff(selectUnit, userID)
+						log_warning("SetTile이 없대요")
+						return
+					end
+					--------------------------------------------------------------------------------
+					-- 예외 처리 3) 대기석에 놓을 수 없는 유닛을 대기석에 놓으려고 한 경우			 
+					if selectUnit.UnitInfo.IsSettableOnWatingField == false then
+						if selectTile.TileComponent_New.horizontalNum == 0 or selectTile.TileComponent_New.verticalNum == 0 then
+							log_warning("이 유닛은 대기석에 배치할 수 없습니다.")
+							self:DragOff(selectUnit, userID)
+							return
+						end
+					end
+					--------------------------------------------------------------------------------
+					-- 예외 처리 4) 사용할 수 있는 대기석의 수를 제한한 상태에서 해당 대기석에 놓으려고 하는 경우
+					if selectTile.TileComponent_New.verticalNum == 0 then
+						-- 4.1. 사용 가능한 대기석 숫자보다 많은 인원 배치
+						local UnitAmount = 0
+						-- 현재 대기석에 있는 유닛 수 체크
+						for i = 1, userPControl.Tile_AvailableWaitingTile do
+							local checkTile = gameManager.RoomTile[math.floor(i) .. ",0"]
+							if isvalid(teamManager.EntityOnTile[checkTile]) then
+								UnitAmount += 1
+								break
+							end
+						end
+						if UnitAmount >= userPControl.Tile_AvailableWaitingTile then
+							log_warning("대기석이 가득 찼습니다.")
+							self:DragOff(selectUnit, userID)
+							return
+						end 
+						
+						-- 4.2. 막힌 대기석에 배치
+						if selectTile.TileComponent_New.horizontalNum > userPControl.Tile_AvailableWaitingTile then
+							self:DragOff(selectUnit, userID)
+							return
+						end
+					end
+					-- 예외 처리 5) 튜토리얼 진행 중일 때, 현재 튜토리얼에서 지정한 타일이 아닐 경우
+					if gameManager.ModeType == "Tutorial" then
+						if user.TutorialManager_New.AllowPlaceAllTile == false then
+							if user.TutorialManager_New.CurrentTargetTile == nil then
+							elseif selectTile ~= user.TutorialManager_New.CurrentTargetTile then
+								_UIToast:ShowMessageByLocalizingKey("Toast_TargetTileError",userID)
+								self:DragOff(selectUnit, userID)
+								return
+							end
+						end
+					end
+					
+					--------------------------------------------------------------------------------
+					-- 온필드 유닛 수 체크
+					local maxCount = teamManager.Level + user.TM_PropertyControl.Level_MaxUnitAdjustment
+					local spawnCheck = true
+					
+					local setTileVerticalNum = setTile.TileComponent_New.verticalNum
+					local selectTileVerticalNum = selectTile.TileComponent_New.verticalNum
+					
+					
+					-- 온필드 유닛 / 오프필드 유닛 체크
+					if (setTileVerticalNum == 0) ~= (selectTileVerticalNum == 0) then -- 둘 중 하나는 대기석, 하나는 필드인 경우
+						-- 해당 타일에 이미 위치한 유닛이 있다면
+						if isvalid(onUnit) then
+							-- 예외 처리 2) 위치를 교환하려는 유닛을 대기석으로 넣으려고 한 경우
+							if onUnit.UnitInfo.IsSettableOnWatingField == false then
+								log_warning("대상 유닛은 대기석에 배치할 수 없습니다.")
+								self:DragOff(selectUnit, userID)
+								return
+							end
+							
+							if setTileVerticalNum > 0 then	-- 대상 타일이 전장이라면
+								self:OnFieldSet(teamManager, onUnit, true, true, true)
+								self:OnFieldSet(teamManager, selectUnit, false, true, true)
+								
+								
+							else							-- 대상 타일이 대기석이라면
+								self:OnFieldSet(teamManager, onUnit, false, true, true)
+								self:OnFieldSet(teamManager, selectUnit, true, true, true)
+							end
+							
+						-- 유닛이 없는 타일에 놓으려고 했다면
+						else
+							-- 필드에 놓으려고 한 경우
+							if selectTileVerticalNum > 0 then
+								if maxCount <= teamManager.OnFieldUnitCount then
+									spawnCheck = false
+								else
+									self:OnFieldSet(teamManager, selectUnit, true, true, true)
+								end
+							-- 대기석에 놓으려고 한 경우
+							else
+								self:OnFieldSet(teamManager, selectUnit, false, true, true)
+							end
+						end
+					end
+					
+					
+					-- 이동이 가능하다면
+					if spawnCheck then
+						if isvalid(onUnit) then
+							-- 기존 유닛 이동
+							local onUnitInfo = onUnit.UnitInfo
+							onUnitInfo:SetPropertyToServer("setTile", setTile, "All", true)
+								
+							if setTile.TileComponent_New.Zone == "Enemy" then
+								onUnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = false
+							else
+								onUnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = true
+							end
+		
+							onUnit.UnitAnimationComponent:SetLayerOrder(setTileVerticalNum, userID)
+							
+							
+							-- 예외 처리 (오르비스 마법석인 경우, 연출을 위함)
+							if string.sub(onUnit.Name, 1, -2) == "BTUnit_OrbisStone" then
+								
+								local aroundCount = 1
+								if 0 < synergyManager.SynergyRuneOn["S10021"] then
+									aroundCount += synergyManager.SynergyRuneOn["S10021"]
+								end
+								local tiles = _BTLogic_New:getTiles(onUnit, onUnit.UnitInfo.setTile, nil, string.format("Around_%d", aroundCount) )
+								_SynergyReadyDirectorLogic:Set10021TilesEffect(
+									onUnit.Id, _UtilLogic:TableToString(tiles),	userID)
+							end
+						end
+						
+						-- 유닛 이동 및 이동한 타일 정보 변경
+						local selectUnitInfo = selectUnit.UnitInfo
+						selectUnitInfo:SetPropertyToServer("setTile", selectTile, "All", true)
+					
+						if selectTile.TileComponent_New.Zone == "Enemy" then
+							selectUnit.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = false
+						else
+							selectUnit.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = true
+						end
+						
+						-- 레이어 설정
+						selectUnit.UnitAnimationComponent:SetLayerOrder(selectTileVerticalNum, userID)
+						
+						
+						
+						-- 예외 처리 (오르비스 마법석인 경우, 연출을 위함)
+						if string.sub(selectUnit.Name, 1, -2) == "BTUnit_OrbisStone" then
+							local aroundCount = 1
+							if 0 < synergyManager.SynergyRuneOn["S10021"] then
+								aroundCount += synergyManager.SynergyRuneOn["S10021"]
+							end
+							local tiles = _BTLogic_New:getTiles(selectUnit, selectUnit.UnitInfo.setTile, nil, string.format("Around_%d", math.floor(aroundCount) ) )
+							
+							_SynergyReadyDirectorLogic:Set10021TilesEffect(
+								selectUnit.Id, _UtilLogic:TableToString(tiles),	userID)
+						end
+						
+						-- 대기석에 놓은 경우
+						if selectTileVerticalNum == 0 then -- 잡은 유닛을 대기석에 놓는 경우
+							user.SynergyManager_New:S10011_WithdrawItem(selectUnit)
+						elseif (isvalid(onUnit) == true and setTileVerticalNum == 0) then -- 위치 교환 대상이 대기석에 들어가야 하는 경우
+							user.SynergyManager_New:S10011_WithdrawItem(onUnit)
+						end
+					end
+				end
+				self:DragOff(selectUnit, userID)
+			end
+		end
+			
+		_TimerService:SetTimerOnce(timer, 0.05)
+	end
+
+	@ExecSpace("Server")
+	method void TouchReleaseByForce(string userID, Entity selectUnit, Entity selectTile)
+		-- selectUnit을 selectTile로 옮기는 함수입니다.
+		--------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local gameManager = user.GameManager
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		local synergyManager = user.SynergyManager_New
+		
+		local function timer()
+			if isvalid(selectUnit) then
+				if isvalid(selectTile) then
+					local onUnit = teamManager.EntityOnTile[selectTile]
+					local setTile = selectUnit.UnitInfo.setTile
+					--------------------------------------------------------------------------------
+					-- 온필드 유닛 수 체크
+					local maxCount = teamManager.Level + user.TM_PropertyControl.Level_MaxUnitAdjustment
+					
+					local setTileVerticalNum = setTile.TileComponent_New.verticalNum
+					local selectTileVerticalNum = selectTile.TileComponent_New.verticalNum
+					
+					
+					-- 온필드 유닛 / 오프필드 유닛 체크
+					if (setTileVerticalNum == 0) ~= (selectTileVerticalNum == 0) then -- 둘 중 하나는 대기석, 하나는 필드인 경우
+						-- 해당 타일에 이미 위치한 유닛이 있다면
+						if isvalid(onUnit) then
+							if setTileVerticalNum > 0 then	-- 대상 타일이 전장이라면
+								self:OnFieldSet(teamManager, onUnit, true, onUnit.UnitInfo.IsSettableOnWatingField, true)
+								self:OnFieldSet(teamManager, selectUnit, false, selectUnit.UnitInfo.IsSettableOnWatingField, true)
+							else							-- 대상 타일이 대기석이라면
+								self:OnFieldSet(teamManager, onUnit, false, onUnit.UnitInfo.IsSettableOnWatingField, true)
+								self:OnFieldSet(teamManager, selectUnit, true, selectUnit.UnitInfo.IsSettableOnWatingField, true)
+							end
+						-- 유닛이 없는 타일에 놓으려고 했다면
+						else
+							-- 필드에 놓으려고 한 경우
+							if selectTileVerticalNum > 0 then
+								self:OnFieldSet(teamManager, selectUnit, true, selectUnit.UnitInfo.IsSettableOnWatingField, true)
+							-- 대기석에 놓으려고 한 경우
+							else
+								self:OnFieldSet(teamManager, selectUnit, false, selectUnit.UnitInfo.IsSettableOnWatingField, true)
+							end
+						end
+					end
+					
+					
+					-- 이동이 가능하다면
+					if isvalid(onUnit) then
+						-- 기존 유닛 이동
+						local onUnitInfo = onUnit.UnitInfo
+						
+						if not onUnitInfo.IsSettableOnWatingField and setTileVerticalNum == 0 then
+							setTile = _BTLogic_New:getTile(onUnit, nil, "EmptyTileNearestToTheUnit_Team")[1]
+							setTileVerticalNum = setTile.TileComponent_New.verticalNum
+						end
+						
+						onUnitInfo:SetPropertyToServer("setTile", setTile, "All", true)
+							
+						if setTile.TileComponent_New.Zone == "Enemy" then
+							onUnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = false
+						else
+							onUnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = true
+						end
+						
+						onUnit.UnitAnimationComponent:SetLayerOrder(setTileVerticalNum, userID)
+						
+											
+		
+						-- 예외 처리 (오르비스 마법석인 경우, 연출을 위함)
+						if string.sub(onUnit.Name, 1, -2) == "BTUnit_OrbisStone" then
+							
+							local aroundCount = 1
+							if 0 < synergyManager.SynergyRuneOn["S10021"] then
+								aroundCount += synergyManager.SynergyRuneOn["S10021"]
+							end
+							local tiles = _BTLogic_New:getTiles(onUnit, onUnit.UnitInfo.setTile, nil, string.format("Around_%d", aroundCount) )
+							_SynergyReadyDirectorLogic:Set10021TilesEffect(
+								onUnit.Id, _UtilLogic:TableToString(tiles),	userID)
+						end
+					end
+					
+					-- 유닛 이동 및 이동한 타일 정보 변경
+					local selectUnitInfo = selectUnit.UnitInfo
+					selectUnitInfo:SetPropertyToServer("setTile", selectTile, "All", true)
+				
+					if selectTile.TileComponent_New.Zone == "Enemy" then
+						selectUnit.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = false
+					else
+						selectUnit.UnitInfo.spriteRenderer.SpriteRendererComponent.FlipX = true
+					end
+					
+					-- 레이어 설정
+					selectUnit.UnitAnimationComponent:SetLayerOrder(selectTileVerticalNum, userID)
+					-- 애니메이션 설정
+					selectUnit.UnitAnimationComponent:PlayAnimation(1, "ForcedIdle", selectUnit.Parent, userID)
+					
+					-- 예외 처리 (오르비스 마법석인 경우, 연출을 위함)
+					if string.sub(selectUnit.Name, 1, -2) == "BTUnit_OrbisStone" then
+						local aroundCount = 1
+						if 0 < synergyManager.SynergyRuneOn["S10021"] then
+							aroundCount += synergyManager.SynergyRuneOn["S10021"]
+						end
+						local tiles = _BTLogic_New:getTiles(selectUnit, selectUnit.UnitInfo.setTile, nil, string.format("Around_%d", math.floor(aroundCount) ) )
+						
+						_SynergyReadyDirectorLogic:Set10021TilesEffect(
+							selectUnit.Id, _UtilLogic:TableToString(tiles),	userID)
+					end
+				end
+			end
+		end
+			
+		_TimerService:SetTimerOnce(timer, 0.05)
+	end
+
+	@ExecSpace("Server")
+	method Entity SpawnUnit(string userId, string unitID, number unitLevel, string spawnType)
+		-- 새로운 유닛을 획득(구매, 이벤트 라운드 보상 등)하는 함수입니다.
+		-- log(unitID, "의 스폰 정보", unitLevel, ", ", spawnType)
+		-- 구매에 성공한 경우 true, 실패한 경우 false를 return 합니다.
+		--------------------------------------------------------
+		--[[ 
+		1. 대기석에 자리가 있는가?
+			1-1. 자리가 있다면, 해당 위치에 소환합니다. 소환 후 merge 관련 처리를 합니다.
+			1-2. 자리가 없다면 :
+				1-2-1. spawnType이 "Force"인 경우 : 필드 내 적절한 위치에 소환합니다. 소환 후 merge 관련 처리를 합니다.
+				1-2-2. spawnType이 "Shop"인 경우 : 같은 ID와 레벨을 가진 유닛을 이미 2마리 가지고 있는지 검사합니다.
+					1-2-2-1. 2마리 보유 --> field에 임시 소환
+					1-2-2-2. 1마리 보유 --> 상점 내 같은 ID를 가진 유닛 조건을 검사합니다.
+						+ 해당 유닛까지 구매할 돈을 갖고 있는지 검사합니다.
+						--> 있다면, 둘 다 구매한 것으로 처리 + 둘 다 field에 임시 소환
+						--> 없다면 return false
+					1-2-2-3. 없다면 return false (구매 불가)
+				1-2-3. spawnType이 "Sack"인 경우  : 같은 ID와 레벨을 가진 유닛을 이미 2마리 가지고 있는지 검사합니다.
+					1-2-3-1. 2마리 보유 --> field에 임시 소환 후 merge, 아이템 소모 체크용 빈 깡통 유닛을 리턴 
+					1-2-3-2. 1마리 보유 --> 소환 불가 return false
+					
+		2. 소환 처리 (skip 가능)
+		3. merge 처리
+		]]
+		--------------------------------------------------------
+		local setId = unitID .. math.floor(unitLevel)
+		local userEntity = _UserService:GetUserEntityByUserId(userId) 
+		local teamManager = userEntity.TeamManager
+		local userPControl = userEntity.TM_PropertyControl
+		local charInfoDB = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitID)
+		local cost = math.floor(tonumber(charInfoDB:GetItem("Cost")))
+		local shopIdx = 0
+		local spawnType_split = _UtilLogic:Split(spawnType, "_")
+		if spawnType_split[1] == "Shop" then
+			shopIdx = tonumber(spawnType_split[2])
+			spawnType = "Shop"
+		end
+		--------------------------------------------------------
+		---@type Entity
+		local setTile = nil -- 유닛을 소환하는 경우, 소환될 위치에 있는 타일 엔티티
+		local isAutoBuying = false
+		--------------------------------------------------------
+		-- 1-1. 대기석에 자리가 있는 경우
+		if spawnType ~= "OnField" then
+			-- 일반적인 SpawnType
+			local waitingTileLine = userEntity.CurrentMap:GetChildByName("WaitLine")
+			local unitCount = 0
+			for i = 1, 9 do
+				local tile = waitingTileLine:GetChildByName("Tile_" .. math.floor(i))
+				if isvalid(teamManager.EntityOnTile[tile]) then
+					unitCount += 1
+				end
+			end
+			if unitCount < userPControl.Tile_AvailableWaitingTile then
+				for i = 1, userPControl.Tile_AvailableWaitingTile do
+					local tile = waitingTileLine:GetChildByName("Tile_" .. math.floor(i))
+					if isvalid(teamManager.EntityOnTile[tile]) == false then
+						setTile = tile
+						break
+					end
+				end
+			end
+		else
+			-- OnField SpawnType
+			for j = 1, 4 do
+				for i = 1, 7 do
+					local tileLine = userEntity.CurrentMap:GetChildByName("Line_" .. math.floor(i))
+					local tile = tileLine:GetChildByName("Tile_" .. math.floor(j))
+					if isvalid(teamManager.EntityOnTile[tile]) == false then
+						setTile = tile
+						break
+					end
+				end
+				if isvalid(setTile) == true then
+					break
+				end
+			end
+		end
+		--------------------------------------------------------
+		
+		
+		-- 1-2. 대기석에 자리가 없는 경우
+		if isvalid(setTile) == false then
+			-- 1-2-1. 강제 소환(이벤트 라운드 등)인 경우, 필드에 소환합니다.
+			if spawnType == "Force" or spawnType == "DataLoad" then
+				-- 필드 중 소환될 위치를 체크합니다.
+				for j = 1, 4 do
+					for i = 7, 1, -1 do
+						local tileLine = userEntity.CurrentMap:GetChildByName("Line_" .. math.floor(i))
+						local tile = tileLine:GetChildByName("Tile_" .. math.floor(j))
+						if isvalid(teamManager.EntityOnTile[tile]) == false then
+							setTile = tile
+							break
+						end
+					end
+					if isvalid(setTile) == true then
+						break
+					end
+				end
+				
+				-- 필드에 소환될 위치가 없다면 소환 실패로 처리합니다.
+				if isvalid(setTile) == false then
+					log("강제 소환에서 소환할 필드 위치가 없습니다.")
+					return nil
+				end
+			--------------------------------------------------------	
+			-- 1-2-2. 상점 구매인 경우
+			elseif spawnType == "Shop" then
+				-- 같은 ID와 레벨을 가진 유닛을 이미 2마리 가지고 있는지 검사합니다.
+				local tileUnitCount = 0
+				
+				local setID = unitID..string.format("%d", unitLevel) 
+				--teamManager.OwnUnitsBySetID[setId]
+				
+				local ownUnits = teamManager.OwnUnits 
+				for i=1, #ownUnits do
+					local unitInfo = ownUnits[i].UnitInfo
+					if unitInfo.charID == unitID and unitInfo.level == unitLevel then
+						tileUnitCount += 1
+					end
+					
+					if tileUnitCount >= 2 then
+		
+						break
+					end
+				end
+				
+				-- (1) 2마리 있는 경우 --> 소환 없이 merge
+				if tileUnitCount == 2 then
+					-- log("tileUnitCount == 2")
+				-- (2) 1마리 있는 경우 --> 상점에 동일 캐릭터가 있다면 자동 구매
+				elseif tileUnitCount == 1 then
+					local shopManager = teamManager.Entity.CharacterShopManager_New
+					local shopUnitCount = 0
+					
+					local pairUnitIdxInShop = 0
+					for i=1, #shopManager.CurrentDisplayedUnits do
+						if i ~= shopIdx and shopManager.CurrentDisplayedUnits[i] == unitID then
+							pairUnitIdxInShop = i
+							break
+						end 
+					end
+					
+					-- 상점에 1마리 더 없다면, 구매할 수 없는 것으로 보고 종료
+					if pairUnitIdxInShop == 0 then 
+						log("상점 특수조건에서 상점 내 수량이 2개 미만")
+						return nil
+						
+					else
+						-- 보유 골드 조건을 체크 --> 충분한 경우 자동 구매
+						if cost*2 > teamManager.Golds then
+							log("상점 특수조건에서 골드 부족")
+							return nil
+						--
+						else
+							shopManager:BuyCharacter_Forced(pairUnitIdxInShop)
+							isAutoBuying = true
+						end
+					end
+		
+					
+				-- (3) 없는 경우 --> 구매 실패
+				elseif tileUnitCount == 0 then
+					return nil
+				end
+			--------------------------------------------------------	
+			-- 1-2-3. 보따리 사용인 경우
+			elseif spawnType == "Sack" then
+				log_warning("Sack")
+				-- 같은 ID와 레벨을 가진 유닛을 이미 2마리 가지고 있는지 검사합니다.
+				local tileUnitCount = 0
+				
+				local setID = unitID..string.format("%d", unitLevel) 
+				
+				local ownUnits = teamManager.OwnUnits 
+				for i=1, #ownUnits do
+					local unitInfo = ownUnits[i].UnitInfo
+					if unitInfo.charID == unitID and unitInfo.level == unitLevel then
+						tileUnitCount += 1
+					end
+					if tileUnitCount >= 2 then
+						break
+					end
+				end
+				
+				-- 둘 이하인 경우, 소환 실패로 처리 
+				if tileUnitCount < 2 then
+					return nil
+				end
+			else
+				log("spawnType 에러")
+				return nil
+			end
+		end
+		--------------------------------------------------------
+		
+		
+		-- 2단계. 유닛을 소환합니다. (실제로는 풀링하고 있으므로, 엔티티 활성화 및 프로퍼티를 변경)
+		---@type Entity
+		local unit = nil
+		
+		local spawnUnit = function()
+			local units = self.UnitsParentEntity[userId]
+			
+			-- 2-1. 소환한 유닛을 적절한 타일에 배치합니다.
+			if isvalid(setTile) then
+				unit = self:GetEmptyPooledUnit(userId, "User") -- 풀링된 엔티티 중 하나를 가져옴
+				local unitInfo = unit.UnitInfo
+		
+				-- 기본 변수 초기화
+				unit.UnitInfo.use = true
+				table.insert(teamManager.OwnUnits, unit)
+				-- unit.UnitBattleStatistics:RoundPropertyInitialize(unitID)
+				
+				-- 필드에만 존재해야 하는 경우 (룬카드로 소환)
+				if spawnType == "OnField" then
+					unit.UnitInfo.IsResellable = false				-- 재판매 가능 여부
+					unit.UnitInfo.IsOnetimeUnit = false				-- 1회성 유닛(소환된 유닛)인가
+					unit.UnitInfo.IsMergableUnit = false			-- 머지 가능 여부
+					unit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+					unit.UnitInfo.IsAppliableSynergy = false		-- 시너지 효과 적용 가능 여부
+					unit.UnitInfo:SetPropertyToServer("IsSettableOnWatingField", false, "", true)	-- 대기석에 배치 가능 여부
+					
+					unit.UnitInfo.IsMovableByPlayer = true			-- 플레이어에 의해 배치 변경 가능 여부
+					
+				-- 일반적인 유닛
+				else
+					unit.UnitInfo.IsResellable = true
+					unit.UnitInfo.IsOnetimeUnit = false
+					unit.UnitInfo.IsMergableUnit = true
+					unit.UnitInfo:SetPropertyToServer("IsItemEquippable", true, "", true)
+					unit.UnitInfo.IsMovableByPlayer = true
+					unit.UnitInfo.IsAppliableSynergy = true
+					unit.UnitInfo:SetPropertyToServer("IsSettableOnWatingField", true, "", true)
+				end
+				
+				-- 유닛 스테이터스 세팅
+				unit.UnitInfo:SetCharInfo(unitID, unitLevel, cost)
+				-- unit.UnitStatus:SetUnitStatus(false)
+				
+				-- 소환 위치 설정
+				local verticalNum = setTile.TileComponent_New.verticalNum
+				local horizontalNum = setTile.TileComponent_New.horizontalNum
+				unitInfo:SetPropertyToServer("setTile", setTile, "All", true)
+				if verticalNum > 0 then
+					self:OnFieldSet(teamManager, unit, true, (spawnType ~= "OnField"), true)
+				end
+				
+				unit.UnitAnimationComponent:SetLayerOrder(verticalNum, userId)
+				unit.UnitAnimationComponent:PlayAnimation(1, "ForcedIdle", unit.Parent, userId)
+				
+			-- 2-2. 대기석은 없지만 합체가 가능해서 소환된 경우
+			else 
+				unit = self:GetEmptyPooledUnit(userId, "User")
+				-- 소환은 하지 않습니다.
+				-- 아무 정보도 없는 깡통 유닛을 리턴해, nil이 리턴되지 않게 합니다.
+			end
+			
+			-- 유닛 수 체크
+			if spawnType ~= "OnField" then
+				if isvalid(teamManager.OwnUnitsBySetID[setId]) then
+					teamManager.OwnUnitsBySetID[setId] += 1
+				else
+					teamManager.OwnUnitsBySetID[setId] = 1
+				end
+			end
+			
+			if spawnType ~= "DataLoad" then
+				if isvalid(userEntity.CharacterShopManager_New.LeftUnitCount[unitID]) == true then
+					userEntity.CharacterShopManager_New.LeftUnitCount[unitID] -= 1
+					-- log(string.format("%s's Left Count is %d", unitID, userEntity.CharacterShopManager_New.LeftUnitCount[unitID])) 
+				end
+			end
+			
+			--유닛 소환 이펙트
+			_GeneralDirectorLogic:UnitOnTileDirector(unit,false,userId)
+		
+		end
+		
+		spawnUnit()
+		
+		if isAutoBuying == true then
+			spawnUnit() -- 자동 구매인 경우 구매를 두 번 수행
+		end
+		--------------------------------------------------------
+		
+		--------------------------------------------------------
+		-- 3단계. 캐릭터 구매 이벤트 처리
+		if spawnType == "Shop" then
+			userEntity:SendEvent(BuyUnit(unit, unitID))	-- 에러 아님
+		end
+		
+		
+		-- 3단계. 캐릭터 Merge를 수행합니다.
+		-- 레벨업 필요 체크
+		local checkUnitMerge = function()
+			self:CheckUnitMerging(userId)
+		end
+		_TimerService:SetTimerOnce(checkUnitMerge, 0.2)
+		
+		return unit
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity SpawnOnetimeUnit(string userId, string unitID, Entity summonTile, number unitLevel, string teamType, boolean isApplyingSynergy)
+		-- 해당 전투에만 참여하는 일회성 유닛을 소환합니다.
+		-- teamType : "User" or "Enemy"
+		------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local teamManager = user.TeamManager
+		
+		---@type Entity
+		local summonedUnit = self:GetEmptyPooledUnit(userId, teamType) -- 풀링된 엔티티 중 하나를 고릅니다.
+		
+		local unitInfo = summonedUnit.UnitInfo
+		if teamType == "User" then
+			table.insert(teamManager.OwnUnits, summonedUnit)
+			user.GameManager.MyUnitCount += 1
+		elseif teamType == "Enemy" then
+			table.insert(teamManager.EnemyUnits, summonedUnit)
+			user.GameManager.EnemyCount += 1
+		end
+		
+		_CustomizedBattleEffectService:SetEntityVisible(summonedUnit, true, userId)
+		-- summonedUnit.UnitBattleStatistics:RoundPropertyInitialize(unitID)
+		
+		-- 소환될 타일
+		local verticalNum = summonTile.TileComponent_New.verticalNum
+		local horizontalNum = summonTile.TileComponent_New.horizontalNum
+		
+		-- 기본값 설정 및 예외 처리
+		unitInfo:SetPropertyToServer("setTile", summonTile, "All", true)
+		unitInfo.IsOnetimeUnit = true
+		unitInfo.use = true
+		unitInfo.IsAppliableSynergy = isApplyingSynergy
+		
+		-- 레이어 설정
+		summonedUnit.UnitAnimationComponent:SetLayerOrder(verticalNum, userId)
+		
+		-- 유닛 스테이터스 세팅
+		summonedUnit.UnitInfo:SetCharInfo(unitID, unitLevel, 0)
+		
+		if user.GameManager.PhaseType == "Battle" or user.GameManager.PhaseType == "Setting" then
+			summonedUnit.UnitAIWanderComponent.Enable = true
+			
+			-- 팀 정보에 추가
+			user.GameManager:RefreshUI_TeamHPInfo(teamType, true, summonedUnit.UnitStatus.MaxHP, userId)
+			user.GameManager:RefreshUI_TeamHPInfo(teamType, false, summonedUnit.UnitStatus.MaxHP, userId)
+			--log("일회성 유닛 소환하여 팀 체력 추가: ", teamType, summonedUnit.UnitStatus.MaxHP)
+		end
+		summonedUnit.UnitStatus.Target = nil
+		------------------------------------------------------------------
+		return summonedUnit
+	end
+
+	@ExecSpace("Server")
+	method void OnFieldSet(TeamManager teamManager, Entity unit, boolean on, boolean countCheck, boolean emblemItemCheck)
+		local charID = unit.UnitInfo.charID
+		
+		local sendOnFieldSynergyCountChangedEvent = function(synergyID, count)
+			teamManager.Entity:SendEvent(OnFieldSynergyCountChanged("User", synergyID, teamManager.OnFieldSynergy[synergyID]))	-- 에러 아님
+		end
+		
+		if isvalid(teamManager) then
+			-- log("OnFieldSet")
+			local charSynergyDBRow = _DataService:GetTable("CharacterSynergy"):FindRow("CharID", charID)
+			
+			log("OnFieldSet", on)
+			-- 유닛이 필드에 올라온 경우
+			if on then
+				if countCheck then
+					teamManager.OnFieldUnitCount += 1
+				end
+				
+				teamManager.Entity.SynergyManager_New:OnFieldUnitCountChanged()
+				
+				-- 중복 체크
+				
+				if isvalid(teamManager.OnFieldUnitIDs[charID]) then
+					teamManager.OnFieldUnitIDs[charID] += 1
+				else
+					teamManager.OnFieldUnitIDs[charID] = 1
+					
+					-- 시너지 On
+					for i = 1, 3 do
+						local synergyID = charSynergyDBRow:GetItem("Synergy_" .. math.floor(i))
+						if synergyID ~= "" then
+							teamManager:GetOnFieldSynergyCount(synergyID, 1)
+							log("charID = ", charID, ", synID + = ", synergyID)
+						end
+					end
+				end
+				
+				-- 상징을 장착한 경우
+				if emblemItemCheck == true then
+					local equippedItems = unit.UnitStatus.EquippedItemIDList
+					for i=1, #equippedItems do
+						local itemID = _UtilLogic:Split(equippedItems[i], "_")[1]
+						local keyHead = string.sub(itemID, 1, 2)
+						local keyTail = string.sub(itemID, 3, -1)
+						if keyHead == "EI" then
+							local synergyID = "S"..keyTail
+							
+							-- 예외처리: 동일한 id를 가진 캐릭터가 전장에 있고, 해당 캐릭터가 동일한 상징을 장착한 경우
+							local hasSameCharWithSameEmblem = false
+							local ownUnits = teamManager.OwnUnits
+							for _, unitToCompare in pairs(ownUnits) do
+								if unitToCompare ~= unit and unitToCompare.UnitInfo:IsOnFieldUnit() then	-- 전장 위 유닛이고
+									if unitToCompare.UnitInfo.charID == charID then	-- 동일한 캐릭터이며
+										local itemListToCompare = unitToCompare.UnitStatus.EquippedItemIDList
+										for _, equippedItemIDtoCompare in pairs(itemListToCompare) do
+											local itemIDtoCompare = _UtilLogic:Split(equippedItemIDtoCompare, "_")[1]
+											
+											if itemIDtoCompare == itemID then -- 동일한 상징 아이템을 장착했다면
+												hasSameCharWithSameEmblem = true
+											end
+										end
+									end
+								end
+							end
+							
+							if hasSameCharWithSameEmblem == false then
+								teamManager:GetOnFieldSynergyCount(synergyID, 1)
+								log(synergyID, " UP")
+							else
+								log("동일한 아이디를 가진 캐릭터가 동일한 메달을 장착한 상태이므로 시너지를 활성화하지 않습니다.")
+							end
+							
+							
+						end
+					end
+				end
+			------------------------------------------------------------------------------
+			else -- 유닛이 필드에서 내려간 경우
+				if countCheck then
+					teamManager.OnFieldUnitCount -= 1
+				end
+				-- log("OnFieldUnitCount = ", teamManager.OnFieldUnitCount)
+				
+				-- 중복 체크
+				if isvalid(teamManager.OnFieldUnitIDs[charID]) then
+					teamManager.OnFieldUnitIDs[charID] -= 1
+					
+					
+					if teamManager.OnFieldUnitIDs[charID] == 0 then
+						-- 시너지 Off
+						for i = 1, 3 do
+							local synergy = charSynergyDBRow:GetItem("Synergy_" .. math.floor(i))
+							if synergy ~= "" then
+								-- log(synergy .. " Minus")
+								
+								teamManager:GetOnFieldSynergyCount(synergy, -1)
+								log("charID = ", charID, ", synID - = ", synergy)
+							end
+						end
+						-- log(charID .. "/" .. teamManager.OnFieldUnitIDs[charID])
+						teamManager.OnFieldUnitIDs[charID] = nil
+					end
+				else
+					--log_error("teamManager.OnFieldUnitIDs = ", teamManager.OnFieldUnitIDs)
+					--log_error(string.format("필드에 없는 CharID를 가진 유닛 내림 = %s", charID))
+				end
+				
+				-- 상징을 장착한 경우
+				if emblemItemCheck == true then
+					local equippedItems = unit.UnitStatus.EquippedItemIDList
+					for i=1, #equippedItems do
+						local itemID = _UtilLogic:Split(equippedItems[i], "_")[1]
+						local keyHead = string.sub(equippedItems[i], 1, 2)
+						local keyTail = string.sub(equippedItems[i], 3, -1)
+						if keyHead == "EI" then
+							local synergyID = "S"..keyTail
+							
+							-- 예외처리: 동일한 id를 가진 캐릭터가 전장에 있고, 해당 캐릭터가 동일한 상징을 장착한 경우
+							local hasSameCharWithSameEmblem = false
+							local ownUnits = teamManager.OwnUnits
+							for _, unitToCompare in pairs(ownUnits) do
+								if unitToCompare ~= unit and unitToCompare.UnitInfo:IsOnFieldUnit() then	-- 전장 위 유닛이고
+									if unitToCompare.UnitInfo.charID == charID then	-- 동일한 캐릭터이며
+										local itemListToCompare = unitToCompare.UnitStatus.EquippedItemIDList
+										for _, equippedItemIDtoCompare in pairs(itemListToCompare) do
+											local itemIDtoCompare = _UtilLogic:Split(equippedItemIDtoCompare, "_")[1]
+											
+											if itemIDtoCompare == itemID then -- 동일한 상징 아이템을 장착했다면
+												hasSameCharWithSameEmblem = true
+											end
+										end
+									end
+								end
+							end
+							
+							if hasSameCharWithSameEmblem == false then
+								teamManager:GetOnFieldSynergyCount(synergyID, -1)
+							else
+								log("동일한 아이디를 가진 캐릭터가 동일한 메달을 장착한 상태이므로 시너지를 제거하지 않습니다.")
+							end
+						end
+					end
+				end
+				
+			end
+			local event = PlaceUnit()
+			event.CharID = unit.UnitInfo.charID
+			teamManager.Entity:SendEvent(event)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckUnitMerging(string userId)
+		-- Merge 가능 여부를 체크하고, 가능하면 수행합니다.
+		-- Merge를 한 번 수행한 경우 재귀호출로 다시 수행합니다. 수행이 불가하면 재귀를 종료합니다.
+		--------------------------------------------------------------
+		
+		-- Merge 가능 여부를 체크합니다.
+		local ownerEntity = _UserService:GetUserEntityByUserId(userId)
+		local teamManager = ownerEntity.TeamManager
+		local mergeTargetEntities = {}
+		local mergedSetID = ""
+		
+		for setID, count in pairs(teamManager.OwnUnitsBySetID) do
+			if count >= 3 then
+				local targetCharID = string.sub(setID, 1, -2)
+				local targetLevel = tonumber(string.sub(setID, -1, -1))
+				mergedSetID = setID
+				--log("mergedSetID = ", mergedSetID, ", count = ", count)
+				if targetLevel ~= 3 then -- 3성 3마리인 경우는 합성 불가
+					--log("#teamManager.OwnUnits = ", #teamManager.OwnUnits)
+					for i=1, #teamManager.OwnUnits do
+						local unit = teamManager.OwnUnits[i]
+						local unitInfo = unit.UnitInfo
+						--log("머지 검사... charID = ", unitInfo.charID, ", level = ", unitInfo.level)
+						if unitInfo.charID == targetCharID and unitInfo.level == targetLevel then
+							if unitInfo.IsMergableUnit == true then
+								table.insert(mergeTargetEntities, unit)
+							end
+						end
+					end
+					--log("합성되는 실제 유닛의 수 = ", #mergeTargetEntities)
+					break -- merge는 한 번에 하나씩 수행합니다.
+				end
+			end
+		end
+		--------------------------------------------------------------
+		-- merge 가능한 상태라면 수행 및 재귀 호출
+		local mergedCharID = string.sub(mergedSetID, 1, -2)
+		if mergedSetID ~= "" and mergedCharID ~= "C00000" then
+			self:MergeUnits(userId, mergeTargetEntities, mergedSetID)
+			--사운드
+			_PlaySoundLogic:PlaySound("M0002",userId)
+			
+			-- 0.75초 뒤 이 함수를 재귀 호출합니다.
+			local reservateCheckingMerge = function()
+				self:CheckUnitMerging(userId)
+			end
+			_TimerService:SetTimerOnce(reservateCheckingMerge, 1.8)
+		else
+			return
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity MergeUnits(string userId, SyncTable<Entity> unitTable, string setID)
+		-- 오너가 userId인 unitTable의 유닛들을 합칩니다.
+		-- 합치고 남은(=별 등급이 오른) 유닛을 return 합니다.
+		------------------------------------------------------------
+		-- 1. unitTable의 유닛들 중 merge 우선순위를 결정합니다. (타일 위치에 따라)
+		-- 우선 순위는 다음과 같습니다.
+			-- 1. HexaTile -> WatingTile : 필드 유닛으로 합쳐집니다.
+			-- 	1-1. HextTile에서 : 뒷 열 -> 앞 열
+			-- 	1-2. WatingTile에서 : 번호 순
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local teamManager = user.TeamManager
+		
+		if not isvalid(self._T.DestroyEntity) then
+			self._T.DestroyEntity={}
+		end
+		
+		-- 유닛이 4기 이상인 경우
+			-- 1. 유닛 위치/상황에 따라 3기만 합치기
+			-- 2. 그 중 가장 우선 위치 유닛을 기준으로 합치기
+		
+		---@type table<Entity>
+		local PriorityUnitTable = {}
+		
+		---@type table<number>
+		local PriorityNumTable ={}
+		
+		for _, unit in pairs(unitTable) do
+			local setTile = unit.UnitInfo.setTile
+			
+			-- setTile이 없는 경우
+			if isvalid(setTile) == false then
+				-- 타일 우선순위 체크
+				local checkUnitId = unit.Id
+				local tilePriority = 2000
+				
+				-- table에 아직 값이 없으면
+				if PriorityUnitTable[1] == nil then
+					PriorityUnitTable[1] = unit
+					PriorityNumTable[1] = tilePriority
+				-- 있으면
+				else
+					for i = 1, 3 do
+						local checkUnit = _EntityService:GetEntity(checkUnitId)
+						if not isvalid(checkUnit) then
+							-- 더 이상 넣을 유닛이 없는 경우
+						elseif not isvalid(PriorityNumTable[i]) then
+							-- 빈 칸에 새로운 유닛을 넣는 경우
+							PriorityUnitTable[i] = checkUnit
+							PriorityNumTable[i] = tilePriority
+							
+							checkUnitId = ""
+							tilePriority = nil
+						elseif PriorityNumTable[i] < tilePriority then
+							-- 뒤로 밀기 위해서 주체 변경
+							local changeUnitId = PriorityUnitTable[i].Id
+							local changeUnitPriority = PriorityNumTable[i]
+							
+							PriorityUnitTable[i] = checkUnit
+							PriorityNumTable[i] = tilePriority
+							
+							checkUnitId = changeUnitId
+							tilePriority = changeUnitPriority
+						end
+					end
+				end
+			
+			
+			-- 비전투인 경우
+			elseif not unit.UnitAIWanderComponent.Enable then
+				-- 타일 우선순위 체크
+				local checkUnitId = unit.Id
+				local tileInfo = setTile.TileComponent_New
+				local tilePriority = 0
+				
+				local verticalNum = tileInfo.verticalNum
+				local horizontalNum = tileInfo.horizontalNum
+				
+				local checkTileSplit =_UtilLogic:Split(setTile.Name, "_")
+				
+				-- 1. 전장/대기석
+				if verticalNum > 0 then
+					tilePriority += 100
+				end
+				
+				-- 2. Column 순서
+				tilePriority += 10 * verticalNum
+				
+				-- 3. Column 순서
+				tilePriority += ( 10 - horizontalNum )
+				
+				-- table에 아직 값이 없으면
+				if PriorityUnitTable[1] == nil then
+					PriorityUnitTable[1] = unit
+					PriorityNumTable[1] = tilePriority
+				-- 있으면
+				else
+					for i = 1, 3 do
+						local checkUnit = _EntityService:GetEntity(checkUnitId)
+						if not isvalid(checkUnit) then
+							-- 더 이상 넣을 유닛이 없는 경우
+						elseif not isvalid(PriorityNumTable[i]) then
+							-- 빈 칸에 새로운 유닛을 넣는 경우
+							PriorityUnitTable[i] = checkUnit
+							PriorityNumTable[i] = tilePriority
+							
+							checkUnitId = ""
+							tilePriority = nil
+						elseif PriorityNumTable[i] < tilePriority then
+							-- 뒤로 밀기 위해서 주체 변경
+							local changeUnitId = PriorityUnitTable[i].Id
+							local changeUnitPriority = PriorityNumTable[i]
+							
+							PriorityUnitTable[i] = checkUnit
+							PriorityNumTable[i] = tilePriority
+							
+							checkUnitId = changeUnitId
+							tilePriority = changeUnitPriority
+						end
+					end
+				end
+			elseif not isvalid(setTile) then
+				
+			end
+		end
+		
+		--log("merge 진행 중... PriotryUnitTable = ", PriorityUnitTable)
+		--log("merge 진행 중... PriorityNumTable = ", PriorityNumTable)
+		------------------------------------------------------
+		-- 2. 유닛 제거 및 업그레이드
+		local isSettedMainUnit = false
+		local mainUnitId = ""
+		---@type Entity
+		local mainUnit = nil
+		
+		---@type table<string>
+		local mergedEntities = {}
+		local mergedPosList = {} -- 머지 연출을 위한 로컬변수
+		local getUnitPos = function(unitEntity)
+			---@type Entity
+			local unit = unitEntity
+			
+			local hor = unit.UnitInfo.setTileHorizontalNum
+			local ver = unit.UnitInfo.setTileVerticalNum
+			
+			return string.format("%d,%d",hor,ver) 
+		end
+		
+		---@type table<string>
+		local items = {}	-- 머지된 유닛들이 장착한 아이템 목록. 이 중 무작위로 3종을 장착.
+		
+		local stackAbilities = {} -- 머지된 유닛들의 영구 스택 합. 메인 유닛에게만 적용.
+		local addStackAbilities = function(targetUnit)
+			---@type Entity
+			local unit = targetUnit
+			for key, value in pairs(unit.UnitStatus.StackProperty) do
+				if stackAbilities[key] == nil then
+					stackAbilities[key] = 0
+				end
+				
+				stackAbilities[key] += value
+			end
+		end
+		
+		
+		local onFieldEmblemItemsID = {}	-- 필드에 있는 merge 대상 유닛들이 장착하고 있던 메달 아이템들입니다.
+		
+		for key = 1, 3 do
+			local getUnit = PriorityUnitTable[key]
+			
+			if isvalid(getUnit) == true then
+				local getUnitInfo = getUnit.UnitInfo
+				
+				-- (1) 일반 유닛의 경우 (타일 정보가 있음)
+				if isvalid(getUnitInfo.setTile) then
+					-- 메인 유닛인 경우
+					if isSettedMainUnit == false then
+						
+						-- 이벤트 처리
+						user:SendEvent(LevelUpUnit(getUnit, getUnitInfo.level + 1, getUnitInfo.cost, getUnitInfo.charID))	-- 에러 아님
+						
+						-- 레벨 올리고
+						getUnitInfo:SetPropertyToServer("level", getUnitInfo.level + 1, nil, true)
+						getUnit.UnitStatus:SetDefaultStatus()
+						
+						isSettedMainUnit = true
+						mainUnit = getUnit
+						mainUnitId = getUnit.Id
+						
+						table.insert(mergedEntities, 1, getUnit.Id)
+						table.insert(mergedPosList, 1, getUnitPos(getUnit))
+						
+						-- 영구 스택 정보를 기록합니다.
+						addStackAbilities(getUnit)
+						
+						-- 장착 중이던 아이템 정보를 기록하고, 제거합니다.
+						local equippedItems = getUnit.UnitStatus.EquippedItemIDList
+						for _, itemID in pairs(equippedItems) do
+							-- 상징인 경우 장착 해제 처리합니다.
+							local keyHead = string.sub(itemID, 1, 2)
+							if keyHead == "EI" and getUnitInfo:IsOnFieldUnit() then
+								if onFieldEmblemItemsID[itemID] == nil then
+									onFieldEmblemItemsID[itemID] = 0
+								else
+									onFieldEmblemItemsID[itemID] += 1
+								end
+							end
+							
+							table.insert(items, itemID)
+						end
+						getUnit.UnitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+						
+						-- 오른 레벨에 따라 material을 설정
+						mainUnit.UnitInfo:SetOutlineMaterial(false, "", userId)
+						
+					------------------------	
+					-- 메인 유닛이 이미 세팅된 경우 (= 합성 재료로 쓰인 유닛인 경우)
+					else
+						-- item 체크해서 빼낸다음 유닛 삭제 해야함 (구현중)
+						local unit_Tile = getUnitInfo.setTile
+						local tileInfo = unit_Tile.TileComponent_New
+						
+						for idx, unit in pairs(teamManager.OwnUnits) do
+							if unit == getUnit then
+								table.remove(teamManager.OwnUnits, idx)
+		                        --for idx, unit in pairs(teamManager.OwnUnits) do
+		                        --    log("Idx = ", idx, ", Unit = ", unit.UnitInfo.charID)
+		                        --end
+		                        --log("REMOVE_ #teamManager.OwnUnits = ", #teamManager.OwnUnits)
+								break
+							end
+						end
+						
+						-- 전장에 있는 유닛이 합성된 경우, OnField 숫자 조정
+						if tileInfo.verticalNum > 0 then
+							self:OnFieldSet(teamManager, getUnit, false, true, false)
+						end
+						
+						table.insert(mergedEntities, getUnit.Id)
+						table.insert(mergedPosList, getUnitPos(getUnit))
+						
+						addStackAbilities(getUnit)
+						
+						-- 장착 중이던 아이템을 temp에 넣고, 장착 해제합니다.
+						local equippedItems = getUnit.UnitStatus.EquippedItemIDList
+						for _, itemID in pairs(equippedItems) do
+							-- 상징인 경우 장착 해제 처리합니다.
+							local keyHead = string.sub(itemID, 1, 2)
+							if keyHead == "EI" and getUnit.UnitInfo:IsOnFieldUnit() then
+								if onFieldEmblemItemsID[itemID] == nil then
+									onFieldEmblemItemsID[itemID] = 0
+								else
+									onFieldEmblemItemsID[itemID] += 1
+								end
+							end
+							
+							table.insert(items, itemID)
+						end
+						getUnit.UnitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+						
+						-- 드래그 해제
+						if self.SelectUnit == getUnit then
+							self:DragOff(getUnit, userId)
+						end
+						
+						-- 삭제 대신 초기화 필요
+						getUnitInfo:CleanCharInfo()
+					end
+				end
+			end
+		end
+		
+		-- merge 대상 필드 위 유닛들이 메달을 장착하고 있었다면, 상징 수를 감소시킵니다.
+		for itemID, count in pairs(onFieldEmblemItemsID) do
+		    local synergyID = string.sub(itemID, 3, -1)
+		    teamManager:GetOnFieldSynergyCount("S"..synergyID, -1)
+		end
+		--------------------------------------------------------------------------------
+		-- 메인 유닛한테 영구 스택 합침
+		for key, value in pairs(stackAbilities) do
+			mainUnit.UnitStatus.StackProperty[key] = value
+		end
+		mainUnit.UnitStatus:SetUnitStatus(false)
+		--------------------------------------------------------------------------------
+		-- 메인 유닛한테 무작위 3개 아이템 장착
+		
+		-- (1) 장착한 아이템이 오직 "산타 장갑"인 경우, 산타 장갑만 장착
+		if #items == 1 and items[1] == "NI10033" then
+			mainUnit.UnitStatus:SetProperty("EquippedItemIDList", "NI10033", "insert,-1")
+			table.remove(items, 1)
+		-- (2) 그 외의 경우
+		else
+		
+			-- 재료 아이템을 가지고 있는가? 
+			local materialIdx = {} 
+			for idx,id in pairs(items) do 			
+				if string.sub(id,1,2) == "MI" then 
+					table.insert(materialIdx,idx)
+				end 		
+			end
+		
+			 -- 재료 아이템 2개를 완성 아이템으로 조합
+			if #materialIdx == 2 then 
+		
+				local materialItem1 = items[materialIdx[1]]
+				local materialItem2 = items[materialIdx[2]]
+				
+				-- 조합 아이템 장착
+				local combineID = _ItemCombineService:GetNormalItemIDByMaterialItemIDs(materialItem1,materialItem2, user)
+				table.insert(items,combineID)
+				-- 재료 아이템 제거 
+				table.remove(items,materialIdx[2]) 
+				table.remove(items,materialIdx[1])
+				
+			end
+		
+			-- 일부 아이템은 장착 대상에서 제외
+			for i=#items, 1, -1 do
+				if items[i] == "NI10033" then	-- 산타 장갑인 경우
+					table.remove(items, i)	-- 대상에게서 제거하고
+					table.insert(teamManager.OwnItems, "NI10033")	-- 인벤토리로 회수
+					
+				elseif string.sub(items[i], 1, 2) == "EI" then -- 동일한 상징 아이템이 있는 경우
+					for j=i-1, 1, -1 do
+						if items[j] == items[i] then
+							log("동일한 상징 아이템이 목록에 있으므로 제거합니다")
+							table.insert(teamManager.OwnItems, items[i])	-- 인벤토리로 회수
+							table.remove(items, i) -- 대상에서 제거
+							break
+						end
+					end
+				end
+			end
+			
+			-- 남은 아이템 장착 
+			for i=1, 3 do
+				if #items < 1 then  -- 남은 아이템 수가 0개라면 종료
+					break 
+				end	
+				----
+				local randomIdx = _UtilLogic:RandomIntegerRange(1, #items)
+				local itemID = items[randomIdx]	
+				
+				-- 장착한 아이템이 상징 아이템인 경우
+				local keyHead = string.sub(itemID, 1, 2)
+				local keyTail = string.sub(itemID, 3, -1)
+				if keyHead == "EI" then
+					if mainUnit.UnitInfo:IsOnFieldUnit() then
+						-- 단, 전장에 해당 유닛과 동일한 ID를 가진 아군 유닛이 있고 동일한 메달을 장착한 경우는 예외처리
+						local targetUnitCharID = mainUnit.UnitInfo.charID
+						local ownUnits = user.TeamManager.OwnUnits
+						local hasSameCharWithSameEmblem = false 
+						for _, unit in pairs(ownUnits) do
+							if unit.UnitInfo:IsOnFieldUnit() then	-- 전장 위 유닛이고
+								if unit ~= mainUnit and unit.UnitInfo.charID == targetUnitCharID then	-- 동일한 캐릭터이며
+									local itemListToCompare = unit.UnitStatus.EquippedItemIDList
+									for _, equippedItemIDtoCompare in pairs(itemListToCompare) do
+										local itemIDtoCompare = _UtilLogic:Split(equippedItemIDtoCompare, "_")[1]
+										
+										if itemIDtoCompare == itemID then -- 동일한 상징 아이템을 장착했다면
+											hasSameCharWithSameEmblem = true
+										end
+									end
+								end
+							end
+						end
+						
+						if hasSameCharWithSameEmblem == false then
+							log("시너지 업 : ", "S"..keyTail)
+							user.TeamManager:GetOnFieldSynergyCount("S"..keyTail, 1)
+						else
+							log("동일한 아이디를 가진 캐릭터가 동일한 메달을 장착한 상태이므로 시너지를 활성화하지 않습니다.")
+						end
+					end
+					
+				end
+				
+				mainUnit.UnitStatus:SetProperty("EquippedItemIDList", itemID, "insert,-1")
+				table.remove(items, randomIdx)
+				
+				mainUnit.UnitStatus:SetUnitStatus(false)
+			end
+		end
+		
+		-- 남은 아이템은 수거
+		for i=1, #items do
+			local itemID = items[i]
+			table.insert(teamManager.OwnItems, itemID)
+		end
+		--------------------------------------------------------------------------------
+		-- teamManager에서 데이터 변경
+		teamManager.OwnUnitsBySetID[setID] -= 3
+		local targetCharID = string.sub(setID, 1, -2)
+		local targetLevel = tonumber(string.sub(setID, -1, -1)) + 1
+		local changedSetID = targetCharID..string.format("%d",targetLevel)
+		
+		if isvalid(teamManager.OwnUnitsBySetID[changedSetID]) == false then
+			teamManager.OwnUnitsBySetID[changedSetID] = 1
+		else 
+			teamManager.OwnUnitsBySetID[changedSetID] += 1
+		end
+		
+		-- 이벤트 생성
+		local mergeUnitEvent = MergeUnit(mainUnit, targetLevel)	-- 에러 아님
+		user:SendEvent(mergeUnitEvent)
+		--------------------------------------------------------------------------------
+		_UI_UnitInfoPopup:UI_Update_WhenMerged(_UtilLogic:TableToString(mergedEntities), userId)
+		self:PlayMergeDirection(_UtilLogic:TableToString(mergedPosList), targetLevel, mainUnit,userId)
+		
+		--log("머지 이후, ownUnitsBySetID = \n")
+		--log(_UserService:GetUserEntityByUserId(userId).TeamManager.OwnUnitsBySetID)
+		
+		
+		if string.sub(user.GameManager.ModeType, 1, 6) == "Single" then
+			-- 일일 미션 : 2성 캐릭터 만들기
+			if mainUnit.UnitInfo.level == 2 then
+				user.DailyMissionComponent:AddDailyMissionProgress("DM10008", user.GameManager.ModeLevel, 1)
+			-- 일일 미션 : 3성 캐릭터 만들기	
+			elseif mainUnit.UnitInfo.level == 3 then
+				user.DailyMissionComponent:AddDailyMissionProgress("DM10009", user.GameManager.ModeLevel, 1)
+			end
+		end
+		
+		return mainUnit --_EntityService:GetEntity(mainUnitId)
+	end
+
+	@ExecSpace("Server")
+	method void SellUnit(string userID, Entity unit)
+		-- 유닛을 판매하는 함수입니다.
+		------------------------------------------------------------
+		-- 예외 처리
+		if isvalid(userID) == false then
+			return
+		end
+		if isvalid(unit) == false then
+			self:DragOff(nil, userID)
+			return
+		end
+		
+		if unit.UnitInfo.IsResellable == false then
+			_UIToast:ShowMessageByLocalizingKey("CannotSellUnit", userID)
+			self:DragOff(unit, userID)
+			return
+		end
+		
+		-- 검증: 사용(대기석 or 전장) 중인 유닛이 아닌 경우
+		if unit.UnitInfo.use == false then
+			unit.UnitInfo:CleanCharInfo()
+			return
+		end
+		
+		self:DragOff(unit, userID)
+		------------------------------------------------------------
+		-- 검증
+		local userEntity = _UserService:GetUserEntityByUserId(userID) 
+		local gameManager = userEntity.GameManager
+		if gameManager.PhaseType ~= "Ready" then
+			return
+		end
+		------------------------------------------------------------
+		-- 기본 프로퍼티
+		local teamManager = userEntity.TeamManager
+		local shopManager = userEntity.CharacterShopManager_New
+		local userPControl = userEntity.TM_PropertyControl
+		local unitInfo = unit.UnitInfo
+		------------------------------------------------------------
+		-- 유닛 판매 이벤트 처리
+		userEntity:SendEvent(SellUnit(unit, unitInfo.charID, unitInfo.cost, unitInfo.level))	 -- 에러 아님
+		------------------------------------------------------------
+		-- 유닛의 별 등급에 따라 판매 금액을 계산합니다.
+		local cost = unitInfo.cost
+		local level = unitInfo.level
+		
+		local getMoney = 0
+		if cost == 1 then
+			getMoney = cost * (3^(level-1))
+		elseif level > 1 then
+			getMoney = cost * (3^(level-1)) - 1
+		else
+			getMoney = cost
+		end
+		
+		getMoney = math.max(0, getMoney + userPControl.Unit_AddResellCost)
+		
+		_GeneralDirectorLogic:PlayCoinDirector_Sprite(getMoney,nil,"Shop",userEntity.PlayerComponent.UserId)
+		--_GeneralDirectorLogic:InsertCoinDirectorData("Shop",nil,userEntity.PlayerComponent.UserId)
+		teamManager:AddGolds(getMoney, "sellChar")
+		------------------------------------------------------------
+		-- 유닛 삭제
+		local setTile = unitInfo.setTile
+		local setId = unitInfo.charID .. string.format("%d", level)
+		
+		if unit.UnitInfo.IsMergableUnit == true then
+			teamManager.OwnUnitsBySetID[setId] -= 1
+		end
+		
+		if isvalid(shopManager.LeftUnitCount[unitInfo.charID]) then
+			shopManager.LeftUnitCount[unitInfo.charID] += 3^(level-1)
+			-- log(string.format("%s's Left Count is %d", unitInfo.charID, shopManager.LeftUnitCount[unitInfo.charID])) 
+		end
+		
+		for idx, ownUnit in pairs(teamManager.OwnUnits) do
+			if unit == ownUnit then
+				table.remove(teamManager.OwnUnits, idx)
+			end 
+		end
+		------------------------------------------------------------
+		if setTile.TileComponent_New.verticalNum > 0 then
+			self:OnFieldSet(teamManager, unit, false, unitInfo.IsSettableOnWatingField, true)
+		end
+		------------------------------------------------------------
+		-- 유닛이 가지고 있던 아이템을 회수합니다.
+		-- 단 OnField 유닛은 회수하지 않습니다.
+		if unit.UnitInfo.IsSettableOnWatingField then
+			_ItemSetLogic:WithdrawAllItems(unit, false)
+		else
+			unit.UnitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+		end
+		------------------------------------------------------------
+		-- 유닛 초기화 필요
+		unit.UnitInfo:CleanCharInfo()
+		
+		-- 붉은 타일 켜져 있으면 끄기
+		_GeneralDirectorLogic:SetClientRedTile(unit,false,userID)
+		------------------------------------------------------------
+		self:DragOff(nil, userID)
+		_PlaySoundLogic:PlaySound("M0006",userID)
+		
+	end
+
+	@ExecSpace("Server")
+	method void BattleSetting_UnitSet(string userId, string phaseType)
+		-- 전투 시작/종료 시 적 유닛을 생성 또는 제거하거나 관리하는 함수
+		---------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then
+			return
+		end
+		
+		local units = self.UnitsParentEntity[userId]
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local userPControl = user.TM_PropertyControl
+		
+		local charStatusTable = _DataService:GetTable("CharacterStatus")
+		local charInfoTable = _DataService:GetTable("CharacterInfo")
+		
+		local enemyUnitCount = 0
+		---------------------------------------------------------
+		-- (준비 => 전투)로 전환할 때
+		if phaseType == "Setting" then
+			---------------------------------------------------------
+			-- 상대 유닛 정보를 받아와서 유닛 세팅해주기
+			-- 상대 유닛 수, 우리팀 유닛 수를 확인하고 세팅
+			---------------------------------------------------------
+			-- 기본 라운드 별 상대팀
+			enemyUnitCount = self:BattleSetting_EnemyUnit(userId, gameManager.ModeSetVersion, gameManager.ModeType, gameManager.UnitPresetType, gameManager.ModeLevel)
+			---------------------------------------------------------
+			-- 딜 체크용 허수아비
+			-- enemyUnitCount = self:BattleSetting_EnemyUnit_New(userId)
+			---------------------------------------------------------
+			-- 적 시너지 체크 후 필요한 작업 세팅
+			self:BattleSetting_EnemySynergyCheck(userId)
+			---------------------------------------------------------
+			-- 전장 내 유닛 수 세팅
+			local eCount = 0
+			local tCount = 0
+			
+			for _, unit in pairs(units.Children) do
+				local unitInfo = unit.UnitInfo
+				if unitInfo.use and unitInfo:IsOnFieldUnit() then
+					if unitInfo.TeamType == "User" then
+						tCount += 1
+					elseif unitInfo.TeamType == "Enemy" then
+						eCount += 1
+					end
+				end
+			end
+			
+			user.GameManager.EnemyCount = eCount
+			user.GameManager.MyUnitCount = tCount
+			---------------------------------------------------------
+			-- 유닛 기록값 초기화
+			for _, unit in pairs(units.Children) do
+				local unitInfo = unit.UnitInfo
+				if unitInfo.use and unitInfo:IsOnFieldUnit() then
+					-- unit.UnitBattleStatistics:RoundPropertyInitialize(unitInfo.charID)
+					
+		
+					if isvalid(unitInfo.SkillComponent.SetBattle) then
+						unitInfo.SkillComponent:SetBattle()
+					end
+				end
+			end
+		---------------------------------------------------------
+		-- 전투 종료의 경우
+		elseif phaseType == "Clean" then
+			---------------------------------------------------------
+		
+			-- 모든 유닛의 전투 중 데이터를 제거합니다.
+			for _, unit in pairs(units.Children) do
+				local unitInfo = unit.UnitInfo
+				if unitInfo.use then
+					--log(unitInfo.unitName, unit.UnitStatus.HP, unit.UnitStatus.HP / unit.UnitStatus.MaxHP)
+					_StatusChangeLogic:RemoveStatusEffect(unit, "All")
+					_StatusChangeLogic:RemoveOneoffStats(unit)
+					
+					if unit.UnitAIWanderComponent.Enable then
+						unit.UnitBattleStatistics:SetProperty("DeadTime", -1, true)
+						unit.UnitAIWanderComponent:BattleEnd()
+						unit.UnitAIWanderComponent.Enable = false
+					end
+				
+					if isvalid(unitInfo.SkillComponent.Reset) then
+						unitInfo.SkillComponent:Reset()
+					end
+					
+					unit.UnitAnimationComponent:PlayAnimation(1, "Idle", nil, userId)
+				end
+				_GeneralDirectorLogic:RemoveHectorEffect(unit,"Clean",userId) --  헥터 위협
+				_SynergyBattleDirectorLogic:S10017SurviveEffect(unit,false,"Clean",userId) -- 빅토리아 부활 초기화
+				_SynergyBattleDirectorLogic:S10016ColdAir(unit,false,0,"Clean",userId)--엘나스 냉기 초기화
+			end
+			---------------------------------------------------------
+			-- 모든 상대 유닛 정리
+			table.clear(teamManager.EnemyUnits)
+			table.clear(teamManager.EnemyOwnedFieldSynergy)
+			---------------------------------------------------------
+			-- 적 룬 제거
+			for i = #teamManager.EnemyOwnedRunes, 1, -1 do
+				user.SpecialShopManager:RemoveRCComponent(teamManager.EnemyOwnedRunes[i], 0, false, i)
+				table.remove(teamManager.EnemyOwnedRunes, i)
+			end
+			
+		---------------------------------------------------------
+		-- 전투 준비 단계
+		elseif phaseType == "Ready" then
+		---------------------------------------------------------
+		-- 유저 유닛 위치 원래대로 조정
+		---------------------------------------------------------
+			for _, unit in pairs(units.Children) do
+				local unitInfo = unit.UnitInfo
+				local unitStatus = unit.UnitStatus
+				local animComponent = unit.UnitAnimationComponent
+				if unitInfo.use then
+					if unitInfo.TeamType == "Enemy" then
+						unitStatus:SetProperty("state", "Idle", "")
+					elseif unitInfo.TeamType == "User" then
+						if isvalid(unitInfo.saveTile) == false then -- 특정 효과에 의해 이번 라운드에만 생성된 케이스 (그림자)
+							unitInfo:SetPropertyToServer("setTile", nil, "All", true)
+						else
+							unitInfo:SetPropertyToServer("setTile", unitInfo.saveTile, "All", true)
+							animComponent:SetLayerOrder(unitInfo.saveTile.TileComponent_New.verticalNum, unitInfo.OwnerId)
+						end
+						
+						unitInfo.spriteRenderer.SpriteRendererComponent.FlipX = true
+					end
+				end
+			end
+			
+			-- 각 유닛의 스탯을 리셋...
+			for i, unit in pairs(units.Children) do
+				_TimerService:SetTimerOnce(function() 
+					
+					if isvalid(unit) == false then
+						return
+					end
+					
+					local unitInfo = unit.UnitInfo
+					local unitStatus = unit.UnitStatus
+					local animComponent = unit.UnitAnimationComponent
+					if unitInfo.use then
+						_CustomizedBattleEffectService:SetEntityVisible(unit, true, userId)
+						animComponent:PlayAnimation(1, "ForcedIdle", unit.Parent, unitInfo.OwnerId)
+						
+						if unitInfo.TeamType == "Enemy" then
+							unitInfo:CleanCharInfo()
+							unitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+						elseif unitInfo.TeamType == "User" then
+							--unitInfo:SetCharInfo(unitInfo.charID, unitInfo.level, unitInfo.cost)
+						end
+						
+						unit.UnitItem:ClearAllStacks()
+						unit.UnitSynergy:ClearAllStackProperties()
+						--unit.UnitAnimationComponent:SetDefaultColor(Color(1,1,1,1), userId)
+						
+						unitStatus:SetUnitStatus(false)
+					end
+				end, 0.03 * i)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BattleSetting_OnSettingPhase(string userId)
+		
+		-- 준비 > 세팅 > 전투 단계 중 '세팅' 단계에서 수행하는 함수입니다.
+		---------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local units = self.UnitsParentEntity[userId]
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local specialShopManager = user.SpecialShopManager
+		---------------------------------------------------------
+		for _, unit in pairs(units.Children) do
+			local unitInfo = unit.UnitInfo
+			if unitInfo.use then
+				unitInfo.saveTile = unitInfo.setTile
+		
+				unit.UnitItem:OnSettingPhase()
+			end
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void BattleSetting_OnBattlePhase(string userId)
+		-- 준비 > 세팅 > 전투 단계 중 '전투' 단계가 시작할 때 수행하는 함수입니다.
+		---------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local units = self.UnitsParentEntity[userId]
+		local teamManager = user.TeamManager
+		---------------------------------------------------------
+		-- 전투하도록 AiWander 켜주기
+		user.TeamBattleStatistics:RoundPropertyInitialize()
+		---------------------------------------------------------
+		-- 전투 유닛 활성화
+		for _, unit in pairs(units.Children) do
+			local unitInfo = unit.UnitInfo
+			if unitInfo.use then
+				unitInfo.OnTileNum["Vertical"] = unitInfo.setTileVerticalNum
+				unitInfo.OnTileNum["Horizontal"] = unitInfo.setTileHorizontalNum
+				
+				if unitInfo:IsOnFieldUnit() then
+					unit.UnitBattleStatistics:RoundPropertyInitialize(unitInfo.charID)
+					unit.UnitStatus.Target = nil
+					unit.UnitAIWanderComponent.Enable = true
+					unit.UnitAIWanderComponent.setBattle = true
+				elseif unitInfo.charID == "C00002" then
+					unit.UnitBattleStatistics:RoundPropertyInitialize(unitInfo.charID)
+					unit.UnitStatus.Target = nil
+					unit.UnitAIWanderComponent.Enable = true
+					unit.UnitAIWanderComponent.stopUnit = true
+					unit.UnitAIWanderComponent.setBattle = true
+				end
+			end
+		end
+		---------------------------------------------------------
+		-- 아이템 효과 적용
+		for _, unit in pairs(units.Children) do
+			local unitInfo = unit.UnitInfo
+			if unitInfo.use then
+				if unitInfo:IsOnFieldUnit() then
+					unit.UnitItem:OnBattleStart()
+				end
+			end
+		end
+		---------------------------------------------------------
+		-- 시너지 효과 적용
+		for _, unit in pairs(units.Children) do
+			local unitInfo = unit.UnitInfo
+			if unitInfo.use then
+				if unitInfo:IsOnFieldUnit() then
+					unit.UnitSynergy:OnBattleStart()
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UnitSampleSpawn(string userId)
+		-- 유닛으로 사용할 엔티티 샘플을 미리 스폰해두는 함수입니다.
+		-- 유저당 자신의 유닛으로 사용할 30 유닛, 적의 유닛으로 사용할 20 유닛이 스폰됩니다.
+		------------------------------------------------------------
+		-- 이미 소환되어 있는 경우, 재소환 없이 유닛 초기화
+		------------------------------------------------------------
+		local us = _UserService:GetUserEntityByUserId(userId).CurrentMap:GetChildByName("UnitsSample")
+		if not isvalid(self.UnitsParentEntity[userId]) then
+			self:SetUnitsParentEntity(userId, us:Clone("Units_" .. userId))
+		else
+			self:SetUnitsParentEntityInClient(userId, self.UnitsParentEntity[userId], userId)
+		end
+		
+		local units = self.UnitsParentEntity[userId]
+		
+		--[[local function unitSampleSpawnFnc()
+			
+			local unitSetCount = 0
+			
+			while true do
+				-- 기본 아군 유닛
+				if unitSetCount <= 30 then
+					local bName = string.format("BTUnit_%d", unitSetCount)
+					local bUnit = units:GetChildByName(bName)
+					if not isvalid(bUnit) then
+						bUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", bName, Vector3(999,999,0), units)
+					end
+					bUnit.UnitBattleStatistics:PropertyClear()
+					bUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+					bUnit.UnitInfo:SetPropertyToServer("TeamType", "User", nil, true)
+					bUnit.UnitInfo:CleanCharInfo()
+				-- [시간의 신전] 시너지 : 도도
+				elseif unitSetCount <= 31 then
+					local bUnit = units:GetChildByName("BTUnit_DoDo")
+					if not isvalid(bUnit) then
+						bUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", "BTUnit_DoDo", Vector3(999,999,0), units)
+					end
+					bUnit.UnitBattleStatistics:PropertyClear()
+					bUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+					bUnit.UnitInfo:SetPropertyToServer("TeamType", "User", nil, true)
+					bUnit.UnitInfo.IsResellable = false
+					bUnit.UnitInfo.IsMergableUnit = false
+					bUnit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+					bUnit.UnitInfo.IsMovableByPlayer = false
+					bUnit.UnitInfo.IsSettableOnWatingField = false
+					bUnit.UnitInfo.IsAppliableSynergy = false
+					bUnit.UnitInfo:CleanCharInfo()
+				-- 적 유닛
+				elseif unitSetCount <= 51 then
+					local eName = string.format("EnemyUnit_%d", unitSetCount - 31)
+					local eUnit = units:GetChildByName(eName)
+					if not isvalid(eUnit) then
+						eUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", eName, Vector3(999,999,0), units)
+					end
+					eUnit.UnitBattleStatistics:PropertyClear()
+					eUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+					eUnit.UnitInfo:SetPropertyToServer("TeamType", "Enemy", nil, true)
+					eUnit.UnitInfo:CleanCharInfo()
+				-- [시간의 신전] 시너지 : 도도 (적)
+				elseif unitSetCount <= 52 then
+					local eUnit = units:GetChildByName("EnemyUnit_DoDo")
+					if not isvalid(eUnit) then
+						eUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", "EnemyUnit_DoDo", Vector3(999,999,0), units)
+					end
+					eUnit.UnitBattleStatistics:PropertyClear()
+					eUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+					eUnit.UnitInfo:SetPropertyToServer("TeamType", "Enemy", nil, true)
+					eUnit.UnitInfo.IsResellable = false
+					eUnit.UnitInfo.IsMergableUnit = false
+					eUnit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+					eUnit.UnitInfo.IsMovableByPlayer = false
+					eUnit.UnitInfo.IsSettableOnWatingField = false
+					eUnit.UnitInfo.IsAppliableSynergy = false
+					eUnit.UnitInfo:CleanCharInfo()
+				-- [그림자] 시너지
+				elseif unitSetCount <= 53 then
+					for i=1, 2 do
+						local bName = string.format("BTUnit_Shadow%d",i)
+						local bUnit = units:GetChildByName(bName)
+						if not isvalid(bUnit) then
+							bUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", bName, Vector3(999,999,0), units)
+						end
+						bUnit.UnitBattleStatistics:PropertyClear()
+						bUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+						bUnit.UnitInfo:SetPropertyToServer("TeamType", "User", nil, true)
+						bUnit.UnitAnimationComponent:SetDefaultColor(Color.black, userId)
+						bUnit.UnitInfo.IsResellable = false
+						bUnit.UnitInfo.IsMergableUnit = false
+						bUnit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+						bUnit.UnitInfo.IsMovableByPlayer = true
+						bUnit.UnitInfo.IsSettableOnWatingField = false
+						bUnit.UnitInfo.IsAppliableSynergy = true
+						bUnit.UnitInfo:CleanCharInfo()
+						bUnit.UnitSynergy.SynergyStack["S10007"] = 50
+					end
+				-- [그림자] 시너지 - 적
+				elseif unitSetCount <= 54 then
+					for i=1, 2 do
+						local eName = string.format("EnemyUnit_Shadow%d",i)
+						local eUnit = units:GetChildByName(eName)
+						if not isvalid(eUnit) then
+							eUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", eName, Vector3(999,999,0), units)
+						end
+						eUnit.UnitBattleStatistics:PropertyClear()
+						eUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+						eUnit.UnitInfo:SetPropertyToServer("TeamType", "Enemy", nil, true)
+						eUnit.UnitAnimationComponent:SetDefaultColor(Color.black, userId)
+						eUnit.UnitInfo:CleanCharInfo()
+						eUnit.UnitSynergy.SynergyStack["S10007"] = 50
+					end
+				-- [오르비스] 시너지
+				elseif unitSetCount <= 55 then
+					for i=1, 3 do
+						local bName = string.format("BTUnit_OrbisStone%d",i)
+						local bUnit = units:GetChildByName(bName)
+						if not isvalid(bUnit) then
+							bUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", bName, Vector3(999,999,0), units)
+						end
+						bUnit.UnitBattleStatistics:PropertyClear()	
+						bUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+						bUnit.UnitInfo:SetPropertyToServer("TeamType", "User", nil, true)
+						bUnit.UnitInfo.IsResellable = false
+						bUnit.UnitInfo.IsMergableUnit = false
+						bUnit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+						bUnit.UnitInfo.IsMovableByPlayer = true
+						bUnit.UnitInfo.IsSettableOnWatingField = false
+						bUnit.UnitInfo.IsAppliableSynergy = false
+						bUnit.UnitInfo:CleanCharInfo()
+					end
+				-- [오르비스] 시너지 - 적
+				elseif unitSetCount <= 56 then
+					for i=1, 3 do
+						local eName = string.format("EnemyUnit_OrbisStone%d",i)
+						local eUnit = units:GetChildByName(eName)
+						if not isvalid(eUnit) then
+							eUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", eName, Vector3(999,999,0), units)
+						end
+						eUnit.UnitBattleStatistics:PropertyClear()
+						eUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+						eUnit.UnitInfo:SetPropertyToServer("TeamType", "Enemy", nil, true)
+						eUnit.UnitInfo:CleanCharInfo()
+					end
+				else
+					_UserService:GetUserEntityByUserId(userId).LoadingManager.LoadedCount["UnitSampleSpawn"] = 1
+					break
+				end
+				unitSetCount += 1
+				wait(0.15)
+			end
+		
+		end
+		
+		_TimerService:SetTimerOnce(unitSampleSpawnFnc, 0.01)
+		]]
+		
+		
+		local unitSetCount = 0
+		local unitSetTimer = 0
+		local user = _UserService:GetUserEntityByUserId(userId) 
+		local function unitSampleSpawnFnc()
+			unitSetCount += 1
+			
+			if user == false then
+				_TimerService:ClearTimer(unitSetTimer)
+				return
+			end
+			
+			-- 기본 아군 유닛
+			if unitSetCount <= 30 then
+				local bName = string.format("BTUnit_%d", unitSetCount)
+				local bUnit = units:GetChildByName(bName)
+				if not isvalid(bUnit) then
+					bUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", bName, Vector3(999,999,0), units)
+				end
+				bUnit.UnitBattleStatistics:PropertyClear()
+				bUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+				bUnit.UnitInfo:SetPropertyToServer("TeamType", "User", nil, true)
+				bUnit.UnitInfo:CleanCharInfo()
+			-- [시간의 신전] 시너지 : 도도
+			elseif unitSetCount <= 31 then
+				local bUnit = units:GetChildByName("BTUnit_DoDo")
+				if not isvalid(bUnit) then
+					bUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", "BTUnit_DoDo", Vector3(999,999,0), units)
+				end
+				bUnit.UnitBattleStatistics:PropertyClear()
+				bUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+				bUnit.UnitInfo:SetPropertyToServer("TeamType", "User", nil, true)
+				bUnit.UnitInfo.IsResellable = false
+				bUnit.UnitInfo.IsMergableUnit = false
+				bUnit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+				bUnit.UnitInfo.IsMovableByPlayer = false
+				bUnit.UnitInfo:SetPropertyToServer("IsSettableOnWatingField", false, "", true)
+				bUnit.UnitInfo.IsAppliableSynergy = false
+				bUnit.UnitInfo:CleanCharInfo()
+			-- 적 유닛
+			elseif unitSetCount <= 51 then
+				local eName = string.format("EnemyUnit_%d", unitSetCount - 31)
+				local eUnit = units:GetChildByName(eName)
+				if not isvalid(eUnit) then
+					eUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", eName, Vector3(999,999,0), units)
+				end
+				eUnit.UnitBattleStatistics:PropertyClear()
+				eUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+				eUnit.UnitInfo:SetPropertyToServer("TeamType", "Enemy", nil, true)
+				eUnit.UnitInfo:CleanCharInfo()
+			-- [시간의 신전] 시너지 : 도도 (적)
+			elseif unitSetCount <= 52 then
+				local eUnit = units:GetChildByName("EnemyUnit_DoDo")
+				if not isvalid(eUnit) then
+					eUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", "EnemyUnit_DoDo", Vector3(999,999,0), units)
+				end
+				eUnit.UnitBattleStatistics:PropertyClear()
+				eUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+				eUnit.UnitInfo:SetPropertyToServer("TeamType", "Enemy", nil, true)
+				eUnit.UnitInfo.IsResellable = false
+				eUnit.UnitInfo.IsMergableUnit = false
+				eUnit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+				eUnit.UnitInfo.IsMovableByPlayer = false
+				eUnit.UnitInfo:SetPropertyToServer("IsSettableOnWatingField", false, "", true)
+				eUnit.UnitInfo.IsAppliableSynergy = false
+				eUnit.UnitInfo:CleanCharInfo()
+			-- [그림자] 시너지
+			elseif unitSetCount <= 53 then
+				for i=1, 2 do
+					local bName = string.format("BTUnit_Shadow%d",i)
+					local bUnit = units:GetChildByName(bName)
+					if not isvalid(bUnit) then
+						bUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", bName, Vector3(999,999,0), units)
+					end
+					bUnit.UnitBattleStatistics:PropertyClear()
+					bUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+					bUnit.UnitInfo:SetPropertyToServer("TeamType", "User", nil, true)
+					bUnit.UnitAnimationComponent:SetDefaultColor(Color.black, userId)
+					bUnit.UnitInfo.IsResellable = false
+					bUnit.UnitInfo.IsMergableUnit = false
+					bUnit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+					bUnit.UnitInfo.IsMovableByPlayer = true
+					bUnit.UnitInfo:SetPropertyToServer("IsSettableOnWatingField", false, "", true)
+					bUnit.UnitInfo.IsAppliableSynergy = true
+					bUnit.UnitInfo:CleanCharInfo()
+					bUnit.UnitSynergy.SynergyStack["S10007"] = 50
+				end
+			-- [그림자] 시너지 - 적
+			elseif unitSetCount <= 54 then
+				for i=1, 2 do
+					local eName = string.format("EnemyUnit_Shadow%d",i)
+					local eUnit = units:GetChildByName(eName)
+					if not isvalid(eUnit) then
+						eUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", eName, Vector3(999,999,0), units)
+					end
+					eUnit.UnitBattleStatistics:PropertyClear()
+					eUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+					eUnit.UnitInfo:SetPropertyToServer("TeamType", "Enemy", nil, true)
+					eUnit.UnitAnimationComponent:SetDefaultColor(Color.black, userId)
+					eUnit.UnitInfo:CleanCharInfo()
+					eUnit.UnitSynergy.SynergyStack["S10007"] = 50
+				end
+			-- [오르비스] 시너지
+			elseif unitSetCount <= 55 then
+				for i=1, 3 do
+					local bName = string.format("BTUnit_OrbisStone%d",i)
+					local bUnit = units:GetChildByName(bName)
+					if not isvalid(bUnit) then
+						bUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", bName, Vector3(999,999,0), units)
+					end
+					bUnit.UnitBattleStatistics:PropertyClear()	
+					bUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+					bUnit.UnitInfo:SetPropertyToServer("TeamType", "User", nil, true)
+					bUnit.UnitInfo.IsResellable = false
+					bUnit.UnitInfo.IsMergableUnit = false
+					bUnit.UnitInfo:SetPropertyToServer("IsItemEquippable", false, "", true)	-- 아이템 장착 가능 여부
+					bUnit.UnitInfo.IsMovableByPlayer = true
+					bUnit.UnitInfo:SetPropertyToServer("IsSettableOnWatingField", false, "", true)
+					bUnit.UnitInfo.IsAppliableSynergy = false
+					bUnit.UnitInfo:CleanCharInfo()
+				end
+			-- [오르비스] 시너지 - 적
+			elseif unitSetCount <= 56 then
+				for i=1, 3 do
+					local eName = string.format("EnemyUnit_OrbisStone%d",i)
+					local eUnit = units:GetChildByName(eName)
+					if not isvalid(eUnit) then
+						eUnit = _SpawnService:SpawnByModelId("model://9cc59355-72de-4dae-bba2-8805e5ca48f1", eName, Vector3(999,999,0), units)
+					end
+					eUnit.UnitBattleStatistics:PropertyClear()
+					eUnit.UnitInfo:SetPropertyToServer("OwnerId", userId, nil, true)
+					eUnit.UnitInfo:SetPropertyToServer("TeamType", "Enemy", nil, true)
+					eUnit.UnitInfo:CleanCharInfo()
+				end
+			else
+				if isvalid(_UserService:GetUserEntityByUserId(userId)) then
+					_UserService:GetUserEntityByUserId(userId).LoadingManager.LoadedCount["UnitSampleSpawn"] = 1
+				end
+				_TimerService:ClearTimer(unitSetTimer)
+			end
+			
+		end
+		unitSetTimer = _TimerService:SetTimerRepeat(unitSampleSpawnFnc, 0.15, 0)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ProjectileSampleSpawn(string userId)
+		-- 투사체로 사용할 엔티티를 미리 소환해두는 함수입니다.
+		-- 기본 공격용 투사체 40개, 스킬 공격용 투사체 60개를 사용합니다.
+		------------------------------------------------------------
+		local ps = _UserService:GetUserEntityByUserId(userId).CurrentMap:GetChildByName("ProjectilesSample")
+		if not isvalid(self.ProjectilesParentEntity[userId]) then
+			self:SetProjectilesParentEntity(userId, ps:Clone("Projectiles_" .. userId))
+			--self:SetProjectilesParentEntity(userId, self.ProjectilesSample:Clone("Projectiles_" .. userId))
+		else
+			self:SetProjectilesParentEntityInClient(userId, self.ProjectilesParentEntity[userId], userId)
+		end
+		
+		local projectiles = self.ProjectilesParentEntity[userId]
+		
+		--[[local function projSampleSpawnFnc()
+			local projSetCount = 0
+			while true do 
+				-- 기본 공격용 투사체
+				if projSetCount < 50 then
+					local ap_Name = string.format("atk_Proj_%d", projSetCount)
+					local atk_proj = projectiles:GetChildByName(ap_Name)
+					if not isvalid(atk_proj) then
+						atk_proj = _SpawnService:SpawnByModelId("model://65ffab91-c0ff-4864-9b4f-ad3908c20cd2", ap_Name, Vector3(999,999,0), projectiles)
+					end
+					atk_proj.AProjectileInfo:SetOwnerID(userId)
+					atk_proj:SetEnable(false)
+				-- 스킬 공격용 투사체
+				elseif projSetCount < 130 then
+					local sp_Name = string.format("skl_Proj_%d", projSetCount)
+					local skl_proj = projectiles:GetChildByName(sp_Name)
+					if not isvalid(skl_proj) then
+						skl_proj = _SpawnService:SpawnByModelId("model://80d32bc0-8fc8-4d3d-a672-8750b8dcb7ed", sp_Name, Vector3(999,999,0), projectiles)
+					end
+					skl_proj.SkillShotCheckComponent:SetOwnerID(userId)
+					skl_proj:SetEnable(false)
+				else
+					_UserService:GetUserEntityByUserId(userId).LoadingManager.LoadedCount["ProjectileSampleSpawn"] = 1
+					break
+				end
+				projSetCount += 1
+			end
+			
+		end
+		_TimerService:SetTimerOnce(projSampleSpawnFnc, 0.01)]]
+		
+		local projSetCount = 0
+		local projSetTimer = 0
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local function projSampleSpawnFnc()
+			projSetCount += 1
+			if isvalid(user) == false then
+				_TimerService:ClearTimer(projSetTimer)
+				return
+			end
+			
+			-- 기본 공격용 투사체
+			if projSetCount < 50 then
+				local ap_Name = string.format("atk_Proj_%d", projSetCount)
+				local atk_proj = projectiles:GetChildByName(ap_Name)
+				if not isvalid(atk_proj) then
+					atk_proj = _SpawnService:SpawnByModelId("model://65ffab91-c0ff-4864-9b4f-ad3908c20cd2", ap_Name, Vector3(999,999,0), projectiles)
+				end
+				atk_proj.AProjectileInfo:SetOwnerID(userId)
+				atk_proj:SetEnable(false)
+			-- 스킬 공격용 투사체
+			elseif projSetCount < 130 then
+				local sp_Name = string.format("skl_Proj_%d", projSetCount)
+				local skl_proj = projectiles:GetChildByName(sp_Name)
+				if not isvalid(skl_proj) then
+					skl_proj = _SpawnService:SpawnByModelId("model://80d32bc0-8fc8-4d3d-a672-8750b8dcb7ed", sp_Name, Vector3(999,999,0), projectiles)
+				end
+				skl_proj.SkillShotCheckComponent:SetOwnerID(userId)
+				skl_proj:SetEnable(false)
+			else
+				if isvalid(_UserService:GetUserEntityByUserId(userId)) then
+					_UserService:GetUserEntityByUserId(userId).LoadingManager.LoadedCount["ProjectileSampleSpawn"] = 1
+				end
+				_TimerService:ClearTimer(projSetTimer)
+			end
+			
+		end
+		
+		projSetTimer = _TimerService:SetTimerRepeat(projSampleSpawnFnc, 0.1, 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UnitSampleDestroy(string userId)
+		-- 유저가 나가면 유닛 샘플 엔티티를 지우는 함수입니다.
+		------------------------------------------------------------
+		local units = self.UnitsParentEntity[userId]
+		
+		local unitSetTimer = 0
+		local function unitSampleDestroyFnc()
+			if isvalid(units) then
+				local sampleEntities = units.Children
+				if #sampleEntities > 0 then
+					for _, sEntity in pairs(sampleEntities) do
+						sEntity:Destroy()
+						break
+					end
+				else
+					-- 더 이상 지울 엔티티가 없으면
+					units:Destroy()
+					_TimerService:ClearTimer(unitSetTimer)
+				end
+			else
+				-- units가 없으면
+				_TimerService:ClearTimer(unitSetTimer)
+			end
+		end
+		
+		unitSetTimer = _TimerService:SetTimerRepeat(unitSampleDestroyFnc, 0.1, 0)
+		self.UnitSampleDestroyTimerID = unitSetTimer
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ProjectileSampleDestroy(string userId)
+		-- 유저가 나가면 투사체 샘플 엔티티를 지우는 함수입니다.
+		------------------------------------------------------------
+		local projectiles = self.ProjectilesParentEntity[userId]
+		
+		local projectileSetTimer = 0
+		local function projectileSampleDestroyFnc()
+			if isvalid(projectiles) then
+				local sampleEntities = projectiles.Children
+				if #sampleEntities > 0 then
+					for _, sEntity in pairs(sampleEntities) do
+						sEntity:Destroy()
+						break
+					end
+				else
+					-- 더 이상 지울 엔티티가 없으면
+					projectiles:Destroy()
+					_TimerService:ClearTimer(projectileSetTimer)
+				end
+			else
+				-- projectiles가 없으면
+				_TimerService:ClearTimer(projectileSetTimer)
+			end
+		end
+		
+		projectileSetTimer = _TimerService:SetTimerRepeat(projectileSampleDestroyFnc, 0.1, 0)
+		
+		self.ProjectileSampleDestroyTimerID = projectileSetTimer
+	end
+
+	@ExecSpace("Client")
+	method void PlayMergeDirection(string mergedPosList_str, number targetStar, Entity MainUnit)
+		-- Merge 연출을 재생하는 함수입니다.
+		-- mergedPosList_str : merge 대상들의 tile 번호(= (h,v))를 저장한 테이블
+		------------------------------------------------
+		local playRate = 1
+		------------------------------------------------
+		local getWorldPos = function(tilePos_str)
+			if _UtilLogic:IsNilorEmptyString(tilePos_str) then
+				return nil
+			end
+			
+			local split = _UtilLogic:Split(tilePos_str, ",")
+			local tilePos_horizontal = tonumber(split[1])
+			local tilePos_vertical = tonumber(split[2]) 
+			
+			local tileEntity = nil
+			if tilePos_vertical > 0 then
+				tileEntity =  
+					_UserService.LocalPlayer.CurrentMap:GetChildByName(string.format("Line_%d", tilePos_vertical)):GetChildByName(string.format("Tile_%d", tilePos_horizontal))
+				--[[
+				_EntityService:GetEntityByPath(
+					string.format(_UserService.LocalPlayer.CurrentMapName.."/maps/Arena/Line_%d/Tile_%d", tilePos_vertical, tilePos_horizontal))]]
+			else
+				if tilePos_horizontal == 0 then
+					return nil
+				end
+				
+				tileEntity = _UserService.LocalPlayer.CurrentMap:GetChildByName("WaitLine"):GetChildByName(string.format("Tile_%d", tilePos_horizontal))
+				--[[ _EntityService:GetEntityByPath(
+					string.format("/maps/Arena/WaitLine/Tile_%d", tilePos_horizontal))]]
+			end 
+			
+			return tileEntity.TransformComponent.WorldPosition:ToVector2()
+		end
+		------------------------------------------------
+		-- 테이블의 1번 항목은 레벨업한 유닛, 나머지는 사라진 유닛의 좌표입니다.
+		local mergedPosList = _UtilLogic:StringToTable(mergedPosList_str)
+		local destinationPos = getWorldPos(mergedPosList[1])
+		------------------------------------------------
+		-- 합성되는 위치에 충전 파티클을 재생합니다. 이 때 메인 유닛 visible과 터치리시브 컴포를 끕니다.
+		local destPos3 = destinationPos:ToVector3()
+		
+		if MainUnit == _UnitSetLogic_New.SelectUnit then -- 만약 이미 드래그중이었던 유닛이라면 드래그 취소합니다.
+			self:DragOff(_UnitSetLogic_New.SelectUnit)
+		end
+		
+		MainUnit.Visible=false
+		MainUnit.TouchReceiveComponent.Enable=false
+		local chargingParticle = _SpawnService:SpawnByModelId(
+			"model://ffce8fbb-8b9c-40b9-a60a-dc321024d658",
+			"MergeParticle_Charge",
+			destPos3 + Vector3(0, 0.25, 0),
+			_UserService.LocalPlayer.CurrentMap)
+		
+		table.remove(mergedPosList, 1)
+		------------------------------------------------
+		-- 움직이는 파티클 create
+		for i=1, 2 do
+			local spawnPos = getWorldPos(mergedPosList[i])
+			
+			if spawnPos ~= nil then
+				local movingParticle = _SpawnService:SpawnByModelId(
+					"model://fddcacb1-164d-4ad7-8616-0a2a85ceb77e",
+					"mergedParticle",
+					spawnPos:ToVector3(),
+					_UserService.LocalPlayer.CurrentMap
+				)
+				
+				local dir = destinationPos - spawnPos -- 총 이동량
+				local t = 0
+				
+				-- 움직임 예약
+				local originPos = spawnPos:ToVector3()
+				local setMovingParticlePos = function()
+					t += 1/40
+					local deltaX = _TweenLogic:Ease(0, dir.x, 1, EaseType.Linear, t)
+					local deltaY = _TweenLogic:Ease(0, dir.y, 1, EaseType.Linear, t)
+					movingParticle.TransformComponent.WorldPosition = originPos + Vector3(deltaX, deltaY, 0)
+				end
+				for j=1, 40 do
+					_TimerService:SetTimerOnce(setMovingParticlePos, (0.5+ j/80)/playRate)
+				end
+				
+				-- 파괴 예약
+				movingParticle:Destroy(1.3)
+			end
+		end
+		
+		------------------------------------------------
+		-- 합성되는 위치에 완성 파티클 및 별 이미지를 보여줍니다. 이 때 메인유닛 visible과 터치리시브 컴포를 킵니다.
+		local playMergeFinishDirection = function()
+			chargingParticle:Destroy()
+			MainUnit.Visible=true
+			MainUnit.TouchReceiveComponent.Enable=true
+			local finishParticle = _SpawnService:SpawnByModelId(
+				"model://43c3cbab-b3db-40f4-9f5a-beaf8919e18b",
+				"MergeParticle_Finish",
+				destPos3 + Vector3(0, 0.5, 0),
+				_UserService.LocalPlayer.CurrentMap)
+			finishParticle:Destroy(1)
+			
+			-- 합성되는 위치에 별 이미지
+			local starImageModelID = "model://525825fe-8ccb-43c3-b015-e4a1e9a5bc8c"
+			if targetStar == 3 then
+				starImageModelID = "model://68c6a250-7921-478b-b92c-a57cd312ad97"
+			end
+			
+			local starImage = _SpawnService:SpawnByModelId(
+				starImageModelID,
+				"MergeStarImage",
+				destPos3 + Vector3(0, 1, 0),
+				_UserService.LocalPlayer.CurrentMap)
+			
+			local alpha = 1
+			local setAlpha = function()
+				alpha -= 1/20
+				if isvalid(starImage.CanvasGroupComponent) then
+					starImage.CanvasGroupComponent.GroupAlpha = alpha
+				else
+					--log_error("컴포넌트가 없음")
+				end
+			end
+			for i=1, 20 do
+				_TimerService:SetTimerOnce(setAlpha, (1+i/40)*playRate)
+			end
+				
+			starImage:Destroy(1)
+		end
+		_TimerService:SetTimerOnce(playMergeFinishDirection, 1.3/playRate)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SpawnShadow(string userId, Entity originUnit, string teamType, string SpawnType, number shadowIdx)
+		
+		-- 그림자 캐릭터의 쉐도우 파트너를 소환/소환 해제 하는 함수입니다.
+		--------------------------------------------------------
+		local charID = "" 
+		local level = ""
+		local setId = ""
+		local userEntity = _UserService:GetUserEntityByUserId(userId) 
+		local teamManager = userEntity.TeamManager
+		---@type UserDataRow
+		local charInfoDB = nil
+		
+		if isvalid(originUnit) == true then
+			charID = originUnit.UnitInfo.charID 
+			level = originUnit.UnitInfo.level
+			setId = charID .. string.format("%d", level)
+			charInfoDB = _DataService:GetTable("CharacterInfo"):FindRow("CharID", charID)
+		end
+		-------------------------------------------------------
+		-- 소환
+		-------------------------------------------------------
+		if SpawnType == "Spawn" then
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local setTile = nil
+			
+			---@type Entity
+			local unit = nil
+			
+			if teamType == "User" then
+				setTile = _BTLogic_New:getTile(originUnit, nil, "EmptyTileNearestToTheUnit_Team")[1]
+				unit = units:GetChildByName(string.format("BTUnit_Shadow%d", shadowIdx))
+				if unit.UnitInfo.use == false then
+					table.insert(teamManager.OwnUnits, unit)
+					for idx, unit in pairs(teamManager.OwnUnits) do
+						log("Idx = ", idx, ", Unit = ", unit.UnitInfo.charID)
+					end	
+					log("INSERT_Shadow #teamManager.OwnUnits = ", #teamManager.OwnUnits)
+				end
+			elseif teamType == "Enemy" then
+				setTile = _BTLogic_New:getTile(originUnit, nil, "EmptyTileNearestToTheUnit_Team")[1]
+				unit = units:GetChildByName(string.format("EnemyUnit_Shadow%d", shadowIdx))
+				if unit.UnitInfo.use == false then
+					table.insert(teamManager.EnemyUnits, unit)
+				end
+			end
+			
+			-- unit.UnitBattleStatistics:RoundPropertyInitialize(charID)
+			
+			local unitInfo = unit.UnitInfo
+			
+			unitInfo.use = true
+			if isvalid(unitInfo.setTile) == false then
+				unitInfo:SetPropertyToServer("setTile", setTile, "All", true)
+			end
+			
+			unitInfo:SetCharInfo(charID, level, 0)
+			
+			if teamType == "User" then
+				_SynergyReadyDirectorLogic:S10007ShadowSpawnEffect(unit, true, userId)
+			else
+				_SynergyReadyDirectorLogic:S10007ShadowSpawnEffect(unit, false, userId)
+				-- 원본 유닛이 장착한 아이템을 장착합니다.
+				for _, equippedItemID in pairs(originUnit.UnitStatus.EquippedItemIDList) do
+					local itemID = _UtilLogic:Split(equippedItemID, "_")[1]
+					_ItemSetLogic:EquipItemThroughItemID(unit, itemID.."_copied")
+				end
+				-- 무적 및 은신 상태가 됩니다.
+				_StatusChangeLogic:SetStatus(unit, unit, "SE0001", -1)
+				_StatusChangeLogic:SetStatus(unit, unit, "SE0002", -1)
+			end
+			--[[_CustomizedBattleEffectService:PlayEffectAttached(
+				"b6dbe98f30cd47b382d78af1665e60af",
+				unit, Vector3.zero, 0, Vector3.one, false, nil, userId)]]--
+			
+			return true
+		-------------------------------------------------------
+		-- 배틀 진입
+		-------------------------------------------------------
+		elseif SpawnType == "InBattle" then
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local unit = nil
+			
+			if teamType == "User" then
+				unit = units:GetChildByName(string.format("BTUnit_Shadow%d", shadowIdx))		
+			elseif teamType == "Enemy" then
+				unit = units:GetChildByName(string.format("EnemyUnit_Shadow%d", shadowIdx))
+			end
+			
+			-- 원본 유닛이 장착한 아이템을 장착합니다.
+			for _, equippedItemID in pairs(originUnit.UnitStatus.EquippedItemIDList) do
+				local itemID = _UtilLogic:Split(equippedItemID, "_")[1]
+				_ItemSetLogic:EquipItemThroughItemID(unit, itemID.."_copied")
+			end
+			
+			-- 무적 및 은신 상태가 됩니다.
+			_StatusChangeLogic:SetStatus(unit, unit, "SE0001", -1)
+			_StatusChangeLogic:SetStatus(unit, unit, "SE0002", -1)
+			
+		-------------------------------------------------------
+		-- 해제
+		-------------------------------------------------------
+		elseif SpawnType == "Clear" then
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local unit = nil
+			
+			if teamType == "User" then
+				unit = units:GetChildByName(string.format("BTUnit_Shadow%d", shadowIdx))
+				for idx, ownUnit in pairs(teamManager.OwnUnits) do
+					if unit == ownUnit then
+						table.remove(teamManager.OwnUnits, idx)
+						for idx, unit in pairs(teamManager.OwnUnits) do
+							log("Idx = ", idx, ", Unit = ", unit.UnitInfo.charID)
+						end
+						log("REMOVE_ #teamManager.OwnUnits = ", #teamManager.OwnUnits)
+					end 
+				end
+			elseif teamType == "Enemy" then
+				unit = units:GetChildByName(string.format("EnemyUnit_Shadow%d", shadowIdx))
+			end
+			
+			_CustomizedBattleEffectService:PlayEffect(
+				"ee242bec514848fea02f7ce3a8a5a537",
+				unit, unit.TransformComponent.WorldPosition, 0, Vector3.one, false, userId)
+				
+			unit.UnitInfo:CleanCharInfo()
+			
+			return true
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SpawnDoDo(string userId, string unitId, string teamType, string SpawnType, number level)
+		-- 도도를 소환/소환 해제 하는 함수입니다.
+		--------------------------------------------------------
+		local setId = unitId .. "1"
+		local userEntity = _UserService:GetUserEntityByUserId(userId) 
+		local teamManager = userEntity.TeamManager
+		local charInfoDB = _DataService:GetTable("CharacterInfo"):FindRow("CharID", "C00002")
+		-------------------------------------------------------
+		-- 소환
+		-------------------------------------------------------
+		
+		if SpawnType == "Spawn" then
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local setTile = nil
+			
+			---@type Entity
+			local unit = nil
+			
+			if teamType == "User" then
+				setTile = userEntity.CurrentMap:GetChildByName("SpecialTile"):GetChildByName("DoDoTile_1")
+				unit = units:GetChildByName("BTUnit_DoDo")
+				if unit.UnitInfo.use == false then
+					table.insert(teamManager.OwnUnits, unit)
+				end
+			elseif teamType == "Enemy" then
+				setTile = userEntity.CurrentMap:GetChildByName("SpecialTile"):GetChildByName("DoDoTile_2")
+				unit = units:GetChildByName("EnemyUnit_DoDo")
+				if unit.UnitInfo.use == false then
+					table.insert(teamManager.EnemyUnits, unit)
+				end
+			end
+			
+			local unitInfo = unit.UnitInfo
+			
+			-- unit.UnitBattleStatistics:RoundPropertyInitialize(unitId)
+			
+			if level == 3 then
+				unitInfo:SetPropertyToServer("unitPhaseNumber", 2, nil, true)
+			elseif level > 0 then
+				unitInfo:SetPropertyToServer("unitPhaseNumber", 1, nil, true)
+			end
+			
+			unitInfo.use = true
+			unitInfo:SetPropertyToServer("setTile", setTile, "All", true)
+			unitInfo:SetCharInfo(unitId, level, 0)
+			unit.UnitAnimationComponent:PlayAnimation(1, "Idle", unit, userId)
+			
+			-- 1초 지연되어 보임
+			_CustomizedBattleEffectService:SetEntityVisible(unit, false, userId)
+			local reservateSetVisible = function()
+				_CustomizedBattleEffectService:SetEntityVisible(unit, true, userId)
+				unit.UnitAnimationComponent:PlayAnimation(1, "ForcedIdle", unit.Parent, unit.UnitInfo.OwnerId)
+			end
+			_TimerService:SetTimerOnce(reservateSetVisible, 0.4)
+			
+			return true
+		-------------------------------------------------------
+		-- 배틀 진입
+		-------------------------------------------------------
+		elseif SpawnType == "InBattle" then
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local unit = nil
+			
+			if teamType == "User" then
+				unit = units:GetChildByName("BTUnit_DoDo")
+			elseif teamType == "Enemy" then
+				unit = units:GetChildByName("EnemyUnit_DoDo")
+			end
+			
+			unit.UnitInfo.SkillComponent:StartBattle()
+			unit.UnitAnimationComponent:PlayAnimation(1, "ForcedIdle", unit.Parent, unit.UnitInfo.OwnerId)
+		-------------------------------------------------------
+		-- 해제
+		-------------------------------------------------------
+		elseif SpawnType == "Clear" then
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local unit = nil
+			
+			if teamType == "User" then
+				unit = units:GetChildByName("BTUnit_DoDo")
+				for idx, ownUnit in pairs(teamManager.OwnUnits) do
+					if unit == ownUnit then
+						table.remove(teamManager.OwnUnits, idx)
+					end 
+				end
+			elseif teamType == "Enemy" then
+				unit = units:GetChildByName("EnemyUnit_DoDo")
+			end
+			
+			unit.UnitInfo:CleanCharInfo()
+			return true
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity SpawnOrbisStone(string userId, string teamType, string spawnType, number stoneIdx)
+		-- 오르비스 소환석을 소환/소환 해제 하는 함수입니다.
+		
+		--------------------------------------------------------
+		local charID = "C00003" 
+		local setId = "C000031"
+		local userEntity = _UserService:GetUserEntityByUserId(userId) 
+		local teamManager = userEntity.TeamManager
+		---@type UserDataRow
+		local charInfoDB = nil
+		-------------------------------------------------------
+		-- 소환
+		-------------------------------------------------------
+		if spawnType == "Spawn" then
+		
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local setTile = nil
+			
+			---@type Entity
+			local unit = nil
+			
+			-- 아군이 가장 많이 모여있는 곳의 빈 칸에 소환
+			if teamType == "User" then
+				unit = units:GetChildByName(string.format("BTUnit_OrbisStone%d", stoneIdx))
+				
+				-- 이미 소환된 상태가 아니라면 소환 실행
+				if unit.UnitInfo.setTile == nil then
+					---@type Entity 
+					local standardUnit = nil
+					for i=1, #teamManager.OwnUnits do
+						local targetUnit = teamManager.OwnUnits[i]
+						if targetUnit.UnitInfo:IsOnFieldUnit() and targetUnit.UnitInfo:DoesHaveSynergy("S10021") then
+							standardUnit = targetUnit
+						end
+					end
+					
+					local checkUnits = {}
+					for _, unit in pairs(teamManager.OwnUnits) do
+						if unit.UnitInfo:IsOnFieldUnit() then
+							table.insert(checkUnits, unit)
+						end
+					end
+					
+					setTile = _BTLogic_New:getTile(standardUnit, checkUnits, "EmptyTileWithMostEnemies_Team_1")[1]
+					
+					if unit.UnitInfo.use == false then
+						table.insert(teamManager.OwnUnits, unit)
+					end
+					
+					local phaseType = userEntity.GameManager.PhaseType
+					if phaseType ~= "Ready" then
+						userEntity.GameManager.MyUnitCount += 1
+					end
+				-- 이미 소환된 상태라면 아무것도 하지 않아요
+				else
+					return nil
+				end
+				
+			elseif teamType == "Enemy" then
+				---@type Entity 
+				local standardUnit = nil
+				for i=1, #teamManager.EnemyUnits do
+					local targetUnit = teamManager.EnemyUnits[i]
+					if targetUnit.UnitInfo:IsOnFieldUnit() and targetUnit.UnitInfo:DoesHaveSynergy("S10021") then
+						standardUnit = targetUnit
+					end
+				end
+				
+				local checkUnits = {}
+				for _, unit in pairs(teamManager.EnemyUnits) do
+					if unit.UnitInfo:IsOnFieldUnit() then
+						table.insert(checkUnits, unit)
+					end
+				end
+				
+				setTile = _BTLogic_New:getTile(standardUnit, checkUnits, "EmptyTileWithMostEnemies_Team_1")[1]
+				
+				unit = units:GetChildByName(string.format("EnemyUnit_OrbisStone%d", stoneIdx))
+				if unit.UnitInfo.use == false then
+					table.insert(teamManager.EnemyUnits, unit)
+				end
+			end
+			
+			-- unit.UnitBattleStatistics:RoundPropertyInitialize(charID)
+			
+			local unitInfo = unit.UnitInfo
+			
+			unitInfo.use = true
+			unitInfo:SetPropertyToServer("setTile", setTile, "All", true)
+			unitInfo:SetCharInfo(charID, 1, 0)
+			
+			
+			-- Visible 처리 + 이펙트 재생
+			_SynergyReadyDirectorLogic:S10021SpawnStone(unit, true, userId)
+			
+			return unit
+		-------------------------------------------------------
+		-- 배틀 진입
+		-------------------------------------------------------
+		elseif spawnType == "InBattle" then
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local unit = nil
+			
+			if teamType == "User" then
+				unit = units:GetChildByName(string.format("BTUnit_OrbisStone%d", stoneIdx))
+			elseif teamType == "Enemy" then
+				unit = units:GetChildByName(string.format("EnemyUnit_OrbisStone%d", stoneIdx))
+			end
+			
+			local unitInfo = unit.UnitInfo
+			unitInfo.saveTile = unitInfo.setTile
+			
+			-- 데미지를 줍니다 (죽음에 이르도록)
+			_StatusChangeLogic:KillUnitForce(nil, unit)
+			return nil
+		-------------------------------------------------------
+		-- 해제
+		-------------------------------------------------------
+		elseif spawnType == "Clear" then
+			local units = self.UnitsParentEntity[userId]
+			
+			---@type Entity
+			local unit = nil
+			
+			if teamType == "User" then
+				unit = units:GetChildByName(string.format("BTUnit_OrbisStone%d", stoneIdx))
+				for idx, ownUnit in pairs(teamManager.OwnUnits) do
+					if unit == ownUnit then
+						table.remove(teamManager.OwnUnits, idx)
+						for idx, unit in pairs(teamManager.OwnUnits) do
+							log("Idx = ", idx, ", Unit = ", unit.UnitInfo.charID)
+						end
+						log("REMOVE_ #teamManager.OwnUnits = ", #teamManager.OwnUnits)
+					end 
+				end
+			elseif teamType == "Enemy" then
+				unit = units:GetChildByName(string.format("EnemyUnit_OrbisStone%d", stoneIdx))
+			end
+			
+			-- 소환된 상태였다가 해제하는 경우
+			if unit.UnitInfo.setTile ~= nil then
+				_CustomizedBattleEffectService:PlayEffect(
+					"ee242bec514848fea02f7ce3a8a5a537",
+					unit, unit.TransformComponent.WorldPosition, 0, Vector3.one, false, userId)
+					
+				unit.UnitInfo:CleanCharInfo()
+				
+				return unit
+				
+		
+			-- 중복 지우기 호출된 경우	
+			else
+				return nil
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity GetEmptyPooledUnit(string userID, string teamType)
+		-- 풀링한 엔티티 중 사용할 엔티티를 찾습니다.
+		-----------------------------------------------------
+		local units = self.UnitsParentEntity[userID]
+		
+		for _, unitSample in pairs(units.Children) do
+			local unitSampleInfo = unitSample.UnitInfo
+			
+			if (not unitSampleInfo.use) and unitSampleInfo.TeamType == teamType then
+				return unitSample
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method number BattleSetting_EnemyUnit(string userId, number modeVersion, string modeType, number modePresetNum, number modeLevel)
+		-- 적 유닛을 소환하는 함수
+		---------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local teamBattleStatistics = user.TeamBattleStatistics
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local gameType = gameManager.ModeType
+		local enemyUnitCount = 0
+		---------------------------------------------------------
+		local roundNum = gameManager.Round + (gameManager.Stage-1) * 3
+		local specialShopManager = user.SpecialShopManager
+		------------------------------------------------------------------------------------------------------------------
+		--[[
+			0. 기본 세팅
+				0-a. 골드 계산
+				0-b. 적 레벨 세팅
+				0-c. 적 인원 수 및 1 스테이지 난이도 보정 작업
+			1. 적 프리셋 선정
+				1-a. 선택된 모드에 따라 맞는 프리셋 리스트 가져오기
+				1-b. 유닛 수 체크해서 프리셋 필요한지 확인하기
+			2. 룬카드 세팅 (프리셋 ID가 없으면 생략)
+				2-a. 등급별 룬카드 리스트 불러오기
+				2-b. 획득할 룬카드 등급 계산
+				2-c. 룬카드 세팅 준비
+				2-d. Forced, Synergy 등 테이블 내 다른 형태로 들어간 값을 룬카드 ID로 변환 후 세팅
+			3. 아이템 사용 개수 체크
+				3-a. 상징 아이템이 필요한지 체크
+				3-b. 아이템 사용 개수 체크
+			4. 캐릭터 세팅
+				4-a. 프리셋 ID가 존재하는 경우, 유닛 ID 및 코스트 테이블 생성
+				4-b. 유닛 생성에 드는 최소 비용 처리
+				4-c. 유닛 레벨 세팅
+				4-d. 유닛 소환
+			5. 아이템 세팅
+				5-a. 상징 아이템부터 세팅
+				5-b. 아이템 세팅
+			6. 적 유닛 스탯 갱신
+		]]--
+		------------------------------------------------------------------------------------------------------------------
+		-- 0. 기본 세팅
+		------------------------------------------------------------------------------------------------------------------
+		-- 0-a. 골드 계산
+		local singleSetRoundGoldsTable = {3, 4, 5, 6, 7, 8, 9, 10}
+		local rankSetRoundGoldsTable = {5, 7, 9, 11, 13, 15}
+		
+		-- 기본금 + 전투 직후 보상 (난이도 별 조정)
+		local GetGolds = 0
+		if gameType == "Rank" then
+			local goldSetIndex = 1
+			local levelcut = {4, 7, 10, 13, 16}
+			
+			for _, cut in pairs(levelcut) do
+				if modeLevel > cut then
+					goldSetIndex += 1
+				else
+					break
+				end
+			end
+			GetGolds = rankSetRoundGoldsTable[goldSetIndex] * roundNum
+		else
+			GetGolds = singleSetRoundGoldsTable[modeLevel] * roundNum
+		end
+		---------------------------------------------------------
+		-- 0-b. 적 레벨 세팅
+		local setLevel = math.min(math.floor(roundNum/3) + 3, 10)
+		---------------------------------------------------------
+		-- 0-c. 적 인원 수 및 1 스테이지 난이도 보정 작업
+		local unitNum = setLevel
+		
+		--튜토리얼 난이도 보정
+		if gameManager.ModeType == "Tutorial" then
+			unitNum = setLevel-1
+		end
+		-- 1스테이지 난이도 보정
+		if gameManager.Stage == 1 then
+			unitNum = gameManager.Round
+		end
+		
+		
+		
+		------------------------------------------------------------------------------------------------------------------
+		-- 1. 적 프리셋 선정
+		------------------------------------------------------------------------------------------------------------------
+		-- 1-a. 선택된 모드에 따라 맞는 프리셋 리스트 가져오기
+		local mType = _UtilLogic:Split(modeType, "_")
+		if mType[1] == "Single" then
+			-- 선택한 확장 버전 맞춰 진행
+		elseif mType[1] == "Challenge" then
+			-- 버전 데이터 가져와서 알맞은 Preset 데이터 넣어줘야 함
+			local chNum = mType[2]
+			local setSeason = _DataService:GetTable("ChallengeModeInfo"):FindRow("ChallengeID", string.format("CH%d", 10000 + chNum)):GetItem("SetSeason")
+			modeVersion = tonumber(setSeason)
+		elseif mType[1] == "Rank" then
+			-- 버전 데이터 가져와서 알맞은 Preset 데이터 넣어줘야 함
+			local chNum = mType[2]
+			local setVersion = _DataService:GetTable("VersionInfo"):FindRow("SeasonID", string.format("%d.%d", _ModeDataLogic.Season, _ModeDataLogic.OrdinalNumber)):GetItem("RankSeason")
+			modeVersion = tonumber(setVersion)
+		elseif mType[1] == "Tutorial" then
+			-- 튜토리얼은 확장버전 없이 진행
+		end
+		
+		local enemyPresetDataSet = _DataService:GetTable(string.format("EnemyPreset_%d_%d", math.floor(gameManager.ModeSetVersion),  modePresetNum))
+		
+		-- 캐릭터 ID, Cost 테이블
+		---@type table<string>
+		local charIDTable = {}
+		local charCostTable = {}
+		
+		local getEnemyPresetIDs = {}
+		local getPresetID = ""
+		
+		---------------------------------------------------------
+		-- 1-b. 유닛 수 체크해서 프리셋 필요한지 확인하기
+		
+		-- 필요한 유닛이 2기 이하인 경우에는 따로 프리셋 사용 없이 임의로 유닛 2기 아무렇게나 넣어줍니다.
+		if unitNum <= 2 then
+			local maxCharCost = math.floor( (modePresetNum+2)/3 )
+			
+			
+			for i = 1, unitNum do
+				local charID = ""
+				local charCost = _UtilLogic:RandomIntegerRange(1, maxCharCost)
+				local charIDNum = charCost * 10000 + _UtilLogic:RandomIntegerRange(1, 13)
+			
+				charID = string.format("C%d", charIDNum)
+				table.insert(charIDTable, charID)
+				table.insert(charCostTable, charCost)
+			end
+			
+			teamBattleStatistics:SetProperty("SetEnemyPresetID", "-")
+		else
+			-- 사용 가능한 프리셋 ID 가져오기
+			for i = 1, enemyPresetDataSet:GetRowCount() do
+				local presetRow = enemyPresetDataSet:GetRow(i)
+				local unitCount = tonumber( presetRow:GetItem("UnitCount") )
+				local setSeason = tonumber( presetRow:GetItem("SetSeason") )
+				
+				-- 30%는 확장 시즌 프리셋, 70%는 기본 프리셋
+				local per = _UtilLogic:RandomDouble()
+				
+				
+				if per <= 0.3 and unitCount == unitNum and ( setSeason == modeVersion ) then
+					table.insert(getEnemyPresetIDs, enemyPresetDataSet:GetRow(i):GetItem("PresetID"))
+				elseif per > 0.3 and unitCount == unitNum and ( setSeason == math.floor(modeVersion) ) then
+					table.insert(getEnemyPresetIDs, enemyPresetDataSet:GetRow(i):GetItem("PresetID"))
+				end
+			end
+			
+			-- 프리셋 선정
+			getPresetID = getEnemyPresetIDs[_UtilLogic:RandomIntegerRange(1, #getEnemyPresetIDs)]
+		
+			teamBattleStatistics:SetProperty("SetEnemyPresetID", getPresetID)
+		end
+		
+		
+		------------------------------------------------------------------------------------------------------------------
+		-- 2. 룬카드 세팅
+		-- 프리셋 ID가 없으면 생략
+		------------------------------------------------------------------------------------------------------------------
+		local runeDataSet = _DataService:GetTable("RuneInfo")
+		local setRuneTable = {}
+		local needSynergyItemID = "-"
+		if getPresetID ~= "" then
+			-- 2-a. 등급별 룬카드 리스트 불러오기
+			local normalRuneIDs = {}
+			local rareRuneIDs = {}
+			local epicRuneIDs = {}
+			local legendRuneIDs = {}
+			
+			-- NeedSynergy 체크
+			local preset = enemyPresetDataSet:FindRow("PresetID", getPresetID)
+			local needSynergy = preset:GetItem("NeedSynergy")
+			
+			if needSynergy ~= "-" then
+				local needtypes = _UtilLogic:Split(needSynergy, "_")
+				
+				if needtypes[2] == "Rune" then
+					table.insert(normalRuneIDs, string.format("Forced_%s_Add", needtypes[1]))
+				elseif needtypes[2] == "All" then
+					table.insert(normalRuneIDs, string.format("Synergy_%s_Add", needtypes[1]))
+				end
+			end
+			
+			-- UseRuneType 체크
+			local useRuneTypes = preset:GetItem("UseRuneType")
+			if useRuneTypes ~= "-" then
+				local types = _UtilLogic:Split(useRuneTypes, "/")
+				for _, type in pairs(types) do
+					if type ~= "Battle" then
+						local typeInfo = _UtilLogic:Split(type, "_")
+						
+						if typeInfo[3] == "Add" then
+							local setRuneID = runeDataSet:FindRow("EnemyUseType", string.format("Synergy_Add_%s", typeInfo[2])):GetItem("RuneID")
+							table.insert(normalRuneIDs, setRuneID)
+						elseif typeInfo[3] == "Normal" then
+							local setRuneID = runeDataSet:FindRow("EnemyUseType", string.format("Synergy_%s", typeInfo[2])):GetItem("RuneID")
+							table.insert(rareRuneIDs, setRuneID)
+						end
+					end
+				end
+			end
+			
+			-- 룬카드 리스트 테이블 작성
+			for idx = 1, runeDataSet:GetRowCount() do
+				local runeId = runeDataSet:GetRow(idx):GetItem("RuneID")
+				local grade = runeDataSet:GetRow(idx):GetItem("Grade")
+				local runeType = runeDataSet:GetRow(idx):GetItem("EnemyUseType")
+				
+				if runeType ~= "Ready" and runeType ~= "Battle_BlankUnit" and runeType ~= "Battle_AddUnit" then
+					if grade == "Normal" and string.sub(runeType, 1, 11) ~= "Synergy_Add" then
+						table.insert(normalRuneIDs, runeId)
+					elseif grade == "Rare" and string.sub(runeType, 1, 8) ~= "Synergy_" then
+						table.insert(rareRuneIDs, runeId)
+					elseif grade == "Epic" then
+						table.insert(epicRuneIDs, runeId)
+					elseif grade == "Legendary" then
+						table.insert(legendRuneIDs, runeId)
+					end
+				end
+			end
+			
+			local runeIdTables = {normalRuneIDs, rareRuneIDs, epicRuneIDs, legendRuneIDs}
+			---------------------------------------------------------
+			-- 2-b. 획득할 룬카드 등급 계산
+			local runeShopProbTableRow = _DataService:GetTable("RuneShopProb"):FindRow("Level", string.format("%d", unitNum))
+			
+			local gradeProbTable = {}
+			local gradeTable = {
+				"Normal",
+				"Rare",
+				"Epic",
+				"Legendary"
+			}
+			
+			local gradeCostTable = {4, 7, 12, 25}
+			local singleGoldAmountTable = {32, 36, 40, 44, 48, 52, 56, 60}
+			local rankGoldAmountTable = {45, 50, 55, 60, 65}
+			
+			-- 룬카드에 사용할 비용 계산
+			local checkedGoldAmount = 0
+			if gameType == "Rank" then
+				checkedGoldAmount = math.floor( rankGoldAmountTable[modePresetNum] * roundNum / 24 )
+			else
+				checkedGoldAmount = math.floor( singleGoldAmountTable[modeLevel] * roundNum / 24 )
+			end
+			
+			local gradeNumTable = {}
+			local runeTotalCost = 0
+			
+			
+			
+			-- 룬 카드 등급 구분해서 계산하기
+			for i = 1, 5 do
+				local loop = true
+				for j = 4, 1, -1 do
+					if gradeCostTable[j] * 2 <= checkedGoldAmount then
+						table.insert(gradeNumTable, 1, j)
+						runeTotalCost += gradeCostTable[j]
+						checkedGoldAmount -= gradeCostTable[j]
+						break
+					elseif j == 1 then
+						loop = false
+					end
+				end
+				
+				if not loop then
+					break
+				end
+			end
+			
+			GetGolds -= runeTotalCost
+			---------------------------------------------------------
+			-- 2-c. 룬카드 세팅 준비
+			
+			-- 시너지 더해주는 룬카드가 꼭 필요한 경우
+			local forcedToSynergyAdd = false
+			if string.sub(normalRuneIDs[1], 1, 6) == "Forced" then
+				-- 상징으로도 해결이 불가능하다면
+				forcedToSynergyAdd = true
+			end
+			
+			-- 등급 내 룬 ID 랜덤하게 받아오기
+			for idx, gradeNum in pairs(gradeNumTable) do
+				--------------------------------------------------
+				local runeIdx = _UtilLogic:RandomIntegerRange(1, #runeIdTables[gradeNum])
+				local setRuneID = runeIdTables[gradeNum][runeIdx]
+				--------------------------------------------------
+				-- 강제 변경이 필요한지 체크
+				if forcedToSynergyAdd then
+					setRuneID = normalRuneIDs[1]
+					gradeNumTable[idx] = 1
+					gradeNum = 1
+					runeIdx = 1
+					forcedToSynergyAdd = false
+				end
+				--------------------------------------------------
+				-- 룬 획득
+				table.insert(setRuneTable, setRuneID)
+				
+				table.remove(runeIdTables[gradeNum], runeIdx)
+			end
+			
+			-- 강제할 룬카드가 없던 경우, 추가
+			if forcedToSynergyAdd then
+				table.insert(setRuneTable, normalRuneIDs[1])
+				
+				-- 룬카드 4원 더 쓰는걸로
+				GetGolds -= gradeCostTable[1]
+			end
+			
+			---------------------------------------------------------
+			-- 2-d. Forced, Synergy 등 테이블 내 다른 형태로 들어간 값을 룬카드 ID로 변환 후 세팅
+			-- setRuneTable에 룬카드 ID 형태로 들어가지 않은 경우, 형태에 맞춰 ID로 변환 후 룬카드를 세팅합니다.
+			
+			-- ID 변환
+			if needSynergy ~= "-" then
+				-- synergy 해결이 안되어있으면 상징 아이템 추가
+				local needSynergyType =_UtilLogic:Split(needSynergy, "_")
+				
+				if needSynergyType[2] == "Item" then
+					-- 아이템으로 해결해야하는 프리셋은 무조건 상징 아이템 추가
+					local itemID = string.format( "EI%s", string.sub(needSynergyType[1], 2, 6) )
+					needSynergyItemID = itemID
+					
+				elseif needSynergyType[2] == "All" then
+					-- 룬으로 해결이 되었는지 확인
+					local checkedRuneType = string.format("Synergy_Add_%s", needSynergyType[1])
+					local setType = string.format("Synergy_%s_Add", needSynergyType[1])
+					local checked = false
+						
+					for idx, checkRuneID in pairs(setRuneTable) do
+						if checkRuneID == setType then
+							checked = true
+							setRuneTable[idx] = runeDataSet:FindRow("EnemyUseType", checkedRuneType):GetItem("RuneID")
+						end
+					end
+					
+					-- 해당 룬을 가지고 있지 않다면 상징 아이템 추가
+					if not checked then
+						local itemID = string.format( "EI%s", string.sub(needSynergyType[1], 2, 6) )
+						needSynergyItemID = itemID
+					end
+				elseif needSynergyType[2] == "Rune" then
+					local checkedRuneType = string.format("Synergy_Add_%s", needSynergyType[1])
+					local setType = string.format("Forced_%s_Add", needSynergyType[1])
+					
+					for idx, checkRuneID in pairs(setRuneTable) do
+						if checkRuneID == setType then
+							setRuneTable[idx] = runeDataSet:FindRow("EnemyUseType", checkedRuneType):GetItem("RuneID")
+						end
+					end
+				end
+			end
+			
+			-- 룬카드 세팅
+			for _, runeID in pairs(setRuneTable) do
+				specialShopManager:AddRCComponent(runeID, false, #teamManager.EnemyOwnedRunes, 0)
+			end
+		end
+		
+		
+		------------------------------------------------------------------------------------------------------------------
+		-- 3. 아이템 사용 개수 체크
+		-- stage * 15골드를 남긴 채로 완성 아이템을 몇개나 소지할 수 있는지 체크
+		------------------------------------------------------------------------------------------------------------------
+		-- 3-a. 상징 아이템이 필요한지 체크
+		-- 프리셋 아이디가 없으면 생략
+		--------------------------------------------------
+		-- 3-b. 아이템 사용 개수 체크
+		local nItemPurchaseCost = 13				-- 완성 아이템 비용
+		local sItemPurchaseCost = 15				-- 상징 아이템 비용
+		
+		local singleItemNumTable = {0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95}
+		local rankItemNumTable = {0.45, 0.65, 0.85, 1.05, 1.25}
+		
+		local itemStack = 0
+		if gameType == "Rank" then
+			itemStack = roundNum * rankItemNumTable[modePresetNum]
+		else
+			itemStack = roundNum * singleItemNumTable[modeLevel]
+		end
+		local nItemCount = math.floor(itemStack / 2)
+		
+		if needSynergyItemID ~= "-" then
+			nItemCount = math.max(0, nItemCount-1)
+			GetGolds -= sItemPurchaseCost
+		end
+		
+		-- 남은 골드량 계산
+		GetGolds -= nItemCount * nItemPurchaseCost
+		------------------------------------------------------------------------------------------------------------------
+		-- 4. 캐릭터 세팅
+		-- 남은 골드 전부 소진
+		-- charIDTable : 프리셋 내 유닛 ID 테이블
+		-- charCostTable : 유닛 별 코스트 테이블
+		------------------------------------------------------------------------------------------------------------------
+		-- 4-a. 프리셋 ID가 존재하는 경우, 유닛 ID 및 코스트 테이블 생성
+		if getPresetID ~= "" then
+			local preset = enemyPresetDataSet:FindRow("PresetID", getPresetID)
+			
+			-- 캐릭터 구성 및 최소 비용 합 계산
+			for i = 1, unitNum do
+				local charID = preset:GetItem(string.format("CharID_%d", i))
+				local charCost = tonumber( string.sub(charID, 2, 2) )
+				
+				table.insert(charIDTable, charID)
+				table.insert(charCostTable, charCost)
+			end
+		end
+		--------------------------------------------------
+		-- 4-b. 유닛 생성에 드는 최소 비용 처리
+		-- 캐릭터 레벨을 올릴 때마다 사용하는 골드 : 레벨을 올리는데 드는 기물 수의 총 비용 + 리롤 1번
+		for i = 1, unitNum do
+			GetGolds -= charCostTable[i] + 2
+		end
+		
+		-- 만약 남은 돈이 음수라면, 아이템에 쓰일 돈을 다시 가져옴
+		if GetGolds < 0 then
+			for i = 1, math.floor(itemStack / 2) do
+				if nItemCount > 0 and GetGolds < 0 then
+					GetGolds += 13
+					nItemCount -= 1
+				else
+					break
+				end
+			end
+		end
+		--------------------------------------------------
+		-- 4-c. 유닛 레벨 세팅
+		---@type table<number>
+		local charLevelTable = {}
+		
+		for i = 1, unitNum do
+			table.insert(charLevelTable, 1)
+		end
+		
+		-- 골드가 다 떨어질 때까지 레벨 세팅
+		local needCost = {2, 6, 18}
+		while GetGolds > 2 do
+			---@type table<number>
+			local charIdxTable = {}
+			local minLevel = 3
+			local minCost = 5
+			
+			for i = 1, unitNum do
+				-- 가장 낮은 레벨대 유닛들 체크
+				if minLevel > charLevelTable[i] then
+					table.clear(charIdxTable)
+					table.insert(charIdxTable, i)
+					minLevel = charLevelTable[i]
+					minCost = charCostTable[i]
+				elseif minLevel == charLevelTable[i] then
+					-- 가장 낮은 코스트 유닛들 체크
+					if minCost > charCostTable[i] then
+						table.clear(charIdxTable)
+						table.insert(charIdxTable, i)
+						minCost = charCostTable[i]
+					elseif minCost == charCostTable[i] then
+						table.insert(charIdxTable, i)
+					end
+				end
+			end
+			
+			-- 더 이상 올릴 유닛이 없다면
+			if minLevel == 3 then
+				break
+			end
+			
+			-- 현재 남은 돈으로 올릴 수 있는 지 유닛 체크
+			for idx = #charIdxTable, 1, -1 do
+				if GetGolds < (charCostTable[charIdxTable[idx]] + 2) * needCost[minLevel] then
+					table.remove(charIdxTable, idx)
+				end
+			end
+			
+			-- 마찬가지로 더 이상 올릴 유닛이 없다면
+			if #charIdxTable <= 0 then
+				break
+			end
+			
+			-- 레벨 업 시킬 유닛 선정 및 적용
+			local setIdxNum = charIdxTable[_UtilLogic:RandomIntegerRange(1, #charIdxTable)]
+			
+			charLevelTable[setIdxNum] += 1
+			GetGolds -= ( (charCostTable[setIdxNum]+2) * needCost[minLevel])
+		end
+		--------------------------------------------------
+		-- 4-d. 유닛 소환
+		for i = 1, unitNum do
+			-- 캐릭터 ID 받아오기
+			local charCost = charCostTable[i]
+			local charID = charIDTable[i]
+			
+			local enemy = self:SpawnEnemyUnit(userId, charID, charLevelTable[i], charCost)
+			enemy.UnitAnimationComponent:PlayAnimation(1, "ForcedIdle", enemy.Parent, userId)
+			enemyUnitCount += 1
+		end
+		
+		------------------------------------------------------------------------------------------------------------------
+		-- 5. 아이템 세팅
+		------------------------------------------------------------------------------------------------------------------
+		---@type table<Entity>
+		local setUnits = {}
+		local charMostItemTable = _DataService:GetTable("CharMostItemSet")
+		
+		for _, unit in pairs(teamManager.EnemyUnits) do
+			local charID = unit.UnitInfo.charID
+			local setItemRow = charMostItemTable:FindRow("CharID", charID)
+			
+			if isvalid(setItemRow) then
+				table.insert(setUnits, unit)
+				unit.UnitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+			end
+		end
+		--------------------------------------------------
+		-- 5-a. 상징 아이템부터 세팅
+		while #setUnits >= 1 do
+			local unitIdx = _UtilLogic:RandomIntegerRange(1, #setUnits)
+			local setUnit = setUnits[unitIdx]
+			
+			if needSynergyItemID == "-" then
+				break
+			else
+				if not setUnit.UnitInfo:DoesHaveSynergy( string.format( "S%s", string.sub( needSynergyItemID, 3, 7 ) ) ) then
+					_ItemSetLogic:EquipItemThroughItemID(setUnit, needSynergyItemID)
+					break
+				end
+			end
+			
+			table.remove(setUnits, unitIdx)
+		end
+		--------------------------------------------------
+		-- 5-b. 아이템 세팅
+		
+		-- 포지션에 따른 아이템 설정
+		--------------------------------
+		-- 아이템 장착 우선 순위는 다음과 같습니다.
+		-- a. 레벨이 높은 순
+		-- b. 코스트가 높은 순
+		-- c. 그 외 다른 사항은 없습니다.
+		--------------------------------
+		
+		-- 돈이 좀 남았다면 아이템 개수 추가
+		nItemCount += math.floor(GetGolds/13)
+		
+		table.clear(setUnits)
+		for _, unit in pairs(teamManager.EnemyUnits) do
+			local charID = unit.UnitInfo.charID
+			local setItemRow = charMostItemTable:FindRow("CharID", charID)
+			
+			if isvalid(setItemRow) then
+				table.insert(setUnits, unit)
+			end
+			
+			unit.UnitItem:ClearAllStacks()
+		end
+		
+		for i = 1, nItemCount do
+			-- 더 이상 장착할 유닛이 없는 경우
+			if #setUnits <= 0 then
+				break
+			end
+			
+			local unitTable = {}
+			local maxLevel = 1
+			local maxCost = 1
+			
+			-- 우선순위 체크
+			for _, unit in pairs(setUnits) do
+				if maxLevel < unit.UnitInfo.level then
+					table.clear(unitTable)
+					table.insert(unitTable, unit)
+					maxLevel = unit.UnitInfo.level
+					maxCost = unit.UnitInfo.cost
+				elseif maxLevel == unit.UnitInfo.level then
+					if maxCost < unit.UnitInfo.cost then
+						table.clear(unitTable)
+						table.insert(unitTable, unit)
+						maxCost = unit.UnitInfo.cost
+					elseif maxCost == unit.UnitInfo.cost then
+						table.insert(unitTable, unit)
+					end
+				end
+			end 
+			
+			-- 더 이상 장착할 유닛이 없는 경우
+			if #unitTable == 0 then
+				break
+			end
+			
+			-- 아이템 장착
+			local setUnitIdx = _UtilLogic:RandomIntegerRange(1, #unitTable)
+			local setUnit = unitTable[setUnitIdx]
+			local charID = setUnit.UnitInfo.charID
+			
+			local setItemIdx = _UtilLogic:RandomIntegerRange(1, 8)
+			local setItemRow = charMostItemTable:FindRow("CharID", charID)
+			
+			if isvalid(setItemRow) then
+				local setItemId = setItemRow:GetItem(string.format("ItemID_%d", setItemIdx))
+				_ItemSetLogic:EquipItemThroughItemID(setUnit, setItemId)
+			else
+				log_error(charID, "Can't Equip Item.")
+			end
+			
+			-- 아이템 3개를 장착한 경우, 장착 가능 유닛 테이블에서 제외
+			if #setUnit.UnitStatus.EquippedItemIDList >= 3 then
+				for idx, checkUnit in pairs(setUnits) do
+					if checkUnit == setUnit then
+						table.remove(setUnits, idx)
+						break
+					end
+				end
+			end
+		end
+		
+		------------------------------------------------------------------------------------------------------------------
+		-- 6. 적 유닛 스탯 갱신
+		------------------------------------------------------------------------------------------------------------------
+		--[[
+		for _, unit in pairs(teamManager.EnemyUnits) do
+			unit.UnitItem:RefreshItemStatus()
+			unit.UnitSynergy:InitAllProperties()
+			unit.UnitStatus:SetUnitStatus(false)
+		end
+		]]--
+		
+		return enemyUnitCount
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BattleSetting_EnemySynergyCheck(string userId)
+		-- 적 시너지를 체크해서 활성화된 시너지에 따라 추가 작업을 하는 코드
+		---------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local units = self.UnitsParentEntity[userId]
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local userPControl = user.TM_PropertyControl
+		local synergyManager = user.SynergyManager_New
+		
+		local charStatusTable = _DataService:GetTable("CharacterStatus")
+		local charInfoTable = _DataService:GetTable("CharacterInfo")
+		---------------------------------------------------------
+		-- 적 유닛에 따라 시너지 체크해서 넣어두기
+		---@type table<string>
+		local checkedCharIDs = {}
+		local charSynergyDB = _DataService:GetTable("CharacterSynergy")
+		
+		---@type table<string, table<string, number>>
+		local equippedEmblemItems = {} -- key:CharID, value:table<string, number> (charID 같은 캐릭터끼리 같은 상징 낀 경우 예방)
+		
+		for _, enemy in pairs(teamManager.EnemyUnits) do
+			local charId = enemy.UnitInfo.charID
+			
+			-- 중복된 캐릭터인지 체크
+			local checked = false
+			for _, checkedId in pairs(checkedCharIDs) do
+				if checkedId == charId then
+					checked = true
+					break
+				end
+			end
+			
+			-- 중복 아닌 경우, 기본 시너지 더함
+			if not checked then
+				table.insert(checkedCharIDs, charId)
+				local charSynergyRow = charSynergyDB:FindRow("CharID", charId)
+				local synergyCount = tonumber(charSynergyRow:GetItem("SynergyCount"))
+				for i = 1, synergyCount do
+					local synergyId = charSynergyRow:GetItem("Synergy_" .. math.floor(i))
+					teamManager:GetEnemyOwnedFieldSynergyCount(synergyId, 1)
+				end
+			end
+			
+			-- 장착 아이템 검사
+			for _, equippedItemID in pairs(enemy.UnitStatus.EquippedItemIDList) do
+				local itemID = _UtilLogic:Split(equippedItemID, "_")[1]
+				local itemID_head = string.sub(itemID, 1, 2)
+				local itemID_tail = string.sub(itemID, 3, -1)
+				if itemID_head == "EI" then
+					if isvalid(equippedEmblemItems[charId]) == false then
+						equippedEmblemItems[charId] = {}
+					end
+					equippedEmblemItems[charId]["S"..itemID_tail] = 1
+				end
+			end
+		end
+		
+		-- 아이템에 의한 시너지 숫자 증가를 적용합니다.
+		for charID, emblemSynergies in pairs(equippedEmblemItems) do
+			for synergyID, count in pairs(emblemSynergies) do
+				teamManager:GetEnemyOwnedFieldSynergyCount(synergyID, 1)
+			end
+		end
+		---------------------------------------------------------
+		--[[
+			그림자 : shadow 소환
+			방해꾼 : 가면 장착
+			오르비스 : 마법석 소환
+			기사단장 : 정해진 자리에 유닛 올리기
+			아랫마을 : 아이템 장착
+			마스코트 : 비율 계산해서, 그에 맞게 캐릭터 등급 올리거나 아이템 추가 등록
+		]]--
+		local synCount_Enemy_S10001 = teamManager.EnemyOwnedFieldSynergy["S10001"]
+		local synCount_Enemy_S10007 = teamManager.EnemyOwnedFieldSynergy["S10007"]
+		local synCount_Enemy_S10011 = teamManager.EnemyOwnedFieldSynergy["S10011"]
+		local synCount_Enemy_S10021 = teamManager.EnemyOwnedFieldSynergy["S10021"]
+		local synCount_Enemy_S10025 = teamManager.EnemyOwnedFieldSynergy["S10025"]
+		local synCount_Enemy_S10031 = teamManager.EnemyOwnedFieldSynergy["S10031"]
+		---------------------------------------------------------
+		-- 그림자 Shadow 소환
+		if isvalid(synCount_Enemy_S10007) then
+			synergyManager:S10007_SpawnShadowReadyPhase(synCount_Enemy_S10007, "Enemy")
+		end
+		
+		-- 방해꾼 가면 장착
+		if isvalid(synCount_Enemy_S10011) then
+			-- 가면을 장착할 수 있는 숫자인지 체크
+			if synCount_Enemy_S10011 >= 3 then
+				---@type table<Entity>
+				local itemEquippableUnits = {}
+				
+				for _, unit in pairs(teamManager.EnemyUnits) do
+					if unit.UnitInfo:DoesHaveSynergy("S10011") and unit.UnitInfo.IsItemEquippable and #unit.UnitStatus.EquippedItemIDList < 3 then
+						table.insert(itemEquippableUnits, unit)
+					end
+				end
+				
+				if #itemEquippableUnits > 0 then
+					local setItemUnitIdx = _UtilLogic:RandomIntegerRange(1, #itemEquippableUnits)
+					itemEquippableUnits[setItemUnitIdx].UnitStatus:SetProperty("EquippedItemIDList", "SI10001", "insert,-1")
+				end
+			end
+		end
+		
+		if isvalid(synCount_Enemy_S10031) then
+			-- 아랫마을 시너지 개수 체크
+			local getItem = 0
+			if synCount_Enemy_S10031 >= 10 then
+				getItem = 7
+			elseif synCount_Enemy_S10031 >= 8 then
+				getItem = 6
+			elseif synCount_Enemy_S10031 >= 5 then
+				getItem = 3
+			elseif synCount_Enemy_S10031 >= 3 then
+				getItem = 1
+			end
+			
+			-- 시너지가 활성화된 경우
+			if getItem > 0 then
+				local itemOrder = synergyManager.Enemy_SynergyStack["S10031_ItemOrder"]
+				local itemSetTable = {}
+				for i = 1, 7 do
+					local itemNum = itemOrder % 10
+					table.insert(itemSetTable, 1, string.format("SI1000%d", itemNum))
+					
+					itemOrder = math.floor(itemOrder / 10)
+				end
+				---@type table<Entity>
+				local itemEquippableUnits = {}
+				
+				for _, unit in pairs(teamManager.EnemyUnits) do
+					if unit.UnitInfo.IsItemEquippable and #unit.UnitStatus.EquippedItemIDList < 3 then
+						table.insert(itemEquippableUnits, unit)
+					end
+				end
+				
+				-- 아이템 장착
+				for i = 1, getItem do
+					if #itemEquippableUnits > 0 then
+						local setItemUnitIdx = _UtilLogic:RandomIntegerRange(1, #itemEquippableUnits)
+						local setUnit = itemEquippableUnits[setItemUnitIdx]
+						
+						setUnit.UnitStatus:SetProperty("EquippedItemIDList", itemSetTable[i], "insert,-1")
+						
+						-- 아이템 3개를 장착한 경우, 장착 가능 유닛 테이블에서 제외
+						if #setUnit.UnitStatus.EquippedItemIDList >= 3 then
+							for idx, checkUnit in pairs(itemEquippableUnits) do
+								if checkUnit == setUnit then
+									table.remove(itemEquippableUnits, idx)
+									break
+								end
+							end
+						end
+					else
+						break
+					end
+				end
+			end
+		end
+		
+		-- 오르비스 마법석 소환
+		if isvalid(synCount_Enemy_S10021) then
+			synergyManager:S10021_SpawnStoneReadyPhase(synCount_Enemy_S10021, "Enemy")
+		end
+		
+		-- 기사단장 : 랜덤한 유닛 기사단장 자리로 이동
+		if isvalid(synCount_Enemy_S10025) then
+			-- 기사단장 효과가 활성화 되어있는지 체크
+			if synCount_Enemy_S10025 >= 2 then
+				
+				local saintAreaPos = synergyManager.Enemy_SynergyStack["S10025_Pos"]
+				local row = math.floor(saintAreaPos/1000)
+				local col = math.floor(saintAreaPos - row*1000)
+				
+				local tilehorizonNode = col * 2 - (row%2)
+				local tileverticalNum = row
+				
+				local saintTile = gameManager.RoomTile[math.floor(tilehorizonNode) .. "," .. math.floor(tileverticalNum)]
+				
+				---@type table<Entity>
+				local ableUnits = {}
+				
+				for _, unit in pairs(teamManager.EnemyUnits) do
+					if unit.UnitInfo.charID ~= "C00000" and unit.UnitInfo.charID ~= "C00001" and unit.UnitInfo.charID ~= "C00002" and unit.UnitInfo.charID ~= "C00003" then
+						table.insert(ableUnits, unit)
+					end
+				end
+				
+				if #ableUnits > 0 then
+					local setUnitIdx = _UtilLogic:RandomIntegerRange(1, #ableUnits)
+					ableUnits[setUnitIdx].UnitInfo:SetPropertyToServer("setTile", saintTile, "All", true)
+				end
+			end
+		end
+		
+		-- 마스코트 : 비율 계산해서, 그에 맞게 캐릭터 등급 올리거나 아이템 추가 등록
+		if isvalid(synCount_Enemy_S10001) then
+			-- 라운드 체크
+			local round = (gameManager.Stage - 1) * 3 + gameManager.Round
+			local charMostItemTable = _DataService:GetTable("CharMostItemSet")
+			
+			-- 마스코트 시너지 개수 체크 (0.8만큼 값 보정)
+			local ratio = 0
+			if synCount_Enemy_S10001 >= 10 then
+				ratio = 32
+			elseif synCount_Enemy_S10001 >= 7 then
+				ratio = 24
+			elseif synCount_Enemy_S10001 >= 5 then
+				ratio = 16
+			elseif synCount_Enemy_S10001 >= 3 then
+				ratio = 8
+			end
+			
+			-- 시너지가 활성화된 경우
+			if ratio > 0 then
+				local stackedValue = ratio * round
+				local convertedValue = math.floor((stackedValue ^ 1.25) * 0.1) -- 골드 가치로 환산
+				
+				-- 시너지 가진 유닛들
+				---@type table<Entity>
+				local s1UnitTable = {}
+				for _, unit in pairs(teamManager.EnemyUnits) do
+					if unit.UnitInfo:DoesHaveSynergy("S10001") then
+						table.insert(s1UnitTable, unit)
+					end
+				end
+				
+				-- 아이템 장착 가능한 유닛들
+				---@type table<Entity>
+				local itemEquippableUnits = {}
+				
+				for _, unit in pairs(teamManager.EnemyUnits) do
+					if unit.UnitInfo.IsItemEquippable and #unit.UnitStatus.EquippedItemIDList < 3 then
+						table.insert(itemEquippableUnits, unit)
+					end
+				end
+				
+				while convertedValue < 7 do
+					local per = _UtilLogic:RandomDouble()
+					
+					-- 25% : 아이템 / 75% : 캐릭터 레벨업
+					if per <= 0.25 then
+						-- 아이템
+						if convertedValue < 7 then
+							break
+						else
+							-- 캐릭터 선택
+							local idx = _UtilLogic:RandomIntegerRange(1, #itemEquippableUnits)
+							local setUnit = itemEquippableUnits[idx]
+							local charID = setUnit.UnitInfo.charID
+							
+							if convertedValue < 10 then
+								-- 재료 아이템 획득 : 7 Gold
+								convertedValue -= 7
+								log("convertedValue_GetMItem = ", convertedValue)
+								
+								-- 아이템 중 랜덤 선택
+								local setItemIdx = _UtilLogic:RandomIntegerRange(1, 8)
+								local setItemID = string.format("MI%d", 10000 + setItemIdx)
+								
+								_ItemSetLogic:EquipItemThroughItemID(setUnit, setItemID)
+							else
+								-- 완성 아이템 획득 : 10 Gold
+								convertedValue -= 10
+								log("convertedValue_GetNItem = ", convertedValue)
+								
+								-- 추천 아이템 중 랜덤 선택
+								local setItemIdx = _UtilLogic:RandomIntegerRange(1, 8)
+								local setItemRow = charMostItemTable:FindRow("CharID", charID)
+								
+								if isvalid(setItemRow) then
+									local setItemId = setItemRow:GetItem(string.format("ItemID_%d", setItemIdx))
+									_ItemSetLogic:EquipItemThroughItemID(setUnit, setItemId)
+								else
+									log_error(charID, "Can't Equip Item.")
+									break
+								end
+							end
+							
+							-- 아이템 3개를 장착한 경우, 장착 가능 유닛 테이블에서 제외
+							if #setUnit.UnitStatus.EquippedItemIDList >= 3 then
+								for idx, checkUnit in pairs(itemEquippableUnits) do
+									if checkUnit == setUnit then
+										table.remove(itemEquippableUnits, idx)
+										break
+									end
+								end
+							end
+						end
+					else
+						-- 캐릭터 레벨업
+						local charLVupCostTable = {2, 8, 18, 32, 50}
+						---@type table<Entity, number>
+						local ableUnitsCostTable = {}
+						local ableUnitsTable = {}
+						for _, unit in pairs(s1UnitTable) do
+							local unitCost = unit.UnitInfo.cost
+							local unitLevel = unit.UnitInfo.level
+							
+							-- 레벨업이 가능한 유닛인가
+							if unitLevel < 3 then
+								local checkCost = charLVupCostTable[unitCost] * ( (unitLevel * 4) - 2 )
+								
+								-- 비용이 충분한가
+								if convertedValue >= checkCost then
+									ableUnitsCostTable[unit] = checkCost
+									table.insert(ableUnitsTable, unit)
+								end
+							end
+						end
+						
+						-- 레벨업 할 캐릭터가 있는지 확인
+						if #ableUnitsTable > 0 then
+							-- 캐릭터 선택
+							local unitIdx = _UtilLogic:RandomIntegerRange(1, #ableUnitsTable)
+							---@type Entity
+							local unit = ableUnitsTable[unitIdx]
+							
+							-- 비용 지불 후 레벨업
+							convertedValue -= ableUnitsCostTable[unit]
+							log("convertedValue_LvUP = ", convertedValue, unit.UnitInfo.charID)
+							
+							unit.UnitInfo:SetCharInfo(unit.UnitInfo.charID, unit.UnitInfo.level + 1, unit.UnitInfo.cost)
+						else
+							break
+						end
+					end
+				end
+				--log("Last ConvertedValue = ", convertedValue)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity SpawnEnemyUnit(string userId, string charID, number charLevel, number charCost)
+		-- 적 유닛을 소환하는 함수
+		---------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local units = self.UnitsParentEntity[userId]
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local userPControl = user.TM_PropertyControl
+		
+		local charStatusTable = _DataService:GetTable("CharacterStatus")
+		local charInfoTable = _DataService:GetTable("CharacterInfo")
+		---------------------------------------------------------
+		
+		-- 안쓰는 유닛 엔티티 하나 가져오기
+		---@type Entity
+		local enemy = nil
+		for _, unitSample in pairs(units.Children) do
+			local unitSampleInfo = unitSample.UnitInfo
+			
+			if (not unitSampleInfo.use) and unitSampleInfo.TeamType == "Enemy" then
+				enemy = unitSample
+				unitSampleInfo.use = true
+				break
+			end
+		end
+		local enemyInfo = enemy.UnitInfo
+		table.insert(teamManager.EnemyUnits, enemy)
+		
+		-- enemy.UnitBattleStatistics:RoundPropertyInitialize(charID)
+		
+		-- 위치 찾기
+		local charRange = tonumber( charStatusTable:FindRow("SetID", charID .. "1"):GetItem("AttackRange") )
+		
+		-- 허수아비 맨 앞으로 예외처리
+		if charID == "C00000" then
+			charRange = 1
+		end
+		
+		local range = { math.min(4, math.floor(charRange)) }
+		range[2] = range[1] + ( (range[1]%2) * 2 - 1 )
+		
+		local setverticalNum = _UtilLogic:RandomIntegerRange(1, 7)
+		local setKey = math.floor(8 + setverticalNum%2 + range[1]*2) .. "," .. math.floor(setverticalNum)
+		
+		for j = 1, 2 do
+			local alreadySet = false
+			for k = 1, 7 do
+				alreadySet = false
+				-- 이미 배치되어있는지 체크
+				local setTile = gameManager.RoomTile[setKey]
+				if isvalid(teamManager.EntityOnTile[setTile]) then
+					alreadySet = true
+				end
+				
+				if alreadySet then
+					setverticalNum += 1
+					setverticalNum = setverticalNum%8 + math.floor(setverticalNum/8)
+					setKey = math.floor(8 + setverticalNum%2 + range[j]*2) .. "," .. math.floor(setverticalNum)
+				else
+					break
+				end
+			end
+			if not alreadySet then
+				break
+			end
+		end
+		
+		-- key Setting 이후
+		local setTile = gameManager.RoomTile[setKey]
+		if isvalid(setTile) then
+			local verticalNum = setTile.TileComponent_New.verticalNum
+			local horizontalNum = setTile.TileComponent_New.horizontalNum
+				
+			enemyInfo:SetPropertyToServer("setTile", setTile, "All", true)
+				
+			-- 레이어 설정
+			enemy.UnitAnimationComponent:SetLayerOrder(verticalNum, userId)
+		end
+		
+		enemy.UnitInfo:SetCharInfo(charID, charLevel, charCost)
+		
+		return enemy
+	end
+
+	@ExecSpace("Server")
+	method void SetUnitsParentEntity(string userID, Entity pEntity)
+		self.UnitsParentEntity[userID] = pEntity
+		self:SetUnitsParentEntityInClient(userID, pEntity, userID)
+	end
+
+	@ExecSpace("Client")
+	method void SetUnitsParentEntityInClient(string userID, Entity pEntity)
+		self.UnitsParentEntity[userID] = pEntity
+	end
+
+	@ExecSpace("Server")
+	method void SetProjectilesParentEntity(string userID, Entity pEntity)
+		self.ProjectilesParentEntity[userID] = pEntity
+		self:SetProjectilesParentEntityInClient(userID, pEntity, userID)
+	end
+
+	@ExecSpace("Client")
+	method void SetProjectilesParentEntityInClient(string userID, Entity pEntity)
+		self.ProjectilesParentEntity[userID] = pEntity
+	end
+
+	@ExecSpace("Server")
+	method Entity GetProjectileEntity(string userId, string type)
+		-- 적 유닛을 소환하는 함수
+		---------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local projectiles = self.ProjectilesParentEntity[userId]
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local userPControl = user.TM_PropertyControl
+		---------------------------------------------------------
+		-- 안쓰는 투사체 하나 가져오기
+		-- 기본 공격 투사체
+		if type == "Attack" then
+			for _, projSample in pairs(projectiles.Children) do
+				if isvalid(projSample.AProjectileInfo) and not projSample.AProjectileInfo.Shots then
+					return projSample
+				end
+			end
+		-- 스킬 공격 투사체
+		elseif type == "Skill" then
+			for _, projSample in pairs(projectiles.Children) do
+				if isvalid(projSample.SkillShotCheckComponent) and not projSample.SkillShotCheckComponent.Shots then
+					return projSample
+				end
+			end
+		else
+			return nil
+		end
+		
+		--[[
+		---@type Entity
+		local proj = nil
+		---@type Entity
+		local enemy = nil
+		
+		for _, unitSample in pairs(units.Children) do
+			local unitSampleInfo = unitSample.UnitInfo
+			
+			if (not unitSampleInfo.use) and unitSampleInfo.TeamType == "Enemy" then
+				enemy = unitSample
+				unitSampleInfo.use = true
+				break
+			end
+		end
+		local enemyInfo = enemy.UnitInfo
+		table.insert(teamManager.EnemyUnits, enemy)]]
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		if Environment:IsMakerPlay() then
+		
+			_TimerService:ClearTimer(self.ProjectileSampleDestroyTimerID)
+			_TimerService:ClearTimer(self.UnitSampleDestroyTimerID)
+		end
+	end
+
+end

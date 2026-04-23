@@ -1,0 +1,344 @@
+@Component
+script DeckEditPanel extends Component
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property DeckManager deckManager = "e920267e-c338-457c-af06-67081552ceca"
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property CardModule cardModule = nil
+
+	property SpriteGUIRendererComponent deckNameImage = nil
+
+	property TextComponent deckNameText = nil
+
+	property TextComponent deckSizeText = nil
+
+	property ButtonComponent deleteButton = nil
+
+	property ButtonComponent finishButton = nil
+
+	property Vector2 gridSize = Vector2(0,0)
+
+	property Vector2 gridCenter = Vector2(0,0)
+
+	property Vector2 gridOffset = Vector2(0,0)
+
+	property any panelTweener = nil
+
+	property table deck = {}
+
+	property boolean isDirty = false
+
+	property table thumbnailArray = {}
+
+	property Thumbnail puttingThumbnail = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 덱 편집 패널 초기화 시 완료 및 삭제 버튼 이벤트를 연결하고 카드 배치용 썸네일을 생성
+		local character = _UserService.LocalPlayer.Character
+		
+		self.finishButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			if self.deckManager:IsDeckComplete(self.deck) then
+				_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickRawSound, 1)
+				
+				_Server:Request(character, "FinishDeck", {self.deck})
+			else
+				self.uiManager.PopupModule:Open(_LocalizationService:GetTextFormat("DoubleCheckFinishDeck", 20 - self.deckManager:GetDeckSize(self.deck)), false, function()
+					_Server:Request(character, "FinishDeck", {self.deck})
+				end, nil)
+			end
+		end)
+		self.deleteButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			self.uiManager.PopupModule:Open(_LocalizationService:GetText("DoubleCheckDeleteDeck"), false, function()
+				_Server:Request(character, "DeleteDeck", {})
+			end, nil)
+		end)
+		
+		self:SpawnAndSetPuttingThumbnail()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 덱 편집 패널을 열고 현재 덱 정보를 로드하여 카드 썸네일들을 생성하고 배치
+		local transform = self.Entity.TransformComponent
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+		if self.panelTweener then
+			self.panelTweener:Destroy()
+		end
+		self.panelTweener = _Tween:ScaleTo(self.Entity, Vector2.one, 0.175, EaseType.Linear)
+		
+		for _, thumbnail in ipairs(self.thumbnailArray) do
+			self:DestroyAnchor(thumbnail)
+			thumbnail.Entity:Destroy()
+		end
+		table.clear(self.thumbnailArray)
+		
+		local character = _UserService.LocalPlayer.Character
+		self.deck = _Table:DeepCopy(character:GetDeck())
+		local resource = self.resourceManager:GetResource("DeckEditPanel")
+		self.deckNameImage.ImageRUID = resource[self.deck.class]
+		self.deckNameText.Text = self.deck.name
+		self:SetDeckSize()
+		
+		for _, info in ipairs(self.cardManager:ToInfoArray(self.deck.cardTable)) do
+			local thumbnail = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Thumbnail"), "Thumbnail", Vector3.zero, self.Entity).Thumbnail
+			table.insert(self.thumbnailArray, thumbnail)
+			
+			thumbnail:SetInfo(info)
+			
+			---@type table
+			local rendererArray = thumbnail.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+			for _, renderer in ipairs(rendererArray) do
+				renderer.SortingLayer = "UI"
+				renderer.OrderInLayer = 5
+			end	
+		end
+		
+		-- MSW Bug
+		transform.Scale.x = 1
+		transform.Scale.y = 1
+		self:PlaceThumbnails()
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 덱 편집 패널을 닫고 모든 썸네일들을 정리하며 상태를 초기화
+		local transform = self.Entity.TransformComponent
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+		if self.panelTweener then
+			self.panelTweener:Destroy()
+		end
+		
+		self.deck = {}
+		self.deckNameText.Text = ""
+		self.deckSizeText.Text = ""
+		
+		for _, thumbnail in ipairs(self.thumbnailArray) do
+			self:DestroyAnchor(thumbnail)
+			thumbnail.Entity:Destroy()
+		end
+		table.clear(self.thumbnailArray)
+		
+		self.isDirty = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetButtonsEnable(boolean enable)
+		-- 덱 편집 패널의 버튼들의 활성화 상태를 설정
+		self.deleteButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.finishButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestSaveDeck()
+		-- 현재 편집 중인 덱 정보를 서버에 저장 요청
+		local character = _UserService.LocalPlayer.Character
+		_Server:Request(character, "SaveDeck", {self.deck})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetPuttingThumbnail()
+		-- 카드 배치용 썸네일을 생성하고 화면 밖 위치에 설정
+		self.puttingThumbnail = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Thumbnail"), "Thumbnail", Vector3(100, 100, -40), self.Entity).Thumbnail
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BeginPuttingThumbnail(Card card)
+		-- 카드 배치를 시작하고 배치용 썸네일에 카드 정보를 설정
+		self.puttingThumbnail:SetInfo(card.info)
+		
+		---@type table
+		local rendererArray = self.puttingThumbnail.Entity:GetChildComponentsByTypeName("SpriteRendererComponent", true)
+		for _, renderer in ipairs(rendererArray) do
+			renderer.SortingLayer = "UI"
+			renderer.OrderInLayer = 5
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndPuttingThumbnail()
+		-- 카드 배치를 종료하고 배치용 썸네일을 초기화
+		self.puttingThumbnail:ClearInfo()
+		
+		local transform = self.puttingThumbnail.Entity.TransformComponent
+		transform.WorldPosition.x = 100
+		transform.WorldPosition.y = 100
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceThumbnails()
+		-- 모든 썸네일들을 그리드 형태로 배치
+		for _, thumbnail in ipairs(self.thumbnailArray) do
+			self:SpawnAndAttachToAnchor(thumbnail)
+		end
+		
+		self:DropAnchors(self.thumbnailArray)
+		
+		for _, thumbnail in ipairs(self.thumbnailArray) do
+			local transform = thumbnail.Entity.TransformComponent
+			transform.Position = Vector3.zero
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InsertThumbnail(Thumbnail thumbnail)
+		-- 새로운 썸네일을 정렬된 위치에 삽입
+		local index = 1
+		for _, item in ipairs(self.thumbnailArray) do
+			if self.cardManager.infoComparer(thumbnail.info, item.info) then
+				break
+			end
+			index += 1
+		end
+		
+		table.insert(self.thumbnailArray, index, thumbnail)
+		self:SpawnAndAttachToAnchor(thumbnail)
+		
+		self:DropAnchors({thumbnail})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RemoveThumbnail(Thumbnail thumbnail)
+		-- 썸네일을 배열에서 제거하고 앵커를 파괴
+		_Table:Remove(self.thumbnailArray, thumbnail)
+		self:DestroyAnchor(thumbnail)
+		
+		self:DropAnchors({})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndAttachToAnchor(Thumbnail thumbnail)
+		-- 썸네일용 앵커를 생성하고 썸네일을 앵커에 부착
+		self:SpawnAnchor(thumbnail)
+		thumbnail:AttachToAnchor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAnchor(Thumbnail thumbnail)
+		-- 썸네일을 위한 앵커 엔티티를 생성
+		if isvalid(thumbnail.anchorEntity) then
+			return
+		end
+		
+		thumbnail.anchorEntity = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Anchor"), "Anchor", 
+			thumbnail.Entity.TransformComponent.WorldPosition, self.Entity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyAnchor(Thumbnail thumbnail)
+		-- 썸네일의 앵커와 관련 트위너들을 파괴
+		if not isvalid(thumbnail.anchorEntity) then
+			return
+		end
+		
+		thumbnail:DestroyTweener()
+		thumbnail:DestroyAnchorTweener()
+		thumbnail.Entity:Detach()
+		thumbnail.anchorEntity:Destroy()
+		thumbnail.anchorEntity = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DropAnchors(table newThumbnailArray)
+		-- 모든 앵커들을 그리드 위치에 배치하고 애니메이션 적용
+		local size = #self.thumbnailArray
+		if size == 0 then
+			return
+		end
+		
+		local zPosition = -1
+		for i, thumbnail in ipairs(self.thumbnailArray) do
+			local row = math.floor((i - 1) / self.gridSize.x) + 1
+			local col = ((i - 1) % self.gridSize.x) + 1
+			local x = self.gridCenter.x - (self.gridSize.x - 1) * self.gridOffset.x * 0.5 + (col - 1) * self.gridOffset.x
+			local y = self.gridCenter.y + (self.gridSize.y - 1) * self.gridOffset.y * 0.5 - (row - 1) * self.gridOffset.y
+			local position = Vector2(x, y)
+			thumbnail.anchorEntity.TransformComponent.Position.z = zPosition
+			if _Table:Find(newThumbnailArray, thumbnail) then
+				thumbnail:SetAnchorTransform(position)
+			else
+				thumbnail:TransformAnchorTo(position)
+			end
+			
+			zPosition = zPosition - 1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Put(table info)
+		-- 카드를 덱에 추가하고 덱 크기를 업데이트
+		local name = info.name
+		local variant = info.variant
+		local quality = info.quality
+		
+		local cardTable = self.deck.cardTable or {}
+		self.deck.cardTable = cardTable
+		
+		cardTable[name] = cardTable[name] or {}
+		cardTable[name][variant] = cardTable[name][variant] or {}
+		cardTable[name][variant][quality] = cardTable[name][variant][quality] or 0
+		cardTable[name][variant][quality] += 1
+		
+		self:SetDeckSize()
+		
+		self.isDirty = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Erase(table info)
+		-- 카드를 덱에서 제거하고 덱 크기를 업데이트
+		local name = info.name
+		local variant = info.variant
+		local quality = info.quality
+		
+		local cardTable = self.deck.cardTable
+		
+		local count = cardTable[name][variant][quality]
+		cardTable[name][variant][quality] = count > 1 and count - 1 or nil
+		local t2 = cardTable[name][variant]
+		if _Table:IsEmpty(t2) then
+			cardTable[name][variant] = nil
+		end
+		local t1 = cardTable[name]
+		if _Table:IsEmpty(t1) then
+			cardTable[name] = nil
+		end
+		if _Table:IsEmpty(cardTable) then
+			self.deck.cardTable = nil
+		end
+		
+		self:SetDeckSize()
+		
+		self.isDirty = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetDeckSize()
+		-- 현재 덱 크기를 계산하여 UI에 표시하고 색상을 설정
+		local deckSize = self.deckManager:GetDeckSize(self.deck)
+		self.deckSizeText.Text = string.format("%s %d/20", _LocalizationService:GetText("Card"), deckSize)
+		if deckSize == 20 then
+			self.deckSizeText.FontColor = Color.green
+		else
+			self.deckSizeText.FontColor = Color.white
+		end
+	end
+
+end

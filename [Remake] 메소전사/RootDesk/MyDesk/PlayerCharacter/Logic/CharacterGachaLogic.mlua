@@ -1,0 +1,483 @@
+@Logic
+script CharacterGachaLogic extends Logic
+
+	property table cardTable = {}
+
+	property table characterTable = {}
+
+	property table characterExpTable = {}
+
+	property Entity darkPanel = "e4c1bdb1-5202-445f-ad60-a37af62b1447"
+
+	property Entity darkPanel_Card_Desc = "5f9d9375-b691-4522-bb05-fc2932b5df71"
+
+	property Entity skipButton = "faab9c72-075b-4a69-a229-54cbb65d33f2"
+
+	property TextComponent gachaResultTitle = "d9388436-d19c-4f95-aeda-d968eee84be0"
+
+	property Entity resultPanel = "52ada174-1ed6-486d-8858-c6b53b2e3227"
+
+	property Entity resultOkButton = "24b65c81-4caf-460e-9eae-bc931048eaf5"
+
+	property Entity gachaCard = "0856bdb3-656a-48d8-a710-6e8e15eb96f8"
+
+	property Entity multiple_darkPanel = "0ede83d7-9017-40da-b074-c4d6514d05e1"
+
+	property Entity multiple_resultPanel_1 = "2331c175-0648-464f-8e76-3bc96edc62f8"
+
+	property Entity multiple_resultPanel_2 = "52ada174-1ed6-486d-8858-c6b53b2e3227"
+
+	property Entity multiple_resultOkButton = "6483050f-950d-48d5-85f6-5ce6ae4f4dcd"
+
+	property table resultGachaTableSolo = {}
+
+	property table resultGachaTableMulti = {}
+
+	property table resultEssenceTableMulti = {}
+
+	property table resultEssenceTableSolo = {}
+
+	property table resultMesoTableMulti = {}
+
+	property table resultMesoTableSolo = {}
+
+	property SoulGatchaResultPopup resultPopup = "b35f74b0-1e0e-470c-93b2-bf02c9ce705d"
+
+	method void OnBeginPlay()
+		-- 캐릭터 가차 데이터 및 경험치 테이블 초기화
+		local characterSet = _DataService:GetTable("GatchaRate_SoulPiece") 
+		local characterData = _DataService:GetTable("CharacterData")
+		local expSet = _DataService:GetTable("CharacterExpData")
+		
+		for i = 1 , characterSet:GetRowCount() do
+			local char = {}
+			char.cardId = characterSet:GetCell(i, "cardId")
+			char.charId = characterSet:GetCell(i, "characterId")
+			char.cardEffect = characterSet:GetCell(i, "cardEffect")
+			char.charEffect = characterSet:GetCell(i, "charEffect")
+			char.prob = characterSet:GetCell(i, "prob")
+			self.characterTable[i] = char
+		end
+		
+		for i = 1 , characterData:GetRowCount() do
+			local exp = {}
+			for j = 1, expSet:GetRowCount() do
+				exp[j] = expSet:GetCell(j, characterData:GetCell(i, "id")) 
+			end
+			self.characterExpTable[characterData:GetCell(i, "id")] = exp 
+		end
+		
+		self._T.multipleGachaResultTable = {}
+	end
+
+	@ExecSpace("Server")
+	method table GetGachaCharacter()
+		-- 확률에 따른 가차 캐릭터 선택 및 반환
+		
+		local randNum = _UtilLogic:RandomDouble() * 10000
+		local id = ""
+		local selectedCharCardTable = {}
+		
+		for i = 1, #self.characterTable do
+			if randNum <= tonumber(self.characterTable[i].prob) * 10000 then
+				selectedCharCardTable = self.characterTable[i]
+				break
+			end
+		end
+		
+		
+		return selectedCharCardTable
+	end
+
+	@ExecSpace("Server")
+	method void CheckGachaPrice(Entity target, boolean oneTime)
+		-- 가차 가격 확인 및 다이아몬드 차감 처리
+		
+		local gachaPrice = 0
+		local playerDiamond = target.PlayerCurrencyData.currencyTable["Diamond"].amount
+		
+		if oneTime then 
+			gachaPrice = 100
+		else 
+			gachaPrice = 900
+		end 
+		
+		if playerDiamond >= gachaPrice then 
+			if oneTime then
+				self:PushGachaButton(false, target.PlayerComponent.UserId)
+			else
+				self:PushGachaButton(true, target.PlayerComponent.UserId)
+			end
+			
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, gachaPrice, senderUserId, "CharacterGatcha")
+		else 
+			_LocalizeLogic:ShowToast("toast237", target.PlayerComponent.UserId)
+			return
+		end
+	end
+
+	method void CloseGachaPanel()
+		-- 가차 패널 닫기
+		_UIGroupManager.shopGroup:SetEnable(false)
+	end
+
+	@ExecSpace("Client")
+	method void PushGachaButton(boolean multiple)
+		-- 가차 버튼 클릭 시 애니메이션 및 UI 표시
+		_UIGroupManager.shopGroup:SetEnable(true)
+		local alphaValue = 0
+		local index = 0 
+		
+		local setEnable = function(targetEntity)
+			index = index + 1
+			alphaValue = alphaValue + 1/30 
+			targetEntity.SpriteGUIRendererComponent.Color.a = alphaValue
+			if index == 30 then 
+				targetEntity:GetChildByName("Card"):SetEnable(true)
+				self._T.touchEable = true
+			end
+		end
+		
+		if multiple then
+			self.multiple_darkPanel.SpriteGUIRendererComponent.Color.a = 0
+			self.multiple_darkPanel.Enable = true
+			for i=1, 30 do
+				_TimerService:SetTimerOnce(
+					function() setEnable(self.multiple_darkPanel) end, 1.5 + i/60)
+			end
+		else
+			self.darkPanel.SpriteGUIRendererComponent.Color.a = 0
+			self.darkPanel.Enable = true
+			for i=1, 30 do
+				_TimerService:SetTimerOnce(
+					function() setEnable(self.darkPanel) end, 1.5 + i/60)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void StartCardTweenScale(boolean firstGet, table getCharTable, boolean levelUp)
+		-- 가차 카드 스케일 애니메이션 시작
+		self._T.transform = self.gachaCard.TransformComponent
+		self._T.scale = self._T.transform.Scale 
+		
+		self._T.selectedCharId = getCharTable.charId 
+		
+		if firstGet then 
+			self.gachaResultTitle.Text = _LocalizeLogic:GetText("etcStr210")
+		else 
+			self.gachaResultTitle.Text = _LocalizeLogic:GetText("etcStr211")
+		end
+		
+		local index = 0
+		
+		local playGetCharacterEffect = function()
+			self:ShowGachaResult(firstGet, levelUp)
+		end
+		
+		
+		for i = 1 , 100 do
+			_TimerService:SetTimerOnce(function() 
+					index = i
+					self._T.transform.Scale = self._T.scale + (self._T.scale * index/500)
+					if i == 100 then
+						for i = 1, 100 do
+							_TimerService:SetTimerOnce(function() 
+								index = 100 - i
+								self._T.transform.Scale = self._T.scale + (self._T.scale * index/500)
+									if i == 100 then
+										self.skipButton.Enable = true
+										playGetCharacterEffect()
+									end
+									end, i/300)
+						end
+					end
+			end, i / 300)
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void ShowGachaResult(boolean firstGet, boolean levelUp)
+		-- 가차 결과 표시 및 경험치 애니메이션
+		
+		
+		
+		local originCharData = _CharacterLogic.characterTable[self._T.selectedCharId]
+		local charData = _UserService.LocalPlayer.PlayerCharacterData 
+		self.skipButton.Enable = false
+		
+		local card = self.resultPanel:GetChildByName("Card")
+		card.SpriteGUIRendererComponent.ImageRUID = originCharData.pieceLargeRUID
+		card:GetChildByName("Name").TextComponent.Text = _LocalizationService:GetText("soul_name_"..self._T.selectedCharId)
+		
+		
+		local gauge = self.resultPanel:GetChildByName("Exp"):GetChildByName("Gauge").SpriteGUIRendererComponent.FillAmount 
+		local value = self.resultPanel:GetChildByName("Exp"):GetChildByName("Gauge"):GetChildByName("Value").TextComponent 
+		local curExp = charData.charPieceStorage[tonumber(self._T.selectedCharId)].count 
+		
+		value.Text = curExp 
+		
+		
+		local func = function(index)
+			if index == 100 then
+				value.Text = curExp  
+				if levelUp then 
+				else
+				end
+				self.resultOkButton.Enable = true
+			end
+		end
+		
+			for i = 1 , 100 do
+				_TimerService:SetTimerOnce(function(
+						) func(i)
+						end, 
+					i * 3 / 100)
+			end
+		
+		
+		
+		self.gachaCard.Enable = false
+		self.gachaCard:GetChildByName("Text").Enable = true
+		self.resultPanel.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void ShowMultipleGachaResult(table results, boolean multiple)
+		-- 다중 가차 결과 표시 및 슬롯 설정
+		local parentPanel = nil
+		if not multiple then
+			parentPanel = self.multiple_resultPanel_2
+		else
+			parentPanel = self.multiple_resultPanel_1
+		end
+		parentPanel:SetEnable(true)
+		
+		local slot = nil
+		
+		for i = 1, #results do
+			slot = parentPanel:GetChildByName("Card_"..math.floor(i))
+			slot.SpriteGUIRendererComponent.ImageRUID = _CharacterLogic.characterTable[results[i]].pieceRUID	
+			slot:GetChildByName("name").TextComponent.Text = _LocalizationService:GetText("soul_name_"..results[i])
+			self:SetResultSlot(results[i], slot, i)
+			slot.Enable = true
+			
+			self.multiple_resultOkButton:SetEnable(true)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetCharacterMultiple(Entity player, integer tryNum)
+		-- 다중 가차 실행 및 보상 지급 처리
+		local multipleGachaResultTable = {}
+		local essenceRewardTable = {}
+		local mesoRewardTable = {}
+		
+		local charPlayerData = player.PlayerCharacterData
+		local charOriginData = _CharacterLogic.characterTable 
+		
+		local GetCharacter = function()
+			local getCharTable = self:GetGachaCharacter()
+			local getCharId = getCharTable.charId
+			
+			if isvalid(charPlayerData.charPieceStorage[tonumber(getCharId)]) then 
+		 		charPlayerData:AddCharPieceCount(tonumber(getCharId), 1, "Gatcha") 
+			else 
+				charPlayerData.charPieceStorage[tonumber(getCharId)] = charPlayerData:SetCharacterPiece(tonumber(getCharId), 1)
+			end
+			table.insert(multipleGachaResultTable, getCharId)
+			self._T.getCharId = getCharId
+		end
+		
+		for i = 1 , tryNum do
+			GetCharacter()
+		end
+		
+		for i = 1 ,tryNum do 
+			essenceRewardTable[i] = self:GetRewardEssenceCount()
+			mesoRewardTable[i] = self:GetRewardMesoCount()
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, mesoRewardTable[i], player.PlayerComponent.UserId,"SoulPieceGatcha","")
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, essenceRewardTable[i], player.PlayerComponent.UserId,"SoulPieceGatcha","")
+		end
+		
+		self:SyncResultTable(true, multipleGachaResultTable, essenceRewardTable, mesoRewardTable, player.PlayerComponent.UserId)
+		charPlayerData:SyncCharPieceStorage(tonumber(self._T.getCharId), charPlayerData.charPieceStorage[tonumber(self._T.getCharId)], charPlayerData.userId)
+		
+		return multipleGachaResultTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetCharacter(Entity player, boolean multiple, string source)
+		-- 단일 가차 실행 및 캐릭터 조각 지급 처리
+		local getCharTable = self:GetGachaCharacter()
+		local getCharId = getCharTable.charId
+		
+		local firstGet = true
+		local levelUp = false
+		
+		local charPlayerData = player.PlayerCharacterData
+		local charOriginData = _CharacterLogic.characterTable 
+		
+		if isvalid(charPlayerData.charPieceStorage[tonumber(getCharId)]) then 
+			firstGet = false
+		 	charPlayerData:AddCharPieceCount(tonumber(getCharId), 1, source) 
+		else 
+			charPlayerData.charPieceStorage[tonumber(getCharId)] = charPlayerData:SetCharacterPiece(tonumber(getCharId), 1)
+		end
+		
+		getCharTable.levelUp = levelUp
+		getCharTable.firstGet = firstGet
+		
+		local gachaResultTable = {}
+		local essenceRewardTable = {}
+		local mesoRewardTable = {}
+		
+		gachaResultTable[1] = getCharTable.charId
+		essenceRewardTable[1] = self:GetRewardEssenceCount()
+		mesoRewardTable[1] = self:GetRewardMesoCount()
+		
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, mesoRewardTable[1], player.PlayerComponent.UserId, source,"") 
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, essenceRewardTable[1], player.PlayerComponent.UserId, source,"") 
+		
+		self:SyncResultTable(false, gachaResultTable, essenceRewardTable, mesoRewardTable, player.PlayerComponent.UserId)
+		charPlayerData:SyncCharPieceStorage(tonumber(getCharId), charPlayerData.charPieceStorage[tonumber(getCharId)], charPlayerData.userId)
+		
+		return gachaResultTable
+	end
+
+	@ExecSpace("Client")
+	method void SyncResultTable(boolean mutltiple, table results, table result_essence, table result_meso)
+		-- 가차 결과 데이터 동기화 및 팝업 표시
+		
+		self:ShowResultPopup(results, result_essence, result_meso)
+		
+	end
+
+	method void SetResultSlot(string index, Entity slot, integer number)
+		-- 가차 결과 슬롯 UI 설정 및 상태 업데이트
+		local character = _UserService.LocalPlayer.PlayerCharacterData
+		local charLevel = 0
+		
+		local bar = slot:GetChildByName("bar", true)
+		local count = slot:GetChildByName("pieceCount", true)
+		local essence_count = slot:GetChildByName("essence_count", true)
+		local charDeck = character.charDeckStorage[tonumber(index)]
+		local lock = slot:GetChildByName("lock", true)
+		local outline = slot:GetChildByName("outline", true)
+		
+		if isvalid(charDeck) then 
+			charLevel = _UserService.LocalPlayer.PlayerCharacterData.charDeckStorage[tonumber(index)].level
+		end
+		
+			local maxPieceCount = _CharacterLogic:GetMaxPieceCount(charDeck.tier, math.floor(tonumber(index)), _UserService.LocalPlayer)
+		
+			local charPieceTable = character.charPieceStorage
+			bar.SliderComponent.Value = charPieceTable[tonumber(index)].count/maxPieceCount
+			count.TextComponent.Text = math.floor(charPieceTable[tonumber(index)].count).."/"..math.floor(maxPieceCount)	
+			bar.SliderComponent.FillRectImageRUID = "b19f49260f144e00b185f2ee43b7821a"
+			bar.Parent.Enable = true
+		
+			essence_count.TextComponent.Text = tostring(math.floor(self.resultEssenceTableMulti[number]))
+			
+			if isvalid(charDeck) then
+				lock.Enable = false
+				if charDeck.tier < 5 then
+					if charPieceTable[tonumber(index)].cournt >= maxPieceCount then
+						outline.Enable = true
+					else
+						outline.Enable = false
+					end
+				else 
+					bar.Parent.Enable = false
+					count.TextComponent.Text = "MAX!"
+				end
+			else
+				if charPieceTable[tonumber(index)].count >= maxPieceCount then
+					lock.Enable = false
+					outline.Enable = true
+				else
+					lock.Enable = true
+					outline.Enable = false
+					bar.SliderComponent.FillRectImageRUID = "2a596133a2124b35aa52634cc3b243bd"
+				end
+			end
+	end
+
+	@ExecSpace("Client")
+	method void ShowResultPopup(table results, table essence_results, table meso_results)
+		-- 가차 결과 팝업 표시
+		
+		self.resultPopup.results = results
+		self.resultPopup.essence_results = essence_results
+		self.resultPopup.meso_results = meso_results
+		self.resultPopup:Show()
+	end
+
+	method integer GetRewardEssenceCount()
+		-- 가차 보상 에센스 수량 랜덤 생성
+		local rewardEssence = _UtilLogic:RandomIntegerRange(1, 10) 
+		return rewardEssence
+	end
+
+	method integer GetRewardMesoCount()
+		-- 가차 보상 메소 수량 랜덤 생성
+		local rewardMeso = _UtilLogic:RandomIntegerRange(100, 1000) 
+		return rewardMeso 
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "0856bdb3-656a-48d8-a710-6e8e15eb96f8")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 가차 카드 버튼 클릭 이벤트
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "110f79a4-a695-42fc-a5c7-0718e837dfe0")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 가차 버튼 클릭 이벤트 5
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "24b65c81-4caf-460e-9eae-bc931048eaf5")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 가차 결과 OK 버튼 클릭 이벤트
+		
+		local Entity = event.Entity
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "6483050f-950d-48d5-85f6-5ce6ae4f4dcd")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 다중 가차 결과 OK 버튼 클릭 이벤트
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "5f483197-3e6d-4d31-97f4-198bd30daf09")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 가차 패널 닫기 버튼 클릭 이벤트
+		
+		local Entity = event.Entity
+		self:CloseGachaPanel()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "151bf032-9b68-4cd7-87a8-994d344e19e4")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 가차 버튼 클릭 이벤트 3
+		
+		local Entity = event.Entity
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "d3e9f57d-1a05-4da8-adbe-c73ff7bb5a0d")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 가차 버튼 클릭 이벤트 4
+		
+		local Entity = event.Entity
+		
+	end
+
+end

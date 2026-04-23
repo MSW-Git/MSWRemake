@@ -1,0 +1,446 @@
+@Component
+script NewbieMissionEventUIComponent extends UICommonPopup
+
+	property Entity exitButton = "b907a2b6-9ab1-4ddb-bd68-9a0f92ee5e44"
+
+	property Entity progressPanel = "268328f4-cc65-42a6-8b22-bc0c250a2246"
+
+	property Entity achievementPanel = "3fa420e7-d19f-44e6-a8c0-f8af823ef2de"
+
+	@HideFromInspector
+	property integer currentDay = 1
+
+	@HideFromInspector
+	property integer maxPoint = 0
+
+	@HideFromInspector
+	property integer currentPoint = 0
+
+	property table currentDayMissionTable = {}
+
+	property boolean inited = false
+
+	property Entity missionHUD = "fd826776-a7a3-4b4b-9c4f-022e45980bc1"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 신규 유저 미션 이벤트 UI 초기화
+		__base:OnBeginPlay()
+		
+		
+		self.exitButton:ConnectEvent(ButtonClickEvent, self.Hide)
+		
+		self:InitGridView()
+		
+		_TimerService:SetTimerRepeat(self.RefreshRemainTime, 60, 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitGridView()
+		-- 미션 목록 그리드뷰 초기화
+		local gridView = self.achievementPanel:GetChildByName("NewbieEventAchieveLayout").GridViewComponent
+		
+		gridView.ItemEntity = gridView.Entity:GetChildByName("NewbieEventAchieveSlot")
+		gridView.OnRefresh = function(index, entity)
+			---@type Entity
+			local newEntity = entity
+			
+			newEntity.NewbieMissionEventSlotComponent:SetSlot(self.currentDayMissionTable[index + 1])
+			newEntity.Enable = true
+		end
+		gridView:Refresh()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 미션 이벤트 UI 새로고침
+		if not _UserService.LocalPlayer.PlayerDBComponent.dbInited then return end
+		table.clear(self.currentDayMissionTable)
+		
+		local playerMission = _UserService.LocalPlayer.PlayerMissionComponent
+		local missionInfo = playerMission.missionInfo
+		
+		self:CheckAndOffHUD()
+		
+		self.currentPoint = playerMission.missionInfo.newbieMissionPoint
+		
+		
+		for key, value in pairs(_NewbieMissionEventLogic.missionEventData) do
+			if value.day == self.currentDay then
+				table.insert(self.currentDayMissionTable, value)
+			end
+		end
+		
+		table.sort(self.currentDayMissionTable, function(a, b) return tonumber(a.id) < tonumber(b.id) end)
+		
+		local gridView = self.achievementPanel:GetChildByName("NewbieEventAchieveLayout").GridViewComponent
+		
+		gridView.TotalCount = #table.keys(self.currentDayMissionTable)
+		gridView:Refresh(false, true)
+		
+		local currentPoint = self.progressPanel:GetChildByName("NewbieEventMissionPoint")
+		currentPoint.TextComponent.Text = string.format("%d", missionInfo.newbieMissionPoint)
+		
+		local progressBarPanel = self.progressPanel:GetChildByName("NewbieEventProgressBarPanel")
+		local progressBar = progressBarPanel:GetChildByName("NewbieEventProgressBar")
+		local point = missionInfo.newbieMissionPoint
+		local tempTable = {}
+		local sumRatio = 0
+		
+		tempTable[1] = {["max"] = 500, ["assignedRatio"] = 0.623}
+		tempTable[2] = {["max"] = 700, ["assignedRatio"] = 0.742 - 0.623}
+		tempTable[3] = {["max"] = 1200, ["assignedRatio"] = 0.87 - 0.742}
+		tempTable[4] = {["max"] = _NewbieMissionEventLogic.targetPoint, ["assignedRatio"] = 1 - 0.87}
+		
+		for i = 1, 4 do
+			if point > tempTable[i].max then
+				sumRatio += tempTable[i].assignedRatio
+			else
+				local tempRatio = 0
+				
+				if i > 1 then
+					tempRatio = (point - tempTable[i - 1].max) / (tempTable[i].max - tempTable[i - 1].max)
+				else
+					tempRatio = point / tempTable[i].max
+				end
+				
+				sumRatio += tempTable[i].assignedRatio * tempRatio
+				
+				break
+			end
+		end
+		
+		progressBar.SpriteGUIRendererComponent.FillAmount = sumRatio
+		
+		
+		for _, parentEntity in pairs(progressBar.Children) do
+			for _, entity in pairs(parentEntity.Children) do
+				if _UtilLogic:Contains(entity.Name, "NewbieEventRewardBoxButton") then
+					local id = _UtilLogic:Split(entity.Name, "_")[2]
+					local rewardData = _NewbieMissionEventLogic.missionEventRewardData[id]
+					local renderer = entity.SpriteGUIRendererComponent
+					
+					local newKey = string.format("newbieMissionReward_%d", tonumber(id))
+		
+		
+					if self.currentPoint < rewardData.needPoint then
+						renderer.Color = Color.FromHexCode("#7e7e7e")
+						renderer:ChangeMaterial("")
+						entity:GetChildByName("icon_check").Enable = false
+					elseif missionInfo[newKey] == "REWARDED" then
+						renderer.Color = Color.FromHexCode("#7e7e7e")
+						renderer:ChangeMaterial("")
+						entity:GetChildByName("icon_check").Enable = true
+					else
+						renderer.Color = Color.white
+						renderer:ChangeMaterial("material://416aedb6-a2eb-4bdb-8a4f-d9bfc819be95")
+						entity:GetChildByName("icon_check").Enable = false
+					end
+				end
+			end
+		end
+		
+		
+		local finalRewardData = _NewbieMissionEventLogic.finalReward
+		local rewardPanel = self.progressPanel:GetChildByName("NewbieEventRewradPanel")
+		local finalRewardButton = rewardPanel:GetChildByName("NewbieEventRewradButton")
+		local finalRewardSprite = finalRewardButton:GetChildByName("NewbieEventRewradIcon")
+		local finalCheck = finalRewardButton:GetChildByName("icon_check")
+		local finalEffect = finalRewardButton:GetChildByName("ClearRewardEffect")
+		local renderer = finalRewardSprite.SpriteGUIRendererComponent
+		local newKey = string.format("newbieMissionReward_%d", tonumber(finalRewardData.id))
+		
+		if self.currentPoint < finalRewardData.needPoint then
+			renderer.Color = Color.FromHexCode("#7e7e7e")
+			finalCheck.Enable = false
+			finalEffect.Enable = false
+		elseif missionInfo[newKey] == "REWARDED" then
+			renderer.Color = Color.FromHexCode("#7e7e7e")
+			finalCheck.Enable = false
+			finalEffect.Enable = false
+		else
+			renderer.Color = Color.white
+			finalCheck.Enable = false
+			finalEffect.Enable = true
+		end
+		
+		
+		local dayButtonLayout = self.achievementPanel:GetChildByName("NewbieEventDayButtonLayout")
+		
+		for _, entity in pairs(dayButtonLayout.Children) do
+			local day = _UtilLogic:Split(entity.Name, "_")[2]
+			
+			if self.currentDay == tonumber(day) then
+				entity.SpriteGUIRendererComponent.ImageRUID = "680e8f1997ed470a8f599c1f671a36a8"
+				entity.ButtonComponent.Enable = true
+				entity.SpriteGUIRendererComponent:ChangeMaterial("")
+			elseif tonumber(day) > _UserService.LocalPlayer.PlayerMissionComponent.missionInfo.newbieMissionDay then
+				entity.SpriteGUIRendererComponent.ImageRUID = "c7b38a460c434e0aa6901e187062ff10"
+				entity.ButtonComponent.Enable = false
+				entity.SpriteGUIRendererComponent:ChangeMaterial("material://a58cbfd6-0988-4bd4-a30b-89e51565bef4")
+			else
+				entity.SpriteGUIRendererComponent.ImageRUID = "c7b38a460c434e0aa6901e187062ff10"
+				entity.ButtonComponent.Enable = true
+				entity.SpriteGUIRendererComponent:ChangeMaterial("")
+			end
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- 신규 유저 미션 이벤트 UI 초기 설정 및 버튼 연결
+		local playerMission = _UserService.LocalPlayer.PlayerMissionComponent
+		local missionInfo = playerMission.missionInfo
+		
+		self:CheckAndOffHUD()
+		
+		
+		local dayButtonLayout = self.achievementPanel:GetChildByName("NewbieEventDayButtonLayout")
+		
+		for _, entity in pairs(dayButtonLayout.Children) do
+			local day = _UtilLogic:Split(entity.Name, "_")[2]
+			
+			entity.TextComponent.Text = string.format("%s일", day)
+			entity:ConnectEvent(ButtonClickEvent, function()
+		
+				self.currentDay = tonumber(day)
+				self:Refresh()
+			end)
+			
+			if self.currentDay == tonumber(day) then
+				entity.SpriteGUIRendererComponent.ImageRUID = "680e8f1997ed470a8f599c1f671a36a8"
+				entity.ButtonComponent.Enable = true
+				entity.SpriteGUIRendererComponent:ChangeMaterial("")
+			elseif tonumber(day) > _UserService.LocalPlayer.PlayerMissionComponent.missionInfo.newbieMissionDay then
+				entity.SpriteGUIRendererComponent.ImageRUID = "c7b38a460c434e0aa6901e187062ff10"
+				entity.ButtonComponent.Enable = false
+				entity.SpriteGUIRendererComponent:ChangeMaterial("material://a58cbfd6-0988-4bd4-a30b-89e51565bef4")
+			else
+				entity.SpriteGUIRendererComponent.ImageRUID = "c7b38a460c434e0aa6901e187062ff10"
+				entity.ButtonComponent.Enable = true
+				entity.SpriteGUIRendererComponent:ChangeMaterial("")
+			end
+		end
+		
+		
+		local progressBarPanel = self.progressPanel:GetChildByName("NewbieEventProgressBarPanel")
+		local progressBar = progressBarPanel:GetChildByName("NewbieEventProgressBar")
+		
+		for _, parentEntity in pairs(progressBar.Children) do
+			for _, entity in pairs(parentEntity.Children) do
+				if _UtilLogic:Contains(entity.Name, "NewbieEventRewardBoxButton") then
+					local id = _UtilLogic:Split(entity.Name, "_")[2]
+					local rewardData = _NewbieMissionEventLogic.missionEventRewardData[id]
+					local renderer = entity.SpriteGUIRendererComponent
+					
+					renderer.LocalPosition = Vector2.zero
+					renderer.LocalScale = Vector2.one
+					
+					if rewardData.rewardType == "bundle" then
+						renderer.ImageRUID = "28145fc80c784312979e4542d0e7f99a"
+						renderer.LocalPosition = Vector2(-13, -12)
+						renderer.LocalScale = Vector2(0.8, 0.8)
+					elseif rewardData.rewardType == "character" then
+						local characterData = _CharacterLogic.characterTable[rewardData.rewardId]
+						
+						renderer.ImageRUID = characterData.pieceRUID
+					elseif rewardData.rewardType == "weapon" then
+						local weaponData = _WeaponSpecLogic.weaponData[rewardData.rewardId]
+						
+						renderer.ImageRUID = weaponData.ruid
+						renderer.LocalScale = Vector2(0.8, 0.8)
+					elseif rewardData.rewardType == "armor" then
+						local armorData = _ArmorSpecLogic.armorData[rewardData.rewardId]
+						
+						renderer.ImageRUID = armorData.ruid
+						renderer.LocalScale = Vector2(0.8, 0.8)
+					end
+					
+					entity.TextComponent.Text = rewardData.needPoint
+					
+					if not self.inited then
+						entity:ConnectEvent(ButtonClickEvent, function()
+							if _UIGroupManager:IsEnableOpenPopup() == false then
+							return
+						end
+								
+								self:OnRewardButton(id)
+							end)
+					end
+					
+					local newKey = string.format("newbieMissionReward_%d", tonumber(id))
+		
+					if self.currentPoint < rewardData.needPoint then
+						renderer.Color = Color.FromHexCode("#7e7e7e")
+						renderer:ChangeMaterial("")
+						entity:GetChildByName("icon_check").Enable = false
+					elseif missionInfo[newKey] == "REWARDED" then
+						renderer.Color = Color.FromHexCode("#7e7e7e")
+						renderer:ChangeMaterial("")
+						entity:GetChildByName("icon_check").Enable = true
+					else
+						renderer.Color = Color.white
+						renderer:ChangeMaterial("material://416aedb6-a2eb-4bdb-8a4f-d9bfc819be95")
+						entity:GetChildByName("icon_check").Enable = false
+					end
+				end
+			end
+		end
+		
+		
+		local finalRewardData = _NewbieMissionEventLogic.finalReward
+		local rewardPanel = self.progressPanel:GetChildByName("NewbieEventRewradPanel")
+		local finalRewardButton = rewardPanel:GetChildByName("NewbieEventRewradButton")
+		local finalRewardSprite = finalRewardButton:GetChildByName("NewbieEventRewradIcon")
+		local finalRewardPoint = finalRewardButton:GetChildByName("NewbieEventRewradPointText")
+		local finalCheck = finalRewardButton:GetChildByName("icon_check")
+		local finalEffect = finalRewardButton:GetChildByName("ClearRewardEffect")
+		local renderer = finalRewardSprite.SpriteGUIRendererComponent
+		
+		renderer.LocalPosition = Vector2.zero
+		renderer.LocalScale = Vector2(1.5, 1.5)
+		
+		if finalRewardData.rewardType == "bundle" then
+			renderer.ImageRUID = "223e9555433e45c8a4273b19951c271d"
+		elseif finalRewardData.rewardType == "character" then
+			local characterData = _CharacterLogic.characterTable[finalRewardData.rewardId]
+			
+			renderer.ImageRUID = characterData.pieceRUID
+		elseif finalRewardData.rewardType == "weapon" then
+			local weaponData = _WeaponSpecLogic.weaponData[finalRewardData.rewardId]
+			
+			renderer.ImageRUID = weaponData.ruid
+		elseif finalRewardData.rewardType == "armor" then
+			local armorData = _ArmorSpecLogic.armorData[finalRewardData.rewardId]
+			
+			renderer.ImageRUID = armorData.ruid
+		end
+		
+		finalRewardPoint.TextComponent.Text = finalRewardData.needPoint
+		
+		if not self.inited then
+			finalRewardButton:ConnectEvent(ButtonClickEvent, function()
+					self:OnRewardButton(finalRewardData.id)
+				end)
+		end
+		
+		local newKey = string.format("newbieMissionReward_%d", tonumber(finalRewardData.id))
+		
+		if self.currentPoint < finalRewardData.needPoint then
+			renderer.Color = Color.FromHexCode("#7e7e7e")
+			finalCheck.Enable = false
+			finalEffect.Enable = false
+		elseif missionInfo[newKey] == "REWARDED" then
+			renderer.Color = Color.FromHexCode("#7e7e7e")
+			finalCheck.Enable = false
+			finalEffect.Enable = false
+		else
+			renderer.Color = Color.white
+			finalCheck.Enable = false
+			finalEffect.Enable = true
+		end
+		
+		self.inited = true
+	end
+
+	method void Show()
+		-- 신규 유저 미션 이벤트 UI 표시
+		if true then return end
+		--[[
+		self.achievementPanel.Enable = false
+		
+		_UserService.LocalPlayer.PlayerMissionComponent:CheckEnteredDate()
+		
+		
+		self:Init()
+		self:Refresh()
+		
+		local gridView = self.achievementPanel:GetChildByName("NewbieEventAchieveLayout").GridViewComponent
+		
+		gridView:Refresh(true, true)
+		
+		__base:Show()
+		
+		self.achievementPanel.Enable = true]]--
+	end
+
+	@ExecSpace("Client")
+	method void OnRewardButton(string id)
+		-- 보상 버튼 클릭 시 보상 지급 처리
+		local playerMission = _UserService.LocalPlayer.PlayerMissionComponent
+		local needPoint = _NewbieMissionEventLogic.missionEventRewardData[tostring(id)].needPoint
+		
+		if playerMission:IsTooShortRequestedTime() then
+			playerMission:NoticeWaitAMoment()
+			
+			return
+		end
+		
+		if playerMission:IsCanGetReward(tonumber(id)) then
+			playerMission:RequestGetReward(tonumber(id))
+		else
+			_UIToast:ShowMessage("보상을 획득할 수 없습니다.")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRemainTime()
+		-- 이벤트 남은 시간 업데이트 및 표시
+		if not _UserService.LocalPlayer.PlayerDBComponent.dbInited then return end
+		
+		local missionInfo = _UserService.LocalPlayer.PlayerMissionComponent.missionInfo
+		local limitTime = DateTime(missionInfo.firstEnteredDate) + TimeSpan(14, 0, 0, 0)
+		
+		if limitTime >= DateTime(2024, 2, 22, 10, 0, 0) then
+			limitTime = DateTime(2024, 2, 22, 10, 0, 0)
+		end
+		
+		self:CheckAndOffHUD()
+		
+		local remainTime = limitTime - _LocalTimeLogic:GetKST()
+		local remainTimeText = self.achievementPanel:GetChildByName("NewbieEventRemainTimeText")
+		remainTimeText.TextComponent.Text = string.format("남은 시간 :\n%s일 %s시간 %s분",remainTime:ToFormattedString("%d"),remainTime:ToFormattedString("hh"),remainTime:ToFormattedString("mm"))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckAndOffHUD()
+		-- 이벤트 기간 종료 확인 및 HUD 비활성화
+		local playerMission = _UserService.LocalPlayer.PlayerMissionComponent
+		local missionInfo = playerMission.missionInfo
+		local limitTime = DateTime(missionInfo.firstEnteredDate) + TimeSpan(14, 0, 0, 0)
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		if (limitTime.Elapsed - _LocalTimeLogic:GetKST().Elapsed <= 0) or 
+			(currentDate.Year >= 2024 and currentDate.Month >= 2 and currentDate.Day >= 22 and currentDate.Hour >= 10 and currentDate.Minute >= 0) then
+			self.Entity.Enable = false
+			self.missionHUD.Enable = false
+			
+			return
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "fd826776-a7a3-4b4b-9c4f-022e45980bc1")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 미션 HUD 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		local playerMission = _UserService.LocalPlayer.PlayerMissionComponent
+		local missionInfo = playerMission.missionInfo
+		local limitTime = DateTime(missionInfo.firstEnteredDate) + TimeSpan(14, 0, 0, 0)
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		if limitTime.Elapsed - _LocalTimeLogic:GetKST().Elapsed <= 0 or
+			(currentDate.Year >= 2024 and currentDate.Month >= 2 and currentDate.Day >= 22 and currentDate.Hour >= 10 and currentDate.Minute >= 0)  then
+			self:CheckAndOffHUD()
+			_UIToast:ShowMessage("도전 기간이 종료됐습니다.")
+			
+			return
+		end
+		
+		self:Refresh()
+		self:ShowByButtonClick()
+	end
+
+end

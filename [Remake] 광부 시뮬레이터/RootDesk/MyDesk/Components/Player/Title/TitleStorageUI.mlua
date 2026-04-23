@@ -1,0 +1,244 @@
+@Component
+script TitleStorageUI extends Component
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 칭호 보관함 UI 초기화 시 로커라이제이션 및 슬롯 복제 설정
+		-- localizing
+		_EntityService:GetEntityByPath("/ui/TitleStorageGroup/TitleStorage/Panel/ListPanel/Slot/HaveAbilTitle").TextComponent.Text = _LocalizationService:GetText("EquipedAbility_Title3")
+		_EntityService:GetEntityByPath("/ui/TitleStorageGroup/TitleStorage/Panel/ListPanel/Slot/EquipAbilTitle").TextComponent.Text = _LocalizationService:GetText("EquipedAbility_Title1")
+		_EntityService:GetEntityByPath("/ui/TitleStorageGroup/TitleStorage/Panel/EquipedPanel/Title").TextComponent.Text = _LocalizationService:GetText("Equiped")..": "
+		_EntityService:GetEntityByPath("/ui/TitleStorageGroup/TitleStorage/Panel/AbilityList/Name_title").TextComponent.Text = _LocalizationService:GetText("Status")
+		_EntityService:GetEntityByPath("/ui/TitleStorageGroup/TitleStorage/Panel/AbilityList/Amount_title").TextComponent.Text = _LocalizationService:GetText("TotalSum")
+		-----------------------------------
+		-- Init UI (copy slot)
+		local titleNum = _DataService:GetRowCount("Title")
+		local listSlot = _EntityService:GetEntityByPath("/ui/TitleStorageGroup/TitleStorage/Panel/ListPanel/Slot")
+		for i=1, titleNum do
+			listSlot:Clone("Slot_"..tostring(i))
+		end
+		
+		local abilityList = _EntityService:GetEntity("fcec968e-0f88-4857-bb35-42e85e929fb2")
+		for i=1, _DataService:GetRowCount("AbilityIcon") do
+			abilityList:Clone("Slot_"..tostring(i))
+		end
+		
+		self:InitUI()
+	end
+
+	@ExecSpace("Client")
+	method void InitUI()
+		-- 칭호 보관함의 칭호 목록과 능력치 리스트를 초기화하고 기본 데이터 설정
+		local titleTable = _DataService:GetTable("Title")
+		local titleNum = titleTable:GetRowCount()
+		-----------------------------------------------------------------
+		-- 칭호 목록 초기화
+		local listEntity = _EntityService:GetEntity("90eaad36-ef66-47f8-914c-edbe4e0053d0")
+		for i=1, titleNum do
+			local slot = listEntity:GetChildByName("Slot_"..tostring(i))
+			
+			local nameUI = slot:GetChildByName("Name")
+			local equipAbilUI = slot:GetChildByName("EquipAbil")
+			local haveAbilUI = slot:GetChildByName("HaveAbil")
+			local equipBtn = slot:GetChildByName("EquipButton")
+			local HideUI = slot:GetChildByName("Hide")
+			local conditionUI = HideUI:GetChildByName("Condition")
+			
+			--nameUI.TextComponent.Text = titleTable:GetCell(i, 1) -- 칭호 텍스트
+			nameUI.TextComponent.Text = _LocalizationService:GetText(titleTable:GetCell(i, 1))
+			
+			--local abilName = string.sub(titleTable:GetCell(i, 5), 1, -4)	
+			local abilName = _LocalizationService:GetText(titleTable:GetCell(i, 5))
+			haveAbilUI.TextComponent.Text = abilName.." +"..titleTable:GetCell(i, 6).."%" -- 보유 효과 텍스트
+			
+			-- haveAbilUI.TextComponent.Text = abilName.." +"..titleTable:GetCell(i, 6).."%" -- 보유 효과 텍스트
+			-- haveAbilUI.TextComponent.Text = string.sub(abilName, 1, string.len(abilName) - 3).." +"..titleTable:GetCell(i, 6).."%"
+		
+			
+			local equipAbilStr = ""
+			for j=1, 3 do
+				-- local abilName = string.sub(titleTable:GetCell(i, 2*j+5), 1, -4)	
+				local abilName2 = _LocalizationService:GetText(titleTable:GetCell(i, 2*j+5))
+				local abilAmount = titleTable:GetCell(i, 2*j+6)
+				if j==1 then
+					equipAbilStr = equipAbilStr..abilName2.." +"..abilAmount.."%"
+				end
+				
+				if j>=2 and abilName2 ~= "" and abilName2 ~= nil then
+					equipAbilStr = equipAbilStr.."\n"..abilName2.." +"..abilAmount.."%"
+				end
+			end
+			equipAbilUI.TextComponent.Text = equipAbilStr -- 장착 효과 텍스트
+			conditionUI.TextComponent.Text = "'".._LocalizationService:GetText(titleTable:GetCell(i, 4)).."'\n".._LocalizationService:GetText("Achieve")
+			-- conditionUI.TextComponent.Text = "'"..titleTable:GetCell(i, 4).."'\n업적 클리어" -- 칭호 해금 텍스트
+			
+		end
+		-----------------------------------------------------------------
+		-- '획득 능력치' 초기화
+		local abilityList = _EntityService:GetEntity("fd770572-8c79-465e-863a-90b78da2319f")
+		local abilityTable = _DataService:GetTable("AbilityIcon")
+		for i=1, abilityTable:GetRowCount() do
+			local slot = abilityList:GetChildByName("Slot_"..tostring(i))
+			local name = slot:GetChildByName("Name")
+			local amount = slot:GetChildByName("Amount")
+			
+			name.TextComponent.Text = abilityTable:GetCell(i, 1)
+			amount.TextComponent.Text = "+0%"
+			
+			if i==7 or i==11 or i==12 or i==13 then
+				slot.Enable = false
+			end
+		end
+		-----------------------------------------------------------------
+		self:RefreshUI()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- UI 새로고침 플래그 상태 확인 및 지연 업데이트 처리
+		if self._T.refreshUI then
+			self:RefreshUI_Inner()
+			self._T.refreshUI = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI()
+		-- UI 새로고침 플래그 활성화
+		self._T.refreshUI = true
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_Inner()
+		-- 칭호 보유와 장착 상태에 따른 UI 업데이트 및 누적 능력치 계산 및 표시
+		local titleTable = _DataService:GetTable("Title")
+		local titleNum = titleTable:GetRowCount()
+		local haveTitle = _UserService.LocalPlayer.PlayerTitle.haveItem
+		local equipedTitle = _UserService.LocalPlayer.PlayerTitle.equipedIdx
+		-----------------------------------------------------------------
+		-- list 갱신
+		local listEntity = _EntityService:GetEntity("90eaad36-ef66-47f8-914c-edbe4e0053d0")
+		for i=1, titleNum do
+			local slot = listEntity:GetChildByName("Slot_"..tostring(i))
+			local equipBtn = slot:GetChildByName("EquipButton")
+			local hidePanel = slot:GetChildByName("Hide")
+				
+			-- 장착 여부에 따라..
+			local equipAbilTextUI = slot:GetChildByName("EquipAbil")
+			if equipedTitle == i then
+				equipBtn.TextComponent.Text = _LocalizationService:GetText("Equiped") -- "장착중" -- 장착중
+				equipBtn.ButtonComponent.Enable = false
+				equipBtn.SpriteGUIRendererComponent.ImageRUID = "dd45a705936c4ce6aec3732374945271"
+				equipBtn.TextComponent.FontColor = Color.FromHexCode("#403126")
+				equipAbilTextUI.TextComponent.FontColor = Color.FromHexCode("#B5F043")
+				equipAbilTextUI.TextComponent.UseOutLine = true
+			else 
+				equipBtn.TextComponent.Text = _LocalizationService:GetText("Equip") -- "장착하기" -- 장착하기
+				equipBtn.ButtonComponent.Enable = true
+				equipBtn.SpriteGUIRendererComponent.ImageRUID = "e771f2a4d52e48ffaa0014258f63c10d"
+				equipBtn.TextComponent.FontColor = Color.FromHexCode("#303F23")
+				equipAbilTextUI.TextComponent.FontColor = Color.FromHexCode("#653122")
+				equipAbilTextUI.TextComponent.UseOutLine = false
+			end
+			
+			-- 보유 여부에 따라..
+			-- 보유 여부를 나중에 체크하므로, 장착 중이지 않고 + 보유중이지 않으면 [장착]버튼 비활성화됨
+			local haveAbilTextUI = slot:GetChildByName("HaveAbil")
+			if haveTitle[i] == true then
+				equipBtn.Enable = true
+				hidePanel.Enable = false
+				haveAbilTextUI.TextComponent.FontColor = Color.FromHexCode("#B5F043")
+				haveAbilTextUI.TextComponent.UseOutLine = true 
+			else 
+				hidePanel.Enable = true
+				equipBtn.TextComponent.Text = ""
+				equipBtn.SpriteGUIRendererComponent.ImageRUID = "651f621afbf14b19b2afd40aeb97af57"
+				equipBtn.TextComponent.FontColor = Color.FromHexCode("#434343")
+				equipBtn.ButtonComponent.Enable = false
+				haveAbilTextUI.TextComponent.FontColor = Color.FromHexCode("#653122")
+				haveAbilTextUI.TextComponent.UseOutLine = false 
+			end
+		end
+		-----------------------------------------------------------------
+		-- 장착중인 칭호 정보 갱신
+		if equipedTitle > 0 then
+			_EntityService:GetEntity("e0142d2f-8edf-4dac-b209-29f188b628d1").TextComponent.Text = _LocalizationService:GetText(titleTable:GetCell(equipedTitle, 1)) -- titleTable:GetCell(equipedTitle, 1)
+		else
+			_EntityService:GetEntity("e0142d2f-8edf-4dac-b209-29f188b628d1").TextComponent.Text = "-"
+		end
+		-----------------------------------------------------------------
+		-- 스탯 갱신
+		local abilityTable = {}
+		for i=1, 10 do
+			table.insert(abilityTable, 0)
+		end
+		-- 보유 효과 합
+		for i=1, titleTable:GetRowCount() do
+			if haveTitle[i] == true then
+				local abilityType = titleTable:GetCell(i, 5)
+				local abilityAmount = tonumber(titleTable:GetCell(i, 6))
+				
+				for j=1, 10 do
+					if tonumber(string.sub(abilityType, 3, -1)) == j then
+						abilityTable[j] = abilityTable[j] + abilityAmount/100
+						break
+					end
+				end
+			end
+		end
+		
+		-- 장착효과 합
+		local equipedIdx = _UserService.LocalPlayer.PlayerTitle.equipedIdx
+		if equipedIdx > 0 then
+			for i=1, 3 do
+				local abilityType = titleTable:GetCell(equipedIdx, 2*i+5)
+				local abilityAmount = tonumber(titleTable:GetCell(equipedIdx, 2*i+6))
+				
+				for j=1, 10 do
+					if tonumber(string.sub(abilityType, 3, -1)) == j then
+						abilityTable[j] = abilityTable[j] + abilityAmount/100
+						break
+					end
+				end
+			end
+		end
+		
+		
+		-- UI에 반영
+		local abilityList = _EntityService:GetEntity("fd770572-8c79-465e-863a-90b78da2319f")
+		local abilIconTable = _DataService:GetTable("AbilityIcon")
+		for i=1, 10 do
+			local slot = abilityList:GetChildByName("Slot_"..tostring(i))
+			local name = slot:GetChildByName("Name")
+			local amount = slot:GetChildByName("Amount")
+			
+			local abilityName = _LocalizationService:GetText(abilIconTable:GetCell(i, 1)) -- abilIconTable:GetCell(i, 1) 
+			name.TextComponent.Text = abilityName
+			amount.TextComponent.Text = string.format("+ %.2f%%", abilityTable[i]*100)
+			
+			if abilityTable[i]*100 > 0 then
+				amount.TextComponent.FontColor = Color.FromHexCode("#B5F043")
+			else 
+				amount.TextComponent.FontColor = Color.gray
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ChangeEquipedTitle(number idx)
+		-- 지정된 인덱스의 칭호를 장착하고 능력치 적용
+		_UserService.LocalPlayer.PlayerTitle:ChangeEquipedItem(idx)
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- ESC 키를 눌러 칭호 보관함 UI를 닫는 이벤트 처리
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if self.Entity.Enable and key == KeyboardKey.Escape then
+			self.Entity.Enable = false
+		end
+	end
+
+end

@@ -1,0 +1,106 @@
+@Component
+script TrapProjectile extends Component
+
+	@Sync
+	@Description("이 투사체에 적중했을 때 입는 피해량.")
+	property number Damage = 0
+
+	@Sync
+	property string HitEffectId = ""
+
+	@Sync
+	property string HitSoundId = ""
+
+	@Sync
+	@Description("플레이어에게 적중시켰을 때 플레이어를 밀어내는 힘입니다.")
+	property number Force = 1
+
+	@Sync
+	@Description("발사되는 방향에 따라 엔티티를 회전시킬지 여부입니다. 만약 True인 경우 (1,0) 방향으로 발사된다는 가정하에 모델화해야 합니다.")
+	property boolean LookDirection = false
+
+	@Sync
+	@Description("이 투사체에 적중했을 때 중독 상태를 적용할 지 여부입니다. True이면 적중 시 중독시킵니다.")
+	property boolean IsToxic = false
+
+	@Sync
+	@Description("타격 시 감전 여부입니다. True면 타격 대상을 감전시킵니다.")
+	property boolean IsElectricHit = false
+
+	@Sync
+	property number Angle = 0
+
+	@ExecSpace("Server")
+	method void DestroySelf()
+		-- 투사체 엔티티를 제거
+		self.Entity:Destroy()
+	end
+
+	@ExecSpace("Server")
+	method void SetParameter(number angle, number distance, number speed)
+		-- 투사체의 각도, 거리, 속도를 설정하여 발사
+		local radian = 3.141592*angle / 180
+		local dirVec = Vector2(math.cos(radian), math.sin(radian))
+		
+		self.Angle = angle
+		self.Entity.TransformComponent.ZRotation = angle
+		
+		self.Entity.TweenLineComponent.Positions[1] = dirVec*distance
+		self.Entity.TweenLineComponent.Duration = distance / speed
+		self.Entity.TweenLineComponent:Play()
+		
+		-- 제거 예약
+		local destroy = function() 
+			self.Entity:Destroy()
+		end
+		
+		_TimerService:SetTimerOnce(destroy, distance/speed)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 플레이어와 충돌 시 데미지 처리 및 이펙트 재생
+		-- Parameters
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		--------------------------------------------------------
+		if TriggerBodyEntity.TagComponent and
+			TriggerBodyEntity.TagComponent.Tags[1] == "player" then
+			
+			-- hit sound
+			_SoundService:PlaySound(self.HitSoundId, 1)
+			
+			
+			-- hit effect
+			local hitPos = Vector3(TriggerBodyEntity.TransformComponent.WorldPosition.x,
+				TriggerBodyEntity.TransformComponent.WorldPosition.y + 0.15,
+				TriggerBodyEntity.TransformComponent.WorldPosition.z)
+			_EffectService:PlayEffect(self.HitEffectId, self.Entity, hitPos, 0, Vector3.one)
+			
+			-- give damage & apply debuff
+			if self.IsToxic then
+				TriggerBodyEntity.PlayerStateAtStage:Poisoned(5)
+			end
+			if self.IsElectricHit then
+				TriggerBodyEntity.PlayerStateAtStage:ElectricDamage(self.Damage, TriggerBodyEntity)
+			else
+				TriggerBodyEntity.PlayerIngameData:Hit(self.Damage)
+			end
+		
+			
+			-- change state 
+			if TriggerBodyEntity.StateComponent.CurrentStateName == "LADDER" 
+				or  TriggerBodyEntity.StateComponent.CurrentStateName == "ROPE" then
+				TriggerBodyEntity.StateComponent:ChangeState("IDLE")
+			end
+			
+			-- add force
+			local dirVec = Vector2(math.cos(self.Angle*3.141592/180), math.sin(self.Angle*3.141592/180))
+			TriggerBodyEntity.RigidbodyComponent:AddForce(dirVec * self.Force)
+			
+			-- remove this entity
+			self:DestroySelf()
+		end
+	end
+
+end

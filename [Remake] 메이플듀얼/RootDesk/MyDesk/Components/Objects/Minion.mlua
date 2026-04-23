@@ -1,0 +1,1008 @@
+@Component
+script Minion extends Unit
+
+	property MinionActor actor = nil
+
+	property MinionBody body = nil
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property Entity atkEntity = nil
+
+	property Integer atkInteger = nil
+
+	property Player player = nil
+
+	property Field field = nil
+
+	property table summonCoroutine = nil
+
+	property boolean isPivotable = false
+
+	property any barrierTweener = nil
+
+	property any freezeTweener = nil
+
+	property string animationState = ""
+
+	property table info = {}
+
+	property string variant = ""
+
+	property string quality = ""
+
+	property Entity minionEntity = nil
+
+	property Entity barrierEntity = nil
+
+	property Entity venomEntity = nil
+
+	property Entity freezeEntity = nil
+
+	property Entity stunEntity = nil
+
+	property Entity scareEntity = nil
+
+	property number originalScale = 0
+
+	property integer atk = nil
+
+	property boolean hasBarrier = nil
+
+	property boolean hasVenom = nil
+
+	property boolean hasChill = nil
+
+	property boolean isDirectAttackable = nil
+
+	property boolean isImmuneToStrong = nil
+
+	property boolean isFreeze = nil
+
+	property boolean isStun = false
+
+	property boolean isScare = false
+
+	property table tagArray = {}
+
+	method table GetProperties()
+		-- 미니언의 모든 속성들을 테이블로 반환
+		local propertyTable = {
+			id = self.id,
+			enchantmentArray = self.enchantmentArray,
+			auraEnchantmentArray = self.auraEnchantmentArray,
+			
+			player = self.player,
+			field = self.field,
+			info = self.info,
+		}
+		
+		_Table:Assign(self:GetIndependentVariables(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void SetPropertiesInClient(table propertyTable)
+		-- 클라이언트에서 속성을 설정하고 액터를 생성
+		__base:SetPropertiesInClient(propertyTable)
+		
+		self:SpawnAndSetActor()
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		-- 속성 동기화 시 블루프린트와 플레이어 정보를 재설정
+		if not _Table:IsEmpty(self.info) then
+			local blueprint = self:GetBlueprint()
+			self:ClearBlueprint()
+			self:SetBlueprint(blueprint)
+		end
+		
+		local player = self.player
+		self:ClearPlayer()
+		self:SetPlayer(player)
+	end
+
+	method void SetVariables(table variableTable)
+		-- 미니언의 변수들을 설정 (공격력, 방어막, 독 등)
+		__base:SetVariables(variableTable)
+		
+		local atk = variableTable.atk
+		if atk then
+			self:SetAtk(atk)
+		end
+		
+		local hasBarrier = variableTable.hasBarrier
+		if hasBarrier ~= nil then
+			self:SetBarrier(hasBarrier)
+		end
+		
+		local hasVenom = variableTable.hasVenom
+		if hasVenom ~= nil then
+			self:SetVenom(hasVenom)
+		end
+		
+		local hasChill = variableTable.hasChill
+		if hasChill ~= nil then
+			self:SetChill(hasChill)
+		end
+		
+		local isDirectAttackable = variableTable.isDirectAttackable
+		if isDirectAttackable ~= nil then
+			self:SetDirectAttackable(isDirectAttackable)
+		end
+		
+		local isImmuneToStrong = variableTable.isImmuneToStrong
+		if isImmuneToStrong ~= nil then
+			self:SetImmuneToStrong(isImmuneToStrong)
+		end
+		
+		local isFreeze = variableTable.isFreeze
+		if isFreeze ~= nil then
+			self:SetFreeze(isFreeze)
+		end
+		
+		local isStun = variableTable.isStun
+		if isStun ~= nil then
+			self:SetStun(isStun)
+		end
+	end
+
+	method table GetIndependentVariables()
+		-- 독립적인 변수들을 테이블로 반환 (방어막, 빙결, 기절, 공포 상태)
+		local independentVariableTable = {
+			hasBarrier = self.hasBarrier,
+			isFreeze = self.isFreeze,
+			isStun = self.isStun,
+			isScare = self.isScare,
+		}
+		
+		_Table:Assign(__base:GetIndependentVariables(), independentVariableTable)
+		
+		return independentVariableTable
+	end
+
+	method void ClearVariables()
+		-- 미니언의 모든 변수들을 초기화
+		__base:ClearVariables()
+		
+		self.atk = nil
+		self.hasBarrier = nil
+		self.hasVenom = nil
+		self.hasChill = nil
+		self.isDirectAttackable = nil
+		self.isFreeze = nil
+		self.isStun = nil
+		self.isScare = nil
+	end
+
+	method table GetBlueprint()
+		-- 미니언의 블루프린트 정보를 반환
+		return {
+			info = self.info,
+			enchantmentArray = _Table:DeepCopy(self.enchantmentArray),
+			independentVariableTable = self:GetIndependentVariables()
+		}
+	end
+
+	method void SetBlueprint(table blueprint)
+		-- 블루프린트로부터 미니언 정보를 설정
+		if not _Table:IsEmpty(self.info) then
+			return
+		end
+		
+		self:SetInfo(blueprint.info)
+		self:SetEnchantments(blueprint.enchantmentArray)
+		self:SetVariables(blueprint.independentVariableTable)
+	end
+
+	method void ClearBlueprint()
+		-- 미니언의 블루프린트 정보를 모두 초기화
+		self:ClearInfo()
+		self:ClearEnchantments()
+		self:ClearVariables()
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetInputState(Character character)
+		-- 캐릭터가 이 미니언을 조작할 수 있는지 확인하고 입력 상태 반환
+		local isPivotable = character.player == self.player and self.player:IsOurTurn() and isvalid(self.field)
+		return {isPivotable = isPivotable}
+	end
+
+	method void SetInputState(table inputState)
+		-- 입력 상태를 설정하여 미니언 조작 가능 여부 결정
+		if _Table:IsEmpty(inputState) then
+			self.isPivotable = false
+		else
+			self.isPivotable = inputState.isPivotable
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetBody(any body)
+		-- 미니언 바디를 설정하고 UI 요소들을 연결
+		__base:SetBody(body)
+		
+		self.atkEntity = body.atkEntity
+		self.atkInteger = body.atkInteger
+		self.minionEntity = body.minionEntity
+		self.barrierEntity = body.barrierEntity
+		self.venomEntity = body.venomEntity
+		self.freezeEntity = body.freezeEntity
+		self.stunEntity = body.stunEntity
+		self.scareEntity = body.scareEntity
+		self.originalScale = body.minionEntity.TransformComponent.Scale.x
+		
+		self.touchAreaEntity:ConnectEvent(TouchEvent, function()
+				self.Entity.CurrentMap.Map.input.touchingMinion = self
+			end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearBody()
+		-- 미니언 바디 참조를 해제하고 UI 요소들 정리
+		self.atkEntity = nil
+		self.atkInteger = nil
+		self.minionEntity = nil
+		self.barrierEntity = nil
+		self.venomEntity = nil
+		self.freezeEntity = nil
+		self.stunEntity = nil
+		self.scareEntity = nil
+		self.originalScale = 0
+		
+		if self.barrierTweener then
+			self.barrierTweener:Destroy()
+		end
+		
+		__base:ClearBody()
+	end
+
+	method void SetName(string name)
+		-- 미니언의 이름을 설정하고 관련 엔트리와 리소스 로드
+		if not _UtilLogic:IsNilorEmptyString(self.name) then
+			return
+		end
+		
+		self.name = name
+		self.entry = self.entryManager:GetEntry(self.name .. "Minion")
+		self.resourceManager:LoadResource(self.name, nil)
+	end
+
+	method void Initialize()
+		-- 미니언을 초기화하고 기본 상태 설정
+		__base:Initialize()
+		
+		self:SetBarrier(self.cardManager:HasBarrier(self.name))
+		self:SetFreeze(false)
+	end
+
+	method void Clear()
+		-- 미니언을 정리하고 파괴
+		__base:Clear()
+		
+		self:Destroy()
+	end
+
+	method void Dead()
+		-- 미니언이 죽을 때 죽음 애니메이션과 효과 재생
+		__base:Dead()
+		
+		if self:IsClient() then
+			self:Animate("Die")
+			_SoundService:PlaySound(self.resourceManager:GetResource(self.name).dieSound, 1)
+			
+			wait(0.25)
+			
+			_TweenLogic:PlayTween(1, 0, 0.2, EaseType.Linear, function(t)
+					if isvalid(self.body) then
+						self.body.minionEntity.SpriteRenderer.Color.a = t
+					end
+				end)
+			
+			wait(0.25)
+			
+			self:Animate("Idle")
+			_Effect:PlayEffect(self.resourceManager:GetResource("Dead").animation, self.actor.Entity.TransformComponent.WorldPosition, nil, _Effect:GetUnitLayerOptions(nil))
+			self:SetActorEnable(false)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method number GetLookAtDirection()
+		-- 미니언이 바라보는 방향을 반환 (-1: 왼쪽, 1: 오른쪽)
+		return self.minionEntity.TransformComponent.Scale.x > 0 and -1 or 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetLookAtPosition(Vector2 offset, boolean isWorldSpace)
+		-- 미니언이 바라보는 방향을 고려한 오프셋 위치를 계산
+		local direction = self:GetLookAtDirection() 
+		local position = Vector2(offset.x * direction, offset.y)
+		if isWorldSpace  then
+			position += self:GetActorPosition()
+		end
+		
+		return position
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookAtPoint(Vector2 point)
+		-- 미니언이 지정된 점을 바라보도록 방향 설정
+		local observer = self.actor.Entity.TransformComponent.WorldPosition
+		local xScale = self.minionEntity.TransformComponent.Scale.x
+		self.minionEntity.TransformComponent.Scale.x = math.abs(xScale) * (point.x - observer.x > 0 and -1 or 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookNothing()
+		-- 미니언의 방향을 기본 상태로 리셋
+		local xScale = self.minionEntity.TransformComponent.Scale.x
+		self.minionEntity.TransformComponent.Scale.x = math.abs(xScale)
+	end
+
+	method void Kill()
+		-- 미니언을 즉시 처치하고 피격 애니메이션 재생
+		__base:Kill()
+		
+		if self:IsClient() then
+			self:Animate("Hit")
+			_SoundService:PlaySound(self.resourceManager:GetResource(self.name).damageSound, 1)
+			
+			wait(0.75)
+			
+			self:Animate("Idle")
+		end
+		
+	end
+
+	method table Damage(any attacker, number damage)
+		-- 공격자로부터 데미지를 받고 결과를 반환 (방어막, 독, 빙결 등 처리)
+		local result = {}
+		
+		if attacker:IsCard() then
+			local skillDamage = attacker.player.skillDamage
+			for _, tag in ipairs(attacker.tagArray) do
+				skillDamage += attacker.player.taggedSkillDamageTable[tag] or 0
+			end
+			damage += skillDamage
+		end
+		
+		if damage > 0 and attacker:IsMinion() and attacker.isStun then
+			if self:IsClient() then
+				local damageSkin = self.resourceManager:GetResource("Damage").damageSkin
+				_DamageSkinService:PlayTextDamage(self.anchorEntity, damageSkin, DamageSkinTextType.Miss, DamageSkinTweenType.Default, Vector2(-0.075, -0.5))
+			end
+			
+			result.loseStun = true
+			result.damage = 0
+			result.excessDamage = 0
+		elseif damage > 0 and attacker:IsMinion() and attacker.isScare and self.commandManager:ShareRandomBoolean() == true then
+			if self:IsClient() then
+				local damageSkin = self.resourceManager:GetResource("Damage").damageSkin
+				_DamageSkinService:PlayTextDamage(self.anchorEntity, damageSkin, DamageSkinTextType.Miss, DamageSkinTweenType.Default, Vector2(-0.075, -0.5))
+			end
+			
+			result.damage = 0
+			result.excessDamage = 0
+		elseif damage > 0 and self.hasBarrier then
+			if self:IsClient() then
+				local damageSkin = self.resourceManager:GetResource("Damage").damageSkin
+				_DamageSkinService:PlayTextDamage(self.anchorEntity, damageSkin, DamageSkinTextType.Miss, DamageSkinTweenType.Default, Vector2(-0.075, -0.5))
+			end
+			
+			result.loseBarrier = true
+			result.damage = 0
+			result.excessDamage = 0
+		else
+			if self:IsClient() then
+				local damageSkin = self.resourceManager:GetResource("Damage").damageSkin
+				if damage > 0 then
+					self:Animate("Hit")
+					_DamageSkinService:Play(self.anchorEntity, damageSkin, 0, {damage}, DamageSkinTweenType.Default, {damage >= 6}, Vector2(-0.075, -0.5))
+				else
+					_DamageSkinService:PlayTextDamage(self.anchorEntity, damageSkin, DamageSkinTextType.Miss, DamageSkinTweenType.Default, Vector2(-0.075, -0.5))
+				end
+			end
+			
+			self:SetHp(self.hp - damage)
+			
+			if self.hp <= 0 then
+				self:SetDead(true)
+				result.isDead = true
+			end
+			
+			if attacker:IsMinion() and attacker.hasVenom then
+				self:SetDead(true)
+				result.isDead = true
+			end
+			
+			if attacker:IsMinion() and attacker.hasChill then
+				result.isFreeze = true
+			end
+			
+			result.damage = damage
+			result.excessDamage = math.abs(math.min(0, self.hp))
+		end
+		
+		if self:IsClient() then
+			_SoundService:PlaySound(self.resourceManager:GetResource(self.name).damageSound, 1)
+			
+			wait(0.75)
+			
+			self:Animate("Idle")
+		end
+		
+		return result
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetInverseScale()
+		-- 원본 스케일의 역수를 계산하여 반환
+		local inverseScale = 1 / self.originalScale
+		return inverseScale * Vector2.one
+	end
+
+	method boolean IsOwner()
+		-- 미니언 소유자인지 확인
+		return self.player:IsOwner()
+	end
+
+	method boolean IsBattler()
+		-- 미니언이 전투 가능한 상태인지 확인 (빙결되지 않음)
+		return not self.isFreeze
+	end
+
+	method boolean IsDirectAttacker()
+		-- 미니언이 직접 공격 가능한지 확인 (전투 가능하고 직접 공격 가능)
+		return self:IsBattler() and self.isDirectAttackable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SummonCoroutine()
+		-- 미니언 소환 코루틴을 시작
+		self.summonCoroutine = self.duel.actionManager:SummonCoroutine(self)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetActor()
+		-- 미니언 액터를 생성하고 설정
+		if isvalid(self.actor) then
+			return
+		end
+		
+		self:SetActor(_SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("MinionActor"), "MinionActor", 
+			Vector3(100, 100, 0), self.Entity).MinionActor)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyActor()
+		-- 미니언 액터 엔티티를 파괴하고 정리
+		if not isvalid(self.actor) then
+			return
+		end
+		
+		self.actor.Entity:Destroy()
+		self:ClearActor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndSetBody()
+		-- 미니언 바디를 생성하고 설정
+		local bodyModelName = string.format("%s%s%sMinionBody", self.name, self.variant, self.quality)
+		local bodyModelId = _EntryService:GetModelIdByName(bodyModelName)
+		self:SetBody(_SpawnService:SpawnByModelId(bodyModelId, bodyModelName, Vector3.zero, self.actor.Entity).MinionBody)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyBody()
+		-- 미니언 바디 엔티티를 파괴하고 정리
+		if not isvalid(self.body) then
+			return
+		end
+		
+		self.body.Entity:Destroy()
+		self:ClearBody()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetActorEnable(boolean enable)
+		-- 미니언 액터의 활성화 상태를 설정
+		self.actor.Entity.Enable = enable
+	end
+
+	method table GetBlueprintByName(string name)
+		-- 카드 이름으로 블루프린트를 생성하여 반환
+		local blueprint
+		if _UtilLogic:IsNilorEmptyString(name) then
+			blueprint = {}
+		else
+			local modelName = string.format("%s%s%sCardFront", name, self.variant, self.quality)
+			local modelId = _EntryService:GetModelIdByName(modelName)
+			local variant = _UtilLogic:IsNilorEmptyString(modelId) and "Default" or self.variant
+			blueprint = {
+				info = {name = name, variant = variant, quality = self.quality},
+				enchantmentArray = {},
+				independentVariableTable = {}
+			}
+		end
+		
+		return blueprint
+	end
+
+	method table GetBlueprintsByNames(table nameArray)
+		-- 여러 카드 이름들로 블루프린트 배열을 생성
+		local blueprintArray = {}
+		for i, name in ipairs(nameArray) do
+			blueprintArray[i] = self:GetBlueprintByName(name)
+		end
+		
+		return blueprintArray
+	end
+
+	method table GetCardTokens(table nameArray)
+		-- 카드 이름들로 카드 토큰들을 생성하여 반환
+		local blueprintArray = self:GetBlueprintsByNames(nameArray)
+		local cardArray = {}
+		for i, name in ipairs(nameArray) do
+			local card = self.duel:ShareAcquiredCard()
+			card:SetPlayer(self.player)
+			card:SetBlueprint(blueprintArray[i])
+			cardArray[i] = card
+		end
+		
+		return cardArray
+	end
+
+	method void SetInfo(table info)
+		-- 미니언 정보를 설정하고 관련 속성들을 초기화
+		if not _Table:IsEmpty(self.info) then
+			return
+		end
+		
+		self.info = info
+		self:SetName(info.name)
+		self.variant = info.variant
+		self.quality = info.quality
+		
+		self.tagArray = self.cardManager:GetTags(info.name)
+		
+		self:SpawnAndSetBody()
+	end
+
+	method void ClearInfo()
+		-- 미니언 정보를 초기화하고 바디를 파괴
+		if isvalid(self.body) then
+			self:DestroyBody()
+		end
+		
+		self.info = {}
+		self:ClearName()
+		self.variant = ""
+		self.quality = ""
+		
+		self.tagArray = {}
+	end
+
+	method void SetPlayer(Player player)
+		-- 미니언의 플레이어를 설정
+		self.player = player
+	end
+
+	method void ClearPlayer()
+		-- 플레이어 참조를 해제
+		self.player = nil
+	end
+
+	method void Destroy()
+		-- 미니언을 완전히 파괴하고 리소스 정리
+		self:ClearPlayer()
+		self:ClearBlueprint()
+		self.duel:ReleaseMinion(self)
+		self.duel:RemoveObject(self)
+		self:DestroyActor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Animate(string toAnimationState)
+		-- 미니언의 애니메이션 상태를 변경
+		if not isvalid(self.minionEntity) then
+			return
+		end
+		
+		local fromAnimationState = self.animationState
+		self.animationState = toAnimationState
+		
+		if toAnimationState == "Idle" then
+			if self.isFreeze then
+				self:Animate("Freeze")
+			else
+				self.minionEntity:SendEvent(StateChangeEvent("idle", "idle"))
+			end
+		elseif toAnimationState == "Freeze" then
+			self.minionEntity:SendEvent(StateChangeEvent("hit", "hit"))
+		elseif toAnimationState == "Skill" or toAnimationState == "Skill2" or toAnimationState == "Skill3" then
+			toAnimationState = string.lower(toAnimationState)
+			self.minionEntity:SendEvent(StateChangeEvent(toAnimationState, toAnimationState))
+			_TimerService:SetTimerOnce(function()
+					self:Animate("Idle")
+				end, _Resource:GetTotalDelay(self.minionEntity.StateAnimationComponent.ActionSheet[toAnimationState]) - 0.03)
+		else
+			toAnimationState = string.lower(toAnimationState)
+			self.minionEntity:SendEvent(StateChangeEvent(toAnimationState, toAnimationState))
+		end
+	end
+
+	method table GetOtherUnits()
+		-- 자신을 제외한 모든 유닛들을 반환
+		return _Table:Difference(self.duel:GetUnits(), {self})
+	end
+
+	method table ShareRandomOtherUnits(integer count)
+		-- 자신을 제외한 살아있는 유닛들 중 랜덤으로 지정된 수만큼 선택
+		return self.commandManager:ShareRandomPermutationInArray(_Table:Select(self:GetOtherUnits(), self.taskManager.liveSelector), count)
+	end
+
+	method table GetOtherMinions(any selector)
+		-- 자신을 제외한 다른 미니언들을 선택자 조건에 따라 반환
+		return _Table:Difference(self.duel:GetMinions(selector), {self})
+	end
+
+	method table ShareRandomOtherMinions(integer count, any selector)
+		-- 자신을 제외한 살아있는 다른 미니언들 중 랜덤으로 지정된 수만큼 선택
+		return self.commandManager:ShareRandomPermutationInArray(_Table:Select(self:GetOtherMinions(selector), self.taskManager.liveSelector), count)
+	end
+
+	method table GetOurOtherUnits()
+		-- 자신을 제외한 아군 유닛들을 반환
+		return _Table:Difference(self.player:GetUnits(), {self})
+	end
+
+	method table ShareRandomOurOtherUnits(integer count)
+		-- 자신을 제외한 살아있는 아군 유닛들 중 랜덤으로 지정된 수만큼 선택
+		return self.commandManager:ShareRandomPermutationInArray(_Table:Select(self:GetOurOtherUnits(), self.taskManager.liveSelector), count)
+	end
+
+	method table GetOurOtherMinions(any selector)
+		-- 자신을 제외한 아군 미니언들을 선택자 조건에 따라 반환
+		return _Table:Difference(self.field:GetMinions(selector), {self})
+	end
+
+	method table ShareRandomOurOtherMinions(integer count, any selector)
+		-- 자신을 제외한 살아있는 아군 미니언들 중 랜덤으로 지정된 수만큼 선택
+		return self.commandManager:ShareRandomPermutationInArray(_Table:Select(self:GetOurOtherMinions(selector), self.taskManager.liveSelector), count)
+	end
+
+	method Minion GetLeftMinion(any selector)
+		-- 자신의 왼쪽에 있는 미니언을 선택자 조건에 따라 반환
+		local index = _Table:Find(self.field.minionArray, self)
+		if selector then
+			for i = index - 1, 1, -1 do
+				local minion = self.field.minionArray[i]
+				if selector(minion) then
+					return minion
+				end
+			end
+		else
+			return self.field.minionArray[index - 1]
+		end
+	end
+
+	method table GetLeftMinions(integer count, any selector)
+		-- 자신의 왼쪽에 있는 미니언들을 지정된 수만큼 선택자 조건에 따라 반환
+		local minionArray = {}
+		local index = _Table:Find(self.field.minionArray, self)
+		for i = index - 1, 1, -1 do
+			local minion = self.field.minionArray[i]
+			if not selector or selector(minion) then
+				table.insert(minionArray, minion)
+				count -= 1
+				if count <= 0 then
+					break
+				end
+			end
+		end
+		
+		return minionArray
+	end
+
+	method Minion GetRightMinion(any selector)
+		-- 자신의 오른쪽에 있는 미니언을 선택자 조건에 따라 반환
+		local index = _Table:Find(self.field.minionArray, self)
+		if selector then
+			for i = index + 1, #self.field.minionArray do
+				local minion = self.field.minionArray[i]
+				if selector(minion) then
+					return minion
+				end
+			end
+		else
+			return self.field.minionArray[index + 1]
+		end
+	end
+
+	method table GetRightMinions(integer count, any selector)
+		-- 자신의 오른쪽에 있는 미니언들을 지정된 수만큼 선택자 조건에 따라 반환
+		local minionArray = {}
+		local index = _Table:Find(self.field.minionArray, self)
+		for i = index + 1, #self.field.minionArray do
+			local minion = self.field.minionArray[i]
+			if not selector or selector(minion) then
+				table.insert(minionArray, minion)
+				count -= 1
+				if count <= 0 then
+					break
+				end
+			end
+		end
+		
+		return minionArray
+	end
+
+	method table GetSelfAndRightMinions(integer count, any selector)
+		-- 자신과 오른쪽 미니언들을 합쳐서 반환
+		return _Table:Concat({self}, self:GetRightMinions(count, selector))
+	end
+
+	method table GetAdjacentMinions(any selector)
+		-- 자신의 인접한 미니언들(왼쪽 1개, 오른쪽 1개)을 반환
+		return _Table:Concat(self:GetLeftMinions(1, selector), self:GetRightMinions(1, selector))
+	end
+
+	method table GetSelfAndAdjacentMinions(any selector)
+		-- 자신과 인접한 미니언들을 모두 합쳐서 반환
+		return _Table:Concat({self}, _Table:Concat(self:GetLeftMinions(1, selector), self:GetRightMinions(1, selector)))
+	end
+
+	method void Summon()
+		-- 미니언을 소환하고 소환 액션 실행
+		self:Initialize()
+		
+		if self.summonCoroutine then
+			_Util:WaitCoroutines({self.summonCoroutine})
+			self.summonCoroutine = nil
+		else
+			self.duel.actionManager:PlaySummonAction(self)
+		end
+	end
+
+	method void Kick()
+		-- 미니언을 킥하여 필드에서 제거하고 효과 재생
+		if self:IsClient() then
+			local resource = self.resourceManager:GetResource("Kick")
+			_SoundService:StopSound(resource.sound)
+			_SoundService:PlaySound(resource.sound, 1)
+			_Effect:PlayEffect(resource.animation, self.body.Entity.TransformComponent.WorldPosition, nil, _Effect:GetUnitLayerOptions(nil))
+			
+			self:SetActorEnable(false)
+		end
+	end
+
+	method void Vanish()
+		-- 미니언을 사라지게 하여 액터 비활성화
+		self:SetActorEnable(false)
+	end
+
+	method void Transform(table blueprint)
+		-- 미니언을 다른 형태로 변신시키고 변신 효과 재생
+		self:ClearBlueprint()
+		self:SetBlueprint(blueprint)
+		
+		self:Initialize()
+		
+		if self:IsClient() then
+			local resource = self.resourceManager:GetResource("Transform")
+			_SoundService:StopSound(resource.sound)
+			_SoundService:PlaySound(resource.sound, 1)
+			_Effect:PlayEffect(resource.animation, Vector3.zero, self.body.Entity, _Effect:GetUnitLayerOptions(nil))
+			
+			wait(0.7)
+		end
+	end
+
+	method void DirectAttack()
+		-- 미니언이 직접 공격을 수행 (구현 필요)
+		
+	end
+
+	method void Freeze()
+		-- 미니언을 빙결 상태로 만듦
+		self:SetFreeze(true)
+	end
+
+	method void Thaw()
+		-- 미니언의 빙결 상태를 해제
+		self:SetFreeze(false)
+	end
+
+	method void Stun()
+		-- 미니언을 기절 상태로 만듦
+		self:SetStun(true)
+	end
+
+	method void Awake()
+		-- 미니언의 기절 상태를 해제
+		self:SetStun(false)
+	end
+
+	method void Scare()
+		-- 미니언을 공포 상태로 만듦
+		self:SetScare(true)
+	end
+
+	method void GainBarrier()
+		-- 미니언이 방어막을 획득
+		self:SetBarrier(true)
+	end
+
+	method void LoseBarrier()
+		-- 미니언이 방어막을 잃음
+		self:SetBarrier(false)
+	end
+
+	method void SetAtk(integer atk)
+		-- 미니언의 공격력을 설정하고 UI 업데이트 및 색상 변경
+		atk = math.max(1, atk)
+		if self.atk == atk then
+			return
+		end
+		
+		if self:IsClient() then
+			self.atkInteger:SetInteger(atk)
+			if atk > self.entry.atk then
+				 self.atkInteger:SetColor(Color.green)
+			else
+				self.atkInteger:SetColor(Color.white)
+			end
+			
+			if self.atkTweener then
+				self.atkTweener:Destroy()
+			end
+			if self.atk ~= nil then
+				self.atkTweener = _Tween:Damp(self.atkEntity, Vector2.one, 1, 0.5)
+			end
+		end
+		
+		self.atk = atk
+	end
+
+	method void AddAtkEnchantment(integer delta)
+		-- 미니언 공격력에 델타 값을 추가하는 인챈트먼트 적용
+		local atk = self.dependentVariableTable.atk or self.entry.atk or 0
+		self.dependentVariableTable.atk = atk + delta
+	end
+
+	method void InsertAddAtkEnchantment(integer delta, table remover)
+		-- 공격력 추가 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "AddAtkEnchantment", args = {delta}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void SetAtkEnchantment(integer atk)
+		-- 미니언 공격력을 특정 값으로 설정하는 인챈트먼트 적용
+		self.dependentVariableTable.atk = atk
+	end
+
+	method void InsertSetAtkEnchantment(integer atk, table remover)
+		-- 공격력 설정 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "SetAtkEnchantment", args = {atk}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void SetBarrier(boolean hasBarrier)
+		-- 미니언의 방어막 상태를 설정하고 시각적 효과 적용
+		if self.hasBarrier == hasBarrier then
+			return
+		end
+		
+		self.hasBarrier = hasBarrier
+		if self:IsClient() then
+			if self.barrierTweener then
+				self.barrierTweener:Destroy()
+			end
+			local spriteRenderer = self.barrierEntity.SpriteRendererComponent
+			local fromAlpha = spriteRenderer.Color.a
+			local toAlpha = hasBarrier and 1 or 0
+			self.barrierTweener = _TweenLogic:PlayTween(fromAlpha, toAlpha, 0.3, EaseType.Linear, function(t)
+					spriteRenderer.Color.a = t
+				end)
+		end
+	end
+
+	method void SetVenom(boolean hasVenom)
+		-- 미니언의 독 상태를 설정하고 시각적 표시 변경
+		if self.hasVenom == hasVenom then
+			return
+		end
+		
+		self.hasVenom = hasVenom
+		if self:IsClient() then
+			self.venomEntity.SpriteRendererComponent.Color.a = hasVenom and 1 or 0
+		end
+	end
+
+	method void SetVenomEnchantment(boolean hasVenom)
+		-- 미니언의 독 상태를 설정하는 인챈트먼트 적용
+		self.dependentVariableTable.hasVenom = hasVenom
+	end
+
+	method void InsertSetVenomEnchantment(boolean hasVenom, table remover)
+		-- 독 설정 인챈트먼트를 인챈트먼트 배열에 삽입
+		self:InsertEnchantment({methodName = "SetVenomEnchantment", args = {hasVenom}, remover = _Table:DeepCopy(remover)})
+	end
+
+	method void SetChill(boolean hasChill)
+		-- 미니언의 냉기 상태를 설정
+		if self.hasChill == hasChill then
+			return
+		end
+		
+		self.hasChill = hasChill
+	end
+
+	method void SetDirectAttackable(boolean isDirectAttackable)
+		-- 미니언의 직접 공격 가능 여부를 설정
+		if self.isDirectAttackable == isDirectAttackable then
+			return
+		end
+		
+		self.isDirectAttackable = isDirectAttackable
+	end
+
+	method void SetImmuneToStrong(boolean isImmuneToStrong)
+		-- 미니언의 강력한 공격 면역 여부를 설정
+		if self.isImmuneToStrong == isImmuneToStrong then
+			return
+		end
+		
+		self.isImmuneToStrong = isImmuneToStrong
+	end
+
+	method void SetFreeze(boolean isFreeze)
+		-- 미니언의 빙결 상태를 설정하고 애니메이션 및 시각적 효과 적용
+		if self.isFreeze == isFreeze then
+			return
+		end
+		
+		self.isFreeze = isFreeze
+		if self:IsClient() then
+			self:Animate(self.isFreeze and "Freeze" or "Idle")
+			self.minionEntity.SpriteRendererComponent.Color = self.isFreeze and Color(0.5, 0.75, 1) or Color.white
+			
+			if self.freezeTweener then
+				self.freezeTweener:Destroy()
+			end
+			local spriteRenderer = self.freezeEntity.SpriteRendererComponent
+			local fromAlpha = spriteRenderer.Color.a
+			local toAlpha = isFreeze and 1 or 0
+			self.freezeTweener = _TweenLogic:PlayTween(fromAlpha, toAlpha, 0.3, EaseType.Linear, function(t)
+					spriteRenderer.Color.a = t
+				end)
+		end
+	end
+
+	method void SetStun(boolean isStun)
+		-- 미니언의 기절 상태를 설정하고 시각적 표시 변경
+		if self.isStun == isStun then
+			return
+		end
+		
+		self.isStun = isStun
+		if self:IsClient() then
+			self.stunEntity.SpriteRendererComponent.Color.a = isStun and 1 or 0
+		end
+	end
+
+	method void SetScare(boolean isScare)
+		-- 미니언의 공포 상태를 설정하고 시각적 표시 변경
+		if self.isScare == isScare then
+			return
+		end
+		
+		self.isScare = isScare
+		if self:IsClient() then
+			self.scareEntity.SpriteRendererComponent.Color.a = isScare and 1 or 0
+		end
+	end
+
+end

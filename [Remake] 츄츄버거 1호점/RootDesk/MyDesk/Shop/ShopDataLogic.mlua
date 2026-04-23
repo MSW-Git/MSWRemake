@@ -1,0 +1,173 @@
+@Logic
+script ShopDataLogic extends Logic
+
+	property table ProductData = {}
+
+	property table ProductIdsByShopId = {}
+
+	property table ShopData = {}
+
+	property table ShopIdsByShopGroup = {}
+
+	method void LoadProductData()
+		-- 상점 상품 데이터셋을 로드하고 상점별로 분류
+		table.clear(self.ProductData)
+		table.clear(self.ProductIdsByShopId)
+		local productDataSet = _DataService:GetTable("ShopProductDataSet")
+		for i = 1, productDataSet:GetRowCount() do
+			local productData = ShopProductData()
+			productData:LoadFrom(productDataSet, i)
+			if self.ProductData[productData.ProductId] ~= nil then
+				break
+			end
+		
+			self.ProductData[productData.ProductId] = productData
+			
+			if self.ProductIdsByShopId[productData.LinkedShopId] == nil then
+				self.ProductIdsByShopId[productData.LinkedShopId] = {}
+			end
+			
+			table.insert(self.ProductIdsByShopId[productData.LinkedShopId], productData.ProductId)
+		end
+	end
+
+	method void LoadShopData()
+		-- 상점 기본 데이터셋을 로드하고 그룹별로 분류
+		table.clear(self.ShopData)
+		table.clear(self.ShopIdsByShopGroup)
+		
+		local shopDataSet = _DataService:GetTable("ShopDataSet")
+		for i = 1, shopDataSet:GetRowCount() do
+			local shopData = ShopData()
+			shopData:LoadFrom(shopDataSet, i)
+			
+			if self.ShopData[shopData.ShopId] ~= nil then
+				break
+			end
+			
+			self.ShopData[shopData.ShopId] = shopData
+			
+			if self.ShopIdsByShopGroup[shopData.ShopGroup] == nil then
+				self.ShopIdsByShopGroup[shopData.ShopGroup] = {}
+			end
+			table.insert(self.ShopIdsByShopGroup[shopData.ShopGroup], shopData.ShopId)
+		end
+	end
+
+	method ShopProductData GetShopProductData(string productId)
+		-- 상품 ID로 상점 상품 데이터 반환
+		return self.ProductData[productId]
+	end
+
+	method ShopData GetShopData(string shopId)
+		-- 상점 ID로 상점 데이터 반환
+		local shopData = self.ShopData[shopId]
+		return shopData
+	end
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 상점 관련 데이터들을 로드
+		self:LoadProductData()
+		self:LoadShopData()
+	end
+
+	method table PickProductsByShopId(string shopId)
+		-- 상점 ID에 따라 랜덤 확률로 상품들을 선택
+		---@type table
+		local candidateProduct = self.ProductIdsByShopId[shopId]
+		---@type table<integer>
+		local picked = {}
+		
+		---@type table<string, RandomBox>
+		local dependetCandidate = {}
+		for i,id in ipairs(candidateProduct) do
+			local product = self:GetShopProductData(id)
+			if product == nil then
+				continue
+			end
+			if product.PutoutType == "Independent" then
+				local randomValue = _UtilLogic:RandomIntegerRange(0, 100000) 
+				if product.PutoutValue > randomValue then
+					table.insert(picked, id)
+				end
+			elseif product.PutoutType:len() > 0 then
+				if dependetCandidate[product.PutoutType] == nil then
+					dependetCandidate[product.PutoutType] = RandomBox()
+				end 
+				local randomBox = dependetCandidate[product.PutoutType]
+				randomBox:AddItem(product.PutoutValue, product.ProductId)
+			end
+		end
+		
+		for k,v in pairs(dependetCandidate) do
+			local pickedId = v:Pick()
+			table.insert(picked, pickedId)
+		end
+		
+		return picked
+	end
+
+	method table GetShopIdsByShopGroup(string shopGroup)
+		-- 상점 그룹에 속한 상점 ID 목록 반환
+		if self.ShopIdsByShopGroup == nil then
+			return nil
+		end
+		
+		return self.ShopIdsByShopGroup[shopGroup]
+	end
+
+	method table GetProductIdsByShopId(string shopId)
+		-- 상점 ID에 속한 상품 ID 목록 반환
+		if self.ProductIdsByShopId == nil then
+			return nil
+		end
+		
+		return self.ProductIdsByShopId[shopId]
+	end
+
+	method boolean CheckCanOpenShop(string shopId, Entity player)
+		-- 플레이어가 해당 상점을 열 수 있는지 조건 확인
+		local shopData = self:GetShopData(shopId)
+		
+		if _UtilLogic:IsNilorEmptyString(shopData.OpenCondition) then
+			return true
+		end
+		
+		if shopData.OpenCondition == "ManagementLevel" then
+			local conditionValue = tonumber(shopData.OpenConditionValue)
+			local userValue = player.PlayerManagement.ManagementLevel
+			
+			if userValue < conditionValue then
+				return false
+			end
+			
+		elseif shopData.OpenCondition == "Achievement" then
+			local conditionValue = tonumber(shopData.OpenConditionValue)
+			return player.PlayerAchievement:IsAchievementAchieved(conditionValue)
+			
+		end
+		
+		return true
+	end
+
+	method boolean CheckProductUnlock(string productId, Entity player)
+		-- 플레이어가 해당 상품을 해금했는지 조건 확인
+		local productData = self:GetShopProductData(productId)
+		
+		if _UtilLogic:IsNilorEmptyString(productData.UnlockCondition) then
+			return true
+		end
+		
+		if productData.UnlockCondition == "ManagementLevel" then
+			local conditionValue = tonumber(productData.UnlockConditionValue)
+			local userValue = player.PlayerManagement.ManagementLevel
+			
+			if userValue < conditionValue then
+				return false
+			end
+		end
+		
+		return true
+	end
+
+end

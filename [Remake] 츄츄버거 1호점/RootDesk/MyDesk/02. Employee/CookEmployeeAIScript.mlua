@@ -1,0 +1,524 @@
+@Component
+script CookEmployeeAIScript extends Component
+
+	property string PrevState = "NONE"
+
+	property string State = "WAIT"
+
+	property string AnimType = ""
+
+	property number WorkDuration = 0
+
+	property number WorkProgress = 0
+
+	property integer UniqueRecipeID = 0
+
+	property integer WorkAppID = 0
+
+	property integer TargetDisplayID = 0
+
+	property boolean IsArrive = true
+
+	property boolean IsStatLevelLow = false
+
+	property boolean IsUpgradePeedback = false
+
+	property BurgerComponent burgerComponent = nil
+
+	property integer StartWorkTime = 0
+
+	property boolean isPauseWork = false
+
+	property number ResumeWorkTime = 0
+
+	property table workTimeBeforePause = {}
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 요리사 AI 초기화를 처리하는 함수
+		self.burgerComponent = self.Entity:GetChildByName("Model_SpawnBurger").BurgerComponent
+		_TimerService:SetTimerRepeat(function() self:StateManager() end, _EmployeeService.EmployeeStateTick)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StateManager()
+		-- 요리사 AI 상태를 관리하는 메인 함수
+		if not self.Entity.EmployeeInfoScript.AnimProduction then return end 
+		
+		if self.State ~= "DESTROY" then 
+				
+			if not _UserService.LocalPlayer.TimeManager:CheckCanTimeFlows() then 
+				if not self.isPauseWork and self.StartWorkTime ~= 0 then
+					if #self.workTimeBeforePause == 0 then
+						table.insert(self.workTimeBeforePause,(DateTime.UtcNow.Elapsed / 1000) - self.StartWorkTime) 
+					else 
+						table.insert(self.workTimeBeforePause,(DateTime.UtcNow.Elapsed / 1000) - self.ResumeWorkTime) 
+					end
+					self.isPauseWork = true
+				end
+				return 
+			end
+			
+			if not self.IsArrive then 
+				return 
+			end
+			
+		end
+		
+		if _UserService.LocalPlayer.MenuManager.ResetInProgress and self.State ~= "DESTROY" then return end
+		
+		if self.isPauseWork then
+			self.ResumeWorkTime = DateTime.UtcNow.Elapsed / 1000 
+			self.isPauseWork = false
+		end
+		if self.State == "WAIT" then self:WAIT()
+		elseif self.State == "WORK" then self:WORK()
+		elseif self.State == "DISPLAY" then self:DISPLAY()
+		elseif self.State == "DESTROY" then self:DESTROY()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void WAIT()
+		-- 요리사가 대기 상태일 때의 처리 함수
+		
+		local canNextState = true
+		if self.PrevState ~= "WAIT" then 
+			
+			_UserService.LocalPlayer.EmployeeUpgradeManager:ChangeWorkExpStatus(self.Entity.EmployeeInfoScript.Id,false)
+			
+			if self.WorkAppID == 0 then
+				self.WorkAppID = _UserService.LocalPlayer.EmployeeManager:SetKitchenAppId(self.Entity.Name)
+				if self.WorkAppID == 0 then
+					return
+				end
+			end
+			
+			self.PrevState = "WAIT" 
+		
+			local debugMonitor = _EntityService:GetEntityByPath("/ui/DebugMonitorGroup/EmployeeInfoMonitor")
+			local totalDuration = 0
+			if self.StartWorkTime ~= 0 then
+				if self.ResumeWorkTime == 0 then
+					totalDuration = (DateTime.UtcNow.Elapsed / 1000) - self.StartWorkTime 
+				else
+					local beforeWorkTime = 0
+					for i = 1, #self.workTimeBeforePause do
+						beforeWorkTime += self.workTimeBeforePause[i]
+					end
+					totalDuration = beforeWorkTime + ((DateTime.UtcNow.Elapsed / 1000) - self.ResumeWorkTime)
+					table.clear(self.workTimeBeforePause)
+					self.ResumeWorkTime = 0
+				end
+		
+				if isvalid(debugMonitor) then
+					debugMonitor.DebugMonitorUIEmployee:TotalDurationSet(self.Entity.EmployeeInfoScript.Id, totalDuration)
+				end
+				self.StartWorkTime = 0
+			end
+		end
+		
+		
+		
+		
+		local curDisplayNum = 0 
+		
+		self.UniqueRecipeID = self:SelectMenu() 
+		if self.UniqueRecipeID == 999 or self.UniqueRecipeID == 0 then
+		    self.PrevState = nil	
+		    return
+		end
+		
+		---@type FastVector3
+		local decoPos = _LobbySpawnPositionLogic.EmployeeUseKitchenAppPosGroup[_KitchenAppEnumType.Grill][self.WorkAppID]
+		if isvalid(decoPos) then
+			self.TargetDisplayID = _EmployeeService:GetNearestDisplayId(self.UniqueRecipeID
+			, self.WorkAppID
+			, _EmployeeTypeEnum.Cook
+			, decoPos.x)
+		else
+			self.TargetDisplayID = -1
+		end
+		
+		
+		
+		if self.TargetDisplayID == -1 then 
+			
+			
+			if _UserService.LocalPlayer.CustomerManager:HasWaitingCustomer() then 
+						
+					_EmployeeUIService:PeedbackUIClose(self.Entity)
+					self.IsUpgradePeedback = false
+				
+			else 
+				if _UpgradeDataSetLogic:ReturnMaxLevelValueOfType(_UpgradeTypeEnum.DisplayCount, _UserService.LocalPlayer) > _UserService.LocalPlayer.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(_UpgradeTypeEnum.DisplayCount) then 
+					
+					_EmployeeUIService:PeedbackUIUpdate("LackDisplay",nil,self.Entity)	
+					self.IsUpgradePeedback = true 
+				end		
+			end
+		
+			if self.AnimType ~= "wait" then	
+				local targetPosition = _LobbySpawnPositionLogic.EmployeeUseKitchenAppPosGroup[_KitchenAppEnumType.Grill][self.WorkAppID]
+				local moneyChangedEvent = EmployeeMoveChangedEvent()
+				moneyChangedEvent:Init(false, targetPosition, "wait")
+				self.Entity:SendEvent(moneyChangedEvent)
+				
+			end
+			
+			return 
+		
+		end
+		
+		self.State = "WORK" 
+		self.StartWorkTime = DateTime.UtcNow.Elapsed / 1000 
+		
+		self.IsUpgradePeedback = false 
+		
+		---@type FastVector3
+		local targetPosition = _LobbySpawnPositionLogic.EmployeeUseKitchenAppPosGroup[_KitchenAppEnumType.Grill][self.WorkAppID]
+		local moneyChangedEvent = EmployeeMoveChangedEvent()
+		moneyChangedEvent:Init(false, targetPosition, "move")
+		self.Entity:SendEvent(moneyChangedEvent)
+		
+		_UserService.LocalPlayer.EmployeeUpgradeManager:ChangeWorkExpStatus(self.Entity.EmployeeInfoScript.Id,true)
+		
+			_EmployeeUIService:PeedbackUIClose(self.Entity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void WORK()
+		-- 요리사가 요리 작업 중일 때의 처리 함수
+		local employeeInfo = self.Entity.EmployeeInfoScript
+		if self.PrevState ~="WORK" then
+			self.PrevState = "WORK" 
+			self.UniqueRecipeID = self:SelectMenu() 
+			if self.UniqueRecipeID == 999 or self.UniqueRecipeID == 0 then
+				self.PrevState = nil	
+				return
+			end
+			_UserService.LocalPlayer.MenuManager:AddCookingBurgers(self.UniqueRecipeID, self:GetSpawnBurgerCount(employeeInfo.Id))
+			
+		
+			self.WorkDuration = _EmployeeService:ReturnWorkDuration(self.Entity.EmployeeInfoScript.Id,self.Entity,_UserService.LocalPlayer,_EmployeeTypeEnum.Cook)
+			
+			local debugMonitor = _EntityService:GetEntityByPath("/ui/DebugMonitorGroup/EmployeeInfoMonitor")
+			if isvalid(debugMonitor) then
+				debugMonitor.DebugMonitorUIEmployee:WorkDurationSet(self.Entity.EmployeeInfoScript.Id , self.WorkDuration, _EmployeeTypeEnum.Cook , self.Entity)
+			end
+			
+			if self.WorkDuration ~= nil then	
+				
+				self.IsStatLevelLow = _EmployeeService:IsStatLevelLow(employeeInfo.Id,self.WorkDuration,_EmployeeTypeEnum.Cook,_UserService.LocalPlayer)
+				if self.IsStatLevelLow then 
+					_EmployeeUIService:PeedbackUIUpdate("EmployeeUpgrade",nil,self.Entity)	
+				end
+				
+		
+			else
+				self.State = "WAIT"
+				return 
+			end
+		
+			_EmployeeUIService:ProgressUIOn(employeeInfo.WorkProgressUI)
+			_EmployeeUIService:ProgressUIInit(self.IsStatLevelLow,employeeInfo.WorkProgressUI)
+			
+			_KitchenAppService:KitchenAppProductionByID(self.WorkAppID,true,_KitchenAppEnumType.Grill)
+			
+		end 
+		
+		
+		
+		if self.WorkProgress < self.WorkDuration then 	
+		
+			self.WorkProgress += _EmployeeService.EmployeeStateTick 
+			
+			_EmployeeUIService:ProgressUIUpdate(employeeInfo.WorkProgressUI, self.WorkProgress, self.WorkDuration) 
+					
+			return 
+			
+		end
+		
+		
+		self.State = "DISPLAY"
+		
+		self.WorkProgress = 0  
+		
+		_EmployeeUIService:PreogressUIOff(self.Entity.EmployeeInfoScript.WorkProgressUI) 
+			
+		_KitchenAppService:KitchenAppProductionByID(self.WorkAppID,false,_KitchenAppEnumType.Grill)
+			
+		local recipeData =  _UserService.LocalPlayer.MenuManager:ReturnRecipeDataByUniqueID(self.UniqueRecipeID) 
+		local spawnBurgerCount = self:GetSpawnBurgerCount(employeeInfo.Id)
+		self.burgerComponent:OnBurgerEntity(spawnBurgerCount, recipeData.Tag, self.UniqueRecipeID)
+		
+		
+		local targetPosition = _LobbySpawnPositionLogic.EmployeeUseKitchenAppPosGroup[_KitchenAppEnumType.Grill][self.WorkAppID]
+		if isvalid(targetPosition) then
+			self.TargetDisplayID = _EmployeeService:GetNearestDisplayId(self.UniqueRecipeID
+			, self.WorkAppID
+			, _EmployeeTypeEnum.Cook
+			, targetPosition.x)
+		else
+			self.TargetDisplayID = -1
+		end
+		
+		
+		if self.TargetDisplayID == -1 then 
+			self.State = "WAIT"
+			self.burgerComponent:OffBurgerEntity(true)
+		
+			return
+		end
+		
+		targetPosition = _LobbySpawnPositionLogic.DisplayOffset[_EmployeeTypeEnum.Cook][self.TargetDisplayID]
+		local moneyChangedEvent = EmployeeMoveChangedEvent()
+		moneyChangedEvent:Init(false, targetPosition, "move")
+		self.Entity:SendEvent(moneyChangedEvent)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DISPLAY()
+		-- 요리사가 완성된 음식을 진열대에 진열하는 함수
+		
+		if self.PrevState ~="DISPLAY" then
+			self.PrevState ="DISPLAY" 
+		end
+		
+		
+		
+		local checkDisplayID = -1
+		---@type FastVector3
+		local decoPos = _LobbySpawnPositionLogic.EmployeeUseKitchenAppPosGroup[_KitchenAppEnumType.Grill][self.WorkAppID]
+		if isvalid(decoPos) then
+			checkDisplayID = _EmployeeService:GetNearestDisplayId(self.UniqueRecipeID
+			, self.WorkAppID
+			, _EmployeeTypeEnum.Cook
+			, decoPos.x)
+		end
+		
+		
+		if checkDisplayID == -1 or self.burgerComponent.burgerCount < 1 then 
+			self.State = "WAIT"
+			self.burgerComponent:OffBurgerEntity(true)
+			return
+		end
+		
+		
+		
+		if (self.TargetDisplayID % 5 ) ~= ( checkDisplayID % 5 ) then
+			
+			self.TargetDisplayID = checkDisplayID
+			local targetPosition = _LobbySpawnPositionLogic.DisplayOffset[_EmployeeTypeEnum.Cook][self.TargetDisplayID] 
+			local moneyChangedEvent = EmployeeMoveChangedEvent()
+			moneyChangedEvent:Init(false, targetPosition, "move")
+			self.Entity:SendEvent(moneyChangedEvent)
+			return 
+		end
+		
+		local curStackburgerNum  = 0
+		local displayAmount = _UserService.LocalPlayer.MenuManager.DisplayBurger[self.UniqueRecipeID]
+		if isvalid(displayAmount) then
+			if isvalid(displayAmount[self.TargetDisplayID]) then 
+				curStackburgerNum = displayAmount[self.TargetDisplayID]
+			end
+		end
+		
+		local displayLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.DisplaystandLevel)
+		local displayMaxCount = _KitchenAppService:GetData(_KitchenAppEnumType.Display..displayLv).EffectValue
+		
+		local burgerCount = self.burgerComponent.burgerCount
+		local remainStackNum = math.min(displayMaxCount - curStackburgerNum, burgerCount) 
+		
+		self.burgerComponent:SubstractBurgerEntity(remainStackNum)
+		
+		_UserService.LocalPlayer.MenuManager:ModifyDisplayBurger(self.UniqueRecipeID,self.TargetDisplayID,remainStackNum) 
+		
+		
+		
+		if isvalid(decoPos) then
+			self.TargetDisplayID = _EmployeeService:GetNearestDisplayId(self.UniqueRecipeID
+			, self.WorkAppID
+			, _EmployeeTypeEnum.Cook
+			, decoPos.x)
+		else
+			self.TargetDisplayID = -1
+		end
+		
+		if self.TargetDisplayID == -1 then 
+			self.State = "WAIT"
+			self.burgerComponent:OffBurgerEntity(true)
+			return
+		end
+		
+		
+		if self.burgerComponent.burgerCount > 0 then
+			local targetPosition = _LobbySpawnPositionLogic.DisplayOffset[_EmployeeTypeEnum.Cook][self.TargetDisplayID]
+			local moneyChangedEvent = EmployeeMoveChangedEvent()
+			moneyChangedEvent:Init(false, targetPosition, "move")
+			self.Entity:SendEvent(moneyChangedEvent)
+			return 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DESTROY()
+		-- 요리사 엔티티를 제거할 때의 처리 함수
+		
+		if self.WorkAppID ~= 0 then 
+			
+			_KitchenAppService:KitchenAppProductionByID(self.WorkAppID,false,_KitchenAppEnumType.Grill)
+		
+			
+			_UserService.LocalPlayer.KitchenAppManager:ReleaseApp(_KitchenAppEnumType.Grill,self.WorkAppID)
+			self.WorkAppID = 0 
+		  	
+		end
+		
+		self.Entity:Destroy()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer SelectMenu()
+		-- 요리할 메뉴를 선택하는 함수 (최소 재고 기준)
+		local player = _UserService.LocalPlayer
+		local setRecipes = player.PlayerRecipe.SetRecipes
+		local displayBurgers = player.MenuManager.DisplayBurger
+		
+		local totalBurgerAmount = {}
+		local hasDisplayedBurger = false
+		for uniqueId , slotAmount in pairs(displayBurgers)do 
+			for slotIdx, burgerAmount in pairs(slotAmount) do 
+				if burgerAmount > 0 then 
+					hasDisplayedBurger = true	
+					if not isvalid(totalBurgerAmount[uniqueId]) then 
+						totalBurgerAmount[uniqueId] = 0 
+					end
+					totalBurgerAmount[uniqueId] += burgerAmount
+				end
+			end
+			
+			if totalBurgerAmount[uniqueId] ~= nil then
+				totalBurgerAmount[uniqueId] += player.MenuManager:GetCookingBurgers(uniqueId)
+			end   
+		end
+		
+		
+		if hasDisplayedBurger == false then
+			for idx, recipeId in pairs(setRecipes) do
+				local unqiueId = player.MenuManager:ReturnRecipeUniqueID(recipeId)
+				return unqiueId
+			end
+		end
+		local minRecipe = 999 
+		local minNum = 999
+		
+		for slotIdx , recipeId in pairs(setRecipes) do 
+			local uniqueID = player.MenuManager:ReturnRecipeUniqueID(recipeId)
+			
+			local settingBurgerNum = totalBurgerAmount[uniqueID] 
+			if not isvalid(settingBurgerNum) then 
+				minRecipe = uniqueID
+				minNum = 0
+				continue
+			end
+			
+			if minNum > settingBurgerNum then 
+				minRecipe = uniqueID
+				minNum = settingBurgerNum
+			end
+		end
+		
+		return minRecipe
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetSpawnBurgerCount(string employeeId)
+		-- 직원의 능력에 따라 생성할 버거 개수를 계산하는 함수
+		local player = _UserService.LocalPlayer
+		local detailData = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(employeeId)
+		local levelData = _EmployeeService:GetStatLevelData(detailData.CookLevel)
+		
+		local canUseSkill= _EmployeeSkillService:CanUseSkill(employeeId,_SkillTypeEnum.CookCountUp, player)
+		
+		local skillEffect = 0 
+		if canUseSkill then 
+			skillEffect = _EmployeeSkillService:ReturnSkillGradeValue(employeeId,_SkillTypeEnum.CookCountUp, player)
+		end
+		
+		---@type RecipeData
+		local recipeData =  _UserService.LocalPlayer.MenuManager:ReturnRecipeDataByUniqueID(self.UniqueRecipeID)
+		local tag = recipeData.Tag
+		
+		return math.tointeger(tonumber(levelData.CookCount) + skillEffect)
+	end
+
+	@EventSender("Self")
+	handler HandleEmployeeMoveChangedEvent(EmployeeMoveChangedEvent event)
+		-- 직원 이동 상태 변경 이벤트를 처리하는 핸들러
+		self.IsArrive = event.IsArrive
+		self.AnimType = event.Type
+		
+		if self.AnimType == "move" and not self.IsArrive then 
+			
+			_EmployeeService:UpdateAnim("move",self.Entity)
+			
+		elseif self.State == "WORK" and self.IsArrive then 
+			
+			_EmployeeService:UpdateAnim("work",self.Entity)
+		
+		elseif not self.IsUpgradePeedback and self.AnimType == "wait" and  self.IsArrive then
+			 
+			_EmployeeService:UpdateAnim("wait",self.Entity)	
+		
+		elseif self.IsUpgradePeedback and self.IsArrive then
+			 
+			_EmployeeService:UpdateAnim("sleep",self.Entity)	
+		
+		end
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleEmployeeDetailChangeEvent(EmployeeDetailChangeEvent event)
+		-- 직원 상세 정보 변경 이벤트를 처리하는 핸들러
+		local employeeInfo = self.Entity.EmployeeInfoScript
+		
+		if _UserService.LocalPlayer.TimeManager:CheckCanTimeFlows() == false then
+			return
+		end
+		
+		if self.State == "WORK" then
+			self.WorkDuration = _EmployeeService:ReturnWorkDuration(self.Entity.EmployeeInfoScript.Id,self.Entity,_UserService.LocalPlayer,_EmployeeTypeEnum.Cook)
+		
+			if self.WorkDuration ~= nil then	
+				
+				self.IsStatLevelLow = _EmployeeService:IsStatLevelLow(employeeInfo.Id,self.WorkDuration,_EmployeeTypeEnum.Cook,_UserService.LocalPlayer)
+				if self.IsStatLevelLow then 
+					_EmployeeUIService:PeedbackUIUpdate("EmployeeUpgrade",nil,self.Entity)	
+				else
+					_EmployeeUIService:PeedbackUIClose(self.Entity)
+				end
+				
+				_EmployeeUIService:ProgressUIInit(self.IsStatLevelLow,employeeInfo.WorkProgressUI)
+				
+			else
+				return
+			end
+		end
+	end
+
+	@EventSender("Logic", "LobbyRenovationService")
+	handler HandleExpansionLobbyEvent(ExpansionLobbyEvent event)
+		-- 로비 확장 이벤트를 처리하는 핸들러
+		if self.WorkAppID == 0 or self.WorkAppID == nil then
+			return
+		end
+		
+		---@type FastVector3
+		local targetPosition = _LobbySpawnPositionLogic.EmployeeUseKitchenAppPosGroup[_KitchenAppEnumType.Grill][self.WorkAppID]
+		self.Entity.MovementComponent:SetPosition(targetPosition:ToVector2())
+	end
+
+end

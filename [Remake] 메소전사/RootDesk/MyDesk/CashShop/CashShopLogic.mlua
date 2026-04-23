@@ -1,0 +1,297 @@
+@Logic
+script CashShopLogic extends Logic
+
+	property table cashItemData = {}
+
+	property table cashShopCategoryData = {}
+
+	property CashShopUIComponent cashShopUI = "7b5fa4aa-7adc-4def-ba00-23f3efc06ef0"
+
+	method void OnBeginPlay()
+		-- 캐시샵 아이템 및 카테고리 데이터를 초기화
+		local data = _DataService:GetTable("CashItemData")
+		
+		for i = 1, data:GetRowCount() do
+			local itemData = {}
+			
+			itemData.id = data:GetCell(i, "id")
+			itemData.categoryId = data:GetCell(i, "categoryId")
+			itemData.order = tonumber(data:GetCell(i, "order"))
+			itemData.name = data:GetCell(i, "name")
+			itemData.description = data:GetCell(i, "description")
+			itemData.ruid = data:GetCell(i, "ruid")
+			itemData.offsetX = tonumber(data:GetCell(i, "offsetX"))
+			itemData.offsetY = tonumber(data:GetCell(i, "offsetY"))
+			itemData.wealthType = data:GetCell(i, "wealthType")
+			itemData.price = tonumber(data:GetCell(i, "price"))
+			itemData.rewardType = data:GetCell(i, "rewardType")
+			itemData.rewardId = data:GetCell(i, "rewardId")
+			itemData.rewardNum = tonumber(data:GetCell(i, "rewardNum"))
+			itemData.limitPurchaseCount = tonumber(data:GetCell(i, "limitPurchaseCount"))
+			itemData.initInterval = data:GetCell(i, "initInterval")
+			itemData.minAccountLevel = tonumber(data:GetCell(i, "minAccountLevel"))
+			itemData.maxAccountLevel = tonumber(data:GetCell(i, "maxAccountLevel"))
+		
+			itemData.displayMinStage = tonumber(data:GetCell(i, "displayMinStage"))
+			itemData.displayMaxStage = tonumber(data:GetCell(i, "displayMaxStage"))
+			
+			itemData.mainDisplayMinStage = tonumber(data:GetCell(i, "mainDisplayMinStage"))
+			itemData.mainDisplayMaxStage = tonumber(data:GetCell(i, "mainDisplayMaxStage"))
+			
+			self.cashItemData[itemData.id] = itemData
+		end
+		
+		data = _DataService:GetTable("CashShopCategoryData")
+		
+		for i = 1, data:GetRowCount() do
+		
+			local categoryData = {}
+			
+			categoryData.id = data:GetCell(i, "id")
+			categoryData.categoryType = data:GetCell(i, "categoryType")
+			categoryData.name = data:GetCell(i, "name")
+			categoryData.backgroundRUID = data:GetCell(i, "backgroundRUID")
+			categoryData.offsetY = tonumber(data:GetCell(i, "offsetY"))
+			categoryData.contentOpenId = data:GetCell(i,"contentOpenId")
+			
+			self.cashShopCategoryData[categoryData.id] = categoryData
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestPurchaseProduct(string productId)
+		-- 클라이언트에서 캐시샵 상품 구매 요청 처리
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(user) then
+			
+			return
+		end
+		
+		user.PlayerStorageComponent:CheckExpiredItems()
+		
+		local data = self.cashItemData[productId]
+		
+		if data == nil then
+			return
+		end
+		
+		if data.wealthType == "worldCoin" then
+			return
+		end
+		
+		self:PurchaseProduct(productId, senderUserId, nil)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PurchaseProduct(string productId, string userId, table outFailInfo)
+		-- 캐시샵 상품 구매 처리 및 보상 지급
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local playerInfo = player.PlayerInfoComponent
+		local data = self.cashItemData[productId]
+		
+		if not isvalid(data) then
+			_WorldLog:LogPurchaseFlow(userId, productId, "CashShop", _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, false, "Item Data Not Exist.")
+			return false
+		end
+		
+		if not self:CheckCanPurchaseProductOnServer(data, player) then
+			_WorldLog:LogPurchaseFlow(userId, productId, "CashShop", _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, false, "ConditionsNotSatisfied")
+			return false
+		end
+		
+		if not self:CheckPlayerPurchaseLimit(data, player, outFailInfo) then
+			_WorldLog:LogPurchaseFlow(userId, productId, "CashShop", _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, false, "LimitCount")
+			return false
+		end
+		
+		if not self:CheckPlayerWealth(data, player, outFailInfo) then
+			_WorldLog:LogPurchaseFlow(userId, productId, "CashShop", _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, false, "NotEnoughWealth")
+			return false
+		end
+		
+		if data.rewardType == "bundle" then
+			if not _RewardLogic:CheckCanGetBundleReward(data.rewardId, userId, outFailInfo) then
+				_WorldLog:LogPurchaseFlow(userId, productId, "CashShop", _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, false, "NotEnoughSlots")
+				return false
+			end
+		
+			_RewardLogic:RequestGetBundleReward(data.rewardId, userId, true)
+		elseif data.rewardType == "decoration" then
+			playerInfo:SetDecoration(data.rewardId)
+		elseif data.rewardType == "gatcha" then
+			local gatchaData = _GatchaLogic.gatchaData[data.rewardId]
+			if not _GatchaLogic:CheckCanRandomPickDecoration(userId, gatchaData.gatchaNum, outFailInfo) then
+				_WorldLog:LogPurchaseFlow(userId, productId, "CashShop", _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, false, "NotEnoughSlots")
+				return false
+			end
+			
+			_GatchaLogic:DoGatcha(data.rewardId, userId, outFailInfo)
+		else
+			if not _RewardLogic:CheckCanGetReward(data.rewardType, data.rewardId, data.rewardNum, userId, outFailInfo) then
+				_WorldLog:LogPurchaseFlow(userId, productId, "CashShop", _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, false, "NotEnoughSlots")
+				return false
+			end
+			
+			_RewardLogic:GetReward(data.rewardType, data.rewardId, data.rewardNum, userId, true, "PurchaseReward")
+		end
+		
+		if data.wealthType == "diamond" then
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, userId, "PurchaseProduct")
+		end
+			
+		playerInfo:AddPurchaseHistory(productId)
+		_WorldLog:LogPurchaseFlow(userId, productId, "CashShop", _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.price, true, "")
+		
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantPurchase(string wealthType)
+		-- 재화 부족으로 구매 불가 시 토스트 메시지 표시
+		if wealthType == "diamond" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast28"))
+		elseif wealthType == "worldCoin" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast32"))
+		end
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantPurchaseCauseHistory()
+		-- 구매 제한으로 인한 구매 불가 시 토스트 메시지 표시
+		_UIToast:ShowMessage(_LocalizeLogic:GetText("toast29"))
+	end
+
+	method boolean CheckPlayerPurchaseLimit(table cashItemData, Entity playerEntity, table outFailInfo)
+		-- 플레이어의 상품 구매 제한 여부를 확인
+		if not playerEntity.PlayerInfoComponent:IsCanPurchaseLimitedProduct(cashItemData.id) then 
+			self:NoticeCantPurchaseCauseHistory(playerEntity.PlayerComponent.UserId)
+				
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Cash item purchase limit check failed"
+			end
+		
+			return false
+		end
+		
+		return true
+	end
+
+	method boolean CheckPlayerWealth(table cashItemData, Entity playerEntity, table outFailInfo)
+		-- 플레이어의 재화 보유량이 충분한지 확인
+		local userId = playerEntity.PlayerComponent.UserId 
+		
+		if cashItemData.wealthType == "diamond" and not _CheckLogic:IsEnoughWealth(userId, _GameConfig:GetConfig().WEALTHTYPE_DIAMOND, cashItemData.price) then
+			self:NoticeCantPurchase("diamond", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Not enough diamond for cash item"
+			end
+			
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CheckCanPurchaseProductOnClient(table cashItemData)
+		-- 클라이언트에서 상품 구매 가능 여부를 확인
+		local playerEntity = _UserService.LocalPlayer
+		
+		if not self:CheckPlayerPurchaseLimit(cashItemData, playerEntity, nil) then
+			return false
+		end
+		
+		if not self:CheckPlayerWealth(cashItemData, playerEntity, nil) then
+			return false
+		end
+		
+		local userId = playerEntity.PlayerComponent.UserId
+		
+		if cashItemData.rewardType == "bundle" then
+			if not _RewardLogic:CheckCanGetBundleReward(cashItemData.rewardId, userId, nil) then
+				return false
+			end
+		else
+			if not _RewardLogic:CheckCanGetReward(cashItemData.rewardType, cashItemData.rewardId, cashItemData.rewardNum, userId, nil) then
+				return false
+			end
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CheckCanPurchaseProductOnServer(table cashItemData, Entity playerEntity)
+		-- 서버에서 상품 구매 가능 여부를 확인
+		local userId = playerEntity.PlayerComponent.UserId
+		local accountLevel = playerEntity.PlayerAccount.accountTable.level
+		local stageStep = playerEntity.PlayerInfoComponent.playerInfo.stageStep
+		
+		if not self:CheckPlayerPurchaseLimit(cashItemData, playerEntity, nil) then
+			return false
+		end
+		
+		if not self:CheckPlayerWealth(cashItemData, playerEntity, nil) then
+			return false
+		end
+		
+		if cashItemData.rewardType == "bundle" then
+			if not _RewardLogic:CheckCanGetBundleReward(cashItemData.rewardId, userId, nil) then
+				return false
+			end
+		else
+			if not _RewardLogic:CheckCanGetReward(cashItemData.rewardType, cashItemData.rewardId, cashItemData.rewardNum, userId, nil) then
+				return false
+			end
+		end
+		
+		if not (accountLevel >= cashItemData.minAccountLevel and accountLevel <= cashItemData.maxAccountLevel and
+			stageStep + 1 >= cashItemData.displayMinStage and stageStep <= cashItemData.displayMaxStage) then
+			
+			return false
+		end 
+		
+		local rewardType = cashItemData.rewardType
+		
+		if rewardType == "decoration" then
+			local decorationType = _ItemDataLogic.decorationData[cashItemData.rewardId].category
+			
+			if decorationType == "damageSkin" then
+				if not _CheckLogic:IsCanPurchaseDamageSkin(userId, cashItemData.rewardId) then
+					self:NoticeCantPurchaseDecoration(decorationType, userId)
+					
+					return false
+				end
+			elseif decorationType == "nameTag" then
+				if not _CheckLogic:IsCanPurchaseNameTag(userId, cashItemData.rewardId) then
+					self:NoticeCantPurchaseDecoration(decorationType, userId)
+					
+					return false
+				end
+			elseif decorationType == "chatBalloon" then
+				if not _CheckLogic:IsCanPurchaseChatBalloon(userId, cashItemData.rewardId) then
+					self:NoticeCantPurchaseDecoration(decorationType, userId)
+					
+					return false
+				end
+			end
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantPurchaseDecoration(string decorationType)
+		-- 장식 아이템 구매 불가 시 토스트 메시지 표시
+		if decorationType == "damageSkin" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast33"))
+		elseif decorationType == "nameTag" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast30"))
+		elseif decorationType == "chatBalloon" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast31"))
+		end
+	end
+
+end

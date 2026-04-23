@@ -1,0 +1,1738 @@
+@Component
+script PlayerData extends Component
+
+	@Sync
+	property number Money = 0.001
+
+	property SyncTable<number> equiped
+
+	property SyncTable<boolean> haveEquipment
+
+	property SyncTable<boolean> TownAdmission
+
+	property SyncTable<boolean> TownProgress
+
+	@Sync
+	property number maxTown = 10
+
+	@Sync
+	property number RebornCount = 0
+
+	@Sync
+	property number PetEgg = 0
+
+	@Sync
+	property number SalesAmountBonus = 0
+
+	@Sync
+	property number Luck = 0
+
+	@Sync
+	property number HistoricSiteRecord = 0
+
+	property number BonusProbDroppingRelic = 0
+
+	property boolean IsLoadedData = false
+
+	@HideFromInspector
+	property number saveTime = 0
+
+	property number saveTargetTime = 300
+
+	property boolean IsPlayingRebornDirection = false
+
+	@Sync
+	@Description("이번 삶(환생)에서의 신전 도달 기록입니다. 이 기록을 기준으로 환생 시 환생코인을 보상으로 받으며, 환생하면 초기화됩니다. ")
+	property number TempleRecord_Current = 0
+
+	@Sync
+	property number TempleFloor_Starting = 0
+
+	@Sync
+	@Description("황금 열쇠 보상을 받은 신전 층 수입니다.")
+	property number GoldKeyRewardedStage = 0
+
+	@Sync
+	property number VoidItemPurchaseCount = 0
+
+	method void OnBeginPlay()
+		-- 플레이어 데이터 컴포넌트 초기화 및 서버에서 데이터 로드
+		self._T.tableList = { equiped = self.equiped, haveEquipment = self.haveEquipment, TownAdmission = self.TownAdmission, TownProgress = self.TownProgress }
+		self._T.tableType = { equiped = "number", haveEquipment = "boolean", TownAdmission = "boolean", TownProgress = "boolean" }
+		
+		
+		if self:IsServer() then
+			self:ClearAllProperty()
+			self.PetEgg = 0
+			self.RebornCount = 0
+		
+			self:LoadData(1)
+			self.saveTargetTime = _UtilLogic:RandomIntegerRange(210, 390)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화 속성이 변경될 때 관련 UI를 새로고침
+		if _UserService.LocalPlayer ~= self.Entity then
+			return
+		end
+		
+		if name == "Money" then
+			self:RefreshUIHUDMoney()
+			self:RefreshUIShop()
+			_EntityService:GetEntityByPath("/ui/InventoryGroup/Storage").StorageUI:RefreshUI()
+			_EntityService:GetEntity("6d046731-a6a7-421e-9318-aa0059842964").EmoticonShopUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop").EquipmentShopUI:RefreshUI()
+			
+			
+			local relicBoxGachaShopUI = _EntityService:GetEntityByPath("/ui/RelicGachaShopGroup/RelicGachaShop")
+			relicBoxGachaShopUI.RelicGachaShopUI:RefreshUI()
+		end
+		
+		if name == "PetEgg" or name =="RebornCount" then
+			_EntityService:GetEntity("2d01e548-a3d5-4e44-8974-1caa27cd33b8").PetShopUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/InventoryGroup/Storage").StorageUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/GemShopGroup/GemShop").GemShopUI:RefreshUI()
+		end
+		
+		if name == "VoidItemPurchaseCount" then
+			_EntityService:GetEntityByPath("/ui/VoidItemGroup/VoidItemShop").VoidItemShopUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		-- 게임 종료시 플레이어 데이터를 저장
+		self:SaveData(1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 3~5분마다 데이터 저장
+		self.saveTime = self.saveTime + delta
+		if self.saveTime > self.saveTargetTime then
+			self.saveTime = 0
+			self:SaveData(1)
+			
+			self.saveTargetTime = _UtilLogic:RandomIntegerRange(210, 390)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void LoadData(number tryNum)
+		-- 데이터베이스에서 플레이어 데이터를 로드하고 실패시 재시도
+		local saveKey = self.Entity.PlayerComponent.UserId.."_PlayerData"
+		local playerDB = _DataStorageService:GetGlobalDataStorage(saveKey)
+		------------------------------------------------------------------------------------------------------------------------
+		
+		-- 데이터 불러오기
+		local storageSet = {
+		"money", 
+		"haveEquipment", 
+		"TownAdmission",
+		"TownProgress",
+		"equiped", 
+		"RebornCount", 
+		"PetEgg",
+		"HistoricSiteRecord", 
+		"collection",
+		"haveTitle",
+		"equipedTitle",
+		"haveEmoticon",
+		"equipedEmoticon",
+		"emotToken",
+		"haveChair",
+		"equipedChair", 
+		"havePet",
+		"equipedPet",
+		"usePetSkill",
+		"achievementProgress", 
+		"achievementComplete", 
+		"havingPurifiedRelic", 
+		"relicRegistration",
+		"relicBoxNum",
+		--"relicBoxBuyingCount",
+		"dailyRewardProgress",
+		"dailyLastRewardTime",
+		"receivedDailyReward",
+		"consumableItems",
+		"currencyItems",
+		"consumableItemStartTime",
+		"Mythic_EquipmentLevel",
+		"Mythic_Equip1_Element",
+		"Mythic_Equip2_Element",
+		"Mythic_Equip3_Element",
+		"Mythic_Equip4_Element",
+		"Mythic_PurchaseUnlockedLevel",
+		"Emblem_haveItems",
+		"Construction_haveItems",
+		"Accessory_haveItems",
+		"Accessory_equipedItems",
+		"Accessory_Proficiency",
+		"VoidItem_haveItems",
+		"VoidItem_randomList",
+		"Reborn_currentTempleRecord",
+		"Reborn_goldKeyRewardedStage",
+		"VoidItem_purchaseCount"
+		} 
+		
+		local moneyStr = ""
+		local haveEquipmentStr = ""
+		local TownAdmissionStr = ""
+		local TownProgressStr = ""
+		local equipedStr = ""
+		local RebornCountStr = ""
+		local PetEggStr = ""
+		local HistoricSiteRecordStr = ""
+		local collectionDataStr = ""
+		local haveTitleStr = ""
+		local equipedTitleStr = ""
+		local haveEmoticonStr = ""
+		local equipedEmoticonStr = ""
+		local emotTokenStr = ""
+		local haveChairStr = ""
+		local equipedChairStr = ""
+		local havePetStr = ""
+		local equipedPetStr = ""
+		local usePetSkillStr = ""
+		local achievementProgressStr = ""
+		local achievementCompleteStr = ""
+		local havingPurifiedRelic = ""
+		local relicRegistration = ""
+		local relicBoxNumStr = ""
+		--local relicBoxBuyingCountStr = ""
+		local dailyRewardProgress = ""
+		local dailyLastRewardTime = ""
+		local receivedDailyReward = ""
+		local consumableItemsStr = ""
+		local currencyItemsStr = ""
+		local consumableItemStartTimeStr = ""
+		local Mythic_EquipmentLevelStr = ""
+		local Mythic_Equip1_ElementStr = ""
+		local Mythic_Equip2_ElementStr = ""
+		local Mythic_Equip3_ElementStr = ""
+		local Mythic_Equip4_ElementStr = ""
+		local Mythic_PurchaseUnlockedLevel = ""
+		local Emblem_haveItems_Str = ""
+		local Construction_haveItems_Str = ""
+		local Accessory_haveItems_Str = ""
+		local Accessory_equipedItems_Str = ""
+		local Accessory_Proficiency_Str = ""
+		local VoidItem_haveItems_Str = ""
+		local VoidItem_randomList_Str = ""
+		local Reborn_currentTempleRecord_Str = ""
+		local Reborn_goldKeyRewardedStage_Str = ""
+		local VoidItem_purchaseCount_Str = ""
+		
+				
+		local errorCode, itemPages = playerDB:BatchGetAndWait(storageSet)
+		
+		if errorCode == 0 then
+			while true do
+			    local currentPage = itemPages:GetCurrentPageDatas() --GetCurrentPageDatas()로 현재 페이지의 목록을 가져올 수 있습니다.
+		 	    for _, currentStorage in pairs(currentPage) do
+					if currentStorage.KeyInfo.Key == "money" then
+						moneyStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "haveEquipment" then
+						haveEquipmentStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "TownAdmission" then
+						TownAdmissionStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "TownProgress" then
+						TownProgressStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "equiped" then
+						equipedStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "RebornCount" then
+						RebornCountStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "PetEgg" then
+						PetEggStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "HistoricSiteRecord" then
+						HistoricSiteRecordStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "collection" then
+						collectionDataStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "haveTitle" then
+						haveTitleStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "equipedTitle" then
+						equipedTitleStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "haveEmoticon" then
+						haveEmoticonStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "equipedEmoticon" then
+						equipedEmoticonStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "emotToken" then
+						emotTokenStr = currentStorage.Value
+						
+						
+					elseif currentStorage.KeyInfo.Key == "haveChair" then
+						haveChairStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "equipedChair" then
+						equipedChairStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "havePet" then
+						havePetStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "equipedPet" then
+						equipedPetStr = currentStorage.Value
+					
+					elseif currentStorage.KeyInfo.Key == "usePetSkill" then
+						usePetSkillStr = currentStorage.Value	
+						
+					elseif currentStorage.KeyInfo.Key == "achievementProgress" then
+						achievementProgressStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "achievementComplete" then
+						achievementCompleteStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "havingPurifiedRelic" then
+						havingPurifiedRelic = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "relicRegistration" then
+						relicRegistration = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "relicBoxNum" then
+						relicBoxNumStr = currentStorage.Value
+						
+					--[[	
+					elseif currentStorage.KeyInfo.Key == "relicBoxBuyingCount" then
+						relicBoxBuyingCountStr = currentStorage.Value
+					]]--
+						
+					elseif currentStorage.KeyInfo.Key == "dailyRewardProgress" then
+						dailyRewardProgress = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "dailyLastRewardTime" then
+						dailyLastRewardTime = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "receivedDailyReward" then
+						receivedDailyReward = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "consumableItems" then
+						consumableItemsStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "currencyItems" then
+						currencyItemsStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "consumableItemStartTime" then
+						consumableItemStartTimeStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "Mythic_EquipmentLevel" then
+						Mythic_EquipmentLevelStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "Mythic_Equip1_Element" then
+						Mythic_Equip1_ElementStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "Mythic_Equip2_Element" then
+						Mythic_Equip2_ElementStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "Mythic_Equip3_Element" then
+						Mythic_Equip3_ElementStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "Mythic_Equip4_Element" then
+						Mythic_Equip4_ElementStr = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "Mythic_PurchaseUnlockedLevel" then
+						Mythic_PurchaseUnlockedLevel = currentStorage.Value
+					
+					elseif currentStorage.KeyInfo.Key == "Emblem_haveItems" then
+						Emblem_haveItems_Str = currentStorage.Value
+					
+					elseif currentStorage.KeyInfo.Key == "Construction_haveItems" then
+						Construction_haveItems_Str = currentStorage.Value
+					elseif currentStorage.KeyInfo.Key == "Accessory_haveItems" then
+						Accessory_haveItems_Str = currentStorage.Value
+					elseif currentStorage.KeyInfo.Key == "Accessory_equipedItems" then
+						Accessory_equipedItems_Str = currentStorage.Value
+					elseif currentStorage.KeyInfo.Key == "Accessory_Proficiency" then
+						Accessory_Proficiency_Str = currentStorage.Value
+					elseif currentStorage.KeyInfo.Key == "VoidItem_haveItems" then
+						VoidItem_haveItems_Str = currentStorage.Value
+					elseif currentStorage.KeyInfo.Key == "VoidItem_randomList" then
+						VoidItem_randomList_Str = currentStorage.Value
+						
+					elseif currentStorage.KeyInfo.Key == "Reborn_currentTempleRecord" then
+						Reborn_currentTempleRecord_Str = currentStorage.Value 
+					elseif currentStorage.KeyInfo.Key == "Reborn_goldKeyRewardedStage" then
+						Reborn_goldKeyRewardedStage_Str = currentStorage.Value 
+					elseif currentStorage.KeyInfo.Key == "VoidItem_purchaseCount" then
+						VoidItem_purchaseCount_Str = currentStorage.Value
+					end
+		
+		  		end
+				
+		     	if itemPages.IsLastPage == true then --IsLastPage 프로퍼티를 통해 현재 페이지가 마지막 페이지인지 확인할 수 있습니다.
+		        		break
+		  		end
+		   		itemPages:MoveToNextPageAndWait() --MoveToNextPageAndWait()로 다음 페이지로 넘어갈 수 있습니다.
+			end
+			------------------------------------------------------------------------------------------------------------------------
+			self.IsLoadedData = true
+			------------------------------------------------------------------------------------------------------------------------
+			-- 데이터 검증 및 반영
+			-------------------------------
+			-- 1
+			if isvalid(tonumber(moneyStr)) == false then
+				self.Money = 0
+			else 
+				self.Money = tonumber(moneyStr)
+			end
+			-------------------------------
+			-- 2
+			if isvalid(haveEquipmentStr) == false then
+				for i=1, 160 do
+					self.haveEquipment[i] = false
+				end
+				
+				
+			else 
+				local haveEquipment = _UtilLogic:StringToTable(haveEquipmentStr)
+				for i=1, 160 do
+					if haveEquipment[i] == nil or haveEquipment[i] == false then
+						self.haveEquipment[i] = false
+					elseif haveEquipment[i] == true then
+						self.haveEquipment[i] = true
+					end
+				end
+			end
+			-------------------------------
+			-- 3
+			
+			self.TownAdmission[1] = true 
+			if isvalid(TownAdmissionStr) == false then
+				for i=2, self.maxTown do
+					self.TownAdmission[i] = false
+				end
+			else 
+				local townAdmission = _UtilLogic:StringToTable(TownAdmissionStr)
+				for i=2, self.maxTown do
+					if townAdmission[i] == nil or townAdmission[i] == false then
+						self.TownAdmission[i] = false
+					elseif townAdmission[i] == true then
+						self.TownAdmission[i] = true
+					end
+				end
+			end
+			-------------------------------
+			-- 4 
+			self.TownProgress[1] = true
+			if isvalid(TownProgressStr) == false then
+				for i=1, self.maxTown do
+					self.TownProgress[i] = false
+				end
+			else 
+				local townProgress = _UtilLogic:StringToTable(TownProgressStr)
+				for i=2, self.maxTown do
+					if townProgress[i] == nil or townProgress[i] == false then
+						self.TownProgress[i] = false
+					elseif townProgress[i] == true then
+						self.TownProgress[i]= true 
+					end
+				end
+			end
+			-------------------------------
+			-- 5
+			if isvalid(equipedStr) == false then
+				for i=1, 4 do
+					self.equiped[i] = 0
+				end
+			else 
+				local equiped = _UtilLogic:StringToTable(equipedStr)
+				
+				for i=1, 4 do
+					if equiped[i] == nil then
+						self.equiped[i] = 0
+					else
+						self.equiped[i] = tonumber(equiped[i])
+					end
+				end
+			end
+			-------------------------------
+			-- 6
+			if RebornCountStr == nil or RebornCountStr == "" then
+				self.RebornCount = 0
+			else
+				self.RebornCount = tonumber(RebornCountStr)
+			end
+			-------------------------------
+			-- 7
+			if PetEggStr == nil or PetEggStr == "" then
+				self.PetEgg = 0
+			else
+				self.PetEgg = tonumber(PetEggStr)
+			end
+			-------------------------------
+			-- 8
+			if HistoricSiteRecordStr == nil or HistoricSiteRecordStr == "" then
+				self.HistoricSiteRecord = 0
+			else
+				self.HistoricSiteRecord = tonumber(HistoricSiteRecordStr)
+			end
+			-------------------------------
+			-- 9 : Collection
+			self.Entity.PlayerCollection:LoadedUserData(collectionDataStr)
+			-------------------------------
+			-- 10, 11 : Title Equiped, Have Bool
+			self.Entity.PlayerTitle:LoadedUserData(haveTitleStr, equipedTitleStr)
+			-------------------------------
+			-- 12~14 : 이모티콘 보유여부, 장착인덱스, 토큰보유량
+			self.Entity.PlayerEmoticon:LoadedUserData(haveEmoticonStr, equipedEmoticonStr, emotTokenStr)
+			-------------------------------
+			-- 15~16 : 의자 보유, 장착
+			self.Entity.PlayerChair:LoadedUserData(haveChairStr, equipedChairStr)
+			-------------------------------
+			-- 17~18 : 펫 보유, 장착
+			self.Entity.PlayerPet:LoadedUserData(havePetStr, equipedPetStr, usePetSkillStr)
+			-------------------------------
+			-- 19~20 : 업적 진행도, 클리어여부
+			self.Entity.PlayerAchievementComponent:LoadedUserData(achievementProgressStr, achievementCompleteStr)
+			-------------------------------
+			-- 21~24 : 유물(정화) 보유 여부, 등록 여부, 보유 유물상자 개수, 유물상자 구매회수
+			self.Entity.PlayerRelic:LoadedUserData(havingPurifiedRelic, relicRegistration, relicBoxNumStr)
+			-------------------------------
+			-- 25~26 : 출석보상 진행도, 최근 보상수령일
+			self.Entity.PlayerDailyRewardComponent:LoadedUserData(dailyRewardProgress, dailyLastRewardTime, receivedDailyReward)
+			-------------------------------
+			-- 27~29 : 소모품, 재화템
+			self.Entity.PlayerStorage:LoadedUserData(consumableItemsStr, currencyItemsStr, consumableItemStartTimeStr)
+			-------------------------------
+			-- 30~35 : 신화 장비
+			self.Entity.PlayerMythicEquipment:LoadedData(Mythic_EquipmentLevelStr, Mythic_Equip1_ElementStr, Mythic_Equip2_ElementStr, 
+				Mythic_Equip3_ElementStr, Mythic_Equip4_ElementStr, Mythic_PurchaseUnlockedLevel)
+			-------------------------------
+			-- 엠블렘
+			self.Entity.PlayerEmblem:LoadedData(Emblem_haveItems_Str)
+			-------------------------------
+			-- 건설소
+			self.Entity.PlayerConstruction:LoadedData(Construction_haveItems_Str)
+			-------------------------------
+			-- 장신구
+			self.Entity.PlayerAccessory:LoadedData(Accessory_haveItems_Str, Accessory_equipedItems_Str, Accessory_Proficiency_Str)
+			-------------------------------
+			-- 공허
+			self.Entity.PlayerVoidItem:LoadedData(VoidItem_haveItems_Str, VoidItem_randomList_Str)
+			self.VoidItemPurchaseCount = tonumber(VoidItem_purchaseCount_Str)
+			if self.VoidItemPurchaseCount == nil then self.VoidItemPurchaseCount = 0 end
+			-------------------------------
+			-- 환생
+			self.TempleRecord_Current = tonumber(Reborn_currentTempleRecord_Str)
+			if self.TempleRecord_Current == nil then self.TempleRecord_Current = 0 end
+			self.GoldKeyRewardedStage = tonumber(Reborn_goldKeyRewardedStage_Str)
+			if self.GoldKeyRewardedStage == nil then self.GoldKeyRewardedStage = 0 end
+			-------------------------------
+			self:LoadedUserData()
+		else
+			log("DB Load Error : " .. tostring(errorCode))
+			
+			if tryNum > 5 then
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_FailToDBLoad", self.Entity.OwnerId)
+				
+				local kickReservation = function()
+					_UserService:KickUser(self.Entity.OwnerId, KickReason.ETC)
+				end
+				_TimerService:SetTimerOnce(kickReservation, 2)
+				return
+			end
+			
+			self:LoadData(tryNum+1)
+			_CustomLocalizationLogic:SendLocalizedFormattedToastMessageFromServer("Message_FailAndRetryToDBLoad", {tryNum}, self.Entity.OwnerId)
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SaveData(number tryNum)
+		-- 데이터 로드에 실패해서 퇴장하는 상황의 경우 데이터를 저장하지 않음
+		if self.IsLoadedData == false then
+			log("self.IsLoadedData = ", self.IsLoadedData)
+			return
+		end
+		----------------------------------------
+		local saveKey = self.Entity.OwnerId.."_PlayerData"
+		local playerDB = _DataStorageService:GetGlobalDataStorage(saveKey)
+		----------------------------------------
+		local storageSet = {}
+		storageSet["money"] = tostring(self.Money)
+		storageSet["haveEquipment"] = _UtilLogic:TableToString(self.haveEquipment)
+		storageSet["TownAdmission"] = _UtilLogic:TableToString(self.TownAdmission)
+		storageSet["TownProgress"] = _UtilLogic:TableToString(self.TownProgress)
+		storageSet["equiped"] =  _UtilLogic:TableToString(self.equiped) 
+		
+		storageSet["RebornCount"] = tostring(self.RebornCount)
+		storageSet["PetEgg"] = tostring(self.PetEgg)
+		storageSet["HistoricSiteRecord"] = tostring(self.HistoricSiteRecord)
+		storageSet["collection"] =  _UtilLogic:TableToString(self.Entity.PlayerCollection.dropItems) 
+		storageSet["haveTitle"] = _UtilLogic:TableToString(self.Entity.PlayerTitle.haveItem)
+		
+		storageSet["equipedTitle"] = tostring(self.Entity.PlayerTitle.equipedIdx)
+		storageSet["haveEmoticon"] = _UtilLogic:TableToString(self.Entity.PlayerEmoticon.haveEmoticon) 
+		storageSet["equipedEmoticon"] =  _UtilLogic:TableToString(self.Entity.PlayerEmoticon.equipedEmoticon)
+		storageSet["emotToken"] = tostring(self.Entity.PlayerEmoticon.EmotToken)
+		storageSet["haveChair"] = _UtilLogic:TableToString(self.Entity.PlayerChair.haveItem)
+		
+		storageSet["equipedChair"] = tostring(self.Entity.PlayerChair.equipedIdx)
+		storageSet["havePet"] = _UtilLogic:TableToString(self.Entity.PlayerPet.havePet)
+		storageSet["equipedPet"] = tostring(self.Entity.PlayerPet.equipedIdx)
+		storageSet["usePetSkill"] = _UtilLogic:TableToString(self.Entity.PlayerPet.useSkill)
+		storageSet["achievementProgress"] = _UtilLogic:TableToString(self.Entity.PlayerAchievementComponent.AchieveProgress)
+		
+		storageSet["achievementComplete"] =  _UtilLogic:TableToString(self.Entity.PlayerAchievementComponent.AchieveComplete)
+		storageSet["havingPurifiedRelic"] = _UtilLogic:TableToString(self.Entity.PlayerRelic.HavingPurifiedItem) 
+		storageSet["relicRegistration"] = _UtilLogic:TableToString(self.Entity.PlayerRelic.RegistrationInfo)
+		storageSet["relicBoxNum"] = _UtilLogic:TableToString(self.Entity.PlayerRelic.havingRelicBoxNum)
+		--storageSet["relicBoxBuyingCount"] = tostring(self.Entity.PlayerRelic.relicBoxBuyingCount)
+		storageSet["dailyRewardProgress"] = tostring(self.Entity.PlayerDailyRewardComponent.dailyProgress)
+		
+		storageSet["dailyLastRewardTime"] = tostring(self.Entity.PlayerDailyRewardComponent.lastRewardTime)
+		storageSet["receivedDailyReward"] = _UtilLogic:TableToString(self.Entity.PlayerDailyRewardComponent.receivedReward)
+		storageSet["consumableItems"] = _UtilLogic:TableToString(self.Entity.PlayerStorage.consumableItems)
+		storageSet["currencyItems"] = _UtilLogic:TableToString(self.Entity.PlayerStorage.currencyItems)
+		storageSet["consumableItemStartTime"] = _UtilLogic:TableToString(self.Entity.PlayerStorage.consumableItemStartTime)
+		
+		storageSet["Mythic_EquipmentLevel"] = _UtilLogic:TableToString(self.Entity.PlayerMythicEquipment.EquipmentLevel)
+		storageSet["Mythic_Equip1_Element"] = _UtilLogic:TableToString(self.Entity.PlayerMythicEquipment.Equip1_Element)
+		storageSet["Mythic_Equip2_Element"] = _UtilLogic:TableToString(self.Entity.PlayerMythicEquipment.Equip2_Element)
+		storageSet["Mythic_Equip3_Element"] = _UtilLogic:TableToString(self.Entity.PlayerMythicEquipment.Equip3_Element)
+		storageSet["Mythic_Equip4_Element"] = _UtilLogic:TableToString(self.Entity.PlayerMythicEquipment.Equip4_Element)
+		
+		storageSet["Mythic_PurchaseUnlockedLevel"] = tostring(self.Entity.PlayerMythicEquipment.PurchaseUnlockedLevel)
+		storageSet["Emblem_haveItems"] = _UtilLogic:TableToString(self.Entity.PlayerEmblem.haveItems)
+		storageSet["Construction_haveItems"] = _UtilLogic:TableToString(self.Entity.PlayerConstruction.haveItems)
+		storageSet["Accessory_haveItems"] = _UtilLogic:TableToString(self.Entity.PlayerAccessory.haveItems)
+		storageSet["Accessory_equipedItems"] = _UtilLogic:TableToString(self.Entity.PlayerAccessory.equipedItemIdx)
+		
+		storageSet["Accessory_Proficiency"] = tostring(self.Entity.PlayerAccessory.Proficiency)
+		storageSet["VoidItem_haveItems"] = _UtilLogic:TableToString(self.Entity.PlayerVoidItem.haveItems)
+		storageSet["VoidItem_randomList"] = _UtilLogic:TableToString(self.Entity.PlayerVoidItem.randomList)
+		storageSet["Reborn_currentTempleRecord"] = tostring(self.TempleRecord_Current)
+		storageSet["Reborn_goldKeyRewardedStage"] = tostring(self.GoldKeyRewardedStage)
+		
+		storageSet["VoidItem_purchaseCount"] = tostring(self.VoidItemPurchaseCount)
+		
+		--local errorCode, success = playerDB:BatchSetAndWait(storageSet)
+		
+		local callback = function(errorCode, successKeys)
+			if errorCode == 0 then
+				log("DB Save Sucess")
+			else
+				log("DB Save Error" .. tostring(errorCode))
+				
+				if tryNum > 5 then
+					log("5회 이상 재시도했으나 저장에 실패함")
+					_UserService:KickUser(self.Entity.OwnerId, KickReason.ETC)
+				else 
+					log("재시도합니다...", tryNum+1)
+					self:SaveData(tryNum+1)
+				end
+			end
+		end
+		
+		playerDB:BatchSetAsync(storageSet, callback)
+		----------------------------------------
+		_LeaderBoard:SaveData(self.Entity.OwnerId, self.Entity.PlayerEmblem.RP, self.Entity.NameTagComponent.Name)
+	end
+
+	@ExecSpace("Server")
+	method void SellAllItems()
+		-- 플레이어 가방의 모든 아이템을 판매하고 보너스 계산
+		local itemTable = _DataService:GetTable("DropItem")
+		
+		local totalPrice = 0
+		
+		local backpackItems = self.Entity.PlayerBackpack.storageList
+		local fossilSellCount = 0
+		
+		for i=1, itemTable:GetRowCount() do
+			local price = tonumber(itemTable:GetCell(i, 5))
+			local amount = backpackItems[i]
+			local sumPrice = price*amount
+			totalPrice = totalPrice + sumPrice
+			
+			if i >= 43 and i <= 49 then
+				fossilSellCount = fossilSellCount + amount
+			end
+		end
+		self.Entity.PlayerBackpack:DiscardAllItem()
+		------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
+		-- 광물 판매비율 결정
+		----------------------------------------
+		-- 기본값
+		local sellPriceBonusRate = 0.00
+		
+		-- 펫 보유효과
+		for i=1, 8 do
+			local petLevel = self.Entity.PlayerPet.havePet[i]
+			sellPriceBonusRate = sellPriceBonusRate + 0.1*petLevel
+			
+			if petLevel == 3 then
+				sellPriceBonusRate = sellPriceBonusRate + 0.05
+			end
+		end
+		
+		-- 소모품3 : 상인의 계약 - 광물 판매금액 +100%
+		if self.Entity.PlayerStorage.consumableItemAvailable[3] == true then
+			sellPriceBonusRate = sellPriceBonusRate + 1
+		end
+		
+		-- 공허 아이템
+		local voidItemTable = _DataService:GetTable("VoidItems")
+		local applyVoidItem13 = function()
+			local voidItemLv = self.Entity.PlayerVoidItem.haveItems[13]
+			--log("no.13 void item Level = ", voidItemLv)
+			if voidItemLv > 0 then
+				local initAbility = tonumber(voidItemTable:GetCell(13, "InitAbility"))
+				local levelAbility = tonumber(voidItemTable:GetCell(13, "AbilityPerLevel"))
+				local currentAbility = initAbility + levelAbility * voidItemLv
+				
+				sellPriceBonusRate = sellPriceBonusRate + currentAbility/100 
+			end
+		end
+		applyVoidItem13()
+		
+		
+		-- 보유 금액에 처분한 금액 적용
+		self.Money = self.Money + totalPrice*(1+sellPriceBonusRate)
+		--log("기본금 = ", totalPrice, ", 증가율 = ", sellPriceBonusRate)
+		--log("증가된 금액 = ", totalPrice*(1+sellPriceBonusRate))
+		
+		------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
+		-- 화석 판매시 뿌리기 아이템 획득
+		-- 공허 아이템 14번 : 화석 판매시 젬 획득
+		local addGemFromFossil = function()
+			local voidItemLv = self.Entity.PlayerVoidItem.haveItems[14]
+			if voidItemLv > 0 then
+				local initAbility = voidItemTable:GetCell(14, "InitAbility")
+				local levelAbility = voidItemTable:GetCell(14, "AbilityPerLevel")
+				local currentAbility = initAbility + levelAbility * voidItemLv
+				
+				self.Entity.PlayerStorage:AddCurrencyItems(2, currentAbility, true)
+				
+				_UIGetLog:PrintVoidItemLog(14, self.Entity.OwnerId)
+			end
+		end
+		
+		for i=1, fossilSellCount do
+			local randIdx = _UtilLogic:RandomIntegerRange(5, 10)
+			self.Entity.PlayerStorage:AddConsumableItems(randIdx, 1)
+			addGemFromFossil()
+		end
+		
+		------------------------------------------------------------------------------
+		------------------------------------------------------------------------------
+		
+		--  (판매한 내용이 있을 때에만)
+		if totalPrice > 0 then 
+			-- 판매 사운드 재생
+			_SoundService:PlaySound("21600ec9d3a04cfeb69c6fe0c50e197c", 1, self.Entity.OwnerId)
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_SoldAllItems", self.Entity.OwnerId)
+			_TutorialGuide:PlayGuide(9, self.Entity.OwnerId)
+		else 
+			-- toast message
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_ThereAreNoSellingItems", self.Entity.OwnerId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseMoney(number amount)
+		-- 플레이어 돈을 차감
+		self.Money = self.Money - amount
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetMoney(number amount)
+		-- 플레이어에게 돈을 지급하고 사운드 재생
+		self.Money = self.Money + amount
+		_SoundService:PlaySound("21600ec9d3a04cfeb69c6fe0c50e197c", 1, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void AddEquipment(number itemType, number level)
+		-- 장비를 구매하여 인벤토리에 추가
+		if self.haveEquipment[40*(itemType-1) + level] == false then
+		
+			-- 비용 처리
+			local equipTable = _DataService:GetTable("Equipment")
+			local cost = equipTable:GetCell(level, 1)
+			
+			if self.Money >= tonumber(cost) then
+				self:UseMoney(tonumber(cost))
+			else 
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_NoEnoughMoney", self.Entity.OwnerId)
+				return
+			end
+			
+			
+			-- 보유 여부 처리
+			self.haveEquipment[40*(itemType-1) + level] = true
+			self:SetTableElementClient("haveEquipment", 40*(itemType-1) + level, "true", self.Entity.OwnerId)
+			
+			-- 장비상점에 확인팝업 띄우기
+			self:SetUIEquipmentPurchaseChecking(self.Entity.OwnerId)
+			
+			-- 데이터 저장
+			self:SaveData(1)
+			
+		else 
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_AlreadyPossessedEquipment", self.Entity.OwnerId)
+			return
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangeEquipment(number itemType, number level)
+		-- 장착 장비를 변경하고 클라이언트에 동기화
+		self.equiped[itemType] = level
+		self:SetTableElementClient("equiped", itemType, tostring(level), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void ApplyPlayerStatus()
+		-- 데이터가 로드되기 전이라면 실행하지 않음
+		if self.IsLoadedData == false then return end
+		------------------------------------------------
+		local equipTable = _DataService:GetTable("Equipment")
+		local titleTable = _DataService:GetTable("Title")
+		local petTable = _DataService:GetTable("Pet")
+		local chairTable = _DataService:GetTable("Chair")
+		local relicSetTable = _DataService:GetTable("RelicSet")
+		local playerStatus = self.Entity.PlayerIngameData
+		------------------------------------------------
+		-- 기본 능력치
+		local basePower = 1 					-- 채광력 (정수)
+		local bonusPower = 0.0					-- 채광력 (+%) : 소숫점 형태로 사용
+		
+		local baseHP = 150						-- 최대체력 (정수)
+		local bonusHP = 0.0						-- 최대체력 (+%): 소숫점 형태로 사용
+		
+		local baseMP = 55						-- 최대 기력 (정수)
+		local bonusMP = 0.0						-- 최대기력 (+%): 소숫점 형태로 사용
+		
+		local invenStorage = 30					-- 가방 용량 (정수)
+		local bonusInvenStorage = 0.0			-- 가방용량 +% : 소숫점 형태로 사용
+		
+		local baseMoveSpeed = 1.2				-- 이동속도 (정수) : 건드리지 마시오
+		local bonusMoveSpeed = 0.0				-- 이동속도 (+%) : 소숫점 형태로 사용
+		
+		local bonusMPRecover = 0.0				-- 마나 회복속도 (+%) : 소숫점 형태로 사용
+		
+		local bonusMPUseRate = 0.0				-- 마나 사용량 감소 : 사용하지 않음
+		
+		local baseCriticalProb = 0.0			-- 치명타 확률 : 소숫점 형태로 사용
+		
+		local baseCriticalDamageRate = 1.1		-- 치명타 피해 비율 : 소숫점 형태로 사용, 기본값 1.1
+		
+		local baseSalesAmountBonus = 0.0		-- 판매 금액 비율 증가량(%) : 소숫점 형태로 사용
+		local baseLuck = 0						-- 행운(%) : 정수 형태로 사용
+		
+		local bounsProbAcquiringRelic = 0.0		-- 유물 획득 확률 증가(%) : 소숫점 형태로 사용
+		local ProbAcquiringBonusRelic = 0.0		-- 유물 추가 획득 확률(%) : 소숫점 형태로 사용
+		------------------------------------------------
+		-- 랭킹에 따른 효과 적용
+		
+		local playerRank = self.Entity.PlayerEmblem.Rank
+		local addAbilityRate = 0
+		if playerRank == 1 then
+			addAbilityRate = 0.20
+		elseif playerRank >=2 and playerRank <= 5 then
+			addAbilityRate = 0.16
+		elseif playerRank >=6 and playerRank <= 30 then
+			addAbilityRate = 0.12
+		elseif playerRank >= 31 and playerRank <= 100 then
+			addAbilityRate = 0.08
+		elseif playerRank >= 101 and playerRank <= 1000 then
+			addAbilityRate = 0.04
+		else 
+			addAbilityRate = 0
+		end
+		
+		bonusPower = bonusPower + addAbilityRate
+		bonusHP = bonusHP + addAbilityRate
+		bonusInvenStorage = bonusInvenStorage + addAbilityRate
+		bonusMoveSpeed = bonusMoveSpeed + addAbilityRate
+		bonusMP = bonusMP + addAbilityRate
+		bonusMPRecover = bonusMPRecover + addAbilityRate
+		baseCriticalProb = baseCriticalProb + addAbilityRate
+		baseCriticalDamageRate = baseCriticalDamageRate + addAbilityRate
+		baseSalesAmountBonus = baseSalesAmountBonus + addAbilityRate
+		baseLuck = baseLuck + addAbilityRate*100
+		------------------------------------------------
+		-- 장비
+		for i=1, 40 do
+			if self.haveEquipment[i] == true then
+				basePower = basePower + tonumber(equipTable:GetCell(i, 3))
+			end
+			
+			if self.haveEquipment[40+i] == true then
+				baseHP = baseHP + tonumber(equipTable:GetCell(i, 6))
+			end
+			
+			if self.haveEquipment[80+i] == true then
+				invenStorage = invenStorage + tonumber(equipTable:GetCell(i, 9)) 
+			end
+			
+			if self.haveEquipment[120+i] == true then
+				baseMP = baseMP + tonumber(equipTable:GetCell(i, 14))
+				bonusMoveSpeed = bonusMoveSpeed + tonumber(equipTable:GetCell(i, 12))  
+			end
+		end
+		------------------------------------------------
+		-- 신화 장비
+		local mythicEquipmentsLevel = self.Entity.PlayerMythicEquipment.EquipmentLevel
+		basePower = basePower + 30000000*mythicEquipmentsLevel[1]
+		baseHP = baseHP + 2500000*mythicEquipmentsLevel[2]
+		invenStorage = invenStorage + 3000000000*mythicEquipmentsLevel[3]
+		baseMP = baseMP + 30 * mythicEquipmentsLevel[4]
+		
+		-- 구슬
+		local beadsAmount = {	0, 0, 0, 0, 
+								0, 0, 0, 0}
+		local beadsGrade =  {	0, 0, 0, 0, 
+							0, 0, 0, 0}
+		for i=1, 8 do
+			beadsAmount[i] = beadsAmount[i] + self.Entity.PlayerMythicEquipment.Equip1_Element[i]
+			beadsAmount[i] = beadsAmount[i] + self.Entity.PlayerMythicEquipment.Equip2_Element[i]
+			beadsAmount[i] = beadsAmount[i] + self.Entity.PlayerMythicEquipment.Equip3_Element[i]
+			beadsAmount[i] = beadsAmount[i] + self.Entity.PlayerMythicEquipment.Equip4_Element[i]
+			
+			if beadsAmount[i] >= 400 then
+				beadsGrade[i] = 5
+			elseif beadsAmount[i] >= 160 then
+				beadsGrade[i] = 4
+			elseif beadsAmount[i] >= 80 then
+				beadsGrade[i] = 3
+			elseif beadsAmount[i] >= 40 then
+				beadsGrade[i] = 2
+			elseif beadsAmount[i] >= 10 then
+				beadsGrade[i] = 1
+			end
+		end
+		
+		bonusPower = bonusPower + beadsGrade[1]*0.04
+		bonusHP = bonusHP + beadsGrade[2]*0.04
+		bonusInvenStorage = bonusInvenStorage + beadsGrade[3]*0.04
+		baseLuck = baseLuck + beadsGrade[4]*4
+		
+		bonusMP = bonusMP + beadsGrade[5]*0.04
+		bonusMPRecover = bonusMPRecover + beadsGrade[6]*0.04
+		baseCriticalProb = baseCriticalProb + beadsGrade[7]*0.04
+		baseCriticalDamageRate = baseCriticalDamageRate + beadsGrade[8]*0.04
+		------------------------------------------------
+		-- 장신구
+		local equipedIdx = self.Entity.PlayerAccessory.equipedItemIdx
+		local accessoryProficiency = self.Entity.PlayerAccessory.Proficiency
+		local equipedSet = {0, 0, 0}
+		for i=1, 3 do
+			if equipedIdx[i] ~= nil and equipedIdx[i] ~= 0 then
+				local itemKey = self.Entity.PlayerAccessory.haveItems[equipedIdx[i]]
+				local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey) -- 1=part, 2=grade, 3=set, 4=ability
+		
+				
+				if i == 1 then
+					basePower = basePower + itemData[4]*accessoryProficiency
+				elseif i == 2 then
+					baseHP = baseHP + itemData[4]*accessoryProficiency
+				elseif i == 3 then
+					invenStorage = invenStorage + itemData[4]*accessoryProficiency
+				end		
+				
+				equipedSet[i] = itemData[3]
+			end
+		end
+		
+		-- 세트효과 
+		local accessorySetTable = _DataService:GetTable("AccessorySet")
+		if equipedSet[1] ~= 0 and equipedSet[1] == equipedSet[2] and equipedSet[1] == equipedSet[3] then
+			if equipedSet[1] == 1 then
+				bonusMP = bonusMP + tonumber(accessorySetTable:GetCell(1, "SetStatusAmount"))/100
+			elseif equipedSet[1] == 2 then
+				bonusMPRecover = bonusMPRecover + tonumber(accessorySetTable:GetCell(2, "SetStatusAmount"))/100
+			elseif equipedSet[1] == 3 then
+				baseCriticalProb = baseCriticalProb + tonumber(accessorySetTable:GetCell(3, "SetStatusAmount"))/100
+			elseif equipedSet[1] == 4 then
+				baseCriticalDamageRate = baseCriticalDamageRate + tonumber(accessorySetTable:GetCell(4, "SetStatusAmount"))/100
+			elseif equipedSet[1] == 5 then
+				baseLuck = baseLuck + tonumber(accessorySetTable:GetCell(5, "SetStatusAmount"))
+			end
+		end
+		------------------------------------------------
+		-- 칭호 (보유효과)
+		local haveTitle = self.Entity.PlayerTitle.haveItem
+		local equipedTitle = self.Entity.PlayerTitle.equipedIdx
+		for i=1, titleTable:GetRowCount() do
+			if haveTitle[i] == true then
+				local abilityType = titleTable:GetCell(i, 5)
+				local abilityAmount = tonumber(titleTable:GetCell(i, 6))
+				
+				if abilityType == "8001" then
+					bonusPower = bonusPower + abilityAmount/100
+				elseif abilityType == "8002" then
+					bonusHP = bonusHP + abilityAmount/100
+				elseif abilityType == "8003" then
+					bonusInvenStorage = bonusInvenStorage + abilityAmount/100
+				elseif abilityType == "8004" then
+					bonusMoveSpeed = bonusMoveSpeed + abilityAmount/100
+				elseif abilityType == "8005" then
+					bonusMP = bonusMP + abilityAmount/100
+				elseif abilityType == "8006" then
+					bonusMPRecover = bonusMPRecover + abilityAmount/100
+				elseif abilityType == "8008" then
+					baseCriticalProb = baseCriticalProb + abilityAmount/100
+				elseif abilityType == "8009" then
+					baseCriticalDamageRate = baseCriticalDamageRate + abilityAmount/100	
+				elseif abilityType == "8010" then
+					baseLuck = baseLuck + abilityAmount
+				end
+			end
+		end
+		-- 칭호 (장착효과)
+		if equipedTitle > 0 then
+			for i=1, 3 do
+				local abilityType = titleTable:GetCell(equipedTitle, 2*i+5)
+				local abilityAmount = tonumber(titleTable:GetCell(equipedTitle, 2*i+6))
+				
+				if abilityType == "8001" then
+					bonusPower = bonusPower + abilityAmount/100
+				elseif abilityType == "8002" then
+					bonusHP = bonusHP + abilityAmount/100
+				elseif abilityType == "8003" then
+					bonusInvenStorage = bonusInvenStorage + abilityAmount/100
+				elseif abilityType == "8004" then
+					bonusMoveSpeed = bonusMoveSpeed + abilityAmount/100
+				elseif abilityType == "8005" then
+					bonusMP = bonusMP + abilityAmount/100
+				elseif abilityType == "8006" then
+					bonusMPRecover = bonusMPRecover + abilityAmount/100
+				elseif abilityType == "8008" then
+					baseCriticalProb = baseCriticalProb + abilityAmount/100
+				elseif abilityType == "8009" then
+					baseCriticalDamageRate = baseCriticalDamageRate + abilityAmount/100		
+				elseif abilityType == "8010" then
+					baseLuck = baseLuck + abilityAmount
+				end
+			end
+		end
+		------------------------------------------------
+		-- 펫
+		local havePet = self.Entity.PlayerPet.havePet
+		local equipedPet = self.Entity.PlayerPet.equipedIdx
+		
+		-- 보유 효과
+		for i=1, petTable:GetRowCount() do
+			baseSalesAmountBonus = baseSalesAmountBonus + 0.1*havePet[i]
+			baseLuck = baseLuck + 2*havePet[i]
+			
+			if havePet[i] == 3 then
+				baseSalesAmountBonus = baseSalesAmountBonus + 0.05
+				baseLuck = baseLuck + 1
+			end
+		end
+		------------------------------------------------
+		-- 의자
+		local haveChair = self.Entity.PlayerChair.haveItem
+		for i=1, chairTable:GetRowCount() do
+			if haveChair[i] == true then
+				for j=1, 2 do
+					local abilityType = chairTable:GetCell(i, 2*j+12)
+					local abilityAmount = tonumber(chairTable:GetCell(i, 2*j+13))
+					
+					if abilityType == "8001" then
+						bonusPower = bonusPower + abilityAmount/100
+					elseif abilityType == "8002" then
+						bonusHP = bonusHP + abilityAmount/100
+					elseif abilityType == "8005" then
+						bonusMP = bonusMP + abilityAmount/100
+					elseif abilityType == "8004" then
+						bonusMoveSpeed = bonusMoveSpeed + abilityAmount/100 
+					elseif abilityType == "8006" then
+						bonusMPRecover = bonusMPRecover + abilityAmount/100
+					elseif abilityType == "8008" then
+						baseCriticalProb = baseCriticalProb + abilityAmount/100
+					elseif abilityType == "8009" then
+						baseCriticalDamageRate = baseCriticalDamageRate + abilityAmount/100
+					elseif abilityType == "8010" then
+						baseLuck = baseLuck + abilityAmount
+					elseif abilityType == "8012" then
+						ProbAcquiringBonusRelic = ProbAcquiringBonusRelic + abilityAmount/100
+					end
+				end
+			end
+		end
+		------------------------------------------------
+		-- 유물도감
+		local mapType = string.sub(self.Entity.CurrentMapName, 1, 4)
+		local mineNumString = tonumber(string.sub(self.Entity.CurrentMapName, 5, 5))
+		local relicRegist = self.Entity.PlayerRelic.RegistrationInfo
+		for i=1, _DataService:GetRowCount("RelicSet") do
+			local haveFullRegist = true
+			for j=1, 4 do
+				local needIdx = relicSetTable:GetCell(i, j*2)
+				if needIdx == nil or needIdx == "" then
+					goto cont
+				else
+					if relicRegist[(i-1)*4+j] == false then
+						haveFullRegist = false
+					end
+				end
+			end
+			::cont::
+			
+			if haveFullRegist == true then
+				for j=1, 2 do
+					local abilityType = relicSetTable:GetCell(i, j*2+8)
+					local abilityAmount = relicSetTable:GetCell(i, j*2+9)
+					
+					if abilityType == "8001" then
+						basePower = basePower + abilityAmount
+						--bonusPower = bonusPower + abilityAmount/100
+					elseif abilityType == "8002" then
+						baseHP = baseHP + abilityAmount
+						--bonusHP = bonusHP + abilityAmount/100
+					elseif abilityType == "8005" then
+						baseMP = baseMP + abilityAmount
+						--bonusMP = bonusMP + abilityAmount/100
+					elseif abilityType == "8004" then
+						bonusMoveSpeed = bonusMoveSpeed + abilityAmount/100
+					--[[
+					elseif abilityType == "8006" then
+						bonusMPRecover = bonusMPRecover + abilityAmount/100
+					elseif abilityType == "8007" then
+						bonusMPUseRate = bonusMPUseRate + abilityAmount/100
+					elseif abilityType == "8010" then
+						baseLuck = baseLuck + abilityAmount
+					elseif abilityType == "8011" then
+						bounsProbAcquiringRelic = bounsProbAcquiringRelic + abilityAmount/100
+					elseif abilityType == "8012" then
+						ProbAcquiringBonusRelic = ProbAcquiringBonusRelic + abilityAmount/100
+					]]--
+					elseif abilityType == "8003" then
+						invenStorage = invenStorage + abilityAmount
+						--bonusInvenStorage = bonusInvenStorage + abilityAmount/100
+					end
+				end
+			end
+		end
+		
+		------------------------------------------------
+		-- 의자 군중버프
+		local chairBuffIdx = self.Entity.PlayerIngameData.ChairBuffIdx
+		if chairBuffIdx > 0 then
+			for i=1, 2 do
+				local abilityType = chairTable:GetCell(chairBuffIdx, 2*i+16)
+				local abilityAmount = tonumber(chairTable:GetCell(chairBuffIdx, 2*i+17))
+				
+				if abilityType == "8001" then
+					bonusPower = bonusPower + abilityAmount/100
+				elseif abilityType == "8002" then
+					bonusHP = bonusHP + abilityAmount/100
+				elseif abilityType == "8005" then
+					bonusMP = bonusMP + abilityAmount/100
+				elseif abilityType == "8004" then
+					bonusMoveSpeed = bonusMoveSpeed + abilityAmount/100
+				elseif abilityType == "8006" then
+					bonusMPRecover = bonusMPRecover + abilityAmount/100
+				elseif abilityType == "8008" then
+					baseCriticalProb = baseCriticalProb + abilityAmount/100
+				elseif abilityType == "8009" then
+					baseCriticalDamageRate = baseCriticalDamageRate + abilityAmount/100
+				elseif abilityType == "8010" then
+					baseLuck = baseLuck + abilityAmount
+				elseif abilityType == "8012" then
+					ProbAcquiringBonusRelic = ProbAcquiringBonusRelic + abilityAmount/100
+				end 
+			end
+		end
+		------------------------------------------------
+		-- 공허 아이템
+		local voidItemTable = _DataService:GetTable("VoidItems")
+		local playerVoidItems = self.Entity.PlayerVoidItem.haveItems
+		
+		if playerVoidItems == nil or playerVoidItems[1] == nil then
+			return
+		end
+		
+		basePower = basePower + tonumber(voidItemTable:GetCell(1, "AbilityPerLevel"))*playerVoidItems[1]
+		baseHP = baseHP + tonumber(voidItemTable:GetCell(2, "AbilityPerLevel"))*playerVoidItems[2]
+		invenStorage = invenStorage + tonumber(voidItemTable:GetCell(3, "AbilityPerLevel"))*playerVoidItems[3]
+		
+		baseCriticalDamageRate = baseCriticalDamageRate + 0.01 * tonumber(voidItemTable:GetCell(4, "AbilityPerLevel"))*playerVoidItems[4]
+		if playerVoidItems[4] > 0 then baseCriticalDamageRate = baseCriticalDamageRate + 0.01 * tonumber(voidItemTable:GetCell(4, "InitAbility")) end
+		
+		bonusMPRecover = bonusMPRecover + 0.01 * tonumber(voidItemTable:GetCell(7, "AbilityPerLevel"))*playerVoidItems[7]
+		if playerVoidItems[7] > 0 then bonusMPRecover = bonusMPRecover + 0.01 * tonumber(voidItemTable:GetCell(7, "InitAbility")) end
+		
+		baseLuck = baseLuck + tonumber(voidItemTable:GetCell(9, "AbilityPerLevel"))*playerVoidItems[9]
+		if playerVoidItems[9] > 0 then baseLuck = baseLuck + tonumber(voidItemTable:GetCell(9, "InitAbility")) end
+		
+		baseSalesAmountBonus = baseSalesAmountBonus + 0.01 * tonumber(voidItemTable:GetCell(13, "AbilityPerLevel"))*playerVoidItems[13]
+		if playerVoidItems[13] > 0 then baseSalesAmountBonus = baseSalesAmountBonus + tonumber(voidItemTable:GetCell(13, "InitAbility")) end
+		------------------------------------------------
+		-- 뿌리기 아이템
+		for i=5, 10 do
+			if self.Entity.PlayerStorage.consumableItemAvailable[i] == true then
+				if i==5 then
+					bonusPower = bonusPower + 0.2
+					
+				elseif i == 6 then
+					bonusHP = bonusHP + 0.2
+					
+				elseif i == 7 then
+					bonusMP = bonusMP + 0.2
+					
+					
+				elseif i == 8 then
+					bonusMPRecover = bonusMPRecover + 2.0
+					
+					
+				elseif i == 9 then
+					baseCriticalProb = baseCriticalProb + 0.15
+					
+				elseif i == 10 then
+					baseLuck = baseLuck + 30
+		
+				end
+			end
+		end
+		------------------------------------------------
+		-- 상태이상
+		local thirstyPenalty = self.Entity.PlayerStateAtStage.ThirstyStack * 0.02
+		baseMoveSpeed = baseMoveSpeed * (1-thirstyPenalty)
+		------------------------------------------------
+		-- 최종 계산
+		playerStatus.MiningPower = basePower * (1+bonusPower)
+		
+		playerStatus.HPMax = baseHP * (1+bonusHP)
+		playerStatus.MPMax = baseMP * (1+bonusMP)
+		
+		if string.sub(self.Entity.CurrentMapName, 1, 4) == "Town" then
+			playerStatus.HP = playerStatus.HPMax
+			playerStatus.MP = playerStatus.MPMax
+		end
+		
+		
+		playerStatus.MPRecover = 1*(1+bonusMPRecover)
+		playerStatus.MPUseRate = 1 - bonusMPUseRate
+		
+		playerStatus.CriticalProb = baseCriticalProb
+		playerStatus.CriticalDamageRate = baseCriticalDamageRate
+		
+		self.Entity.PlayerBackpack.maxStorageNum = invenStorage * (1+bonusInvenStorage)
+		
+		self.Entity.MovementComponent.InputSpeed = baseMoveSpeed * (1+bonusMoveSpeed)
+		
+		self.SalesAmountBonus = baseSalesAmountBonus
+		self.Luck = baseLuck
+		
+		self.BonusProbDroppingRelic = bounsProbAcquiringRelic
+		self.Entity.PlayerRelic.ProbAcquiringBonusRelic = ProbAcquiringBonusRelic
+		------------------------------------------------
+		-- UI 반영
+		local baseStatusTable = {}
+		local bonusStatusTable = {}
+		
+		table.insert(baseStatusTable, basePower)
+		table.insert(baseStatusTable, baseHP)
+		table.insert(baseStatusTable, invenStorage)
+		table.insert(baseStatusTable, 1.20)
+		table.insert(baseStatusTable, baseMP) --5 
+		table.insert(baseStatusTable, 1)
+		table.insert(baseStatusTable, 0)
+		table.insert(baseStatusTable, baseCriticalProb)
+		table.insert(baseStatusTable, baseCriticalDamageRate)
+		table.insert(baseStatusTable, baseLuck) --10
+		table.insert(baseStatusTable, bounsProbAcquiringRelic)
+		table.insert(baseStatusTable, ProbAcquiringBonusRelic)
+		table.insert(baseStatusTable, baseSalesAmountBonus) 
+		
+		table.insert(bonusStatusTable, bonusPower)
+		table.insert(bonusStatusTable, bonusHP)
+		table.insert(bonusStatusTable, bonusInvenStorage)
+		table.insert(bonusStatusTable, bonusMoveSpeed)
+		table.insert(bonusStatusTable, bonusMP) --5
+		table.insert(bonusStatusTable, bonusMPRecover)
+		table.insert(bonusStatusTable, bonusMPUseRate)
+		table.insert(bonusStatusTable, 0)
+		table.insert(bonusStatusTable, 0)
+		table.insert(bonusStatusTable, 0) --10
+		table.insert(bonusStatusTable, 0)
+		table.insert(bonusStatusTable, 0)
+		table.insert(baseStatusTable, 0) 
+		
+		self:SetStatusUI(baseStatusTable, bonusStatusTable)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeTownProgress(number number)
+		-- 특정 마을의 진행도를 완료 상태로 변경
+		self.TownProgress[number] = true
+		self:SetTableElementClient("TownProgress", number, "true", self.Entity.OwnerId)
+		
+		if number == 10 then
+			self.TownAdmission[number] = true
+		self:SetTableElementClient("TownAdmission", number, "true", self.Entity.OwnerId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void PurchaseTownAdmission(number townIdx)
+		-- 보유 여부 체크
+		if self.TownAdmission[townIdx] == true then
+			_UIToast:ShowMessage("이미 이동권을 보유하고 있습니다.", self.Entity.OwnerId)
+			return
+		end
+		
+		-- 재화 보유 여부 체크
+		local Data = _DataService:GetTable("Map_Town")
+		local cost = tonumber(Data:GetCell(townIdx, 3))
+		if self.Money < cost then
+			_UIToast:ShowMessage("보유 금액이 부족합니다.", self.Entity.OwnerId)
+			return 
+		end
+		
+		-- 재화 소모
+		self.Money = self.Money - cost
+		
+		-- 보유여부 변환
+		self.TownAdmission[townIdx] = true
+		self:SetTableElementClient("TownAdmission", townIdx, "true", self.Entity.OwnerId)
+		
+		-- 사운드 및 토스트 메세지 재생
+		_SoundService:PlaySound("e1712cca3d4048e3bc01958135baa775", 0.85, self.Entity.OwnerId)
+		_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_BuyWarpTicket", self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void ChangeEquipmentAvatarOnServer()
+		-- 장착중인 장비에 따라 캐릭터 외형을 변경
+		local avatarTable = _DataService:GetTable("EquipmentAvatar")
+		
+		local costumeComp = self.Entity.CostumeManagerComponent
+		
+		for i=1, 4 do
+			if isvalid(self.equiped[i]) == false then
+				self.equiped[i] = 0
+			end
+		end
+		
+		
+		local weapon = avatarTable:GetCell(self.equiped[1]+1, 1)
+		local hat = avatarTable:GetCell(self.equiped[2]+1, 2)
+		local coat = avatarTable:GetCell(self.equiped[2]+1, 3)
+		local pants = avatarTable:GetCell(self.equiped[2]+1, 4)
+		local longcoat = avatarTable:GetCell(self.equiped[2]+1, 5)
+		local shoes = avatarTable:GetCell(self.equiped[4]+1, 6)
+		--local backpack = avatarTable:GetCell(self.equiped[3]+1, 7)
+		
+		if longcoat ~= nil and longcoat ~= "" then
+			costumeComp.CustomLongcoatEquip = longcoat
+			costumeComp.CustomCoatEquip = ""
+			costumeComp.CustomPantsEquip = ""
+		else
+			costumeComp.CustomLongcoatEquip = ""
+			costumeComp.CustomCoatEquip = coat
+			costumeComp.CustomPantsEquip = pants
+		end
+		
+		--costumeComp.CustomCapeEquip = backpack
+		costumeComp.CustomCapEquip = hat
+		costumeComp.CustomTwoHandedWeaponEquip = weapon
+		costumeComp.CustomShoesEquip = shoes
+		--self:ChangeEquipmentAvatarOnClient()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddPetEgg()
+		-- 펫 알 개수를 1개 증가시킴
+		self.PetEgg = self.PetEgg + 1
+	end
+
+	@ExecSpace("Client")
+	method void SetStatusUI(SyncTable<number> baseStatusTable, SyncTable<number> bonusStatusTable)
+		-- 플레이어 능력치를 UI에 표시하고 채광력 HUD 업데이트
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		-----------------------------------------------------
+		_EntityService:GetEntityByPath("/ui/StatusGroup/StatusList").StatusListUI:RefreshUI(baseStatusTable, bonusStatusTable)
+		--_EntityService:GetEntity("48667632-97d3-4ffa-a58a-50f9d188cc1e").InventoryUI:RefreshStatusInfoUI(baseStatusTable, bonusStatusTable)
+		-----------------------------------------------------
+		local HUDMiningPowerNumUI = _EntityService:GetEntity("1679c0f6-6b68-4657-a581-1628cdf52284")
+		HUDMiningPowerNumUI.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(self.Entity.PlayerIngameData.MiningPower, nil)
+	end
+
+	@ExecSpace("Server")
+	method void Reborn()
+		-- 조건 검증 
+		if self.Entity.CurrentMapName ~= "Town9" and self.Entity.CurrentMapName ~= "Town10" then
+			return
+		end
+		
+		-- 조건 검증2 : 버튼 연타했을 때 실행하지 않도록
+		if self.IsPlayingRebornDirection == true then
+			log("조건검증2에 걸림")
+			return
+		end
+		
+		--[[
+		-- 조건 검증3 : 열쇠 확인
+		if self.TownProgress[9] == false then
+			log("조건검증3에 걸림")
+			return
+		end
+		]]--
+		
+		
+		self.IsPlayingRebornDirection = true
+		local initiating = function()
+			self.IsPlayingRebornDirection = false
+		end
+		_TimerService:SetTimerOnce(initiating, 60)
+		---------------------------------------
+		self:PlayRebornDirection(self.Entity.OwnerId)
+		------------------------------------------------------------------------------
+		--log("reborn!")
+		
+		local GetRebornReward = function()
+			self.Money = 0
+			--------------------------------------------------------
+			self:ClearAllProperty() -- 돈, 장비, 마을 정보 초기화
+			--------------------------------------------------------
+			self.Entity.PlayerBackpack:DiscardAllItem() -- 가방 비우기
+			--------------------------------------------------------
+			self:AddPetEgg() -- 펫 알 1개 획득
+			--------------------------------------------------------
+			self.RebornCount = self.RebornCount + 1 -- 환생 회수 카운트
+			--------------------------------------------------------
+			-- 환생코인 보상 : 신화장비 레벨에 비례 
+			local rebirthCoinRewardAmount = 0
+			for i=1, 4 do
+				rebirthCoinRewardAmount = rebirthCoinRewardAmount + self.Entity.PlayerMythicEquipment.EquipmentLevel[i]
+			end
+			
+			
+			-- 공허 아이템 효과 적용 : 환생코인 보상 증가 
+			local voidItemLv = self.Entity.PlayerVoidItem.haveItems[12]
+			local voidItemTable = _DataService:GetTable("VoidItems")
+			if voidItemLv > 0 then
+				local initAbility = voidItemTable:GetCell(12, "InitAbility")
+				local levelAbility = voidItemTable:GetCell(12, "AbilityPerLevel")
+				local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+					
+				rebirthCoinRewardAmount = math.floor(rebirthCoinRewardAmount * (1 + currentAbility/100))
+				_UIGetLog:PrintVoidItemLog(12, self.Entity.OwnerId)
+			end
+			
+			self.Entity.PlayerStorage:AddCurrencyItems(5, rebirthCoinRewardAmount, true)
+			--------------------------------------------------------
+			-- 신화 장비 리셋
+			self.Entity.PlayerMythicEquipment:ResetPropertiesByReborn()
+			--------------------------------------------------------
+			-- 황금열쇠 보상
+			local goldKeyRewardAmount = self.TempleRecord_Current - self.GoldKeyRewardedStage
+			if goldKeyRewardAmount <= 0 then
+				goldKeyRewardAmount = 0
+			end
+			
+			self.Entity.PlayerStorage:AddCurrencyItems(6, goldKeyRewardAmount, true)
+			
+			-- 업적 - 황금열쇠 획득하기
+			if goldKeyRewardAmount > 0 then
+				self.Entity.PlayerAchievementComponent:GetProgress(34, 1)
+			end
+			--------------------------------------------------------
+			-- 신전 도달 기록 리셋
+			if self.GoldKeyRewardedStage < self.TempleRecord_Current then
+				self.GoldKeyRewardedStage = self.TempleRecord_Current
+			end
+			self.TempleRecord_Current = 0
+			--------------------------------------------------------
+			-- 반복퀘스트 리셋
+			self.Entity.PlayerInfiniteQuest:GetNewQuest()
+			--------------------------------------------------------
+			-- 마을1로 이동
+			_TeleportService:TeleportToEntity(self.Entity, _EntityService:GetEntity("a13a0e3c-a396-4776-87a1-8642e8ccd1ac")) 
+			
+			-- 데이터 저장
+			self:SaveData(1)
+		end
+		
+		_TimerService:SetTimerOnce(GetRebornReward, 12)
+		---------------------------------------
+	end
+
+	@ExecSpace("Client")
+	method void PlayRebornDirection()
+		-- 환생 연출 UI를 재생
+		_EntityService:GetEntityByPath("/ui/Reborn/New_Reborn").RebornUI:PlayRebornDirection()
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 전달받은 테이블 데이터를 클라이언트에서 적용
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 전달받은 테이블의 특정 인덱스 값을 클라이언트에서 적용
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트에서 테이블을 초기값으로 모두 리셋
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 테이블이 변경될 때 관련 UI와 상태를 새로고침
+		if name == "haveEquipment" then
+			--_EntityService:GetEntity("48667632-97d3-4ffa-a58a-50f9d188cc1e").InventoryUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop").EquipmentShopUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage").EquipmentStorageUI:RefreshUI()
+			self:ApplyPlayerStatus()
+		end
+		
+		if name == "equiped" then
+			--_EntityService:GetEntity("48667632-97d3-4ffa-a58a-50f9d188cc1e").InventoryUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop").EquipmentShopUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage").EquipmentStorageUI:RefreshUI()
+			self:ChangeEquipmentAvatarOnServer()
+		end
+		
+		if name == "TownAdmission" then
+			_EntityService:GetEntity("c2e43eac-471f-4851-9cd8-5a53c04fb484").TeleportTownController:RenewUI()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllProperty()
+		-- 환생 시 모든 장비와 마을 진행도를 초기화 (마을1 제외)
+		for i=1, 4 do
+			self.equiped[i] = 0
+		end
+		
+		self:ClearTableClient("equiped", "0", 4, self.Entity.OwnerId)
+		
+		for i=1, 160 do
+			self.haveEquipment[i] = false
+		end
+		self:ClearTableClient("haveEquipment", "false", 160, self.Entity.OwnerId)
+		
+		self.TownAdmission[1] = true -- 마을 1은 항상 이동 가능하므로 예외 처리 필요
+		self.TownProgress[1] = true -- for문을 1이 아닌 마을 2부터 돌리는 상황
+		for i=2, self.maxTown do
+			self.TownAdmission[i] = false
+			self.TownProgress[i] = false
+		end
+		
+		self:ClearTableClient("TownAdmission", "false", self.maxTown, self.Entity.OwnerId)
+		self:ClearTableClient("TownProgress", "false", self.maxTown, self.Entity.OwnerId)
+		self:SetTableElementClient("TownAdmission", 1, "true", self.Entity.OwnerId)
+		self:SetTableElementClient("TownProgress", 1, "true", self.Entity.OwnerId)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadedUserData()
+		-- 데이터 로드 완료 후 클라이언트에 모든 테이블 데이터 동기화
+		self:SetTableClient("equiped", _UtilLogic:TableToString(self.equiped), self.Entity.OwnerId)
+		self:SetTableClient("haveEquipment", _UtilLogic:TableToString(self.haveEquipment), self.Entity.OwnerId)
+		self:SetTableClient("TownAdmission", _UtilLogic:TableToString(self.TownAdmission), self.Entity.OwnerId)
+		self:SetTableClient("TownProgress", _UtilLogic:TableToString(self.TownProgress), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(any enteredMap)
+		-- 맵 입장시 유적 방문 기록 갱신 및 가이드 재생
+		-- 유적 방문 기록
+		if string.sub(enteredMap.Name, 1, 5) == "Mine9" then
+			local currentHSStage = tonumber(string.sub(enteredMap.Name, -1, -1))
+			
+			if currentHSStage >= self.HistoricSiteRecord then
+				self.HistoricSiteRecord = currentHSStage
+			end
+		end
+		
+		-- 유적지(마을) 방문시 가이드 재생
+		if string.sub(enteredMap.Name, 1, 5) == "Town9" then
+			_TutorialGuide:PlayGuide(10, self.Entity.OwnerId)
+		end
+		
+		self:ApplyPlayerStatus()
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUIHUDMoney()
+		-- HUD의 돈 표시를 현재 보유 금액으로 새로고침
+		local moneyUI = _EntityService:GetEntity("4acef241-3f6d-40f4-9cef-6f23bbf75cec")
+		moneyUI:GetChildByName("Num").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(math.floor(self.Money), nil)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUIShop()
+		-- 로컬 플레이어인 경우에만 상점 UI 새로고침
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		_EntityService:GetEntity("c22b0f71-6a6d-40bb-a02e-47e4b03b906f").ShopUI:RefreshUI()
+	end
+
+	@ExecSpace("Client")
+	method void SetUIEquipmentPurchaseChecking()
+		-- 장비 구매 완료 후 확인 팝업과 연출을 표시
+		-- 구매 확인 팝업(+연출)
+		local equipmentShopUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop")
+		equipmentShopUI.EquipmentShopUI:SetPurchaseCheckUI()
+	end
+
+	@ExecSpace("Server")
+	method void PurchaseEquipmentBundle(number filterIdx, string checkedTableStr)
+		-- 선택된 장비들을 한번에 번들 구매 처리
+		local checkedList = _UtilLogic:StringToTable(checkedTableStr)
+		local equipmentTable = _DataService:GetTable("Equipment")
+		-------------------------------------------------------
+		-- 조건검증 : 비용, 보유여부
+		local totalCost = 0
+		for i=1, 40 do
+			if checkedList[i] == true then
+				local idx = 40*(filterIdx-1) + i
+		
+				if self.haveEquipment[idx] == true then
+					log("이미 보유중인 장비 인덱스가 번들구매에 포함되어 있습니다")
+					return
+				end
+					
+				local cost = equipmentTable:GetCell(i, 1)
+				totalCost = totalCost + tonumber(cost)
+			end
+		end
+		
+		if totalCost > self.Money then
+			log("비용 초과 오류입니다")
+			return
+		end
+		
+		if #checkedList < 1 then
+			log("구매 수량이 0 입니다")
+			return
+		end
+		-------------------------------------------------------
+		-- 구매 처리
+		for i=1, 40 do
+			if checkedList[i] == true then
+				local idx =  40*(filterIdx-1) + i 
+				local cost = tonumber(equipmentTable:GetCell(i, 1))
+				
+				self.Money = self.Money - cost
+				self.haveEquipment[idx] = true
+			end	
+		end
+		
+		--log("purchased successfully!")
+		self:SetTableClient("haveEquipment", _UtilLogic:TableToString(self.haveEquipment), self.Entity.OwnerId)
+		-------------------------------------------------------
+		-- 연출 실행
+		self:PlayDirection_EquipmentBundlePurchase(self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void PlayDirection_EquipmentBundlePurchase()
+		-- 장비 번들 구매 완료 연출을 재생
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop").EquipmentShopUI:PlayPurchaseBundleDirection()
+	end
+
+	@ExecSpace("Server")
+	method void UseCharonsBoat()
+		-- 카론의 배 사용 - 펫 알을 소모해 모든 마을과 장비를 해금하는 치트 기능
+		------------------------------------------------------------------------------------------
+		-- 검증
+		------------------------------------------------------------------------------------------
+		-- 현재 마을이 마을1이 아니면 이용 불가
+		if self.Entity.CurrentMapName ~= "Town" then
+			return
+		end
+		
+		-- 건설하지 않았다면 이용 불가
+		if self.Entity.PlayerConstruction.haveItems[2] < 2 then
+			return
+		end
+		
+		-- 펫 알이 없다면 이용 불가
+		if self.PetEgg < 1 then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("/ui/PetShopGroup/PetShop/WarningPopup/Panel/Message", self.Entity.OwnerId)
+			return
+		end
+		------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------
+		-- 진행시켜
+		------------------------------------------------------------------------------------------
+		-- 펫 알 소모
+		self.PetEgg = self.PetEgg - 1
+		
+		-- 모든 마을 이동 권한 해금
+		for i=1, 10 do
+			self.TownAdmission[i] = true
+			self.TownProgress[i] = true
+		end
+		
+		-- 모든 장비 획득
+		for i=1, 160 do
+			self.haveEquipment[i] = true
+		end
+		
+		-- 텔레포트
+		_TeleportService:TeleportToEntityPath(self.Entity, "/maps/Town10/RoadArrow")
+		------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------
+		-- 동기화
+		------------------------------------------------------------------------------------------
+		self:SetTableClient("TownAdmission", _UtilLogic:TableToString(self.TownAdmission), self.Entity.OwnerId)
+		self:SetTableClient("TownProgress", _UtilLogic:TableToString(self.TownProgress), self.Entity.OwnerId)
+		self:SetTableClient("haveEquipment", _UtilLogic:TableToString(self.haveEquipment), self.Entity.OwnerId)
+		------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------
+	end
+
+end

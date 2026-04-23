@@ -1,0 +1,301 @@
+@Logic
+script HUDManager extends Logic
+
+	property Entity weaponLayout = "58cd27b0-779c-4604-a73a-61d816952511"
+
+	@HideFromInspector
+	property Entity interactionEntity = nil
+
+	property Entity baseWeaponSlot = "362271a6-099d-4324-91f5-010a340a0c35"
+
+	property EntityRef currnecyPanel = "0f4c090c-fb18-4d55-9c4a-5a3b06596890"
+
+	property WeaponMiniPopup weaponMinipopup = "c9657462-1f67-4df3-85a8-424df580285d"
+
+	property UIMergePopup mergePopup = "51164ab4-12fd-4a18-80da-1d716e6fb756"
+
+	property Entity panelExpandMenu = "a80c2bc0-6354-4c54-9994-f4fd43286271"
+
+	property Entity buttonExpandMenu = "c04a4de1-0dc1-4d7e-a470-5825cd1d1d13"
+
+	property TextComponent eggCount = "a512a6a6-3b13-4ebb-9a34-b0d1b3a2fc14"
+
+	property OutGameBuffUIComponent outGameBuffUI = "19cdadfb-e837-4068-9fb7-84ff939b2401"
+
+	property Entity lobbyDashButonPC = "065dcdc0-65a3-479f-89df-dfcb6a53ccd0"
+
+	property Entity townButton = "b29b5124-07a2-438f-9d95-fd8676c1425f"
+
+	property Entity cashShopStorageCount = "ca5dbb87-98c1-4845-928d-06789f3eab24"
+
+	property string currentCharId = ""
+
+	property Entity fieldCashShopStorageCount = "18b302c6-8976-44a7-b71f-d82f51477868"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 HUD 매니저 초기화
+		self:Init()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- 무기 슬롯들을 생성하고 초기화
+		
+		self.baseWeaponSlot.Enable = false
+		self._T.weaponSlot = {}
+		
+		self._T.maxSlotNum = _GameConfig:GetConfig().MAX_EQUIPMENT_CNT
+		local maxEquip = self._T.maxSlotNum
+		for i = 1, maxEquip do
+			local clone = self.baseWeaponSlot:Clone(string.format("slot_%d",i))
+			clone.WeaponSlotComponent:Init(i)
+			clone.Enable = true
+			table.insert(self._T.weaponSlot,clone)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetWeaponSlot(integer slotNum, string uniqueKey)
+		-- 지정된 슬롯에 무기 정보를 설정하고 UI 업데이트
+		if slotNum > _GameConfig:GetConfig().MAX_EQUIPMENT_CNT then return end
+		
+		local slot = self._T.weaponSlot[slotNum]
+		if isvalid(slot) == false then
+			return
+		end
+		
+		
+		local item = _UserService.LocalPlayer.PlayerStorageComponent:GetItem(uniqueKey)
+		local id = item.originalId
+		local type = _WeaponSpecLogic.weaponData[id].type
+		local category = _ItemDataLogic.equipmentData[id].category 
+		local grade = _ItemDataLogic.equipmentData[id].grade
+		
+		if not isvalid(_ItemDataLogic.equipmentData[id]) or _ItemDataLogic.equipmentData[id].category ~= "weapon" then return end
+		
+		slot.WeaponSlotComponent:SetWeaponInfo(uniqueKey)
+		
+		if category == "weapon" then
+			
+			local slotBG = slot:GetChildByName("bg_grade", true)
+			local sprite = slot:GetChildByName("icon_weapon", true)
+		
+			local weaponSpec = _WeaponSpecLogic.weaponData[id]
+			local equipmentData = _ItemDataLogic.equipmentData[id]
+		
+			local ruid = equipmentData.ruid
+		
+			if _UtilLogic:IsNilorEmptyString(ruid) == true then
+				sprite.SpriteGUIRendererComponent.ImageRUID = weaponSpec.ruid
+			else
+				sprite.SpriteGUIRendererComponent.ImageRUID = equipmentData.ruid
+			end
+		
+			sprite.SpriteGUIRendererComponent.Enable = true
+			slotBG.SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic:GetHUDWeaponSlotByGrade(grade) 
+		
+			
+			slot:GetChildByName("WeaponCategory", true).SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic:GetHUDCategorySlotByGrade(grade)
+			
+			if _CharacterLogic:CheckMatchExWeapon(id, tostring(math.floor(_UserService.LocalPlayer.PlayerCharacterData.charIndex))) then
+				slot:GetChildByName("WeaponCategory", true).SpriteGUIRendererComponent:ChangeMaterial("material://128cb24f-4eab-4abe-b385-f55cc170785e")
+			else
+				slot:GetChildByName("WeaponCategory", true).SpriteGUIRendererComponent:ChangeMaterial("")
+			end
+		
+			slot:GetChildByName("state_empty", true):SetEnable(false)
+			slot:GetChildByName("state_equip", true):SetEnable(true)
+			
+			slot:GetChildByName("WeaponCategory", true):SetEnable(true)
+		
+			slot:GetChildByName("icon_weapon_category", true).SpriteGUIRendererComponent.ImageRUID = _WeaponSpecLogic:GetWeaponCategoryIcon(type)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void InitWeaponSlots()
+		-- 모든 무기 슬롯의 상태를 초기화하고 장착 가능 여부 설정
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage
+		local canEquipCount = _UserService.LocalPlayer.PlayerCharacteristicData.canEquipCount
+		
+		local slots = {}
+		
+		for i = 1, self._T.maxSlotNum do
+			slots[i] = false
+		end
+		
+		for key, value in pairs(storage) do
+			if value.equippedSlotNum > 0 then
+				slots[value.equippedSlotNum] = true
+			end
+		end
+		
+		for i = 1, self._T.maxSlotNum do
+			if not slots[i] then
+				local slot = self._T.weaponSlot[i]
+				if isvalid(slot) then
+		
+					local sprite = slot:GetChildByName("icon_weapon", true)
+					sprite.SpriteGUIRendererComponent.Enable = false
+				end
+		
+				slot:GetChildByName("state_equip", true):SetEnable(false) 
+				slot:GetChildByName("state_empty", true):SetEnable(false) 
+				slot:GetChildByName("state_locked", true):SetEnable(false) 
+		
+				if i > canEquipCount then
+					slot.WeaponSlotComponent.canEquipState = false 
+					slot:GetChildByName("state_locked", true):SetEnable(true)
+				else
+					slot.WeaponSlotComponent.canEquipState = true 
+					slot:GetChildByName("state_empty", true):SetEnable(true)
+				end
+				slot:GetChildByName("WeaponCategory", true):SetEnable(false)
+			else
+				self._T.weaponSlot[i].WeaponSlotComponent.canEquipState = i <= canEquipCount 
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SendEquipEvent(integer slotNum, boolean isEquip, string uniqueKey)
+		-- 장비 착용/해제 이벤트를 플레이어에게 전송
+		_UserService.LocalPlayer:SendEvent(EquipEvent(slotNum, isEquip, uniqueKey))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshEggCount()
+		-- 보유 중인 알의 개수를 UI에 업데이트
+		self.eggCount.Text = _NumberSeparator:ConvertToMetricPrefixString(_UserService.LocalPlayer.PlayerStorageComponent:GetAllEggCount(), "en") 
+	end
+
+	@ExecSpace("Client")
+	method void RefreshExWeaponMaterial(string charId)
+		-- 캐릭터 변경 시 전용 무기 표시 머티리얼 업데이트
+		charId = tostring(math.floor(tonumber(charId)))
+		self.currentCharId = charId
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage
+		for key, value in pairs(storage) do
+			if not _UtilLogic:IsNilorEmptyString(value.originalId) and _ItemDataLogic.equipmentData[value.originalId] ~= nil then
+				if _ItemDataLogic.equipmentData[value.originalId].category == "weapon" then
+					if value.equippedSlotNum > 0 then
+						local slot = self._T.weaponSlot[value.equippedSlotNum]
+						if _CharacterLogic:CheckMatchExWeapon(value.originalId, charId) then
+							slot:GetChildByName("WeaponCategory", true).SpriteGUIRendererComponent:ChangeMaterial("material://128cb24f-4eab-4abe-b385-f55cc170785e")
+						else		 
+							slot:GetChildByName("WeaponCategory", true).SpriteGUIRendererComponent:ChangeMaterial("")
+						end		
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTownButtonEnable(boolean onOff)
+		-- 마을 이동 버튼의 활성화 상태 설정
+		self.townButton.Enable = onOff
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEquipEvent(EquipEvent event)
+		-- 장비 착용/해제 이벤트 처리하여 UI 업데이트
+		local slotNum = event.slotNum
+		local isEquip = event.isEquip
+		local uniqueKey = event.uniqueKey
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage[uniqueKey]
+		if storage ==  nil then
+			return
+		end
+		local originalId = storage.originalId
+			
+		
+		
+		if not isvalid(_ItemDataLogic.equipmentData[originalId]) then
+			return
+		end
+		
+		if _ItemDataLogic.equipmentData[originalId].category == "weapon" then
+			self:InitWeaponSlots()
+		end
+		
+		if isEquip and _ItemDataLogic.equipmentData[originalId].category == "weapon" then
+			self:SetWeaponSlot(slotNum, uniqueKey)
+		end
+		
+		if not _UserService.LocalPlayer.PlayerDBComponent.dbInited then return end
+		
+		if _ItemDataLogic.equipmentData[originalId].category == "armor" then 
+			_UIGroupManager.armorInformation.ArmorInformationUI.selectedUniqueKey = uniqueKey	
+			_UIGroupManager.uiPlayerStatusPopup:RefreshArmorPanel()
+			_UIGroupManager.uiPlayerStatusPopup:RefreshInventoryList(_ItemDataLogic:GetUniqueKeyListByCategory("armor", _UserService.LocalPlayer.PlayerComponent.UserId), "armor")	
+		elseif _ItemDataLogic.equipmentData[originalId].category == "accessoty" then 	
+			_UIGroupManager.uiPlayerStatusPopup:RefreshAccessoryPanel()
+			_UIGroupManager.uiPlayerStatusPopup:RefreshInventoryList(_ItemDataLogic:GetUniqueKeyListByCategory("accessory", _UserService.LocalPlayer.PlayerComponent.UserId), "accessory")	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleDBLoadedEvent(DBLoadedEvent event)
+		-- 데이터베이스 로드 완료 시 무기 슬롯과 전용 무기 표시 초기화
+		self:InitWeaponSlots()
+		self:RefreshExWeaponMaterial(tostring(math.floor(_UserService.LocalPlayer.PlayerCharacterData.charIndex)))
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleSetCanEquipCountEvent(SetCanEquipCountEvent event)
+		-- 장착 가능한 무기 개수 변경 시 슬롯 상태 업데이트
+		self:InitWeaponSlots()
+	end
+
+	@EventSender("Entity", "c04a4de1-0dc1-4d7e-a470-5825cd1d1d13")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 확장 메뉴 버튼 클릭 시 메뉴 표시/숨김 토글
+		
+		local Entity = event.Entity
+		if self.panelExpandMenu.Enable then
+			self.panelExpandMenu.UICommonPopup:Hide()	
+		else
+			self.panelExpandMenu.UICommonPopup:Show()	
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleOnHatchSuccess(OnHatchSuccess event)
+		-- 알 부화 성공 시 알 개수 UI 업데이트
+		local uniqueKey = event.uniqueKey
+		self:RefreshEggCount()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleAddEggEvent(ChangedEggEvent event)
+		-- 알 개수 변경 시 UI 업데이트
+		self:RefreshEggCount()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 플레이어 맵 변경 이벤트 처리
+		
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+	end
+
+	@EventSender("Entity", "25ca318f-e7c0-4682-a2e8-ac3c2feb1321")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 추가 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+	end
+
+end

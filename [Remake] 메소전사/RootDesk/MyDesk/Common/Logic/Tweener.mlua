@@ -1,0 +1,132 @@
+@Logic
+script Tweener extends Logic
+
+	property table tweener = {}
+
+	property number id = 0
+
+	method void PlayTween(number from, number to, number duration, number delay, any ease, any onTweenValue, any onFinished, string identification)
+		-- 트위닝 애니메이션 실행
+		local tween = self:RentStruct()
+		tween.onTweenValue = onTweenValue
+		tween.onFinished = onFinished
+		tween.delay = delay
+		tween.from = from
+		tween.to = to
+		tween.duration = duration
+		tween.time = 0
+		tween.ease = ease
+		tween.isvalid = true
+		tween.identification = identification
+		
+		tween.onTweenValue(from)
+		self.id = self.id + 1
+		self.tweener[self.id] = tween
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 모든 트위닝 업데이트 처리
+		if _TimerLogic.pause then
+			return
+		end
+		
+		local tweener = self.tweener
+		local removeList = self._T.removeList
+		
+		delta = delta * _TimerLogic.timeScale
+		for k,v in pairs(tweener) do
+			if v.delay > 0 then
+				v.delay = v.delay - delta
+			else
+				v.time = math.max(0, v.time + delta)
+				
+				local result, error = pcall(function()
+					if not v.isvalid then
+						return
+					end
+					local currentTime = _G.ElapsedSeconds
+					local value = _TweenLogic:Ease(v.from,v.to,v.duration,v.ease,v.time)
+					v.onTweenValue(value)
+					if v.time >= v.duration then
+						if v.onFinished ~= nil then					
+							v.onFinished()
+						end
+						removeList[#removeList + 1] = k
+						self:ReturnStruct(v)
+					end
+					if currentTime ~= _G.ElapsedSeconds then
+					end
+					
+				end)
+				
+				
+			end
+		end
+		
+		for i=1, #removeList do
+			tweener[removeList[i]] = nil
+		end
+		
+		table.clear(removeList)
+	end
+
+	method void MoveTo(Entity entity, Vector3 to, number duration, number delay, any ease, any onFinished, string identification)
+		-- 엔티티를 지정된 위치로 이동
+		local transform = entity.TransformComponent 
+		local from = transform.Position:Clone()
+		local innerVector = Vector3.zero
+		self:PlayTween(0,1,duration,delay,ease,function(value)
+				if isvalid(entity) then
+					local reverseValue = 1 - value
+					innerVector.x = to.x * value + from.x * reverseValue
+					innerVector.y = to.y * value + from.y * reverseValue
+					innerVector.z = to.z * value + from.z * reverseValue
+					transform.Position = innerVector
+				end
+		end,onFinished, identification)
+	end
+
+	method void ClearAll()
+		-- 모든 트위닝 제거
+		table.clear(self.tweener)
+		self.id = 0
+	end
+
+	method table RentStruct()
+		-- 트위닝 구조체 대여
+		local _T = self._T
+		---@type LuaQueue
+		local queue = _T.tweenerStructPool
+		
+		if queue:IsEmpty() then
+			return {onTweenValue = false, onFinished = false, delay = 0, from = false, to = false, duration = 0, time = 0, ease = false, isvalid = false, identification = false}
+		end
+		
+		local rtn = queue:Dequeue()
+		return rtn
+	end
+
+	method void ReturnStruct(table tweenStruct)
+		-- 트위닝 구조체 반납
+		tweenStruct.onTweenValue = false
+		tweenStruct.onFinished = false
+		tweenStruct.delay = 0
+		tweenStruct.from = false
+		tweenStruct.to = false
+		tweenStruct.duration = 0
+		tweenStruct.time = 0
+		tweenStruct.ease = false
+		tweenStruct.isvalid = false
+		tweenStruct.identification = false
+		
+		self._T.tweenerStructPool:Enqueue(tweenStruct)
+	end
+
+	method void OnBeginPlay()
+		-- 트위너 초기화
+		self._T.tweenerStructPool = _DataStructLogic:GetQueue()
+		self._T.removeList = {}
+	end
+
+end

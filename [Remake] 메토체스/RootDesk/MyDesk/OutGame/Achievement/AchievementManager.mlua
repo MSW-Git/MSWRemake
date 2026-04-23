@@ -1,0 +1,905 @@
+@Component
+script AchievementManager extends Component
+
+	property table PlayerAchievementData = {}
+
+	property table PlayerAchieveCategoryData = {}
+
+	property boolean IsResetAchieveRank = false
+
+	@ExecSpace("ServerOnly")
+	method void Init_AchieveCategoryData()
+		------------------------------------------------------------------------------------
+		-- func: 업적 카테고리 DB가 없는 경우 self.PlayerAchievementData에 초기값 설정하는 함수 
+		------------------------------------------------------------------------------------
+		
+		-- 업적 카테고리 데이터 초기화  
+		local achieveCategory = _DataService:GetTable("AchievementCategory")
+		
+		for _, row in pairs(achieveCategory:GetAllRow()) do
+			local id = row:GetItem("CategoryID")
+			self.PlayerAchieveCategoryData[id] = {['count']=0,['state']= _AchievementStateEnum.InProgress,['date']=""}
+		end
+		
+		-------------------------------------------------------------------
+		
+		-- 업적 카테고리 데이터 세팅 후 처리 
+		self:OnDataLoadComplete()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Init_AchieveData()
+		-----------------------------------------------------------------------------------------
+		-- func: 업적 DB에 새로 추가된 업적의 ID가 없 경우 self.PlayerAchievementData에 초기값을 설정하는 함수입니다. 
+		-----------------------------------------------------------------------------------------
+		
+		--local dataSet = _DataService:GetTable("AchievementInfo")
+		
+		for i, data in pairs(_AchievementService.AchievementInfo) do
+		 
+			---@type AchievementInfo
+			local achievement = data
+			
+			--업적 상태 		
+			local stateType = _AchievementStateEnum.InProgress
+			--업적 카테고리가 '캐릭터 도전과제'인가?
+			if achievement.CategoryID == "8" then 
+				stateType = _AchievementStateEnum.Lock
+			end
+		
+			local stateTable = {}	
+			local dateTable = {}
+			for i=1, achievement.MaxStep do 
+				table.insert(stateTable,stateType)
+				table.insert(dateTable,"")
+			end
+		
+			self.PlayerAchievementData[achievement.ID] = { ['state']=stateTable,['count']=0,['date']=dateTable }
+		
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Init_NEW_AchieveData(string newAchieveID)
+		-----------------------------------------------------------------------------------------
+		-- func: 업적 DB가 없는 경우 self.PlayerAchievementData에 초기값을 설정하는 함수입니다. 
+		-----------------------------------------------------------------------------------------
+		
+		---@type AchievementInfo
+		local achievement = _AchievementService.AchievementInfo[newAchieveID] 
+			
+		--업적 상태
+		local stateType = _AchievementStateEnum.InProgress
+		--업적 카테고리가 '캐릭터 도전과제'인가?
+		if achievement.CategoryID == "8" then 
+			stateType = _AchievementStateEnum.Lock
+		end
+		
+		local stateTable = {}	
+		local dateTable = {}
+		for i=1, achievement.MaxStep do 
+			table.insert(stateTable,stateType)
+			table.insert(dateTable,"")
+		end
+		
+		self.PlayerAchievementData[achievement.ID] = { ['state']=stateTable,['count']=0,['date']=dateTable }
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Init_AchieveStack(string type)
+		-----------------------------------------------------------------------------
+		-- func: 1회 플레이가 끝나기 전에 완료해야하는 업적들의 진행도를 초기화합니다.  
+		-----------------------------------------------------------------------------
+		
+		-- 업적 id 
+		local achieveIDs 
+		
+		-- 라운드 마다 업적 조건을 초기화 하는 경우 
+		if type == "round" then 
+			achieveIDs = _AchievementService.RoundStackAchievements
+			
+		-- 모드 한판이 끝난 후에 업적 조건을 초기화 하는 경우 
+		else
+			 achieveIDs = _AchievementService.GameStackAchievements
+		end
+		
+		-- 업적 진행도 초기화 
+		for _,achieveID in pairs(achieveIDs) do 
+			
+			local achieveData = _AchievementService:GetAchievementInfo(achieveID)
+			
+			-- 이미 완료한 상태라면 초기화하지 않는다. 
+			local achieveState =  self.PlayerAchievementData[achieveID]['state'][achieveData.MaxStep] 
+			if achieveState == _AchievementStateEnum.Complete 
+				or achieveState == _AchievementStateEnum.RewardEarned then 
+				
+				continue
+		
+				
+			end
+			
+			self.PlayerAchievementData[achieveID]['count'] = 0; 
+		
+		--	self:SyncDataByID("playerAchievementData",achieveID,self.PlayerAchievementData[achieveID],self.Entity.PlayerComponent.UserId)
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Init_AchieveRank()
+		-------------------------------------------------------------
+		--func: 시즌 마다 초기화되는 랭크 티어 업적을 초기화합니다. 
+		-------------------------------------------------------------
+		
+		-- param 
+		local rankAchieveID = "AC006001" -- 초기화되는 업적 id
+		local CategoryID = "6" -- 랭크 모드
+		local achieveData =  _AchievementService:GetAchievementInfo(rankAchieveID)
+		
+		-- 데이터 저장&불러오기 진행 중 에러발생하지 않도록 pcall처리 
+		local success, result = pcall(function() 	
+		
+			-----------------------------------------------------------------
+			-- 업적 데이터 중 AC006001만 초기화 
+			local stateTable = {}	
+			local dateTable = {}
+			for i=1, achieveData.MaxStep do 
+				table.insert(stateTable, _AchievementStateEnum.InProgress)
+				table.insert(dateTable,"")
+			end
+			
+			self.PlayerAchievementData[rankAchieveID] = { ['state']=stateTable,['count']=0,['date']=dateTable }
+			
+			--	self:SyncDataByID("playerAchievementData",rankAchieveID,self.PlayerAchievementData[rankAchieveID],self.Entity.PlayerComponent.UserId)
+		
+			-----------------------------------------------------------------
+			-- 카테고리 완료 개수 초기화
+			
+			local completeCount = 0; --랭크 카테고리 업적 완료 개수 
+			for i, data in pairs(_AchievementService.AchievementInfo) do
+			 
+				---@type AchievementInfo
+				local achievement = data
+				
+				--업적 카테고리가 '랭크 모드'인가?
+				if achievement.CategoryID ~= CategoryID then
+					continue 
+				end
+			
+			
+				for curStep=1, achievement.MaxStep do 
+				
+					-- 업적을 완료한 상태라면 
+					local achieveState = self.PlayerAchievementData[achievement.ID]['state'][curStep] 
+					if achieveState == _AchievementStateEnum.Complete then 
+						completeCount += 1 
+					end
+				end
+			
+			end
+			
+			
+			self.PlayerAchieveCategoryData[CategoryID] = {['count']=completeCount,['state']= _AchievementStateEnum.InProgress,['date']=""}
+		--	self:SyncDataByID("PlayerAchieveCategoryData",CategoryID,self.PlayerAchieveCategoryData[CategoryID],self.Entity.PlayerComponent.UserId)
+		
+		end)
+		
+		-----------------------------------------------------------------
+		-- pcall 처리한 함수 내부에서 오류가 발생하였는가? 
+		
+		if not success then 
+			log_error("업적 - 랭크 관련 업적 초기화 실패")
+			return
+		end
+		
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Modify_AchieveStack(string achieveID, number value)
+		---------------------------------------------------------------
+		-- 업적 진행도를 stack처럼 사용하는 경우 // 게임 후 초기화
+		-- 한 게임 내에 조건(count)보다 덜 해야 하는 경우
+		-- 게임이 끝났을 때 불리도록 ..
+		---------------------------------------------------------------
+		
+		local data = _AchievementService:GetAchievementInfo(achieveID)
+		local playerAchieveData = self.PlayerAchievementData[achieveID]
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		if data == nil then
+			log("ID: ", achieveID, "업적데이터가 불러와지지 않았습니다.")
+		end
+		
+		-- 이미 완료한 업적은 갱신하지 않는다. 
+		if playerAchieveData['state'][data.MaxStep] == _AchievementStateEnum.RewardEarned -- 보상 획득
+			or playerAchieveData['state'][data.MaxStep] == _AchievementStateEnum.Complete -- 보상 수령 완료 
+			or playerAchieveData['state'][data.MaxStep] == _AchievementStateEnum.Lock -- 잠금 상태
+		then 
+			return
+		end
+		
+		-------------------------------------------------------------------
+		-- 업적 진행 횟수 변경 
+			--log(achieveID,"의 현재 카운트 상태: ", bef)
+		--local aft = bef + value
+		--self.PlayerAchievementData[achieveID]['count'] = math.floor(aft)
+			--log(achieveID,"의 게임 후 카운트 상태: ", math.floor(aft))
+		
+		local befCount = playerAchieveData['count'] -- 진행도 변경 이전 값 
+		local aftCount -- 진행도 변경 값 
+		
+		aftCount = befCount + value
+		
+		if aftCount ~= 0 then aftCount+=1 end -- 임시코드 :: 0이 아니면 1을 더함
+		
+		
+		playerAchieveData['count'] = math.floor(math.min(data.Count[data.MaxStep],aftCount)) --진행도는 업적 단계의 최대 값을 넘을 수 없다. 
+			
+		if playerAchieveData['count'] <= data.Count[data.MaxStep] then
+			
+			playerAchieveData['state'][data.MaxStep] = _AchievementStateEnum.RewardEarned -- 보상 획득 상태로 변경 
+			playerAchieveData['date'][data.MaxStep] = (DateTime.UtcNow):ToFormattedString("yyyy/MM/dd") -- 업적 날짜 기록
+				
+			if isvalid(userId) then -- 서버 강종 시 예외처리 
+				_UI_AchievementService:EnableRedDotByID(data.CategoryID,true,userId)	
+				_UI_AchievementService:EnableAchieveBtnRedDot(true,userId)
+				_UI_AchievementService:EnableAllRewardButton(true,userId)
+				_UI_AchievementService:RequestRefreshAchievementData(userId)
+				_UI_AchievementPopup:InsertPopUpQueue(achieveID,data.MaxStep,1, userId)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Modify_AchievementData(string achievementID, integer value)
+		-------------------------------------------------------------------
+		--[func] 업적 진행 횟수를 변경하는 함수입니다. 
+		-------------------------------------------------------------------
+		
+		--param
+		local data = _AchievementService:GetAchievementInfo(achievementID)
+		local playerAchieveData = self.PlayerAchievementData[achievementID]
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		
+		--업적ID 유효성 검사 
+		
+		if not isvalid(data) then 
+			log_error("achievement id is nill")
+			return 
+		end
+		
+		--업적DB 유효성 검사 
+		if not isvalid(playerAchieveData) then 
+			log_error("achievement data is nill")
+			return 
+		end
+		
+		--업적 진행도 증가값 유효성 검사 
+		if not isvalid(value) then 
+			return
+		end
+		
+		-- 이미 완료된 업적이라면 더 이상 값을 갱신하지 않는다. 
+		if playerAchieveData['state'][data.MaxStep] == _AchievementStateEnum.RewardEarned -- 보상 획득
+			or playerAchieveData['state'][data.MaxStep] == _AchievementStateEnum.Complete -- 보상 수령 완료 
+			or playerAchieveData['state'][data.MaxStep] == _AchievementStateEnum.Lock -- 잠금 상태
+		then 
+			return
+		end
+		
+		
+		-------------------------------------------------------------------
+		-- 업적 진행 횟수 변경 
+		
+		local befCount = playerAchieveData['count'] -- 진행도 변경 이전 값 
+		local aftCount -- 진행도 변경 값 
+		if data.IsCumulative == "TRUE" then 
+			aftCount = befCount + value
+		else 
+			aftCount = math.max(befCount,value)
+		end
+		
+		playerAchieveData['count'] = math.floor(math.min(data.Count[data.MaxStep],aftCount)) --진행도는 업적 단계의 최대 값을 넘을 수 없다. 
+		--log("보상 받은 후 칭호 카운트(서버): ", self.PlayerAchievementData["AC001007"]['count'])
+		
+		for i = data.MaxStep, 1 ,-1 do 
+			
+			local state = playerAchieveData['state'][i]
+			
+			-- 완료한 업적이거나 잠금 상태 업적인 경우는 제외 
+			if state ~= _AchievementStateEnum.InProgress then 
+				continue
+			end		
+		
+			-- 이번 addCount로 다음 단계까지 완료했는가? 
+			if aftCount < tonumber(data.Count[i]) then 
+				continue
+			end
+		
+				
+			playerAchieveData['state'][i] = _AchievementStateEnum.RewardEarned -- 보상 획득 상태로 변경 
+			playerAchieveData['date'][i] = (DateTime.UtcNow):ToFormattedString("yyyy/MM/dd") -- 업적 날짜 기록
+				
+			if isvalid(userId) then -- 서버 강종 시 예외처리 
+				_UI_AchievementService:EnableRedDotByID(data.CategoryID,true,userId)	
+				_UI_AchievementService:EnableAchieveBtnRedDot(true,userId)
+				_UI_AchievementService:EnableAllRewardButton(true,userId)
+				_UI_AchievementService:RequestRefreshAchievementData(userId)
+				_UI_AchievementPopup:InsertPopUpQueue(achievementID,i,1, userId)
+			end
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Modify_AchieveCategoryData(string categoryID, integer value)
+		-----------------------------------------------------------
+		-- func: 업적 카테고리 완료 개수를 변경하는 함수 
+		-----------------------------------------------------------
+		
+		-- parameters
+		
+		local userId = self.Entity.PlayerComponent.UserId
+		local completeNum = _AchievementService.CategoryTotalNum[categoryID]
+		
+		-----------------------------------------------------------
+		-- 업적 카테고리 완료 개수 증가 
+		
+		if not isvalid(self.PlayerAchieveCategoryData[categoryID]['count']) then 
+			self.PlayerAchieveCategoryData[categoryID]['count'] = value 
+		else
+			self.PlayerAchieveCategoryData[categoryID]['count'] += value 	
+		end
+		
+		
+		-----------------------------------------------------------
+		-- 카테고리 업적 총 개수 보다 완료한 업적 수가 적을 경우 보상을 획득할 수 없다. 
+		
+		if completeNum <= self.PlayerAchieveCategoryData[categoryID]['count'] then 
+			self.PlayerAchieveCategoryData[categoryID]['state'] = _AchievementStateEnum.RewardEarned
+		end
+		
+		-----------------------------------------------------------
+		-- 업적 카테고리 완료 개수 증가 
+		self:SaveData("PlayerAchieveCategoryData",self.PlayerAchieveCategoryData,categoryID)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EarnReward_Achieve(string achievementID, integer befStep)
+		-----------------------------------------------------------
+		-- func: 업적 보상을 획득하는 함수 입니다 
+		-----------------------------------------------------------
+		local userID = self.Entity.OwnerId
+		-----------------------------------------------------------
+		-- 유효성 검사 1) 존재하는 업적 id인가?
+		if not isvalid(self.PlayerAchievementData[achievementID]) then 
+			log_error("존재하지 않는 업적 id입니다.")
+			return
+		end
+		
+		-- 유효성 검사 2) 보상 획득 단계인가?
+		
+		if _AchievementStateEnum.RewardEarned ~= self.PlayerAchievementData[achievementID]['state'][befStep] then 
+			log_error("업적 아이디: ",achievementID,"요청 단계:",befStep,"단계 상태 :",self.PlayerAchievementData[achievementID]['state'][befStep])
+			log_error("업적 보상 획득 - 잘못된 접근입니다",achievementID,befStep,self.PlayerAchievementData[achievementID]['state'][befStep]," / ",self.PlayerAchievementData[achievementID]['state'])
+		end
+		
+		-----------------------------------------------------------
+		-- params
+		
+		local achieveData = _AchievementService:GetAchievementInfo(achievementID) -- 업적 데이터셋 
+		local playerAchievementData = self.PlayerAchievementData[achievementID] -- 플레이어 업적 데이터 
+		local categoryID = _AchievementService:GetAchievementInfo(achievementID).CategoryID -- 업적 카테고리 id 
+		local userId = self.Entity.PlayerComponent.UserId -- userId 
+		
+		-----------------------------------------------------------
+		-- 업적 데이터 업데이트
+		
+		-- 업적 상태 변경 
+		playerAchievementData['state'][befStep] = _AchievementStateEnum.Complete
+		self:SaveData("playerAchievementData",self.PlayerAchievementData,achievementID)
+		
+		
+		-- 업적 카테고리 완료 개수 증가 
+		self:Modify_AchieveCategoryData(categoryID,1)
+		
+		-----------------------------------------------------------
+		-- 업적 보상 획득 
+		
+		---@type table<string, integer>
+		local allRewardTable = {}
+		
+		local givenReward = false
+		for key, value in pairs (achieveData.RewardTable) do 
+		
+			if value[1] ~= tostring(befStep) then 
+				continue
+			end
+			
+			local rewardId = value[2] 
+			if isvalid(rewardId) then 
+				givenReward = true 
+			end
+			
+			local rewardAmount = value[3]
+			
+			allRewardTable[rewardId] = rewardAmount
+			
+			local keyHead = string.sub(rewardId,1,2)
+			local characterKeyHead = string.sub(rewardId,1,1)
+			if keyHead == "Sy" then -- 시럽 
+				self.Entity.PlayerDataComponent:AddSyrup("Syrup", rewardAmount, "Achievement")
+			elseif	keyHead == "CO" then -- 코치
+				self.Entity.CoachManager:ModifyPlayerOwnedCoachesID(rewardId,1,"Achievement")			
+			elseif keyHead == "MC" then 
+				rewardId = "CO"..string.sub(rewardId,3,string.len(rewardId))
+				self.Entity.CoachManager:ModifyPlayerOwnedCoachesID(rewardId,2,"Achievement")			
+				
+			elseif characterKeyHead == "C" then 
+				
+				-- 변동된 캐릭터 아이디를 받아옵니다 achieveData.ConditionType
+				---@type table<string, integer>
+				local updateChar = {}
+				updateChar[achieveData.ConditionType[1]] = 4
+				
+				self.Entity.PlayerCollectionDataComponent:UpdateCharacterCollectionData(updateChar) --수정필요합니다. 0219 (수정완료 시 주석 지울 것.)
+			elseif keyHead == "NT" then -- 네임태그
+				self.Entity.TitleManager:GetTitle(rewardId, true)
+			elseif keyHead == "KW" then -- 키워드
+				local keywordKeyHead = string.sub(rewardId,1,3)
+				if keywordKeyHead == "KWF" then -- Front
+					self.Entity.TitleManager:GetTitle(rewardId, true)
+				elseif keywordKeyHead == "KWB" then -- Back
+					self.Entity.TitleManager:GetTitle(rewardId, true)
+				end
+				
+			end
+			
+		--	log("업적 보상 획득 완료",value[2])
+		--	log(self.Entity.PlayerDataComponent.Syrup, value[1],befStep)
+		
+		end
+		
+		------------------------------------------------------------------------------------
+		--[[-- 획득 성공 토스트 메세지 출력 
+		if givenReward then 
+			_UIToast:ShowMessageByLocalizingKey("RewardEarned", userID)
+		end]]
+		
+		-- UI로 보상 리스트 출력
+		_UI_AchievementService:EnableRewardPopup(allRewardTable, self.Entity.PlayerComponent.UserId)
+		
+		-------------------------------------------------------------------------------------
+		-- 레드닷
+		_UI_AchievementService:EnableRedDot(categoryID,self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EarnAllReward(SyncTable<string, integer> achievement)
+		-----------------------------------------------------------
+		-- func: 업적의 보상을 '전체 받기' 하는 함수입니다.
+		-----------
+		------------------------------------------------
+		local userID = self.Entity.OwnerId
+		-----------------------------------------------------------
+		
+		--[[ table의 형태
+		achievement = [achievementID][betStep]
+		]]
+		
+		-----------------------------------------------------------
+		-- 모든 보상을 저장합니다. <string = 보상ID, integer = 보상의 양>
+		---@type table<string, integer>
+		local allRewardTable = {}
+		-----------------------------------------------------------
+		---@type table<string, integer>
+		local clearedAchievementTable= {}
+		
+		for id, step in pairs(achievement) do
+			
+			-- 유효성 검사 1) 존재하는 업적 id인가?
+			if not isvalid(self.PlayerAchievementData[id]) then 
+				log_error("존재하지 않는 업적 id입니다.")
+				return
+			end
+			
+			-- 클리어 된 모든 단계를 한 번에 받을 수 있도록
+			for stepcount=1, step do
+			
+				-- 유효성 검사 2) 보상 획득 단계인가?
+				if _AchievementStateEnum.RewardEarned ~= self.PlayerAchievementData[id]['state'][stepcount] then 
+					log("이미 보상을 받은 업적 / 아이디: ",id,"요청 단계: ",stepcount,"단계 상태 :",self.PlayerAchievementData[id]['state'][stepcount])
+					--log_error("업적 보상 획득 - 잘못된 접근입니다",id,stepcount,self.PlayerAchievementData[id]['state'][stepcount]," / ",self.PlayerAchievementData[id]['state'])
+				continue
+				end
+		
+			
+				-----------------------------------------------------------
+				-- params
+				
+				local achieveData = _AchievementService:GetAchievementInfo(id) -- 업적 데이터셋 
+				local playerAchievementData = self.PlayerAchievementData[id] -- 플레이어 업적 데이터 
+				local categoryID = _AchievementService:GetAchievementInfo(id).CategoryID -- 업적 카테고리 id 
+				local userId = self.Entity.PlayerComponent.UserId -- userId 
+				
+				-----------------------------------------------------------
+				-- 업적 데이터 업데이트
+				
+				-- 업적 상태 변경 
+				playerAchievementData['state'][stepcount] = _AchievementStateEnum.Complete
+				self:SaveData("playerAchievementData",self.PlayerAchievementData,id)
+				
+				--로그용 테이블에 적재
+				clearedAchievementTable[id] = stepcount
+				
+				-- 업적 카테고리 완료 개수 증가 
+				self:Modify_AchieveCategoryData(categoryID,1)
+				
+				-- 레드닷
+				_UI_AchievementService:EnableRedDot(categoryID, self.Entity.PlayerComponent.UserId)
+				
+				-----------------------------------------------------------
+				-- 업적 보상 획득 
+				
+				local givenReward = false
+				for key, value in pairs (achieveData.RewardTable) do
+				
+					if value[1] ~= tostring(stepcount) then
+						continue
+					end
+				
+					local rewardId = value[2]
+					if isvalid(rewardId) then
+						givenReward = true 
+					end
+					
+					local rewardAmount = value[3]
+					
+					if allRewardTable[rewardId] == nil then allRewardTable[rewardId] = rewardAmount
+					else allRewardTable[rewardId] += rewardAmount end
+					
+			
+				end
+				
+			end
+			
+		end -- end FOR (업적 테이블만큼 반복)
+		
+		-- UI로 보상 리스트 출력
+		_UI_AchievementService:EnableRewardPopup(allRewardTable, self.Entity.PlayerComponent.UserId)
+		
+		
+		-- 보상 받기 처리 for 시작
+		for rID, amount in pairs(allRewardTable) do
+			
+			local keyHead = string.sub(rID,1,2)
+				local characterKeyHead = string.sub(rID,1,1)
+				if keyHead == "Sy" then -- 시럽 
+					self.Entity.PlayerDataComponent:AddSyrup("Syrup", amount, "Achievement")
+				elseif	keyHead == "CO" then -- 코치
+					self.Entity.CoachManager:ModifyPlayerOwnedCoachesID(rID,1,"Achievement")			
+				elseif keyHead == "MC" then 
+					rID = "CO"..string.sub(rID,3,string.len(rID))
+					self.Entity.CoachManager:ModifyPlayerOwnedCoachesID(rID,2,"Achievement")
+					
+				elseif characterKeyHead == "C" then 
+					
+					-- 변동된 캐릭터 아이디를 받아옵니다 achieveData.ConditionType
+					---@type table<string, integer>
+					local updateChar = {}
+					updateChar[rID] = 4
+		
+					self.Entity.PlayerCollectionDataComponent:UpdateCharacterCollectionData(updateChar) --수정필요합니다. 0219 (수정완료 시 주석 지울 것.)
+				
+				elseif keyHead == "NT" then -- 네임태그
+					self.Entity.TitleManager:GetTitle(rID, true)
+				elseif keyHead == "KW" then -- 키워드
+					local keywordKeyHead = string.sub(rID,1,3)
+					if keywordKeyHead == "KWF" then -- Front
+						self.Entity.TitleManager:GetTitle(rID, true)
+					elseif keywordKeyHead == "KWB" then -- Back
+						self.Entity.TitleManager:GetTitle(rID, true)
+					end
+					
+					-- 칭호 획득 업적을 즉시 업데이트 합니다.
+					self:SaveData("playerAchievementData",self.PlayerAchievementData,"AC001007")
+				end
+					
+		end -- 보상 받기 처리 for 종료
+		
+		
+		--_UI_AchievementService:RequestRefreshAchievementData(self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EarnReward_All_inCategory(string categoryID)
+		----------------------------------------------------------------
+		-- func: 선택한 카테고리의 하위 업적의 보상 일괄 획득 처리
+		----------------------------------------------------------------
+		
+		for achieveID, data in pairs(_AchievementService.AchievementInfo) do 
+			
+			---@type AchievementInfo
+			local achieveInfo = data
+			
+			-- 카테고리가 다른가? 
+			if categoryID ~= achieveInfo.CategoryID then 
+				continue
+			end
+			
+			-- 보상
+			
+			for step=1, achieveInfo.MaxStep do 
+				
+				-- 보상 획득 상태인가?
+						if self.PlayerAchievementData[achieveID] == nil then continue end
+				if self.PlayerAchievementData[achieveID]['state'][step] ~= _AchievementStateEnum.RewardEarned then
+					continue			
+				end
+				
+				self:EarnReward_Achieve(achieveID,step)
+				
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EarnReward_AllAchieve()
+		----------------------------------------------------------------
+		-- func: 모든 카테고리 내 완료된 업적 전체 받기
+		----------------------------------------------------------------
+		
+		local completeAchieves = {}
+		
+		for achieveID, data in pairs(_AchievementService.AchievementInfo) do 
+			
+			---@type AchievementInfo
+			local achieveInfo = data
+			
+			-- 보상
+			for step=1, achieveInfo.MaxStep do 
+				-- 보상 획득 상태인가?
+				if self.PlayerAchievementData[achieveID]['state'][step] ~= _AchievementStateEnum.RewardEarned then
+					continue
+				elseif self.PlayerAchievementData[achieveID]['state'][step] == _AchievementStateEnum.Complete then
+					
+				end
+				
+				completeAchieves[achieveID] = step
+				
+			end
+		end
+		
+		-- 예외처리 필요할듯 02.20 (처리 완료 되면 주석 지우기)
+		self:EarnAllReward(completeAchieves)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EarnReward_AchieveCategory(string categoryID)
+		-------------------------------------------------------------------
+		-- func: 업적 카테고리 보상을 획득하는 함수입니다. 
+		-------------------------------------------------------------------
+		
+		--유효성 검사: 존재하는 업적 카테고리인가?
+		local data = _DataService:GetTable("AchievementCategory"):FindRow("CategoryID",categoryID)
+		
+		if not isvalid(data) then 
+			log_error("존재하지 않는 업적 카테고리 id입니다.")
+			return
+		end
+		
+		--유효성 검사: 보상 획득 단계인가?
+		
+		if _AchievementStateEnum.RewardEarned ~= self.PlayerAchieveCategoryData[categoryID]['state'] then 
+			log_error("업적 카테고리 보상 획득 - 잘못된 접근입니다",categoryID)
+		end
+		
+		-------------------------------------------------------------------
+		-- 업적 조건 만족했는가? 
+		local totalAchieveNum = _AchievementService.CategoryTotalNum[categoryID]
+		
+		if totalAchieveNum > self.PlayerAchieveCategoryData[categoryID]['count'] then --카테고리 업적 총 개수 보다 완료한 업적 수가 적을 경우 보상을 획득할 수 없다. 
+			return
+		end
+		
+		
+		-------------------------------------------------------------------
+		-- 업적 상태 변경: 보상 획득 -> 완료  
+		
+		self.PlayerAchieveCategoryData[categoryID]['state'] = _AchievementStateEnum.Complete
+		self.PlayerAchieveCategoryData[categoryID]['date'] = (DateTime.UtcNow):ToFormattedString("yyyy/MM/dd") 
+		
+		self:SaveData("PlayerAchieveCategoryData",self.PlayerAchieveCategoryData, categoryID)
+		
+		-------------------------------------------------------------------
+		-- 업적 보상 획득 
+		
+		---@type table<string,integer>
+		local allRewardTable = {}
+		
+		local rewardID = data:GetItem("RewardID")
+		local keyHead = string.sub(rewardID,1,2) 
+		if keyHead == "Sy" then -- 시럽 
+			local rewardAmount = tonumber(data:GetItem("RewardCount"))
+			self.Entity.PlayerDataComponent:AddSyrup("Syrup", rewardAmount, "Achievement")
+			
+			allRewardTable[rewardID] = rewardAmount
+		else
+			log_error("입력된 보상이 없습니다")
+		end		
+		
+		-- UI로 보상 리스트 출력
+		_UI_AchievementService:EnableRewardPopup(allRewardTable, self.Entity.PlayerComponent.UserId)
+		
+		-- 레드닷 
+		_UI_AchievementService:EnableRedDot(categoryID,self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void UnLockCharAchievement(string charID)
+		-----------------------------------------------------------------
+		-- func: charId에 해당하는 캐릭터 도전과제를 해금하는 함수 
+		-----------------------------------------------------------------
+		
+		--[[if _DictionaryDataManager.CharDataList[charID] == nil then
+			log_error("캐릭터 아이디가 존재하지 않습니다 - ", charID)
+		end]]
+		
+		if charID == "" then return end
+		
+		--log("캐릭터 도전과제 언락 :: ",charID)
+		
+		local achievementList = _DataService:GetTable("AchievementInfo")
+		local achievementID = ""
+		
+			for i=1, achievementList:GetRowCount() do
+				
+				local condition = achievementList:GetCell(i, "ConditionType")
+				
+				if _UtilLogic:Split(condition,";")[1] == charID then
+					achievementID = achievementList:GetCell(i, "ID")
+				end
+			end
+		
+		
+		--[[if  _UtilLogic:IsNilorEmptyString(achievementID) then
+			log_error("유효하지 않은 '캐릭터 도전과제' 업적입니다 - ",charID)
+			return
+		end]]
+		
+		-----------------------------------------------------------------
+		-- 잠금상태 해제 
+		self.PlayerAchievementData[achievementID]['state'][1] = _AchievementStateEnum.InProgress 
+		
+		-- 업적 데이터 저장
+		self:SaveData("playerAchievementData",self.PlayerAchievementData,achievementID)
+	end
+
+	@ExecSpace("Server")
+	method void OnDataLoadComplete()
+		--------------------------------------------------------------------
+		-- func: (서버에서) DB데이터 불러오기가 완료 된 이후 필요한 처리를 합니다.  
+		--------------------------------------------------------------------
+		
+		-- 새로운 시즌이 되었을 때 티어 관련 업적 초기화 
+		if self.IsResetAchieveRank then 
+			self:Init_AchieveRank()
+		end
+		------------------------------------------------
+		
+		-- 새로운 업적이 추가됐을 때 새 업적 초기화
+		for achieveID, data in pairs(_AchievementService.AchievementInfo) do 
+			if self.PlayerAchievementData[achieveID] == nil then
+				log("새 업적 아이디: ",achieveID)
+				self:Init_NEW_AchieveData(achieveID)
+			end
+		end
+		------------------------------------------------
+		-- 존재하던 업적 ID가 없어졌을 때, DB에서 지우기
+		for achievementID,playerData in pairs(self.PlayerAchievementData) do 
+			local achieveData = _AchievementService:GetAchievementInfo(achievementID)
+			if not isvalid(achieveData) then 
+				log("제거된 업적 아이디:",achievementID)
+				self.PlayerAchievementData[achievementID] = nil
+			end
+		end
+		
+		-- 데이터 sync 
+		self:SyncData_All(self.PlayerAchievementData,self.PlayerAchieveCategoryData,self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void SaveData(string type, table data, string id)
+		-------------------------------------------------------------------
+		-- func: 변경된 업적관련 플레이어 DB 저장 
+		-------------------------------------------------------------------
+		
+		local userID = self.Entity.OwnerId
+		-- 플레이어 업적 DB 
+		if type == "playerAchievementData" then
+			_PlayerDataLogic:SetPlayerAchievementData(self.Entity)
+		
+		-- 플레이어 업적 카테고리 DB
+		elseif type == "PlayerAchieveCategoryData" then
+			_PlayerDataLogic:SetPlayerAchievementCategoryData(self.Entity)
+		
+		end
+		-------------------------------------------------------------------
+		-- 클라로 싱크 요청 
+		
+		self:SyncData_ID(type, id, data[id], userID)
+	end
+
+	@ExecSpace("Client")
+	method void SyncData_All(table achieveData, table categoryData)
+		--------------------------------------------------------------------
+		-- func: (클라에서) DB데이터 저장이 완료 된 이후 필요한 처리를 합니다.  
+		--------------------------------------------------------------------
+		
+		-- 데이터 sync 
+		self.PlayerAchievementData = achieveData
+		self.PlayerAchieveCategoryData = categoryData
+		
+		-- 레드닷 
+		local func = function()
+			
+			local dataSet = _DataService:GetTable("AchievementCategory")
+			for _,row in pairs(dataSet:GetAllRow()) do 
+				local categoryID = row:GetItem("CategoryID")
+				_UI_AchievementService:EnableRedDot(categoryID)
+		
+			end
+		
+		end
+		
+		_TimerService:SetTimerOnce(func,1.5)
+	end
+
+	@ExecSpace("Client")
+	method void SyncData_ID(string type, string id, table data)
+		-------------------------------------------------------------------
+		-- func: 서버에서 전달받은 업적관련 플레이어 DB를 Client로 sync 
+		-------------------------------------------------------------------
+		
+		-- 플레이어 업적 DB 
+		if type == "playerAchievementData" then 
+			self.PlayerAchievementData[id] = data 
+			-- 업적 UI가 켜져있다면
+			if _UI_AchievementService.AchievementGroup.Enable then
+				_UI_AchievementService:RequestRefreshAchievementData() --업적 리스트 UI 갱신 
+		
+			end
+			
+		-- 플레이어 업적 카테고리 DB
+		elseif type == "PlayerAchieveCategoryData" then 
+			
+			self.PlayerAchieveCategoryData[id] = data
+		
+				
+			-- 업적 UI가 켜져있다면
+			if _UI_AchievementService.AchievementGroup.Enable then
+				
+				_UI_AchievementService:RequestUpdateCategory(id) --업적 리스트 UI 갱신 
+				
+				_UI_AchievementService:RequestUpdateTotalAchieveInfo() --전체 업적 진행도 UI 갱신
+			end
+		
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		_AchievementService:SaveAchieveDB(self.Entity)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleInGameStart(InGameStart event)
+		-- 게임 시작 시 stack처럼 사용한 일부 업적의 데이터를 초기화합니다. 
+		self:Init_AchieveStack("all")
+	end
+
+end

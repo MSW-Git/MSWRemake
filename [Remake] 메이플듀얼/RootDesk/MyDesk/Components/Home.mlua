@@ -1,0 +1,719 @@
+@Component
+script Home extends Map
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property table channel = nil
+
+	property boolean isEndMatch = false
+
+	property table matchUserInfos = {}
+
+	method void OnBeginPlay()
+		
+	end
+
+	method table GetProperties()
+		local propertyTable = {
+			channel = self.channel,
+		}
+		
+		_Table:Assign(__base:GetProperties(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		__base:OnSyncProperties()
+		
+		if _UtilLogic:IsNilorEmptyString(self.mode) then
+			return
+		end
+		
+		self.uiManager:SpawnAndSetModule("GalleryModule", self.Entity)
+		self.uiManager:SpawnAndSetModule("CardModule", self.Entity)
+		self.uiManager:SpawnAndSetModule("ShopModule", self.Entity)
+		self.uiManager:SpawnAndSetModule("CardPackModule", self.Entity)
+		self.uiManager:SpawnAndSetModule("RoomChannelModule", self.Entity)
+		
+		self.uiManager:SpawnAndSetModule("GuideModule", self.Entity)
+		
+		if self.mode == "Lobby" then
+			self.uiManager:SpawnAndSetModule("LobbyModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("RankedMatchModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("RankingModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("NoticeModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("RewardModule", self.Entity)
+			self.uiManager:SpawnAndSetModule("EventModule", self.Entity)
+			self.uiManager.LocationModule:SetLobby()
+			
+		elseif self.mode == "RankedMatch" then
+			if not _UserService.LocalPlayer.Character.isMatchUser then
+				self.uiManager:SpawnAndSetModule("DuelModule", self.Entity)
+				
+				self.uiManager:SpawnAndSetModule("NoticeModule", self.Entity)
+				self.uiManager:SpawnAndSetModule("RewardModule", self.Entity)
+				self.uiManager:SpawnAndSetModule("EventModule", self.Entity)
+			end
+			self.uiManager:SpawnAndSetModule("PlayerModule", self.Entity)
+			self.uiManager.LocationModule:SetRankedMatch()
+		end
+		
+		self.input = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Input"), "Input", Vector3.zero, self.Entity).Input
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateChannels()
+		if not Environment:IsPublishedPlay() then
+			self.channel = {id = 1, key = _WorldInstanceService.WorldInstanceId}
+			self.isWaiting = false
+			return
+		end
+		
+		_WorldInstanceService:GetWorldInstanceInfoPagesAsync(function(result, pages)
+			if not result then
+				self.channel = {id = 1, key = _WorldInstanceService.WorldInstanceId}
+				self.isWaiting = false
+				return
+			end
+			
+			local keyTable = {}
+			while true do
+				local datas = pages:GetCurrentPageDatas()
+				
+				for _, data in pairs(datas) do
+					keyTable[data.Id] = true
+				end
+				
+				if pages.IsLastPage == true then
+					break
+				end
+				
+				pages:MoveToNextPageAndWait()
+			end
+			
+			local resultCode, memory = _WorldInstanceService:GetSharedMemory("Channel")
+			if resultCode ~= SharedMemoryResultCode.OK then
+				log(resultCode)
+				return
+			end
+			
+			memory:GetVariableAsync("channelArray", function(result)
+				local oldChannelArray
+				if result.Code == SharedMemoryResultCode.OK then
+					oldChannelArray = _MSON:FastStringToAny(result.Info.Value)
+				elseif result.Code == SharedMemoryResultCode.NotFound then
+					oldChannelArray = {}
+				else
+					log(result.Code)
+					return
+				end
+				
+				local channelArray = {}
+				for _, channel in ipairs(oldChannelArray) do
+					if keyTable[channel.key] then
+						table.insert(channelArray, channel)
+					end
+				end
+				
+				local id = 1
+				table.sort(channelArray, function(left, right) return left.id < right.id end)
+				while channelArray[id] ~= nil and channelArray[id].id == id do
+					id += 1
+				end
+				
+				self.channel = {id = id, key = _WorldInstanceService.WorldInstanceId}
+				table.insert(channelArray, id, self.channel)
+				if result.Code == SharedMemoryResultCode.OK then
+					local keyInfo = SharedVariableKeyInfo("channelArray", result.Info.ETag)
+					memory:UpdateVariableAsync(keyInfo, _MSON:FastAnyToString(channelArray), function(result)
+						if result.Code == SharedMemoryResultCode.OK then
+							self.isWaiting = false
+						elseif result.Code == SharedMemoryResultCode.PreconditionFailed then
+							self:UpdateChannels()
+						end
+					end)
+				elseif result.Code == SharedMemoryResultCode.NotFound then
+					memory:SetVariableAsync("channelArray", _MSON:FastAnyToString(channelArray), function(result) end)
+					
+					self.isWaiting = false
+				end
+			end)
+		end)
+	end
+
+	method void EnterChannelServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnterChannel(Character character, table channel)
+		if not isvalid(character) or _Table:IsEmpty(channel) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		_TeleportService:WarpUserToWorldInstanceAsync(character.Entity.Name, channel.key, "", function(result) end)
+	end
+
+	method void GetChannelsServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetChannels()
+		if not _Server:IsRequesting() then
+			return
+		end
+		
+		if not Environment:IsPublishedPlay() then
+			return
+		end
+		
+		local senderUserId = _Server.sender.Entity.Name
+		
+		_Server.sender = nil
+		
+		_WorldInstanceService:GetWorldInstanceInfoPagesAsync(function(result, pages)
+			if not result then
+				return
+			end
+			
+			local dataTable = {}
+			while true do
+				local datas = pages:GetCurrentPageDatas()
+				
+				for _, data in pairs(datas) do
+					dataTable[data.Id] = data
+				end
+				
+				if pages.IsLastPage == true then
+					break
+				end
+				
+				pages:MoveToNextPageAndWait()
+			end
+		
+			local _, memory = _WorldInstanceService:GetSharedMemory("Channel")
+			memory:GetVariableAsync("channelArray", function(result)
+				local oldChannelArray
+				if result.Code == SharedMemoryResultCode.OK then
+					oldChannelArray = _MSON:FastStringToAny(result.Info.Value)
+				elseif result.Code == SharedMemoryResultCode.NotFound then
+					oldChannelArray = {}
+				else
+					log(result.Code)
+					return
+				end
+				
+				local channelArray = {}
+				for _, channel in ipairs(oldChannelArray) do
+					local data = dataTable[channel.key]
+					if data ~= nil then
+						channel.currentUserCount = data.CurrentUserCount
+						channel.maxUserCount = data.MaxUserCount
+						table.insert(channelArray, channel)
+					end
+				end
+				
+				self:GetChannelsInOwner(channelArray, senderUserId)
+			end)
+		end)
+	end
+
+	@ExecSpace("Client")
+	method void GetChannelsInOwner(table channelArray)
+		self.Entity:SendEvent(_Event:GetChannels(channelArray))
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetRooms(string mode)
+		local roomArray = {}
+		for key, instanceRoom in pairs(_RoomService.InstanceRooms) do
+			local split = _UtilLogic:Split(key, "_")
+			if split[1] == mode then
+				table.insert(roomArray, {key = key, mode = split[1], theme = split[2], id = tonumber(split[3]), channel = self.channel, userCount = instanceRoom:GetUserCount()})
+			end
+		end
+		table.sort(roomArray, function(left, right) return left.id < right.id end)
+		
+		return roomArray
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GetNewRoomId(string mode)
+		local roomArray = self:GetRooms(mode)
+		local id = 1
+		while roomArray[id] ~= nil and roomArray[id].id == id do
+			id += 1
+		end
+		
+		return id
+	end
+
+	method void CreateFriendlyMatchRoomServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CreateFriendlyMatchRoom(Character character)
+		if not isvalid(character) then
+			return
+		end
+		
+		if character.isMatching then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local mode = "FriendlyMatch"
+		local theme = _Table:GetRandomElement({"Perion", "Ellinia", "Henesys", "KerningCity", "Nautilus", "Orbis", "Ludibrium"})
+		local id = self:GetNewRoomId("FriendlyMatch")
+		local key = string.format("%s_%s_%d", mode, theme, id)
+		local room = {key = key, mode = mode, theme = theme, id = id, channel = self.channel}
+		
+		_RoomService:GetOrCreateInstanceRoom(key)
+		_RoomService:MoveUserToInstanceRoom(key, character.Entity.Name)
+		_RoomService:RequestSendEventToRoomAndWait(_Event:SetRoom(room), key)
+	end
+
+	method void EnterFriendlyMatchRoomServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EnterFriendlyMatchRoom(Character character, table room)
+		if not isvalid(character) or _Table:IsEmpty(room) then
+			return
+		end
+		
+		if character.isMatching then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local key = room.key
+		if _RoomService.InstanceRooms[key] == nil then
+			return
+		end
+		
+		_RoomService:GetOrCreateInstanceRoom(key)
+		_RoomService:MoveUserToInstanceRoom(key, character.Entity.Name)
+	end
+
+	method void BeginPracticeServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BeginPractice(Character character)
+		if not isvalid(character) then
+			return
+		end
+		
+		if character.isMatching then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local difficulty
+		if character.rankPoint >= 1300 then
+			difficulty = "Hard"
+		elseif character.rankPoint >= 900 then
+			difficulty = "Normal"
+		else
+			difficulty = "Easy"
+		end
+		
+		local mode = "Practice"
+		local themeArray = {"Perion", "Ellinia", "Henesys", "KerningCity", "Nautilus"}
+		local index = _UtilLogic:RandomIntegerRange(1, #themeArray)
+		local theme = themeArray[index]
+		local id = self:GetNewRoomId("Practice")
+		local key = string.format("%s_%s_%d", mode, theme, id)
+		local room = {key = key, mode = mode, theme = theme, id = id, channel = self.channel, difficulty = difficulty}
+		
+		_RoomService:GetOrCreateInstanceRoom(key)
+		_RoomService:MoveUserToInstanceRoom(key, character.Entity.Name)
+		_RoomService:RequestSendEventToRoomAndWait(_Event:SetRoom(room), key)
+	end
+
+	method void BeginTutorialServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BeginTutorial(Character character)
+		if not isvalid(character) then
+			return
+		end
+		
+		if character.isMatching then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local mode = "Tutorial"
+		local theme = "Henesys"
+		local id = self:GetNewRoomId("Tutorial")
+		local key = string.format("%s_%s_%d", mode, theme, id)
+		local room = {key = key, mode = mode, theme = theme, id = id, channel = self.channel}
+		
+		_RoomService:GetOrCreateInstanceRoom(key)
+		_RoomService:RequestSendEventToRoomAndWait(_Event:SetRoom(room), key)
+		_RoomService:MoveUserToInstanceRoom(key, character.Entity.Name)
+	end
+
+	method void GetFriendlyMatchRoomsServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetFriendlyMatchRooms()
+		if not _Server:IsRequesting() then
+			return
+		end
+		
+		local character = _Server.sender
+		
+		_Server.sender = nil
+		
+		self:GetFriendlyMatchRoomsInSender(self:GetRooms("FriendlyMatch"), character.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void GetFriendlyMatchRoomsInSender(table roomArray)
+		self.Entity:SendEvent(_Event:GetFriendlyMatchRooms(roomArray))
+	end
+
+	method void BeginMatchingServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BeginMatching(Character character)
+		if not isvalid(character) then
+			return
+		end
+		
+		if not Environment:IsPublishedPlay() or character.isMatching or not character:IsAbleToMatch() then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local resultCode
+		local leaderBoardInfo = _Matching:GetOrCreateLeaderBoard()
+		if leaderBoardInfo == nil then
+			return
+		end
+		
+		resultCode = _MatchmakingService:RequestMatchingAndWait(leaderBoardInfo.Id, "RankedMatch", character.Entity.PlayerComponent.ProfileCode, "", function(matchInfo)
+			if matchInfo.ResultCode == MatchmakingResultCode.Ok then
+				if isvalid(character) and character.isMatching then
+					_MatchmakingService:WarpMatchUser(character.Entity.PlayerComponent.ProfileCode)
+				end
+			else
+				self:CancelMatching(character)
+			end
+		end)
+		if resultCode ~= MatchmakingResultCode.Ok then
+			return
+		end
+		
+		self:BeginMatchingInSender(character.Entity.Name)
+		character.isMatching = true
+	end
+
+	@ExecSpace("Client")
+	method void BeginMatchingInSender()
+		local character = _UserService.LocalPlayer.Character
+		character.isMatching = true
+		
+		self.uiManager.LobbyModule:Close()
+		self.uiManager.NoticeModule:Hide()
+		self.uiManager.RewardModule:Hide()
+		self.uiManager.EventModule:Hide()
+		self.uiManager.RankedMatchModule:SetMatching(true)
+	end
+
+	method void CancelMatchingServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CancelMatching(Character character)
+		if not isvalid(character) then
+			return
+		end
+		
+		if not Environment:IsPublishedPlay() or not character.isMatching then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		local resultCode = _MatchmakingService:CancelMatchingAndWait(character.Entity.PlayerComponent.ProfileCode)
+		if resultCode == MatchmakingResultCode.AlreadyMatched then
+			return
+		end
+		
+		self:CancelMatchingInSender(tostring(resultCode) , character.Entity.Name)
+		character.isMatching = false
+	end
+
+	@ExecSpace("Client")
+	method void CancelMatchingInSender(string resultCode)
+		resultCode = MatchmakingResultCode.CastFrom(resultCode)
+		
+		local character = _UserService.LocalPlayer.Character
+		character.isMatching = false
+		
+		if resultCode == MatchmakingResultCode.NotMatching then
+			self.uiManager.PopupModule:Open("MatchingNotFound", true, nil, nil)
+		end
+		self.uiManager.LobbyModule:Open()
+		self.uiManager.NoticeModule:Show()
+		self.uiManager.RewardModule:Show()
+		self.uiManager.EventModule:Show()
+		self.uiManager.RankedMatchModule:SetMatching(false)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Initialize(boolean isRankedMatch)
+		if not _UtilLogic:IsNilorEmptyString(self.mode) then
+			return
+		end
+		
+		self.mode = isRankedMatch and "RankedMatch" or "Lobby"
+		if self.mode == "Lobby" then
+			self.theme = "LithHarbor"
+			self:UpdateChannels()
+		elseif self.mode == "RankedMatch" then
+			self.theme = _Table:GetRandomElement({"Perion", "Ellinia", "Henesys", "KerningCity"})
+			self.duel = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Duel"), "Duel", Vector3.zero, self.Entity).Duel
+			self.isWaiting = false
+			
+			_TimerService:SetTimerOnce(function()
+				if self.duel.isDueling or self.isEndMatch then
+					return
+				end
+				
+				local playerCount = 0
+				local winner
+				for _, player in ipairs(self.duel.playerArray) do
+					if isvalid(player.character) then
+						playerCount += 1
+						winner = player
+					end
+				end
+				if playerCount == 1 then
+					self.duel:EndMatch(winner)
+					winner:Tardy()
+				end
+			end, 50)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table UpdateMatchResult(string winnerUserId)
+		if not Environment:IsPublishedPlay() then
+			return
+		end
+		
+		local resultCode
+		local leaderBoardInfo = _Matching:GetOrCreateLeaderBoard()
+		if leaderBoardInfo == nil then
+			return
+		end
+		
+		if _Table:IsEmpty(self.matchUserInfos) then
+			return
+		end
+		
+		local resultTable = {}
+		for i = 1, 2 do
+			local profileCode = self.matchUserInfos[i].ProfileCode
+			local userId = _UserService:GetUserByProfileCode(profileCode).UserId
+			resultTable[userId] = {}
+		end
+		
+		local rankInfo
+		for i = 1, 2 do
+			local profileCode = self.matchUserInfos[i].ProfileCode
+			local userId = _UserService:GetUserByProfileCode(profileCode).UserId
+			resultCode, rankInfo = _MatchmakingService:GetRankInfoAndWait(leaderBoardInfo.Id, "1", profileCode)
+			local befMmr = resultCode == LeaderboardResultCode.Ok and rankInfo.Score or 1500
+			resultTable[userId].befMmr = befMmr
+		end
+		
+		local matchResultInfo
+		if not _UtilLogic:IsNilorEmptyString(winnerUserId) then
+			local winnerProfileCode = _UserService.Users[winnerUserId].ProfileCode
+			resultCode, matchResultInfo = _MatchmakingService:UpdateMatchResultAndWait(leaderBoardInfo.Id, self.matchUserInfos[1].ProfileCode, self.matchUserInfos[2].ProfileCode, winnerProfileCode)
+			if resultCode ~= MatchmakingResultCode.Ok then
+				log(resultCode)
+				return
+			end
+		end
+		
+		local sortableDataStorage = _DataStorageService:GetSortableDataStorage("Ranking")
+		for i = 1, 2 do
+			local profileCode = self.matchUserInfos[i].ProfileCode
+			local userId = _UserService:GetUserByProfileCode(profileCode).UserId
+			local userDataStorage = _DataStorageService:GetUserDataStorage(userId)
+			local result = resultTable[userId]
+			
+			local befMmr = result.befMmr
+			local afterMmr
+			if matchResultInfo == nil then
+				afterMmr = befMmr
+			else
+				if profileCode == matchResultInfo.Home.ProfileCode then
+					afterMmr = matchResultInfo.Home.Score
+				else
+					afterMmr = matchResultInfo.Away.Score
+				end
+			end
+			
+			local value
+			resultCode, value = userDataStorage:GetAndWait("rankPoint")
+			if not (resultCode == 0 or resultCode == 1000002) then
+				log(resultCode)
+				continue
+			end
+			
+			local befRankPoint = value and _MSON:FastStringToAny(value) or 500
+			local targetRankPoint = 2 * (afterMmr - 1500) + 1500
+			local bonus = math.floor((targetRankPoint - befRankPoint) / 40)
+			local delta
+			if _UtilLogic:IsNilorEmptyString(winnerUserId) then
+				delta = 0
+			elseif winnerUserId == userId then
+				delta = math.max(math.min(20 + bonus, 40), 10)
+			else
+				delta = math.min(math.max(-20 + bonus, -40), -10)
+			end
+			local afterRankPoint = math.max(befRankPoint + delta, 500)
+			userDataStorage:SetAndWait("rankPoint", _MSON:FastAnyToString(afterRankPoint))
+			
+			result.rankPoint = afterRankPoint - befRankPoint
+			result.befRankPoint = befRankPoint
+			result.afterRankPoint = afterRankPoint
+			result.mmr = afterMmr - befMmr
+			result.afterMmr = afterMmr
+			
+			local userEntity = _UserService:GetUserEntityByUserId(userId)
+			if not isvalid(userEntity) then
+				continue
+			end
+			local character = userEntity.Character
+			local ranking = 0
+			local sortedPages
+			resultCode, sortedPages = sortableDataStorage:GetSortedAndWait(SortDirection.Descending, 0, 100000)
+			if resultCode ~= 0 then
+				log(resultCode)
+				return
+			end
+			
+			local count = 1
+			while true do
+			    local datas = sortedPages:GetCurrentPageDatas()
+			    for _, data in pairs(datas) do
+					if self.Entity.Name == data.KeyInfo.Key then
+						ranking = count
+						break
+					end
+					count += 1
+					if count > 1 then
+						break
+					end
+			    end
+				if count > 1 or ranking > 0 then
+					break
+				end
+				
+			    if sortedPages.IsLastPage == true then
+			        break
+			    end
+			    
+			    sortedPages:MoveToNextPageAndWait()
+			end
+			character:SetRankInServer(afterRankPoint, ranking)
+			
+			sortableDataStorage:SetByInfoAndWait(DataStorageKeyInfo(userId, "", character.nickname), afterRankPoint)
+		end
+		
+		return resultTable
+	end
+
+	method void ReturnToLobbyServerAttribute()
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReturnToLobby(Character character)
+		if not isvalid(character) then
+			return
+		end
+		
+		if _Server:IsRequesting() then
+			if character ~= _Server.sender then
+				return
+			end
+		end
+		
+		_Server.sender = nil
+		
+		_TeleportService:WarpUserToWorldAsync(character.Entity.Name, Environment.WorldId, "", function() end)
+	end
+
+end

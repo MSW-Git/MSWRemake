@@ -1,0 +1,3087 @@
+@Logic
+script InGameInfoDataLogic extends Logic
+
+	@ExecSpace("ServerOnly")
+	method void SaveInGameData(string userID)
+		-- 데이터를 저장하는 함수입니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		--------------------------------------------------------
+		--[[
+			1. GameManager
+			2. TeamManager
+			3. Unit
+			4. Rune
+		]]--
+		
+		--------------------------------------------------------
+		-- 인게임 데이터
+		self:SaveInGameInfoData(user)
+		self:SaveInGameTeamInfoData(user)
+		self:SaveInGameUnitInfoData(user)
+		self:SaveInGameRuneInfoData(user)
+		self:SaveInGameTeamPropertyInfoData(user)
+		
+		-- 통계
+		self:SaveGameUnitBattleStatisticsData(user, 0)
+		self:SaveGameTeamBattleStatisticsData(user, 0)
+		
+		self:SetSavedDataDB(true, user)
+		
+		---- 24.10.08 즐겨찾기 데이터 추가 ----- 25.04.10 주석처리
+		_PlayerDataLogic:SetPlayerFavoriteDicData(user)
+		----------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameData(string userID)
+		-- 데이터를 가져오는 함수입니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		--------------------------------------------------------
+		--[[
+			1. GameManager
+			2. TeamManager
+			3. Unit
+			4. Rune
+		]]--
+		--------------------------------------------------------
+		-- 인게임 데이터
+		self:LoadInGameInfoData(userID)
+		self:LoadInGameTeamInfoData(userID)
+		self:LoadInGameUnitInfoData(userID)
+		self:LoadInGameRuneInfoData(userID)
+		self:LoadInGameTeamPropertyInfoData(userID)
+		
+		-- 통계
+		self:LoadInGameUnitBattleStatisticsData(userID)
+		self:LoadInGameTeamBattleStatisticsData(userID)
+		
+		---- 24.10.08 즐겨찾기 데이터 추가 ----- 25.04.10 주석처리
+		--_PlayerDataLogic:GetPlayerFavoriteDicData(userID) -- 실행환경 상 오류가 날 수도..
+		----------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveInGameInfoData(Entity user)
+		-- 기본적인 GameInfo를 저장하는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local gameManager = user.GameManager
+		local charShopManager = user.CharacterShopManager_New
+		local specialShopManager = user.SpecialShopManager
+		--------------------------------------------------------------------------------------
+		---@type table<string,any>
+		local gameInfoTable = {}
+		
+		-- 1. 모드 타입 및 레벨 정보, 플레이 타임 정보, 퇴장 phase
+		gameInfoTable["ModeVersion"] = gameManager.ModeSetVersion
+		gameInfoTable["ModeType"] = gameManager.ModeType
+		gameInfoTable["ModeLevel"] = gameManager.ModeLevel
+		
+		gameInfoTable["PhaseType"] = gameManager.PhaseType
+		gameInfoTable["PlayTime"] = gameManager.PlayTime
+		gameInfoTable["UsedRepechage"] = gameManager.UsedRepechage
+		_TimerService:ClearTimer(gameManager.PlayTimer)
+		gameManager.PlayTimer = 0
+		--------------------------------------------------------------------------------------
+		
+		-- 2. 스테이지 및 라운드 정보
+		gameInfoTable["Stage"] = gameManager.Stage
+		gameInfoTable["Round"] = gameManager.Round
+		gameInfoTable["Round83"] = gameManager.Round8_3Num
+		
+		--------------------------------------------------------------------------------------
+		-- 3. 상대 전투 프리셋 ID
+		
+		gameInfoTable["NextEnemyPresetID"] = gameManager.NextEnemyPresetID
+		
+		--------------------------------------------------------------------------------------
+		-- 4. 캐릭터 상점 라인업
+		
+		local charShopList = ""
+		for i = 1, 5 do
+			local charInfo = ""
+			if charShopManager.CurrentDisplayedUnits[i] ~= nil and charShopManager.CurrentDisplayedUnits[i] ~= "" then
+				charInfo = charShopManager.CurrentDisplayedUnits[i]
+			else
+				charInfo = "NIL"
+			end
+			
+			charInfo = string.format("%s/%d", charInfo, charShopManager.CurrentDisplayedUnitsCost[i])
+			
+			if i ~= 5 then
+				charInfo = charInfo .. ","
+			end
+			
+			charShopList = charShopList .. charInfo
+		end
+		
+		gameInfoTable["CharShopList"] = charShopList
+		
+		--------------------------------------------------------------------------------------
+		-- 5. 아이템 상점 라인업
+		
+		local itemShopList = ""
+		for i = 1, 2 do
+			local itemInfo = ""
+			if specialShopManager.ShopList_Items[i] ~= "" then
+				itemInfo = specialShopManager.ShopList_Items[i]
+			else
+				itemInfo = "NIL"
+			end
+			
+			itemInfo = string.format("%s/%d", itemInfo, specialShopManager.Cost_Items[i])
+			
+			if i ~= 2 then
+				itemInfo = itemInfo .. ","
+			end
+			
+			itemShopList = itemShopList .. itemInfo
+		end
+		
+		gameInfoTable["ItemShopList"] = itemShopList
+		
+		--------------------------------------------------------------------------------------
+		-- 6. 룬카드 상점 라인업
+		local runeShopList = ""
+		for i = 1, 2 do
+			local runeInfo = ""
+			if specialShopManager.ShopList_Runes[i] ~= "" then
+				runeInfo = specialShopManager.ShopList_Runes[i]
+			else
+				runeInfo = "NIL"
+			end
+			
+			runeInfo = string.format("%s/%d/%s/%s", runeInfo, specialShopManager.Cost_Runes[i], tostring(specialShopManager.IsDestructible_Runes[i]), tostring(specialShopManager.ToBeDestroyed_Runes[i]))
+			
+			if i ~= 2 then
+				runeInfo = runeInfo .. ","
+			end
+			
+			runeShopList = runeShopList .. runeInfo
+		end
+		
+		gameInfoTable["RuneShopList"] = runeShopList
+		-------------------------------------------------------------------------------------
+		-- 7. 캐릭터 풀 리스트 저장
+		local charAmountList = ""
+		for unitID, amount in pairs(charShopManager.LeftUnitCount) do
+			charAmountList = string.format("%s%s_%d,", charAmountList, unitID, amount)
+		end
+		
+		if charAmountList == "" then
+			charAmountList = "NIL"
+		else
+			charAmountList = string.sub(charAmountList, 1, -2)
+		end
+		
+		gameInfoTable["LeftUnitCount"] = charAmountList
+		--------------------------------------------------------------------------------------
+		-- 8. NextUID
+		gameInfoTable["NextUID"] = specialShopManager.NextUID
+		--------------------------------------------------------------------------------------
+		-- 9. 데이터 저장
+		
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("GameInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(gameInfoTable))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("GameInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(gameInfoTable))
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameInfoData(string userID)
+		-- 저장한 GameInfo를 불러와 적용하는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local gameManager = user.GameManager
+		local charShopManager = user.CharacterShopManager_New
+		local specialShopManager = user.SpecialShopManager
+		--------------------------------------------------------------------------------------
+		-- 0. 데이터 불러오기
+		local errorCode, gameInfo = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("GameInfo_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Load 실패")
+				return
+			else
+				errorCode, gameInfo = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("GameInfo_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		local gameInfoTable = _UtilLogic:StringToTable(gameInfo)
+		--------------------------------------------------------------------------------------
+		-- 1. 모드 타입 및 레벨 정보
+		gameManager.ModeSetVersion = gameInfoTable["ModeVersion"]
+		gameManager.ModeType = gameInfoTable["ModeType"]
+		gameManager.ModeLevel = gameInfoTable["ModeLevel"]
+		gameManager.PlayTime = gameInfoTable["PlayTime"]
+		gameManager.UsedRepechage = gameInfoTable["UsedRepechage"]
+		--------------------------------------------------------------------------------------
+		-- 2. 스테이지 및 라운드 정보
+		gameManager.Stage = gameInfoTable["Stage"]
+		gameManager.Round = gameInfoTable["Round"]
+		gameManager.Round8_3Num = gameInfoTable["Round83"]
+		--------------------------------------------------------------------------------------
+		-- 3. 상대 전투 프리셋 ID
+		gameManager.NextEnemyPresetID = gameInfoTable["NextEnemyPresetID"] 
+		--------------------------------------------------------------------------------------
+		-- 4. 캐릭터 풀 리스트 저장
+		if gameInfoTable["LeftUnitCount"] ~= "NIL" then
+			local charAmountList = _UtilLogic:Split(gameInfoTable["LeftUnitCount"], ",")
+			
+			for _, v in pairs(charAmountList) do
+				local keyInfo = _UtilLogic:Split(v, "_")
+				
+				local unitID = keyInfo[1]
+				local amount = tonumber(keyInfo[2])
+				
+				charShopManager.LeftUnitCount[unitID] = amount
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- 5. 캐릭터 상점 라인업
+		if gameManager.NeedDataLoadPhaseType == "Ready" then
+			local charShopList = _UtilLogic:Split(gameInfoTable["CharShopList"], ",")
+			
+			local charIDList = {}
+			local charCostList = {}
+			for i = 1, 5 do
+				local charInfo = _UtilLogic:Split(charShopList[i], "/")
+				
+				table.insert(charIDList, charInfo[1])
+				table.insert(charCostList, charInfo[2])
+			end
+			
+			charShopManager:Reroll_Setting(charIDList, charCostList)
+		else
+			charShopManager:Reroll(0)
+		end
+		--------------------------------------------------------------------------------------
+		-- 6. 아이템 상점 라인업
+		if gameManager.NeedDataLoadPhaseType == "Ready" then
+			local itemShopList = _UtilLogic:Split(gameInfoTable["ItemShopList"], ",")
+			for i = 1, 2 do
+				local itemInfo = _UtilLogic:Split(itemShopList[i], "/")
+				
+				if itemInfo[1] == "NIL" then
+					specialShopManager.ShopList_Items[i] = ""
+				else
+					specialShopManager.ShopList_Items[i] = itemInfo[1]
+				end
+				
+				specialShopManager.Cost_Items[i] = itemInfo[2]
+			end
+		else
+			specialShopManager:RerollList_Items()
+		end
+		--------------------------------------------------------------------------------------
+		-- 7. 룬카드 상점 라인업
+		if gameManager.NeedDataLoadPhaseType == "Ready" then
+			local runeShopList = _UtilLogic:Split(gameInfoTable["RuneShopList"], ",")
+			for i = 1, 2 do
+				local runeInfo = _UtilLogic:Split(runeShopList[i], "/")
+				
+				if runeInfo[1] == "NIL" then
+					specialShopManager.ShopList_Runes[i] = ""
+				else
+					specialShopManager.ShopList_Runes[i] = runeInfo[1]
+				end
+				
+				specialShopManager.Cost_Runes[i] = runeInfo[2]
+				
+				if runeInfo[3] == "true" then
+					specialShopManager.IsDestructible_Runes[i] = true
+				else
+					specialShopManager.IsDestructible_Runes[i] = false
+				end
+				
+				if runeInfo[4] == "true" then
+					specialShopManager.ToBeDestroyed_Runes[i] = true
+				else
+					specialShopManager.ToBeDestroyed_Runes[i] = false
+				end
+			end
+		else
+			specialShopManager:RerollList_Runes()
+		end
+		-------------------------------------------------------------------------------------
+		-- 8. NextUID
+		specialShopManager.NextUID = gameInfoTable["NextUID"]
+		-------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveInGameTeamInfoData(Entity user)
+		-- Team 데이터를 저장하는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local teamManager = user.TeamManager
+		local coachManager = user.CoachManager
+		local coachListEntity = user:GetChildByName("CoachListEntity")
+		local penaltyManager = user.PenaltyManager
+		local challengeManager = user.ChallengeManager
+		--------------------------------------------------------------------------------------
+		---@type table<string,any>
+		local teamInfoTable = {}
+		
+		-- 1. 팀 체력, 레벨, 경험치, 소지금, 연승 연패 기록
+		teamInfoTable["HP"] = teamManager.HP
+		teamInfoTable["Level"] = teamManager.Level
+		teamInfoTable["EXP"] = teamManager.EXP
+		teamInfoTable["Golds"] = teamManager.Golds
+		teamInfoTable["WinningStreak"] = teamManager.WinningStreak
+		--------------------------------------------------------------------------------------
+		-- 2. 사용하지 않은 소지 아이템
+		local itemList = ""
+		for i, itemID in pairs(teamManager.OwnItems) do
+			itemList = itemList .. itemID
+			
+			if i ~= #teamManager.OwnItems then
+				itemList = itemList .. ","
+			end
+		end
+		
+		if itemList == "" then
+			itemList = "NIL"
+		end
+		
+		teamInfoTable["OwnItems"] = itemList
+		--------------------------------------------------------------------------------------
+		-- 3. 코치 데이터
+		local coachList = ""
+		for i, coachID in pairs(coachManager.PlayCoachesID) do
+			coachList = coachList .. coachID
+			
+			if i ~= #coachManager.PlayCoachesID then
+				coachList = coachList .. ","
+			end
+		end
+		
+		if coachList == "" then
+			coachList = "NIL"
+		end
+		
+		teamInfoTable["OwnCoaches"] = coachList
+		--------------------------------------------------------------------------------------
+		-- 4. 코치 코스트 데이터
+		local coachCostList = ""
+		for i, coachCost in pairs(coachManager.PlayCoachesCost) do
+			coachCostList = coachCostList .. coachCost
+			
+			if i ~= #coachManager.PlayCoachesCost then
+				coachCostList = coachCostList .. ","
+			end
+		end
+		
+		if coachCostList == "" then
+			coachCostList = "NIL"
+		end
+		
+		teamInfoTable["OwnCoachesCost"] = coachCostList
+		--------------------------------------------------------------------------------------
+		-- 5. 코치 스택 데이터
+		-- cID-stack,cID-stack...
+		local coachStackList = ""
+		for i, coachID in pairs(coachManager.PlayCoachesID) do
+			local coachEntity = coachListEntity:GetChildByName(string.format("Coach_%d", i))
+			---@type CoachComponent
+			local cComponent = coachEntity:GetComponent(coachID)
+			
+			if isvalid(cComponent) then
+				coachStackList = string.format("%s%s-%d,", coachStackList, coachID, cComponent.CoachStack)
+			end
+		end
+		
+		if coachStackList == "" then
+			coachStackList = "NIL"
+		else
+			coachStackList = string.sub(coachStackList, 1, -2)
+		end
+		
+		teamInfoTable["OwnCoachesStack"] = coachStackList
+		--------------------------------------------------------------------------------------
+		-- 6. 코치 StringValue 데이터
+		-- cID-idx_value/idx_value,cID-idx_value/idx_value/idx_value...
+		local coachSValueList = ""
+		for i, coachID in pairs(coachManager.PlayCoachesID) do
+			local coachEntity = coachListEntity:GetChildByName(string.format("Coach_%d", i))
+			---@type CoachComponent
+			local cComponent = coachEntity:GetComponent(coachID)
+			
+			if isvalid(cComponent) then
+				local sValueline = ""
+				for idx, value in pairs(cComponent.NeedStringTypeValue) do
+					sValueline = string.format("%s%d_%s/", sValueline, idx, value)
+				end
+				
+				if sValueline == "" then
+					sValueline = "NIL"
+				else
+					sValueline = string.sub(sValueline, 1, -2)
+				end
+				
+				coachSValueList = string.format("%s%s-%s,", coachSValueList, coachID, sValueline)
+			end
+		end
+		
+		if coachSValueList == "" then
+			coachSValueList = "NIL"
+		else
+			coachSValueList = string.sub(coachSValueList, 1, -2)
+		end
+		
+		teamInfoTable["OwnCoachesStringValue"] = coachSValueList
+		-------------------------------------------------------------------------------------
+		-- 7. 패널티 데이터
+		local penaltyList = ""
+		for i, penaltyID in pairs(penaltyManager.PlayPenaltiesID) do
+			penaltyList = penaltyList .. penaltyID
+			
+			if i ~= #penaltyManager.PlayPenaltiesID then
+				penaltyList = penaltyList .. ","
+			end
+		end
+		
+		if penaltyList == "" then
+			penaltyList = "NIL"
+		end
+		
+		teamInfoTable["Penalties"] = penaltyList
+		-------------------------------------------------------------------------------------
+		-- 8. 챌린지 데이터
+		teamInfoTable["Challenge"] = challengeManager.PlayChallengeID
+		--------------------------------------------------------------------------------------
+		-- 9. 데이터 저장
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("TeamInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(teamInfoTable))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("TeamInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(teamInfoTable))
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameTeamInfoData(string userID)
+		-- Team 데이터를 불러오는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		local coachManager = user.CoachManager
+		local penaltyManager = user.PenaltyManager
+		local challengeManager = user.ChallengeManager
+		--------------------------------------------------------------------------------------
+		-- 1. 데이터 불러오기
+		local errorCode, teamInfo = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("TeamInfo_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+		
+			elseif i == 10 then
+				log_error("Load 실패")
+				return
+			else
+				errorCode, teamInfo = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("TeamInfo_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		
+		local teamInfoTable = _UtilLogic:StringToTable(teamInfo)
+		--------------------------------------------------------------------------------------
+		-- 2. 팀 체력, 레벨, 경험치, 소지금, 연승 연패 기록
+		teamManager.HP = teamInfoTable["HP"]
+		teamManager.Level = teamInfoTable["Level"]
+		teamManager.EXP = teamInfoTable["EXP"]
+		teamManager.Golds = teamInfoTable["Golds"]
+		teamManager.WinningStreak = teamInfoTable["WinningStreak"]
+		--------------------------------------------------------------------------------------
+		-- 3. 사용하지 않은 소지 아이템
+		if teamInfoTable["OwnItems"] ~= "NIL" then
+			local itemList = _UtilLogic:Split(teamInfoTable["OwnItems"], ",")
+			for _, itemID in pairs(itemList) do
+				table.insert(teamManager.OwnItems, itemID)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- 4. 코치 데이터
+		table.clear(coachManager.PlayCoachesID)
+		if teamInfoTable["OwnCoaches"] ~= "NIL" then
+			local coachList = _UtilLogic:Split(teamInfoTable["OwnCoaches"], ",")
+			for _, coachID in pairs(coachList) do
+				table.insert(coachManager.PlayCoachesID, coachID)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- 5. 코치 코스트 데이터
+		table.clear(coachManager.PlayCoachesCost)
+		if teamInfoTable["OwnCoachesCost"] ~= "NIL" then
+			local coachCosts = _UtilLogic:Split(teamInfoTable["OwnCoachesCost"], ",")
+			for _, coachCost in pairs(coachCosts) do
+				table.insert(coachManager.PlayCoachesCost, coachCost)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- 6. 코치 스택 데이터
+		-- cID-stack,cID-stack...
+		table.clear(coachManager.NeedDataLoadCoachStack)
+		if teamInfoTable["OwnCoachesStack"] ~= "NIL" then
+			local coachStacks = _UtilLogic:Split(teamInfoTable["OwnCoachesStack"], ",")
+			for _, coachStackInfo in pairs(coachStacks) do
+				local cInfo = _UtilLogic:Split(coachStackInfo, "-")
+				coachManager.NeedDataLoadCoachStack[cInfo[1]] = tonumber(cInfo[2])
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- 7. 코치 StringValue 데이터
+		-- cID-idx_value/idx_value,cID-idx_value/idx_value/idx_value...
+		table.clear(coachManager.NeedDataLoadCoachStringValue)
+		if teamInfoTable["OwnCoachesStringValue"] ~= "NIL" then
+			local coachStringValues = _UtilLogic:Split(teamInfoTable["OwnCoachesStringValue"], ",")
+			
+			for _, cStringValueInfo in pairs(coachStringValues) do
+				local cInfo = _UtilLogic:Split(cStringValueInfo, "-")
+				if cInfo[2] ~= "NIL" then
+					coachManager.NeedDataLoadCoachStringValue[cInfo[1]] = cInfo[2]
+				end
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- 6. 패널티 데이터
+		table.clear(penaltyManager.PlayPenaltiesID)
+		if teamInfoTable["Penalties"] ~= "NIL" then
+			local penalties = _UtilLogic:Split(teamInfoTable["Penalties"], ",")
+			for _, penaltyID in pairs(penalties) do
+				table.insert(penaltyManager.PlayPenaltiesID, penaltyID)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- 6. 챌린지 데이터
+		if teamInfoTable["Challenge"] ~= "NIL" then
+			challengeManager.PlayChallengeID = teamInfoTable["Challenge"]
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveInGameRuneInfoData(Entity user)
+		-- Rune 데이터를 저장하는 함수입니다.
+		
+		--------------------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local teamManager = user.TeamManager
+		--------------------------------------------------------------------------------------
+		---@type table<string,any>
+		local runeInfoTable = {}
+		--------------------------------------------------------------------------------------
+		-- 1. 룬 리스트 및 룬 별 정보 저장
+		local runeIDList = ""
+		local runeParent = user:GetChildByName("RuneCardParent")
+		for _, runeUID in pairs(teamManager.OwnRunes) do
+			runeIDList = runeIDList .. runeUID .. ","
+			for i = 1, 5 do
+				local runeEntity = runeParent:GetChildByName(string.format("PlayerRune%d", i))
+				
+				local runeIDInfo = _UtilLogic:Split(runeUID, "_")
+				---@type RuneCardComponent
+				local runeComponent = runeEntity:GetComponent(runeIDInfo[1])
+				local runeInfo = ""
+				
+				if isvalid(runeComponent) and (not runeComponent.Copied) and runeComponent.UID == tonumber(runeIDInfo[2]) then
+					--------------------------------------------------------------
+					--[[
+						1. OnActive
+						2. ResellCost
+						3. RuneStack
+						4. RuneStringTypeValue
+						5. UsedRuneAbility
+						6. IsDestructible
+						7. IsRemoveCount
+					]]--
+					--------------------------------------------------------------
+					runeInfo = string.format("%s,%d,%d,%s,%s,%s,%d", tostring(runeComponent.OnActive), runeComponent.ResellCost, runeComponent.RuneStack,
+											runeComponent.RuneStringTypeValue, tostring(runeComponent.UsedRuneAbility), tostring(runeComponent.IsDestructible),
+											runeComponent.IsRemovedCount)
+					runeInfoTable[runeUID] = runeInfo
+					log("RuneInfoTable = ", runeInfoTable[runeUID], runeUID)
+					break
+				end
+			end
+		end
+		
+		if runeIDList == "" then
+			runeIDList = "NIL"
+		else
+			runeIDList = string.sub(runeIDList, 1, -2)
+		end
+		
+		runeInfoTable["OwnRunes"] = runeIDList
+		log("OwnRunes = ", runeInfoTable["OwnRunes"])
+		--------------------------------------------------------------------------------------
+		-- 2. 데이터 저장
+		
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("RuneInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(runeInfoTable))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("RuneInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(runeInfoTable))
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameRuneInfoData(string userID)
+		-- Rune 데이터를 불러오는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		local specialShopManager = user.SpecialShopManager
+		--------------------------------------------------------------------------------------
+		-- 1. 데이터 불러오기
+		local errorCode, runeInfo = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("RuneInfo_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Load 실패")
+				return
+			else
+				errorCode, runeInfo = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("RuneInfo_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		local runeInfoTable = _UtilLogic:StringToTable(runeInfo)
+		--------------------------------------------------------------------------------------
+		-- 2. 룬 세팅
+		local runeList = runeInfoTable["OwnRunes"]
+		if runeList ~= "NIL" then
+			local runeIDList = _UtilLogic:Split(runeList, ",")
+			
+			for i, runeUID in pairs(runeIDList) do
+				-- 컴포넌트 생성
+				local runeIDInfo = _UtilLogic:Split(runeUID, "_")
+				local rcComponent = specialShopManager:AddRCComponent(runeIDInfo[1], true, #teamManager.OwnRunes, -1)
+				
+				-- 프로퍼티 세팅
+				log("RuneInfoTable = ", runeInfoTable[runeUID], runeUID)
+				local checkRuneInfo = _UtilLogic:Split(runeInfoTable[runeUID], ",")
+				--------------------------------------------------------------
+				--[[
+					1. OnActive
+					2. ResellCost
+					3. RuneStack
+					4. RuneStringTypeValue
+					5. UsedRuneAbility
+					6. IsDestructible
+					7. IsRemovedCount
+				]]--
+				--------------------------------------------------------------
+				rcComponent.SetRuneID = runeIDInfo[1]
+				-- rcComponent.UID = tonumber(runeIDInfo[2])
+				
+				if checkRuneInfo[1] == "true" then
+					rcComponent:SetActive(true)
+				else
+					rcComponent:SetActive(false)
+				end
+				rcComponent:SetResellCostInfo(math.floor(tonumber(checkRuneInfo[2])))
+				rcComponent:SetRuneStackInfo(math.floor(tonumber(checkRuneInfo[3])))
+				rcComponent:SetStringTypeValue(checkRuneInfo[4])
+				if checkRuneInfo[5] == "true" then
+					rcComponent:SetUsedRuneAbility(true)
+				else
+					rcComponent:SetUsedRuneAbility(false)
+				end
+				if checkRuneInfo[6] == "true" then
+					rcComponent:SetIsDestructible(true)
+				else
+					rcComponent:SetIsDestructible(false)
+				end
+				rcComponent:SetIsRemovedCount(math.floor(tonumber(checkRuneInfo[7])))
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveInGameUnitInfoData(Entity user)
+		-- Unit 데이터를 저장하는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local teamManager = user.TeamManager
+		--------------------------------------------------------------------------------------
+		---@type table<string,any>
+		local unitInfoTable = {}
+		--------------------------------------------------------------------------------------
+		-- 1. 유닛 별 정보 저장
+		local units = _UnitSetLogic_New.UnitsParentEntity[userID]
+		
+		---@type table<Entity>
+		local onFieldUnits = {}
+		---@type table<Entity>
+		local offFieldUnits = {}
+		
+		for i, unit in pairs(teamManager.OwnUnits) do
+			local unitInfo = unit.UnitInfo
+			local verNum = unitInfo.setTileVerticalNum
+			
+			if verNum == 0 then
+				table.insert(offFieldUnits, unit)
+			else
+				table.insert(onFieldUnits, unit)
+			end
+		end
+		
+		
+		-- 온필드 유닛 우선
+		local count = 0
+		for i, unit in pairs(onFieldUnits) do
+			count += 1
+			local unitInfo = unit.UnitInfo
+			local unitStatus = unit.UnitStatus
+			local unitBattleStattistics = unit.UnitBattleStatistics
+			--------------------------------------------------------------
+			--[[
+				UnitInfo
+				1. charID
+				2. level
+				3. cost
+				4. setTileVerticalNum
+				5. setTileHorizontalNum
+				6. IsOnetimeUnit
+				7. IsMergableUnit
+				8. IsItemEquippable
+				9. IsSettableOnWatingField
+				10. IsMovableByPlayer
+				11. IsResellable
+				12. IsAppliableSynergy
+				13. OnTileNum
+			]]--
+			--------------------------------------------------------------
+			if unitInfo.charID == "C00003" or string.sub(unit.Name, 1, -2) == "BTUnit_Shadow" or unit.Name == "BTUnit_DoDo" then
+				-- 오르비스 마법석, 그림자 유닛, 도도는 저장에서 제외
+			else
+				local onTileStringValue = ""
+				
+				for key, value in pairs(unitInfo.OnTileNum) do
+					onTileStringValue = string.format("%s%s-%d_", onTileStringValue, key, value)
+				end
+				
+				if onTileStringValue == "" then
+					onTileStringValue = "NIL"
+				else
+					onTileStringValue = string.sub(onTileStringValue, 1, -2)
+				end
+				
+				local unitInfoStringTypeValue = string.format("%s,%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s", unitInfo.charID, unitInfo.level, unitInfo.cost,
+													unitInfo.setTileVerticalNum, unitInfo.setTileHorizontalNum, tostring(unitInfo.IsOnetimeUnit),
+													tostring(unitInfo.IsMergableUnit), tostring(unitInfo.IsItemEquippable), tostring(unitInfo.IsSettableOnWatingField),
+													tostring(unitInfo.IsMovableByPlayer), tostring(unitInfo.IsResellable), tostring(unitInfo.IsAppliableSynergy), onTileStringValue)
+				
+				unitInfoTable[string.format("UnitInfo_%d", count)] = unitInfoStringTypeValue
+				--------------------------------------------------------------
+				-- UnitStatus의 StackProperty들 타입 별 전부 체크 필요
+				--------------------------------------------------------------
+				local unitStatusStringTypeValue = ""
+				for key, value in pairs(unitStatus.StackProperty) do
+					unitStatusStringTypeValue = unitStatusStringTypeValue .. string.format("%s/%d,", key, value)
+				end
+				
+				if unitStatusStringTypeValue == "" then
+					unitStatusStringTypeValue = "NIL"
+				else
+					unitStatusStringTypeValue = string.sub(unitStatusStringTypeValue, 1, -2)
+				end
+				
+				unitInfoTable[string.format("UnitStatus_%d", count)] = unitStatusStringTypeValue
+				--------------------------------------------------------------
+				-- UnitStatus에서 착용 중인 아이템 정보 체크
+				-- 일회성 아이템 제외하고 저장
+				--------------------------------------------------------------
+				local unitItemIDList = ""
+				for _, itemID in pairs(unitStatus.EquippedItemIDList) do
+					local check = _UtilLogic:Split(itemID, "_")
+					if not isvalid(check[2]) then
+						unitItemIDList = unitItemIDList .. string.format("%s,", itemID)
+					end
+				end
+				
+				if unitItemIDList == "" then
+					unitItemIDList = "NIL"
+				else
+					unitItemIDList = string.sub(unitItemIDList, 1, -2)
+				end
+				
+				unitInfoTable[string.format("UnitItem_%d", count)] = unitItemIDList
+			end
+		end
+		
+		
+		-- 오프필드 유닛 저장
+		for i, unit in pairs(offFieldUnits) do
+			count += 1
+			local unitInfo = unit.UnitInfo
+			local unitStatus = unit.UnitStatus
+			local unitBattleStattistics = unit.UnitBattleStatistics
+			--------------------------------------------------------------
+			--[[
+				UnitInfo
+				1. charID
+				2. level
+				3. cost
+				4. setTileVerticalNum
+				5. setTileHorizontalNum
+				6. IsOnetimeUnit
+				7. IsMergableUnit
+				8. IsItemEquippable
+				9. IsSettableOnWatingField
+				10. IsMovableByPlayer
+				11. IsResellable
+				12. IsAppliableSynergy
+				13. OnTileNum
+			]]--
+			--------------------------------------------------------------
+			if unitInfo.charID == "C00003" or string.sub(unit.Name, 1, -2) == "BTUnit_Shadow" or unit.Name == "BTUnit_DoDo" then
+				-- 오르비스 마법석, 그림자 유닛, 도도는 저장에서 제외
+			else
+				local onTileStringValue = ""
+				
+				for key, value in pairs(unitInfo.OnTileNum) do
+					onTileStringValue = string.format("%s%s-%d_", onTileStringValue, key, value)
+				end
+				
+				if onTileStringValue == "" then
+					onTileStringValue = "NIL"
+				else
+					onTileStringValue = string.sub(onTileStringValue, 1, -2)
+				end
+				
+				local unitInfoStringTypeValue = string.format("%s,%d,%d,%d,%d,%s,%s,%s,%s,%s,%s,%s,%s", unitInfo.charID, unitInfo.level, unitInfo.cost,
+													unitInfo.setTileVerticalNum, unitInfo.setTileHorizontalNum, tostring(unitInfo.IsOnetimeUnit),
+													tostring(unitInfo.IsMergableUnit), tostring(unitInfo.IsItemEquippable), tostring(unitInfo.IsSettableOnWatingField),
+													tostring(unitInfo.IsMovableByPlayer), tostring(unitInfo.IsResellable), tostring(unitInfo.IsAppliableSynergy), onTileStringValue)
+				
+				unitInfoTable[string.format("UnitInfo_%d", count)] = unitInfoStringTypeValue
+				--------------------------------------------------------------
+				-- UnitStatus의 StackProperty들 타입 별 전부 체크 필요
+				--------------------------------------------------------------
+				local unitStatusStringTypeValue = ""
+				for key, value in pairs(unitStatus.StackProperty) do
+					unitStatusStringTypeValue = unitStatusStringTypeValue .. string.format("%s/%d,", key, value)
+				end
+				
+				if unitStatusStringTypeValue == "" then
+					unitStatusStringTypeValue = "NIL"
+				else
+					unitStatusStringTypeValue = string.sub(unitStatusStringTypeValue, 1, -2)
+				end
+				
+				unitInfoTable[string.format("UnitStatus_%d", count)] = unitStatusStringTypeValue
+				--------------------------------------------------------------
+				-- UnitStatus에서 착용 중인 아이템 정보 체크
+				-- 일회성 아이템 제외하고 저장
+				--------------------------------------------------------------
+				local unitItemIDList = ""
+				for _, itemID in pairs(unitStatus.EquippedItemIDList) do
+					local check = _UtilLogic:Split(itemID, "_")
+					if not isvalid(check[2]) then
+						unitItemIDList = unitItemIDList .. string.format("%s,", itemID)
+					end
+				end
+				
+				if unitItemIDList == "" then
+					unitItemIDList = "NIL"
+				else
+					unitItemIDList = string.sub(unitItemIDList, 1, -2)
+				end
+				
+				unitInfoTable[string.format("UnitItem_%d", count)] = unitItemIDList
+			end
+		end
+		--------------------------------------------------------------------------------------
+		
+		--------------------------------------------------------------------------------------
+		-- 2. 데이터 저장
+		
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("UnitInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(unitInfoTable))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("UnitInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(unitInfoTable))
+			end
+		end
+		--------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameUnitInfoData(string userID)
+		-- Unit 데이터를 저장하는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------------------------------
+		-- 1. 데이터 불러오기
+		local errorCode, data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("UnitInfo_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Load 실패")
+				return
+			else
+				errorCode, data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("UnitInfo_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		local unitInfoTable = _UtilLogic:StringToTable(data)
+		--------------------------------------------------------------------------------------
+		-- 2. 유닛 소환 후 스탯 넣기
+		local loadSpawnTimer = 0
+		local loadSpawnCount = 0
+		local function loadSpawnFnc()
+			loadSpawnCount += 1
+			if loadSpawnCount > 50 then
+				_TimerService:ClearTimer(loadSpawnTimer)
+				user.LoadingManager.LoadedCount["GameDataLoad"] = 1
+				user:SendEvent(InGameDataLoad())
+				return
+			end
+			local unitInfoStringTypeValue = unitInfoTable[string.format("UnitInfo_%d", loadSpawnCount)]
+			local unitStatusStringTypeValue = unitInfoTable[string.format("UnitStatus_%d", loadSpawnCount)]
+			local unitItemIDList = unitInfoTable[string.format("UnitItem_%d", loadSpawnCount)]
+			
+			if isvalid(unitInfoStringTypeValue) and isvalid(unitStatusStringTypeValue) and isvalid(unitItemIDList) then
+				local unitInfoProperties = _UtilLogic:Split(unitInfoStringTypeValue, ",")
+				--------------------------------------------------------------
+				--[[
+					UnitInfo
+					1. charID
+					2. level
+					3. cost
+					4. setTileVerticalNum
+					5. setTileHorizontalNum
+					6. IsOnetimeUnit
+					7. IsMergableUnit
+					8. IsItemEquippable
+					9. IsSettableOnWatingField
+					10. IsMovableByPlayer
+					11. IsResellable
+					12. IsAppliableSynergy
+					13. OnTileNum
+				]]--
+				--------------------------------------------------------------
+				
+				-- 유닛 스폰
+				local cost = tonumber(unitInfoProperties[3])
+				local spawnType = "DataLoad"
+				if cost == 0 then
+					spawnType = "OnField"
+				end
+				
+				local unit = _UnitSetLogic_New:SpawnUnit(userID, unitInfoProperties[1], tonumber(unitInfoProperties[2]), spawnType)
+				local unitInfo = unit.UnitInfo
+				local unitStatus = unit.UnitStatus
+				
+				-- 1,2,3
+				unitInfo:SetCharInfo(unitInfoProperties[1], tonumber(unitInfoProperties[2]), cost)
+				
+				-- 4,5 (13)
+				local tileHorizonNode, tileVerticalNode
+				
+				-- Phase : Ready인 경우
+				local checkPhaseType = gameManager.NeedDataLoadPhaseType
+				if checkPhaseType == "Ready" or checkPhaseType == "Clean" then
+					if tonumber(unitInfoProperties[4]) == 0 then
+						tileHorizonNode = tonumber(unitInfoProperties[5])
+					else
+						tileHorizonNode = tonumber(unitInfoProperties[5]) * 2 - (tonumber(unitInfoProperties[4])%2)
+					end
+					
+					tileVerticalNode = tonumber(unitInfoProperties[4])
+				-- Phase : Battle이나 Setting인 경우 (기타 : Clean, End엔 애초에 저장이 안되었어야 함)
+				elseif checkPhaseType == "Battle" or checkPhaseType == "Setting" then
+					if unitInfoProperties[13] ~= "NIL" then
+						local onTileStringValueTable = _UtilLogic:Split(unitInfoProperties[13], "_")
+						
+						for _, v in pairs(onTileStringValueTable) do
+							local keyInfo = _UtilLogic:Split(v, "-")
+							
+							unitInfo.OnTileNum[keyInfo[1]] = tonumber(keyInfo[2])
+						end
+						
+						tileVerticalNode = unitInfo.OnTileNum["Vertical"]
+						if tonumber(tileVerticalNode) == 0 then
+							tileHorizonNode = tonumber(unitInfo.OnTileNum["Horizontal"])
+						else
+							tileHorizonNode = tonumber(unitInfo.OnTileNum["Horizontal"]) * 2 - (tileVerticalNode%2)
+						end
+					else
+						log("이 값이 없으면 안돼요")
+						tileHorizonNode = 1
+						tileVerticalNode = 0
+					end
+				else
+					log("checkPhaseType =", checkPhaseType)
+				end
+				
+				local moveTile = gameManager.RoomTile[string.format("%d,%d", tileHorizonNode, tileVerticalNode)]
+				
+				
+				-- 6,7,8,9,10,11,12
+				unitInfo.IsOnetimeUnit = (unitInfoProperties[6] == "true")
+				unitInfo.IsMergableUnit = (unitInfoProperties[7] == "true")
+				unitInfo.IsItemEquippable = (unitInfoProperties[8] == "true")
+				unitInfo.IsSettableOnWatingField = (unitInfoProperties[9] == "true")
+				unitInfo.IsMovableByPlayer = (unitInfoProperties[10] == "true")
+				unitInfo.IsResellable = (unitInfoProperties[11] == "true")
+				unitInfo.IsAppliableSynergy = (unitInfoProperties[12] == "true")
+				
+				--------------------------------------------------------------
+				-- UnitStatus의 StackProperty들 타입 별 전부 체크 필요
+				--------------------------------------------------------------
+				if unitStatusStringTypeValue ~= "NIL" then
+					local unitStatusStackProperties = _UtilLogic:Split(unitStatusStringTypeValue, ",")
+					for _, pInfo in pairs(unitStatusStackProperties) do
+						local propertyInfo = _UtilLogic:Split(pInfo, "/")
+						_StatusChangeLogic:SetStack(unit, propertyInfo[1], tonumber(propertyInfo[2]))
+					end
+				end
+				--------------------------------------------------------------
+				-- UnitStatus에서 착용 중인 아이템 정보 체크
+				--------------------------------------------------------------
+				if unitItemIDList ~= "NIL" then
+					local itemList = _UtilLogic:Split(unitItemIDList, ",")
+					for _, itemID in pairs(itemList) do
+						_ItemSetLogic:EquipItemThroughItemID(unit, itemID)
+					end
+				end
+				
+				_UnitSetLogic_New:TouchReleaseByForce(userID, unit, moveTile)
+			else
+			end
+		end
+		loadSpawnTimer = _TimerService:SetTimerRepeat(loadSpawnFnc, 0.1, 0)
+		--------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveInGameTeamPropertyInfoData(Entity user)
+		-- 인게임 기타 프로퍼티 데이터를 저장하는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local userPControl = user.TM_PropertyControl
+		local synergyManager = user.SynergyManager_New
+		--------------------------------------------------------------------------------------
+		-- 모든 변수를 저장해봅시다..
+		---@type table<string,any>
+		local propertyTable = {}
+		--------------------------------------------------------------------------------------
+		-- Golds
+		local goldsProperty = string.format("%d,%d,%d,%d,%d,%d", userPControl.Golds_baseReward, userPControl.Golds_baseReward_Lose, userPControl.Golds_BattleReward_Win,
+								userPControl.Golds_BattleReward_Lose, userPControl.Golds_BattleReward, userPControl.Golds_MaxInterestReward)
+		propertyTable["Golds"] = goldsProperty
+		
+		--------------------------------------------------------------------------------------
+		-- Reroll
+		local rerollProperty = string.format("%d,%d,%d", userPControl.Reroll_Cost, userPControl.Reroll_FreeCounts_Temporary, userPControl.Reroll_FreeCounts_Permanents)
+		propertyTable["Reroll"] = rerollProperty
+		
+		--------------------------------------------------------------------------------------
+		-- RuneReroll
+		local runeRerollProperty = string.format("%d,%d,%d", userPControl.RuneReroll_Cost, userPControl.RuneReroll_FreeCounts_Temporary, userPControl.RuneReroll_FreeCounts_Permanents) 
+		propertyTable["RuneReroll"] = runeRerollProperty
+		
+		--------------------------------------------------------------------------------------
+		-- Exp
+		local expProperty = string.format("%d,%s,%s,%d,%d,%s,%s", userPControl.Exp_Cost, userPControl.Exp_CostType, tostring(userPControl.Exp_CanGetBaseReward),
+										userPControl.Exp_baseReward, userPControl.Exp_BuyExpReward, tostring(userPControl.Exp_CanLevelUpThroughBuyExp),
+										tostring(userPControl.Exp_CanBuyExp))
+		propertyTable["Exp"] = expProperty
+		
+		--------------------------------------------------------------------------------------
+		-- Level
+		local levelProperty = string.format("%d,%d,%d,%d,%d,%d", userPControl.Level_MaxLevel, userPControl.Level_MaxUnitAdjustment, userPControl.Level_ExpAdjustment,
+											userPControl.Level_ShopAddLevel, userPControl.Level_CharShopAddLevel, userPControl.Level_RuneShopAddLevel)
+		propertyTable["Level"] = levelProperty
+		
+		--------------------------------------------------------------------------------------
+		-- HP
+		local hpProperty = string.format("%d", userPControl.HP_Max)
+		propertyTable["HP"] = hpProperty 
+		
+		--------------------------------------------------------------------------------------
+		-- Rune
+		local runeProperty = string.format("%d,%d,%s,%d,%d", userPControl.Rune_AmplifiesEffectOfRunes, userPControl.Rune_UseRuneSlotCount, tostring(userPControl.Rune_CanReSellRuneCard),
+										userPControl.Rune_UnCountableNumberOfMyTeam, userPControl.Rune_UnCountableNumberOfEnemy)
+		propertyTable["Rune"] = runeProperty
+		
+		--------------------------------------------------------------------------------------
+		-- Tile
+		local tileProperty = string.format("%d", userPControl.Tile_AvailableWaitingTile)
+		propertyTable["Tile"] = tileProperty
+		
+		--------------------------------------------------------------------------------------
+		-- Shop
+		local shopProperty = string.format("%d,%d,%d,%d,%s,%s,%s,%s,%s,%s", userPControl.Shop_ItemShopDiscountRate, userPControl.Shop_RuneCardShopDiscountRate, userPControl.Shop_UseCharSlotCount,
+									userPControl.Shop_UseRuneSlotCount, tostring(userPControl.Shop_CanPurchaseCharacter), tostring(userPControl.Shop_CanPurchaseRuneCard), tostring(userPControl.Shop_CanPurchaseMoreItems),
+									tostring(userPControl.Shop_CanRerollCharacter), tostring(userPControl.Shop_CanRerollRuneCard), tostring(userPControl.Shop_CanPurchaseItems))
+		propertyTable["Shop"] = shopProperty
+		
+		--------------------------------------------------------------------------------------
+		-- Battle
+		local battleProperty = string.format("%s", tostring(userPControl.Battle_DrawIsWin))
+		propertyTable["Battle"] = battleProperty
+		
+		--------------------------------------------------------------------------------------
+		-- Unit
+		local unitProperty = string.format("%d,%d", userPControl.Unit_EquipableItemCount, userPControl.Unit_AddResellCost)
+		propertyTable["Unit"] = unitProperty
+		
+		--------------------------------------------------------------------------------------
+		-- Item
+		local itemProperty = string.format("%d", userPControl.Item_AddBoxListCount)
+		propertyTable["Item"] = itemProperty
+		
+		--------------------------------------------------------------------------------------
+		-- 기타 Table 프로퍼티
+		
+		--------------------------------------------------------------------------------------
+		-- SynergyStack
+		local synergyStack_Value = ""
+		for key, value in pairs(synergyManager.SynergyStack) do
+			synergyStack_Value = synergyStack_Value .. string.format("%s/%d,", key, value)
+		end
+		
+		-- EnemyStack 중 필요한 것만 따로 저장
+		synergyStack_Value = synergyStack_Value .. string.format("Enemy_S10025_Pos/%d", synergyManager.Enemy_SynergyStack["S10025_Pos"])
+		
+		propertyTable["SynergyStack"] = synergyStack_Value
+		--------------------------------------------------------------------------------------
+		-- Golds_breakStreakReward
+		local golds_breakStreakReward_Value = ""
+		for key, value in pairs(userPControl.Golds_breakStreakReward) do
+			golds_breakStreakReward_Value = golds_breakStreakReward_Value .. string.format("%s/%d,", key, value)
+		end
+		
+		if golds_breakStreakReward_Value == "" then
+			golds_breakStreakReward_Value = "NIL"
+		else
+			golds_breakStreakReward_Value = string.sub(golds_breakStreakReward_Value, 1, -2)
+		end
+		propertyTable["Golds_breakStreakReward"] = golds_breakStreakReward_Value
+		--------------------------------------------------------------------------------------
+		-- Golds_streakReward
+		local golds_streakReward_Value = ""
+		for key, value in pairs(userPControl.Golds_streakReward) do
+			golds_streakReward_Value = golds_streakReward_Value .. string.format("%s/%d,", key, value)
+		end
+		
+		if golds_streakReward_Value == "" then
+			golds_streakReward_Value = "NIL"
+		else
+			golds_streakReward_Value = string.sub(golds_streakReward_Value, 1, -2)
+		end
+		propertyTable["Golds_streakReward"] = golds_streakReward_Value
+		
+		
+		--------------------------------------------------------------------------------------
+		-- Rune_SetCheck
+		local rune_SetCheck_Value = ""
+		for key, value in pairs(userPControl.Rune_SetCheck) do
+			rune_SetCheck_Value = rune_SetCheck_Value .. string.format("%s/%d,", key, value)
+		end
+		
+		if rune_SetCheck_Value == "" then
+			rune_SetCheck_Value = "NIL"
+		else
+			rune_SetCheck_Value = string.sub(rune_SetCheck_Value, 1, -2)
+		end
+		propertyTable["Rune_SetCheck"] = rune_SetCheck_Value
+		
+		
+		--------------------------------------------------------------------------------------
+		-- Coach_SetCheck
+		local coach_SetCheck_Value = ""
+		for key, value in pairs(userPControl.Coach_SetCheck) do
+			coach_SetCheck_Value = coach_SetCheck_Value .. string.format("%s/%d,", key, value)
+		end
+		
+		if coach_SetCheck_Value == "" then
+			coach_SetCheck_Value = "NIL"
+		else
+			coach_SetCheck_Value = string.sub(coach_SetCheck_Value, 1, -2)
+		end
+		propertyTable["Coach_SetCheck"] = coach_SetCheck_Value
+		
+		
+		--------------------------------------------------------------------------------------
+		-- Penalty_SetCheck
+		local penalty_SetCheck_Value = ""
+		for key, value in pairs(userPControl.Penalty_SetCheck) do
+			penalty_SetCheck_Value = penalty_SetCheck_Value .. string.format("%s/%d,", key, value)
+		end
+		
+		if penalty_SetCheck_Value == "" then
+			penalty_SetCheck_Value = "NIL"
+		else
+			penalty_SetCheck_Value = string.sub(penalty_SetCheck_Value, 1, -2)
+		end
+		propertyTable["Penalty_SetCheck"] = penalty_SetCheck_Value
+		
+		
+		--------------------------------------------------------------------------------------
+		-- Challenge_SetCheck
+		local challenge_SetCheck_Value = ""
+		for key, value in pairs(userPControl.Challenge_SetCheck) do
+			challenge_SetCheck_Value = challenge_SetCheck_Value .. string.format("%s/%d,", key, value)
+		end
+		
+		if challenge_SetCheck_Value == "" then
+			challenge_SetCheck_Value = "NIL"
+		else
+			challenge_SetCheck_Value = string.sub(challenge_SetCheck_Value, 1, -2)
+		end
+		propertyTable["Challenge_SetCheck"] = challenge_SetCheck_Value
+		--------------------------------------------------------------------------------------
+		-- Synergy Rune On
+		local synergyValue = ""
+		for key, value in pairs(synergyManager.SynergyRuneOn) do
+			synergyValue = synergyValue .. string.format("%s/%d,", key, value)
+		end
+		
+		if synergyValue == "" then
+			synergyValue = "NIL"
+		else
+			synergyValue = string.sub(synergyValue, 1, -2)
+		end
+		propertyTable["SynergyRuneOn"] = synergyValue
+		
+		--------------------------------------------------------------------------------------
+		-- 2. 데이터 저장
+		
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PropertyInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(propertyTable))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PropertyInfo_%s", _PlayerDataLogic.SetVer), _UtilLogic:TableToString(propertyTable))
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameTeamPropertyInfoData(string userID)
+		-- 인게임 기타 프로퍼티 데이터를 불러오는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local userPControl = user.TM_PropertyControl
+		local synergyManager = user.SynergyManager_New
+		local teamManager = user.TeamManager
+		local specialShopManager = user.SpecialShopManager
+		--------------------------------------------------------------------------------------
+		-- 1. 데이터 불러오기
+		local errorCode, data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PropertyInfo_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Load 실패")
+				return
+			else
+				errorCode, data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PropertyInfo_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		local propertyTable = _UtilLogic:StringToTable(data)
+		--------------------------------------------------------------------------------------
+		-- 2. 데이터 적용
+		
+		-- Golds
+		local goldsProperty = _UtilLogic:Split(propertyTable["Golds"], ",")
+		
+		userPControl.Golds_baseReward = tonumber(goldsProperty[1])
+		userPControl.Golds_baseReward_Lose = tonumber(goldsProperty[2])
+		userPControl.Golds_BattleReward_Win = tonumber(goldsProperty[3])
+		userPControl.Golds_BattleReward_Lose = tonumber(goldsProperty[4])
+		userPControl.Golds_BattleReward = tonumber(goldsProperty[5])
+		userPControl.Golds_MaxInterestReward = tonumber(goldsProperty[6])
+		--------------------------------------------------------------------------------------
+		-- Reroll
+		local rerollProperty = _UtilLogic:Split(propertyTable["Reroll"], ",")
+		
+		userPControl.Reroll_Cost = tonumber(rerollProperty[1])
+		userPControl.Reroll_FreeCounts_Temporary = tonumber(rerollProperty[2])
+		userPControl.Reroll_FreeCounts_Permanents = tonumber(rerollProperty[3])
+		--------------------------------------------------------------------------------------
+		-- RuneReroll
+		local runeRerollProperty = _UtilLogic:Split(propertyTable["RuneReroll"], ",")
+		
+		userPControl.RuneReroll_Cost = tonumber(runeRerollProperty[1])
+		userPControl.RuneReroll_FreeCounts_Temporary = tonumber(runeRerollProperty[2])
+		userPControl.RuneReroll_FreeCounts_Permanents = tonumber(runeRerollProperty[3])
+		--------------------------------------------------------------------------------------
+		-- Exp
+		local expProperty = _UtilLogic:Split(propertyTable["Exp"], ",")
+		
+		userPControl.Exp_Cost = tonumber(expProperty[1])
+		userPControl.Exp_CostType = expProperty[2]
+		userPControl.Exp_CanGetBaseReward = (expProperty[3] == "true")
+		userPControl.Exp_baseReward = tonumber(expProperty[4])
+		userPControl.Exp_BuyExpReward = tonumber(expProperty[5])
+		userPControl.Exp_CanLevelUpThroughBuyExp = (expProperty[6] == "true")
+		userPControl.Exp_CanBuyExp = (expProperty[7] == "true")
+		--------------------------------------------------------------------------------------
+		-- Level
+		local levelProperty = _UtilLogic:Split(propertyTable["Level"], ",")
+		
+		userPControl.Level_MaxLevel = tonumber(levelProperty[1])
+		userPControl.Level_MaxUnitAdjustment = tonumber(levelProperty[2])
+		userPControl.Level_ExpAdjustment = tonumber(levelProperty[3])
+		userPControl.Level_ShopAddLevel = tonumber(levelProperty[4])
+		userPControl.Level_CharShopAddLevel = tonumber(levelProperty[5])
+		userPControl.Level_RuneShopAddLevel = tonumber(levelProperty[6])
+		--------------------------------------------------------------------------------------
+		-- HP
+		local hpProperty = _UtilLogic:Split(propertyTable["HP"], ",")
+		
+		userPControl.HP_Max = tonumber(hpProperty[1])
+		--------------------------------------------------------------------------------------
+		-- Rune
+		local runeProperty = _UtilLogic:Split(propertyTable["Rune"], ",")
+		
+		userPControl.Rune_AmplifiesEffectOfRunes = tonumber(runeProperty[1])
+		userPControl.Rune_UseRuneSlotCount = tonumber(runeProperty[2])
+		userPControl.Rune_CanReSellRuneCard = (runeProperty[3] == "true")
+		userPControl.Rune_UnCountableNumberOfMyTeam = tonumber(runeProperty[4])
+		userPControl.Rune_UnCountableNumberOfEnemy = tonumber(runeProperty[5])
+		--------------------------------------------------------------------------------------
+		-- Tile
+		local tileProperty = _UtilLogic:Split(propertyTable["Tile"], ",")
+		
+		userPControl.Tile_AvailableWaitingTile = tonumber(tileProperty[1])
+		--------------------------------------------------------------------------------------
+		-- Shop
+		local shopProperty = _UtilLogic:Split(propertyTable["Shop"], ",")
+		
+		userPControl.Shop_ItemShopDiscountRate = tonumber(shopProperty[1])
+		userPControl.Shop_RuneCardShopDiscountRate = tonumber(shopProperty[2])
+		userPControl.Shop_UseCharSlotCount = tonumber(shopProperty[3])
+		userPControl.Shop_UseRuneSlotCount = tonumber(shopProperty[4])
+		userPControl.Shop_CanPurchaseCharacter = (shopProperty[5] == "true")
+		userPControl.Shop_CanPurchaseRuneCard = (shopProperty[6] == "true")
+		userPControl.Shop_CanPurchaseMoreItems = (shopProperty[7] == "true")
+		userPControl.Shop_CanRerollCharacter = (shopProperty[8] == "true")
+		userPControl.Shop_CanRerollRuneCard = (shopProperty[9] == "true")
+		userPControl.Shop_CanPurchaseItems = (shopProperty[10] == "true")
+		--------------------------------------------------------------------------------------
+		-- Battle
+		local battleProperty = _UtilLogic:Split(propertyTable["Battle"], ",")
+		
+		userPControl.Battle_DrawIsWin = (battleProperty[1] == "true")
+		--------------------------------------------------------------------------------------
+		-- Unit
+		local unitProperty = _UtilLogic:Split(propertyTable["Unit"], ",")
+		
+		userPControl.Unit_EquipableItemCount = tonumber(unitProperty[1])
+		userPControl.Unit_AddResellCost = tonumber(unitProperty[2])
+		--------------------------------------------------------------------------------------
+		-- Item
+		local itemProperty = _UtilLogic:Split(propertyTable["Item"], ",")
+		
+		userPControl.Item_AddBoxListCount = tonumber(itemProperty[1])
+		--------------------------------------------------------------------------------------
+		-- 기타 Table 프로퍼티
+		--------------------------------------------------------------------------------------
+		-- SynergyStack
+		if propertyTable["SynergyStack"] ~= "NIL" then
+			local synergyStack_Value = _UtilLogic:Split(propertyTable["SynergyStack"], ",")
+			for _, checkValue in pairs(synergyStack_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = tonumber(keyInfo[2])
+				
+				if key == "Enemy_S10025_Pos" then
+					synergyManager.Enemy_SynergyStack["S10025_Pos"] = value
+					_SynergyReadyDirectorLogic:S10025Direction(0,true,user.PlayerComponent.UserId)
+				elseif key == "S10025_Pos" then
+					synergyManager.SynergyStack["S10025_Pos"] = value
+					_SynergyReadyDirectorLogic:S10025Direction(0,false,user.PlayerComponent.UserId)
+				elseif key == "S10031_ItemOrder" then
+					synergyManager.SynergyStack["S10031_ItemOrder"] = value
+					synergyManager:S10031_GetItem(-1)
+				else
+					synergyManager.SynergyStack[key] = value
+				end
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- Golds_breakStreakReward
+		if propertyTable["Golds_breakStreakReward"] ~= "NIL" then
+			local golds_breakStreakReward_Value = _UtilLogic:Split(propertyTable["Golds_breakStreakReward"], ",")
+			for _, checkValue in pairs(golds_breakStreakReward_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = tonumber(keyInfo[2])
+				
+				userPControl.Golds_breakStreakReward[key] = value
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- Golds_streakReward
+		if propertyTable["Golds_streakReward"] ~= "NIL" then
+			local golds_streakReward_Value = _UtilLogic:Split(propertyTable["Golds_streakReward"], ",")
+			for _, checkValue in pairs(golds_streakReward_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = tonumber(keyInfo[1])
+				local value = tonumber(keyInfo[2])
+				
+				userPControl.Golds_streakReward[key] = value
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- Rune_SetCheck
+		if propertyTable["Rune_SetCheck"] ~= "NIL" then
+			local rune_SetCheck_Value = _UtilLogic:Split(propertyTable["Rune_SetCheck"], ",")
+			for _, checkValue in pairs(rune_SetCheck_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = tonumber(keyInfo[2])
+				
+				userPControl.Rune_SetCheck[key] = value
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- Coach_SetCheck
+		if propertyTable["Coach_SetCheck"] ~= "NIL" then
+			local coach_SetCheck_Value = _UtilLogic:Split(propertyTable["Coach_SetCheck"], ",")
+			for _, checkValue in pairs(coach_SetCheck_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = tonumber(keyInfo[2])
+				
+				userPControl.Coach_SetCheck[key] = value
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- Penalty_SetCheck
+		if propertyTable["Penalty_SetCheck"] ~= "NIL" then
+			local penalty_SetCheck_Value = _UtilLogic:Split(propertyTable["Penalty_SetCheck"], ",")
+			for _, checkValue in pairs(penalty_SetCheck_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = tonumber(keyInfo[2])
+				
+				userPControl.Penalty_SetCheck[key] = value
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- Challenge_SetCheck
+		if propertyTable["Challenge_SetCheck"] ~= "NIL" then
+			local challenge_SetCheck_Value = _UtilLogic:Split(propertyTable["Challenge_SetCheck"], ",")
+			for _, checkValue in pairs(challenge_SetCheck_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = tonumber(keyInfo[2])
+				
+				userPControl.Challenge_SetCheck[key] = value
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- Synergy Rune On
+		if propertyTable["SynergyRuneOn"] ~= "NIL" then
+			local SynergyRuneOn_Value = _UtilLogic:Split(propertyTable["SynergyRuneOn"], ",")
+			for _, checkValue in pairs(SynergyRuneOn_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = tonumber(keyInfo[2])
+				
+				synergyManager.SynergyRuneOn[key] = value
+			end
+		end
+		--------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveGameUnitBattleStatisticsData(Entity user, number dataNum)
+		-- 유닛 통계를 저장하는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local teamManager = user.TeamManager
+		--------------------------------------------------------------------------------------
+		-- 모든 변수를 저장해봅시다..
+		---@type table<string,any>
+		local unitBattleStatisticsTable = {}
+		--------------------------------------------------------------------------------------
+		-- 유닛 별 정보 저장 필요
+		local units = _UnitSetLogic_New.UnitsParentEntity[userID]
+		for i, unit in pairs(units.Children) do
+			local unitBattleStatistics = unit.UnitBattleStatistics
+			----------------------------------------------------------------------------------
+			-- SetCharID
+			local setCharID_Value = ""
+			for key, value in pairs(unitBattleStatistics.SetCharID) do
+				setCharID_Value = setCharID_Value .. string.format("%s/%s,", key, value)
+			end
+			
+			if setCharID_Value == "" then
+				setCharID_Value = "NIL"
+			else
+				setCharID_Value = string.sub(setCharID_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("SetCharID_%d", i)] = setCharID_Value
+			----------------------------------------------------------------------------------
+			-- SetCharLevel
+			local setCharLevel_Value = ""
+			for key, value in pairs(unitBattleStatistics.SetCharLevel) do
+				setCharLevel_Value = setCharLevel_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if setCharLevel_Value == "" then
+				setCharLevel_Value = "NIL"
+			else
+				setCharLevel_Value = string.sub(setCharLevel_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("SetCharLevel_%d", i)] = setCharLevel_Value
+			----------------------------------------------------------------------------------
+			-- SetItemList
+			local setItemList_Value = ""
+			for key, value in pairs(unitBattleStatistics.SetItemList) do
+				setItemList_Value = setItemList_Value .. string.format("%s/%s,", key, value)
+			end
+			
+			if setItemList_Value == "" then
+				setItemList_Value = "NIL"
+			else
+				setItemList_Value = string.sub(setItemList_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("SetItemList_%d", i)] = setItemList_Value
+			----------------------------------------------------------------------------------
+			-- PhysicalDamageDealt
+			local physicalDamageDealt_Value = ""
+			for key, value in pairs(unitBattleStatistics.PhysicalDamageDealt) do
+				physicalDamageDealt_Value = physicalDamageDealt_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if physicalDamageDealt_Value == "" then
+				physicalDamageDealt_Value = "NIL"
+			else
+				physicalDamageDealt_Value = string.sub(physicalDamageDealt_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("PhysicalDamageDealt_%d", i)] = physicalDamageDealt_Value
+			----------------------------------------------------------------------------------
+			-- MagicalDamageDealt
+			local magicalDamageDealt_Value = ""
+			for key, value in pairs(unitBattleStatistics.MagicalDamageDealt) do
+				magicalDamageDealt_Value = magicalDamageDealt_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if magicalDamageDealt_Value == "" then
+				magicalDamageDealt_Value = "NIL"
+			else
+				magicalDamageDealt_Value = string.sub(magicalDamageDealt_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MagicalDamageDealt_%d", i)] = magicalDamageDealt_Value
+			----------------------------------------------------------------------------------
+			-- TrueDamageDealt
+			local trueDamageDealt_Value = ""
+			for key, value in pairs(unitBattleStatistics.TrueDamageDealt) do
+				trueDamageDealt_Value = trueDamageDealt_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if trueDamageDealt_Value == "" then
+				trueDamageDealt_Value = "NIL"
+			else
+				trueDamageDealt_Value = string.sub(trueDamageDealt_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("TrueDamageDealt_%d", i)] = trueDamageDealt_Value
+			----------------------------------------------------------------------------------
+			-- PhysicalDamageTaken
+			local physicalDamageTaken_Value = ""
+			for key, value in pairs(unitBattleStatistics.PhysicalDamageTaken) do
+				if not isvalid(value) then
+					value = 0
+				end
+				physicalDamageTaken_Value = physicalDamageTaken_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if physicalDamageTaken_Value == "" then
+				physicalDamageTaken_Value = "NIL"
+			else
+				physicalDamageTaken_Value = string.sub(physicalDamageTaken_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("PhysicalDamageTaken_%d", i)] = physicalDamageTaken_Value
+			----------------------------------------------------------------------------------
+			-- MagicalDamageTaken
+			local magicalDamageTaken_Value = ""
+			for key, value in pairs(unitBattleStatistics.MagicalDamageTaken) do
+				magicalDamageTaken_Value = magicalDamageTaken_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if magicalDamageTaken_Value == "" then
+				magicalDamageTaken_Value = "NIL"
+			else
+				magicalDamageTaken_Value = string.sub(magicalDamageTaken_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MagicalDamageTaken_%d", i)] = magicalDamageTaken_Value
+			----------------------------------------------------------------------------------
+			-- TrueDamageTaken
+			local trueDamageTaken_Value = ""
+			for key, value in pairs(unitBattleStatistics.TrueDamageTaken) do
+				trueDamageTaken_Value = trueDamageTaken_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if trueDamageTaken_Value == "" then
+				trueDamageTaken_Value = "NIL"
+			else
+				trueDamageTaken_Value = string.sub(trueDamageTaken_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("TrueDamageTaken_%d", i)] = trueDamageTaken_Value
+			----------------------------------------------------------------------------------
+			-- PhysicalDamageAbsorbed
+			local physicalDamageAbsorbed_Value = ""
+			for key, value in pairs(unitBattleStatistics.PhysicalDamageAbsorbed) do
+				physicalDamageAbsorbed_Value = physicalDamageAbsorbed_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if physicalDamageAbsorbed_Value == "" then
+				physicalDamageAbsorbed_Value = "NIL"
+			else
+				physicalDamageAbsorbed_Value = string.sub(physicalDamageAbsorbed_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("PhysicalDamageAbsorbed_%d", i)] = physicalDamageAbsorbed_Value
+			----------------------------------------------------------------------------------
+			-- MagicalDamageAbsorbed
+		
+			local MagicalDamageAbsorbed_Value = ""
+			for key, value in pairs(unitBattleStatistics.MagicalDamageAbsorbed) do
+				MagicalDamageAbsorbed_Value = MagicalDamageAbsorbed_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if MagicalDamageAbsorbed_Value == "" then
+				MagicalDamageAbsorbed_Value = "NIL"
+			else
+				MagicalDamageAbsorbed_Value = string.sub(MagicalDamageAbsorbed_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MagicalDamageAbsorbed_%d", i)] = MagicalDamageAbsorbed_Value
+			----------------------------------------------------------------------------------
+			-- TrueDamageAbsorbed
+			local trueDamageAbsorbed_Value = ""
+			for key, value in pairs(unitBattleStatistics.TrueDamageAbsorbed) do
+				trueDamageAbsorbed_Value = trueDamageAbsorbed_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if trueDamageAbsorbed_Value == "" then
+				trueDamageAbsorbed_Value = "NIL"
+			else
+				trueDamageAbsorbed_Value = string.sub(trueDamageAbsorbed_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("TrueDamageAbsorbed_%d", i)] = trueDamageAbsorbed_Value
+			----------------------------------------------------------------------------------
+			-- HPAmountGainedByHealing
+			local hpAmountGainedByHealing_Value = ""
+			for key, value in pairs(unitBattleStatistics.HPAmountGainedByHealing) do
+				hpAmountGainedByHealing_Value = hpAmountGainedByHealing_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if hpAmountGainedByHealing_Value == "" then
+				hpAmountGainedByHealing_Value = "NIL"
+			else
+				hpAmountGainedByHealing_Value = string.sub(hpAmountGainedByHealing_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("HPAmountGainedByHealing_%d", i)] = hpAmountGainedByHealing_Value
+			----------------------------------------------------------------------------------
+			-- HPAmountGainedByBloodAbsorption
+			local hpAmountGainedByBloodAbsorption_Value = ""
+			for key, value in pairs(unitBattleStatistics.HPAmountGainedByBloodAbsorption) do
+				hpAmountGainedByBloodAbsorption_Value = hpAmountGainedByBloodAbsorption_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if hpAmountGainedByBloodAbsorption_Value == "" then
+				hpAmountGainedByBloodAbsorption_Value = "NIL"
+			else
+				hpAmountGainedByBloodAbsorption_Value = string.sub(hpAmountGainedByBloodAbsorption_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("HPAmountGainedByBloodAbsorption_%d", i)] = hpAmountGainedByBloodAbsorption_Value
+			----------------------------------------------------------------------------------
+			-- ShieldAmountGained
+			local shieldAmountGained_Value = ""
+			for key, value in pairs(unitBattleStatistics.ShieldAmountGained) do
+				shieldAmountGained_Value = shieldAmountGained_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if shieldAmountGained_Value == "" then
+				shieldAmountGained_Value = "NIL"
+			else
+				shieldAmountGained_Value = string.sub(shieldAmountGained_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("ShieldAmountGained_%d", i)] = shieldAmountGained_Value
+			----------------------------------------------------------------------------------
+			-- HPAmountProvidedToHealing
+			local hpAmountProvidedToHealing_Value = ""
+			for key, value in pairs(unitBattleStatistics.HPAmountProvidedToHealing) do
+				hpAmountProvidedToHealing_Value = hpAmountProvidedToHealing_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if hpAmountProvidedToHealing_Value == "" then
+				hpAmountProvidedToHealing_Value = "NIL"
+			else
+				hpAmountProvidedToHealing_Value = string.sub(hpAmountProvidedToHealing_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("HPAmountProvidedToHealing_%d", i)] = hpAmountProvidedToHealing_Value
+			----------------------------------------------------------------------------------
+			-- ShieldAmountProvided
+			local shieldAmountProvided_Value = ""
+			for key, value in pairs(unitBattleStatistics.ShieldAmountProvided) do
+				shieldAmountProvided_Value = shieldAmountProvided_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if shieldAmountProvided_Value == "" then
+				shieldAmountProvided_Value = "NIL"
+			else
+				shieldAmountProvided_Value = string.sub(shieldAmountProvided_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("ShieldAmountProvided_%d", i)] = shieldAmountProvided_Value
+			----------------------------------------------------------------------------------
+			-- SkillCountUsed
+			local skillCountUsed_Value = ""
+			for key, value in pairs(unitBattleStatistics.SkillCountUsed) do
+				skillCountUsed_Value = skillCountUsed_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if skillCountUsed_Value == "" then
+				skillCountUsed_Value = "NIL"
+			else
+				skillCountUsed_Value = string.sub(skillCountUsed_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("SkillCountUsed_%d", i)] = skillCountUsed_Value
+			----------------------------------------------------------------------------------
+			-- MaximumHP
+			local maximumHP_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumHP) do
+				maximumHP_Value = maximumHP_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumHP_Value == "" then
+				maximumHP_Value = "NIL"
+			else
+				maximumHP_Value = string.sub(maximumHP_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumHP_%d", i)] = maximumHP_Value
+			----------------------------------------------------------------------------------
+			-- MaximumPhysicalAttack
+			local maximumPhysicalAttack_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumPhysicalAttack) do
+				maximumPhysicalAttack_Value = maximumPhysicalAttack_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumPhysicalAttack_Value == "" then
+				maximumPhysicalAttack_Value = "NIL"
+			else
+				maximumPhysicalAttack_Value = string.sub(maximumPhysicalAttack_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumPhysicalAttack_%d", i)] = maximumPhysicalAttack_Value
+			----------------------------------------------------------------------------------
+			-- MaximumMagicalAttack
+			local maximumMagicalAttack_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumMagicalAttack) do
+				maximumMagicalAttack_Value = maximumMagicalAttack_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumMagicalAttack_Value == "" then
+				maximumMagicalAttack_Value = "NIL"
+			else
+				maximumMagicalAttack_Value = string.sub(maximumMagicalAttack_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumMagicalAttack_%d", i)] = maximumMagicalAttack_Value
+			----------------------------------------------------------------------------------
+			-- MaximumAttackSpeed
+			local maximumAttackSpeed_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumAttackSpeed) do
+				maximumAttackSpeed_Value = maximumAttackSpeed_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumAttackSpeed_Value == "" then
+				maximumAttackSpeed_Value = "NIL"
+			else
+				maximumAttackSpeed_Value = string.sub(maximumAttackSpeed_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumAttackSpeed_%d", i)] = maximumAttackSpeed_Value
+			----------------------------------------------------------------------------------
+			-- MaximumDamagePerSecond
+			local maximumDamagePerSecond_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumDamagePerSecond) do
+				maximumDamagePerSecond_Value = maximumDamagePerSecond_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumDamagePerSecond_Value == "" then
+				maximumDamagePerSecond_Value = "NIL"
+			else
+				maximumDamagePerSecond_Value = string.sub(maximumDamagePerSecond_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumDamagePerSecond_%d", i)] = maximumDamagePerSecond_Value
+			----------------------------------------------------------------------------------
+			-- MaximumDefence
+			local maximumDefence_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumDefence) do
+				maximumDefence_Value = maximumDefence_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumDefence_Value == "" then
+				maximumDefence_Value = "NIL"
+			else
+				maximumDefence_Value = string.sub(maximumDefence_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumDefence_%d", i)] = maximumDefence_Value
+			----------------------------------------------------------------------------------
+			-- MaximumMagicalResistance
+			local maximumMagicalResistance_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumMagicalResistance) do
+				maximumMagicalResistance_Value = maximumMagicalResistance_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumMagicalResistance_Value == "" then
+				maximumMagicalResistance_Value = "NIL"
+			else
+				maximumMagicalResistance_Value = string.sub(maximumMagicalResistance_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumMagicalResistance_%d", i)] = maximumMagicalResistance_Value
+			----------------------------------------------------------------------------------
+			-- MaximumSkillusedPerMinute
+			local maximumSkillusedPerMinute_Value = ""
+			for key, value in pairs(unitBattleStatistics.SkillusedPerMinute) do
+				maximumSkillusedPerMinute_Value = maximumSkillusedPerMinute_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumSkillusedPerMinute_Value == "" then
+				maximumSkillusedPerMinute_Value = "NIL"
+			else
+				maximumSkillusedPerMinute_Value = string.sub(maximumSkillusedPerMinute_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumSkillusedPerMinute_%d", i)] = maximumSkillusedPerMinute_Value
+			----------------------------------------------------------------------------------
+			-- MaximumAttackRange
+			local maximumAttackRange_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumAttackRange) do
+				maximumAttackRange_Value = maximumAttackRange_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumAttackRange_Value == "" then
+				maximumAttackRange_Value = "NIL"
+			else
+				maximumAttackRange_Value = string.sub(maximumAttackRange_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumAttackRange_%d", i)] = maximumAttackRange_Value
+			----------------------------------------------------------------------------------
+			-- MaximumMoveSpeed
+			local maximumMoveSpeed_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumMoveSpeed) do
+				maximumMoveSpeed_Value = maximumMoveSpeed_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumMoveSpeed_Value == "" then
+				maximumMoveSpeed_Value = "NIL"
+			else
+				maximumMoveSpeed_Value = string.sub(maximumMoveSpeed_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumMoveSpeed_%d", i)] = maximumMoveSpeed_Value
+			----------------------------------------------------------------------------------
+			-- MaximumAttackDamage
+			local maximumAttackDamage_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumAttackDamage) do
+				maximumAttackDamage_Value = maximumAttackDamage_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumAttackDamage_Value == "" then
+				maximumAttackDamage_Value = "NIL"
+			else
+				maximumAttackDamage_Value = string.sub(maximumAttackDamage_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumAttackDamage_%d", i)] = maximumAttackDamage_Value
+			----------------------------------------------------------------------------------
+			-- MaximumBloodAbsorptionPercent
+			local maximumBloodAbsorptionPercent_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumBloodAbsorptionPercent) do
+				maximumBloodAbsorptionPercent_Value = maximumBloodAbsorptionPercent_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumBloodAbsorptionPercent_Value == "" then
+				maximumBloodAbsorptionPercent_Value = "NIL"
+			else
+				maximumBloodAbsorptionPercent_Value = string.sub(maximumBloodAbsorptionPercent_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumBloodAbsorptionPercent_%d", i)] = maximumBloodAbsorptionPercent_Value
+			----------------------------------------------------------------------------------
+			-- MaximumCriticalPercent
+			local maximumCriticalPercent_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumCriticalPercent) do
+				maximumCriticalPercent_Value = maximumCriticalPercent_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumCriticalPercent_Value == "" then
+				maximumCriticalPercent_Value = "NIL"
+			else
+				maximumCriticalPercent_Value = string.sub(maximumCriticalPercent_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumCriticalPercent_%d", i)] = maximumCriticalPercent_Value
+			----------------------------------------------------------------------------------
+			-- MaximumCriticalDamagePercent
+			local maximumCriticalDamagePercent_Value = ""
+			for key, value in pairs(unitBattleStatistics.MaximumCriticalDamagePercent) do
+				maximumCriticalDamagePercent_Value = maximumCriticalDamagePercent_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if maximumCriticalDamagePercent_Value == "" then
+				maximumCriticalDamagePercent_Value = "NIL"
+			else
+				maximumCriticalDamagePercent_Value = string.sub(maximumCriticalDamagePercent_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("MaximumCriticalDamagePercent_%d", i)] = maximumCriticalDamagePercent_Value
+			----------------------------------------------------------------------------------
+			-- DeadTime
+			local deadTime_Value = ""
+			for key, value in pairs(unitBattleStatistics.DeadTime) do
+				deadTime_Value = deadTime_Value .. string.format("%s/%d,", key, value)
+			end
+			
+			if deadTime_Value == "" then
+				deadTime_Value = "NIL"
+			else
+				deadTime_Value = string.sub(deadTime_Value, 1, -2)
+			end
+			unitBattleStatisticsTable[string.format("DeadTime_%d", i)] = deadTime_Value
+			----------------------------------------------------------------------------------
+		end
+		--------------------------------------------------------------------------------------
+		-- 2. 데이터 저장
+		local dbKey = ""
+		
+		if dataNum == 0 then
+			dbKey = string.format("UnitBattleStatisticsInfo_%s", _PlayerDataLogic.SetVer)
+		else
+			dbKey = string.format("UnitBattleStatisticsInfo_%s_%d", _PlayerDataLogic.SetVer, dataNum)
+		end
+		
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(dbKey, _UtilLogic:TableToString(unitBattleStatisticsTable))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(dbKey, _UtilLogic:TableToString(unitBattleStatisticsTable))
+			end
+		end
+		--------------------------------------------------------------------------------------
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameUnitBattleStatisticsData(string userID)
+		
+		-- 유닛 통계를 불러오는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		--------------------------------------------------------------------------------------
+		-- 1. 데이터 불러오기
+		local errorCode, data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("UnitBattleStatisticsInfo_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Load 실패")
+				return
+			else
+				errorCode, data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("UnitBattleStatisticsInfo_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		local unitBattleStatisticsTable = _UtilLogic:StringToTable(data)
+		--------------------------------------------------------------------------------------
+		-- 2. 유닛 통계 넣기
+		local units = _UnitSetLogic_New.UnitsParentEntity[userID]
+		for i, unit in pairs(units.Children) do
+			local unitBattleStatistics = unit.UnitBattleStatistics
+			----------------------------------------------------------------------------------
+			-- SetCharID
+			local setCharID_Value = unitBattleStatisticsTable[string.format("SetCharID_%d", i)]
+			
+			if setCharID_Value ~= "NIL" then
+				local setCharIDList = _UtilLogic:Split(setCharID_Value, ",")
+				for _, checkValue in pairs(setCharIDList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("SetCharID", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- SetCharLevel
+			local setCharLevel_Value = unitBattleStatisticsTable[string.format("SetCharLevel_%d", i)]
+			
+			if setCharLevel_Value ~= "NIL" then
+				local setCharLevelList = _UtilLogic:Split(setCharLevel_Value, ",")
+				for _, checkValue in pairs(setCharLevelList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("SetCharLevel", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- SetItemList
+			local setItemList_Value = unitBattleStatisticsTable[string.format("SetItemList_%d", i)]
+			
+			if setItemList_Value ~= "NIL" then
+				local setItemLists = _UtilLogic:Split(setItemList_Value, ",")
+				for _, checkValue in pairs(setItemLists) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("SetItemList", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- PhysicalDamageDealt
+			local physicalDamageDealt_Value = unitBattleStatisticsTable[string.format("PhysicalDamageDealt_%d", i)]
+			
+			if physicalDamageDealt_Value ~= "NIL" then
+				local physicalDamageDealtList = _UtilLogic:Split(physicalDamageDealt_Value, ",")
+				for _, checkValue in pairs(physicalDamageDealtList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("PhysicalDamageDealt", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MagicalDamageDealt
+			local magicalDamageDealt_Value = unitBattleStatisticsTable[string.format("MagicalDamageDealt_%d", i)]
+			
+			if magicalDamageDealt_Value ~= "NIL" then
+				local magicalDamageDealtList = _UtilLogic:Split(magicalDamageDealt_Value, ",")
+				for _, checkValue in pairs(magicalDamageDealtList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MagicalDamageDealt", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- TrueDamageDealt
+			local trueDamageDealt_Value = unitBattleStatisticsTable[string.format("TrueDamageDealt_%d", i)]
+			
+			if trueDamageDealt_Value ~= "NIL" then
+				local trueDamageDealtList = _UtilLogic:Split(trueDamageDealt_Value, ",")
+				for _, checkValue in pairs(trueDamageDealtList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("TrueDamageDealt", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- PhysicalDamageTaken
+			local physicalDamageTaken_Value = unitBattleStatisticsTable[string.format("PhysicalDamageTaken_%d", i)]
+			
+			if physicalDamageTaken_Value ~= "NIL" then
+				local physicalDamageTakenList = _UtilLogic:Split(physicalDamageTaken_Value, ",")
+				for _, checkValue in pairs(physicalDamageTakenList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("PhysicalDamageTaken", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MagicalDamageTaken
+			local magicalDamageTaken_Value = unitBattleStatisticsTable[string.format("MagicalDamageTaken_%d", i)]
+			
+			if magicalDamageTaken_Value ~= "NIL" then
+				local magicalDamageTakenList = _UtilLogic:Split(magicalDamageTaken_Value, ",")
+				for _, checkValue in pairs(magicalDamageTakenList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MagicalDamageTaken", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- TrueDamageTaken
+			local trueDamageTaken_Value = unitBattleStatisticsTable[string.format("TrueDamageTaken_%d", i)]
+			
+			if trueDamageTaken_Value ~= "NIL" then
+				local trueDamageTakenList = _UtilLogic:Split(trueDamageTaken_Value, ",")
+				for _, checkValue in pairs(trueDamageTakenList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("TrueDamageTaken", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- PhysicalDamageAbsorbed
+			local physicalDamageAbsorbed_Value = unitBattleStatisticsTable[string.format("PhysicalDamageAbsorbed_%d", i)]
+			
+			if physicalDamageAbsorbed_Value ~= "NIL" then
+				local physicalDamageAbsorbedList = _UtilLogic:Split(physicalDamageAbsorbed_Value, ",")
+				for _, checkValue in pairs(physicalDamageAbsorbedList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("PhysicalDamageAbsorbed", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MagicalDamageAbsorbed
+			local magicalDamageAbsorbed_Value = unitBattleStatisticsTable[string.format("MagicalDamageAbsorbed_%d", i)]
+			
+			if magicalDamageAbsorbed_Value ~= "NIL" then
+				local magicalDamageAbsorbedList = _UtilLogic:Split(magicalDamageAbsorbed_Value, ",")
+				for _, checkValue in pairs(magicalDamageAbsorbedList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MagicalDamageAbsorbed", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- TrueDamageAbsorbed
+			local trueDamageAbsorbed_Value = unitBattleStatisticsTable[string.format("TrueDamageAbsorbed_%d", i)]
+			
+			if trueDamageAbsorbed_Value ~= "NIL" then
+				local trueDamageAbsorbedList = _UtilLogic:Split(trueDamageAbsorbed_Value, ",")
+				for _, checkValue in pairs(trueDamageAbsorbedList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("TrueDamageAbsorbed", key, value)
+				end
+			end
+		
+			----------------------------------------------------------------------------------
+			-- HPAmountGainedByHealing
+			local hpAmountGainedByHealing_Value = unitBattleStatisticsTable[string.format("HPAmountGainedByHealing_%d", i)]
+			
+			if hpAmountGainedByHealing_Value ~= "NIL" then
+				local hpAmountGainedByHealingList = _UtilLogic:Split(hpAmountGainedByHealing_Value, ",")
+				for _, checkValue in pairs(hpAmountGainedByHealingList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("HPAmountGainedByHealing", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- HPAmountGainedByBloodAbsorption
+			local hpAmountGainedByBloodAbsorption_Value = unitBattleStatisticsTable[string.format("HPAmountGainedByBloodAbsorption_%d", i)]
+			
+			if hpAmountGainedByBloodAbsorption_Value ~= "NIL" then
+				local hpAmountGainedByBloodAbsorptionList = _UtilLogic:Split(hpAmountGainedByBloodAbsorption_Value, ",")
+				for _, checkValue in pairs(hpAmountGainedByBloodAbsorptionList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("HPAmountGainedByBloodAbsorption", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- ShieldAmountGained
+			local shieldAmountGained_Value = unitBattleStatisticsTable[string.format("ShieldAmountGained_%d", i)]
+			
+			if shieldAmountGained_Value ~= "NIL" then
+				local shieldAmountGainedList = _UtilLogic:Split(shieldAmountGained_Value, ",")
+				for _, checkValue in pairs(shieldAmountGainedList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("ShieldAmountGained", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- HPAmountProvidedToHealing
+			local hpAmountProvidedToHealing_Value = unitBattleStatisticsTable[string.format("HPAmountProvidedToHealing_%d", i)]
+			
+			if hpAmountProvidedToHealing_Value ~= "NIL" then
+				local hpAmountProvidedToHealingList = _UtilLogic:Split(hpAmountProvidedToHealing_Value, ",")
+				for _, checkValue in pairs(hpAmountProvidedToHealingList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("HPAmountProvidedToHealing", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- ShieldAmountProvided
+			local shieldAmountProvided_Value = unitBattleStatisticsTable[string.format("ShieldAmountProvided_%d", i)]
+			
+			if shieldAmountProvided_Value ~= "NIL" then
+				local shieldAmountProvidedList = _UtilLogic:Split(shieldAmountProvided_Value, ",")
+				for _, checkValue in pairs(shieldAmountProvidedList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("ShieldAmountProvided", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- SkillCountUsed
+			local skillCountUsed_Value = unitBattleStatisticsTable[string.format("SkillCountUsed_%d", i)]
+			
+			if skillCountUsed_Value ~= "NIL" then
+				local skillCountUsedList = _UtilLogic:Split(skillCountUsed_Value, ",")
+				for _, checkValue in pairs(skillCountUsedList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("SkillCountUsed", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumHP
+			local maximumHP_Value = unitBattleStatisticsTable[string.format("MaximumHP_%d", i)]
+			
+			if maximumHP_Value ~= "NIL" then
+				local maximumHPList = _UtilLogic:Split(maximumHP_Value, ",")
+				for _, checkValue in pairs(maximumHPList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumHP", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumPhysicalAttack
+			local maximumPhysicalAttack_Value = unitBattleStatisticsTable[string.format("MaximumPhysicalAttack_%d", i)]
+			
+			if maximumPhysicalAttack_Value ~= "NIL" then
+				local maximumPhysicalAttackList = _UtilLogic:Split(maximumPhysicalAttack_Value, ",")
+				for _, checkValue in pairs(maximumPhysicalAttackList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumPhysicalAttack", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumMagicalAttack
+			local maximumMagicalAttack_Value = unitBattleStatisticsTable[string.format("MaximumMagicalAttack_%d", i)]
+			
+			if maximumMagicalAttack_Value ~= "NIL" then
+				local maximumMagicalAttackList = _UtilLogic:Split(maximumMagicalAttack_Value, ",")
+				for _, checkValue in pairs(maximumMagicalAttackList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumMagicalAttack", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumAttackSpeed
+			local maximumAttackSpeed_Value = unitBattleStatisticsTable[string.format("MaximumAttackSpeed_%d", i)]
+			
+			if maximumAttackSpeed_Value ~= "NIL" then
+				local maximumAttackSpeedList = _UtilLogic:Split(maximumAttackSpeed_Value, ",")
+				for _, checkValue in pairs(maximumAttackSpeedList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumAttackSpeed", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumDamagePerSecond
+			local maximumDamagePerSecond_Value = unitBattleStatisticsTable[string.format("MaximumDamagePerSecond_%d", i)]
+			
+			if maximumDamagePerSecond_Value ~= "NIL" then
+				local maximumDamagePerSecondList = _UtilLogic:Split(maximumDamagePerSecond_Value, ",")
+				for _, checkValue in pairs(maximumDamagePerSecondList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumDamagePerSecond", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+		
+			-- MaximumDefence
+			local maximumDefence_Value = unitBattleStatisticsTable[string.format("MaximumDefence_%d", i)]
+			
+			if maximumDefence_Value ~= "NIL" then
+				local maximumDefenceList = _UtilLogic:Split(maximumDefence_Value, ",")
+				for _, checkValue in pairs(maximumDefenceList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumDefence", key, value)
+				end
+			end
+		
+			----------------------------------------------------------------------------------
+			-- MaximumMagicalResistance
+			local maximumMagicalResistance_Value = unitBattleStatisticsTable[string.format("MaximumMagicalResistance_%d", i)]
+			
+			if maximumMagicalResistance_Value ~= "NIL" then
+				local maximumMagicalResistanceList = _UtilLogic:Split(maximumMagicalResistance_Value, ",")
+				for _, checkValue in pairs(maximumMagicalResistanceList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumMagicalResistance", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumSkillusedPerMinute
+			local maximumSkillusedPerMinute_Value = unitBattleStatisticsTable[string.format("MaximumSkillusedPerMinute_%d", i)]
+			
+			if maximumSkillusedPerMinute_Value ~= "NIL" then
+				local maximumSkillusedPerMinuteList = _UtilLogic:Split(maximumSkillusedPerMinute_Value, ",")
+				for _, checkValue in pairs(maximumSkillusedPerMinuteList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumSkillusedPerMinute", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumAttackRange
+			local maximumAttackRange_Value = unitBattleStatisticsTable[string.format("MaximumAttackRange_%d", i)]
+			
+			if maximumAttackRange_Value ~= "NIL" then
+				local maximumAttackRangeList = _UtilLogic:Split(maximumAttackRange_Value, ",")
+				for _, checkValue in pairs(maximumAttackRangeList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumAttackRange", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumMoveSpeed
+			local maximumMoveSpeed_Value = unitBattleStatisticsTable[string.format("MaximumMoveSpeed_%d", i)]
+			
+			if maximumMoveSpeed_Value ~= "NIL" then
+				local maximumMoveSpeedList = _UtilLogic:Split(maximumMoveSpeed_Value, ",")
+				for _, checkValue in pairs(maximumMoveSpeedList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumMoveSpeed", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumAttackDamage
+			local maximumAttackDamage_Value = unitBattleStatisticsTable[string.format("MaximumAttackDamage_%d", i)]
+			
+			if maximumAttackDamage_Value ~= "NIL" then
+				local maximumAttackDamageList = _UtilLogic:Split(maximumAttackDamage_Value, ",")
+				for _, checkValue in pairs(maximumAttackDamageList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumAttackDamage", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumBloodAbsorptionPercent
+			local maximumBloodAbsorptionPercent_Value = unitBattleStatisticsTable[string.format("MaximumBloodAbsorptionPercent_%d", i)]
+			
+			if maximumBloodAbsorptionPercent_Value ~= "NIL" then
+				local maximumBloodAbsorptionPercentList = _UtilLogic:Split(maximumBloodAbsorptionPercent_Value, ",")
+				for _, checkValue in pairs(maximumBloodAbsorptionPercentList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumBloodAbsorptionPercent", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumCriticalPercent
+			local maximumCriticalPercent_Value = unitBattleStatisticsTable[string.format("MaximumCriticalPercent_%d", i)]
+			
+			if maximumCriticalPercent_Value ~= "NIL" then
+				local maximumCriticalPercentList = _UtilLogic:Split(maximumCriticalPercent_Value, ",")
+				for _, checkValue in pairs(maximumCriticalPercentList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumCriticalPercent", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- MaximumCriticalDamagePercent
+			local maximumCriticalDamagePercent_Value = unitBattleStatisticsTable[string.format("MaximumCriticalDamagePercent_%d", i)]
+			
+			if maximumCriticalDamagePercent_Value ~= "NIL" then
+				local maximumCriticalDamagePercentList = _UtilLogic:Split(maximumCriticalDamagePercent_Value, ",")
+				for _, checkValue in pairs(maximumCriticalDamagePercentList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("MaximumCriticalDamagePercent", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+			-- DeadTime
+			local deadTime_Value = unitBattleStatisticsTable[string.format("DeadTime_%d", i)]
+			
+			if deadTime_Value ~= "NIL" then
+				local deadTimeList = _UtilLogic:Split(deadTime_Value, ",")
+				for _, checkValue in pairs(deadTimeList) do
+					local keyInfo = _UtilLogic:Split(checkValue, "/")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					unitBattleStatistics:SetPropertyWithKey("DeadTime", key, value)
+				end
+			end
+			----------------------------------------------------------------------------------
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveGameTeamBattleStatisticsData(Entity user, number dataNum)
+		-- 팀 내 통계를 저장하는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local teamManager = user.TeamManager
+		local teamBattleStatistics = user.TeamBattleStatistics
+		--------------------------------------------------------------------------------------
+		-- 모든 변수를 저장해봅시다..
+		---@type table<string,any>
+		local teamBattleStatisticsTable = {}
+		--------------------------------------------------------------------------------------
+		-- SetRuneCard
+		local setRuneCard_Value = ""
+		for key, value in pairs(teamBattleStatistics.SetRuneCard) do
+			setRuneCard_Value = setRuneCard_Value .. string.format("%s/%s,", key, value)
+		end
+		
+		if setRuneCard_Value == "" then
+			setRuneCard_Value = "NIL"
+		else
+			setRuneCard_Value = string.sub(setRuneCard_Value, 1, -2)
+		end
+		teamBattleStatisticsTable["SetRuneCard"] = setRuneCard_Value
+		--------------------------------------------------------------------------------------
+		-- EnemySetRuneCard
+		local enemySetRuneCard_Value = ""
+		for key, value in pairs(teamBattleStatistics.EnemySetRuneCard) do
+			enemySetRuneCard_Value = enemySetRuneCard_Value .. string.format("%s/%s,", key, value)
+		end
+		
+		if enemySetRuneCard_Value == "" then
+			enemySetRuneCard_Value = "NIL"
+		else
+			enemySetRuneCard_Value = string.sub(enemySetRuneCard_Value, 1, -2)
+		end
+		teamBattleStatisticsTable["EnemySetRuneCard"] = enemySetRuneCard_Value
+		--------------------------------------------------------------------------------------
+		-- SetEnemyNameKey
+		local setEnemyNameKey_Value = ""
+		for key, value in pairs(teamBattleStatistics.SetEnemyNameKey) do
+			setEnemyNameKey_Value = setEnemyNameKey_Value .. string.format("%s/%s,", key, value)
+		end
+		
+		if setEnemyNameKey_Value == "" then
+			setEnemyNameKey_Value = "NIL"
+		else
+			setEnemyNameKey_Value = string.sub(setEnemyNameKey_Value, 1, -2)
+		end
+		teamBattleStatisticsTable["SetEnemyNameKey"] = setEnemyNameKey_Value
+		--------------------------------------------------------------------------------------
+		-- SetMyCoaches
+		local setMyCoach_Value = ""
+		for _, coachID in pairs(teamBattleStatistics.SetMyCoaches) do
+			setMyCoach_Value = string.format("%s%s,", setMyCoach_Value, coachID)
+		end
+		
+		if setMyCoach_Value == "" then
+			setMyCoach_Value = "NIL"
+		else
+			setMyCoach_Value = string.sub(setMyCoach_Value, 1, -2)
+		end
+		teamBattleStatisticsTable["SetMyCoaches"] = setMyCoach_Value
+		--------------------------------------------------------------------------------------
+		-- SetEnemyPresetID
+		local epID_Value = ""
+		for key, value in pairs(teamBattleStatistics.SetEnemyPresetID) do
+			epID_Value = epID_Value .. string.format("%s/%s,", key, value)
+		end
+		
+		if epID_Value == "" then
+			epID_Value = "NIL"
+		else
+			epID_Value = string.sub(epID_Value, 1, -2)
+		end
+		teamBattleStatisticsTable["SetEnemyPresetID"] = epID_Value
+		--------------------------------------------------------------------------------------
+		-- SetRoundResult
+		local rr_Value = ""
+		for key, value in pairs(teamBattleStatistics.SetRoundResult) do
+			rr_Value = rr_Value .. string.format("%s/%s,", key, value)
+		end
+		
+		if rr_Value == "" then
+			rr_Value = "NIL"
+		else
+			rr_Value = string.sub(rr_Value, 1, -2)
+		end
+		teamBattleStatisticsTable["SetRoundResult"] = rr_Value
+		--------------------------------------------------------------------------------------
+		-- SetRankAmount
+		local ra_Value = ""
+		for key, value in pairs(teamBattleStatistics.SetRankAmount) do
+			ra_Value = ra_Value .. string.format("%s/%d,", key, value)
+		end
+		
+		if ra_Value == "" then
+			ra_Value = "NIL"
+		else
+			ra_Value = string.sub(ra_Value, 1, -2)
+		end
+		teamBattleStatisticsTable["SetRankAmount"] = ra_Value
+		--------------------------------------------------------------------------------------
+		-- 2. 데이터 저장
+		local dbKey = string.format("TeamBattleStatisticsInfo_%s", _PlayerDataLogic.SetVer)
+		if dataNum ~= 0 then
+			dbKey = string.format("TeamBattleStatisticsInfo_%s_%d", _PlayerDataLogic.SetVer, dataNum)
+		end
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(dbKey, _UtilLogic:TableToString(teamBattleStatisticsTable))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(dbKey, _UtilLogic:TableToString(teamBattleStatisticsTable))
+			end
+		end
+		--------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameTeamBattleStatisticsData(string userID)
+		-- 팀 내 통계를 불러오는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		local teamBattleStatistics = user.TeamBattleStatistics
+		--------------------------------------------------------------------------------------
+		-- 1. 데이터 불러오기
+		local errorCode, data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("TeamBattleStatisticsInfo_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Load 실패")
+				return
+			else
+				errorCode, data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("TeamBattleStatisticsInfo_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		local teamBattleStatisticsTable = _UtilLogic:StringToTable(data)
+		--------------------------------------------------------------------------------------
+		-- SetRuneCard
+		if teamBattleStatisticsTable["SetRuneCard"] ~= "NIL" then
+			local setRuneCard_Value = _UtilLogic:Split(teamBattleStatisticsTable["SetRuneCard"], ",")
+			for _, checkValue in pairs(setRuneCard_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = keyInfo[2]
+				
+				teamBattleStatistics:SetPropertyWithKey("SetRuneCard", key, value)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- EnemySetRuneCard
+		if teamBattleStatisticsTable["EnemySetRuneCard"] ~= "NIL" then
+			local enemySetRuneCard_Value = _UtilLogic:Split(teamBattleStatisticsTable["EnemySetRuneCard"], ",")
+			for _, checkValue in pairs(enemySetRuneCard_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = keyInfo[2]
+				
+				teamBattleStatistics:SetPropertyWithKey("EnemySetRuneCard", key, value)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- SetEnemyNameKey
+		if teamBattleStatisticsTable["SetEnemyNameKey"] ~= "NIL" then
+			local setEnemyNameKey_Value = _UtilLogic:Split(teamBattleStatisticsTable["SetEnemyNameKey"], ",")
+			for _, checkValue in pairs(setEnemyNameKey_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = keyInfo[2]
+				
+				teamBattleStatistics:SetPropertyWithKey("SetEnemyNameKey", key, value)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- SetMyCoaches
+		if teamBattleStatisticsTable["SetMyCoaches"] ~= "NIL" then
+			teamBattleStatistics:SetCoachesProperty(teamBattleStatisticsTable["SetMyCoaches"])
+		end
+		--------------------------------------------------------------------------------------
+		-- SetEnemyPresetID
+		if teamBattleStatisticsTable["SetEnemyPresetID"] ~= "NIL" then
+			local epID_Value = _UtilLogic:Split(teamBattleStatisticsTable["SetEnemyPresetID"], ",")
+			for _, checkValue in pairs(epID_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = keyInfo[2]
+				
+				teamBattleStatistics:SetPropertyWithKey("SetEnemyPresetID", key, value)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- SetRoundResult
+		if teamBattleStatisticsTable["SetRoundResult"] ~= "NIL" then
+			local rr_Value = _UtilLogic:Split(teamBattleStatisticsTable["SetRoundResult"], ",")
+			for _, checkValue in pairs(rr_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = keyInfo[2]
+				
+				teamBattleStatistics:SetPropertyWithKey("SetRoundResult", key, value)
+			end
+		end
+		--------------------------------------------------------------------------------------
+		-- SetRankAmount
+		if teamBattleStatisticsTable["SetRankAmount"] ~= "NIL" then
+			local rr_Value = _UtilLogic:Split(teamBattleStatisticsTable["SetRankAmount"], ",")
+			for _, checkValue in pairs(rr_Value) do
+				local keyInfo = _UtilLogic:Split(checkValue, "/")
+				
+				local key = keyInfo[1]
+				local value = tonumber(keyInfo[2])
+				
+				teamBattleStatistics:SetRankCountProperty(key, value, "Set")
+			end
+		end
+		--------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetSavedDataDB(boolean saved, Entity user)
+		-- SetSavedData : 저장된 데이터가 있는지 확인할 수 있도록 체크하는 프로퍼티입니다.
+		--------------------------------------------------------
+		local userID = user.OwnerId
+		local gameManager = user.GameManager
+		local season = _ModeDataLogic:GetVersionInfo("season")
+		local ordinalNumber = _ModeDataLogic:GetVersionInfo("ordinal")
+		--------------------------------------------------------
+		gameManager.SetSavedData = saved
+		
+		local mType = _UtilLogic:Split(gameManager.ModeType)
+		
+		local sValue = ""
+		if saved then
+			sValue = string.format("TRUE_%s_%s_%d", mType[1], season, ordinalNumber)
+			self:LoadInGameInfoDataInLobby(user)
+		else
+			sValue = string.format("FALSE_%s_%s_%d", mType[1], season, ordinalNumber)
+		end
+		
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SavedData_%s", _PlayerDataLogic.SetVer), sValue)
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SavedData_%s", _PlayerDataLogic.SetVer), sValue)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetSavedDataDB(string userID)
+		-- SetSavedData : 저장된 데이터가 있는지 확인할 수 있도록 체크하는 프로퍼티입니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local gameManager = user.GameManager
+		local season = _ModeDataLogic:GetVersionInfo("season")
+		local ordinalNumber = _ModeDataLogic:GetVersionInfo("ordinal")
+		--------------------------------------------------------
+		-- 이어하기 데이터 확인
+		local errorCode, checkedDataValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("SavedData_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode, checkedDataValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("SavedData_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		if isvalid(checkedDataValue) then
+			local checkedData = _UtilLogic:Split(checkedDataValue, "_")
+			log("checkedDataValue = ", checkedDataValue)
+			if checkedData[1] == "TRUE" then
+				if checkedData[2] ~= "Rank" then
+					gameManager.SetSavedData = true
+					self:LoadInGameInfoDataInLobby(user)
+				elseif season == tonumber(checkedData[3]) and ordinalNumber == tonumber(checkedData[4]) then
+					gameManager.SetSavedData = true
+					self:LoadInGameInfoDataInLobby(user)
+				end
+			else
+				gameManager.SetSavedData = false
+			end
+		else
+			gameManager.SetSavedData = false
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadInGameInfoDataInLobby(Entity user)
+		-- 로비에서 GameInfo 중 필요한 데이터 일부만 불러오는 함수입니다.
+		--------------------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local gameManager = user.GameManager
+		--------------------------------------------------------------------------------------
+		-- 0. 데이터 불러오기
+		local errorCode, gameInfo = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("GameInfo_%s", _PlayerDataLogic.SetVer))
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Load 실패")
+				return
+			else
+				errorCode, gameInfo = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("GameInfo_%s", _PlayerDataLogic.SetVer))
+			end
+		end
+		
+		local gameInfoTable = _UtilLogic:StringToTable(gameInfo)
+		
+		if not isvalid(gameInfoTable) then
+			return
+		end
+		
+		--------------------------------------------------------------------------------------
+		-- 1. 모드 타입 및 레벨, 퇴장 정보
+		gameManager.NeedDataLoadVersion = gameInfoTable["ModeVersion"]
+		gameManager.NeedDataLoadType = gameInfoTable["ModeType"]
+		gameManager.NeedDataLoadLevel = gameInfoTable["ModeLevel"]
+		gameManager.NeedDataLoadPhaseType = gameInfoTable["PhaseType"]
+		--------------------------------------------------------------------------------------
+		-- 2. 스테이지 및 라운드 정보
+		gameManager.NeedDataLoadStage = gameInfoTable["Stage"]
+		gameManager.NeedDataLoadRound = gameInfoTable["Round"]
+		--------------------------------------------------------------------------------------
+		-- 3. 현재 시즌, 분기 체크
+		if gameManager.NeedDataLoadType == "Rank" then
+			-- 해당 분기에 처음 접속 했는지 확인
+			if gameManager.ChangeSeason then
+				gameManager.ChangeSeason = false
+				gameManager.SetSavedData = false
+				self:SetSavedDataDB(false, user)
+			end
+		elseif gameManager.NeedDataLoadType == "Tutorial" then
+			gameManager.SetSavedData = false
+		end
+		
+		----------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveGameEndData(Entity user, boolean win)
+		-- 게임이 끝났을 때, 데이터를 저장하는 함수입니다.
+		--------------------------------------------------------
+		local userID = user.OwnerId
+		local playerDataComponent = user.PlayerDataComponent
+		local gameManager = user.GameManager
+		local teamManager = user.TeamManager
+		local coachManager = user.CoachManager
+		--------------------------------------------------------
+		--[[
+			1. 전체 기록
+				- 총 게임 횟수
+			2. 게임 내 기록
+				- 승패 여부
+				- 게임 모드 및 도달 스테이지
+				- 사용 유닛 및 장착 아이템
+				- 최종 룬카드
+				- 사용 코치
+				- 최종 팀 체력
+				- 지금까지 획득한 코인
+				- 지금까지 사용한 코인
+				- 게임 일시
+		]]--
+		--------------------------------------------------------
+		-- 1. 전체 기록
+		-- 총 게임 횟수 증가
+		playerDataComponent.PlayGameCount += 1
+		
+		if win then
+			playerDataComponent.WinGameCount += 1
+		end
+		
+		local c_value = string.format("%d/%d/%d", playerDataComponent.StartGameCount, playerDataComponent.PlayGameCount, playerDataComponent.WinGameCount)
+		local c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("GameCountData_%s", _PlayerDataLogic.SetVer), c_value)
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("GameCountData_%s", _PlayerDataLogic.SetVer), c_value)
+			end
+		end
+		
+		--------------------------------------------------------
+		-- 2. 게임 내 기록
+		-- 기록 데이터 변환
+		local egDataStringValue = ""
+		
+			-- 승패 여부
+		if win then
+			egDataStringValue = "win,"
+		else
+			egDataStringValue = "lose,"
+		end
+		
+			-- 게임 모드 및 도달 스테이지
+		local roundKey = string.format("%d-%d", gameManager.Stage, gameManager.Round)
+		
+		local modeType = gameManager.ModeType
+		if modeType == "Rank" then
+			modeType = string.format("%s_%d", modeType, _ModeDataLogic.Season)
+		end
+		egDataStringValue = string.format("%s%s_%d_%s,", egDataStringValue, modeType, gameManager.ModeLevel, roundKey)
+		
+		-- 8-3 반복 플레이 처리
+		local setKey = roundKey
+		if setKey == "8-3" then
+			setKey = "8-3-1"
+			for i = 1, 5 do
+				local checkKey = string.format("%s-%d", roundKey, i)
+				if isvalid(user.TeamBattleStatistics.SetRuneCard[checkKey]) then
+					setKey = checkKey
+				else
+					break
+				end
+			end	
+		end
+		
+			-- 사용 유닛 및 장착 아이템
+		local ownUnitsStringValue = ""
+		for _, unit in pairs(teamManager.OwnUnits) do
+			local unitStringValue = ""
+			
+			if unit.UnitBattleStatistics.SetCharID[setKey] ~= nil then
+				-- 캐릭터_별 개수_(아이템들)
+				local unitCharID = unit.UnitInfo.charID
+				local unitCharLevel = unit.UnitInfo.level
+				unitStringValue = string.format("%s_%d_", unitCharID, unitCharLevel)
+				
+				
+				
+				local itemStringValue = ""
+				-- 아이템-아이템-...
+				for _, itemID in pairs(unit.UnitStatus.EquippedItemIDList) do
+					itemStringValue = string.format("%s%s-", itemStringValue, itemID)
+				end
+				
+				if itemStringValue == "" then
+					itemStringValue = "NIL"
+				else
+					itemStringValue = string.sub(itemStringValue, 1, -2)
+				end
+				
+				-- (캐릭터정보)/(캐릭터정보)/...
+				ownUnitsStringValue = string.format("%s%s%s/", ownUnitsStringValue, unitStringValue, itemStringValue)
+			end
+		end
+		
+		if ownUnitsStringValue == "" then
+			ownUnitsStringValue = "NIL"
+		else
+			ownUnitsStringValue = string.sub(ownUnitsStringValue, 1, -2)
+		end
+		
+		egDataStringValue = string.format("%s%s,", egDataStringValue, ownUnitsStringValue)
+		
+			-- 최종 룬카드
+		local runeStringValue = ""
+		for _, runeUID in pairs(teamManager.OwnRunes) do
+			local runeIDInfo = _UtilLogic:Split(runeUID, "_")
+			runeStringValue = string.format("%s%s_", runeStringValue, runeIDInfo[1])
+		end
+		
+		if runeStringValue == "" then
+			runeStringValue = "NIL"
+		else
+			runeStringValue = string.sub(runeStringValue, 1, -2)
+		end
+		egDataStringValue = string.format("%s%s,", egDataStringValue, runeStringValue)
+		
+			-- 사용 코치
+		local coachStringValue = ""
+		for _, coachID in pairs(coachManager.PlayCoachesID) do
+			coachStringValue = string.format("%s%s_", coachStringValue, coachID)
+		end
+		
+		if coachStringValue == "" then
+			coachStringValue = "NIL"
+		else
+			coachStringValue = string.sub(coachStringValue, 1, -2)
+		end
+		egDataStringValue = string.format("%s%s,", egDataStringValue, coachStringValue)
+		
+			-- 최종 팀 체력
+		egDataStringValue = string.format("%s%d,", egDataStringValue, teamManager.HP)
+		
+			-- 지금까지 획득한 코인
+		egDataStringValue = string.format("%s%d,", egDataStringValue, teamManager.GetGoldAmount)
+		
+			-- 지금까지 사용한 코인
+		egDataStringValue = string.format("%s%d,", egDataStringValue, teamManager.UsedGoldAmount)
+		
+			-- 게임 일시
+		local nowTime = (DateTime.UtcNow):ToFormattedString("MM/dd/yyyy HH:mm:ss")
+		egDataStringValue = string.format("%s%s,", egDataStringValue, nowTime)
+		
+		-- DB에 기록 후
+		local keyName = string.format("EndGameData_%s_%d", _PlayerDataLogic.SetVer, playerDataComponent.PlayGameCount)
+		
+		local eg_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(keyName, egDataStringValue)
+		for i = 1, 10 do
+			if eg_err == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				eg_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(keyName, egDataStringValue)
+			end
+		end
+		
+		-- 쌓인 통계 또한 DB에 기록
+		---------------------------------------
+		self:SaveGameUnitBattleStatisticsData(user, playerDataComponent.PlayGameCount)
+		self:SaveGameTeamBattleStatisticsData(user, playerDataComponent.PlayGameCount)
+		---------------------------------------
+		
+		-- 컴포넌트에 저장
+		playerDataComponent:SetGameRecordProperty(nil)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadEndInGameData(string userID)
+		-- 로드가 완료되면, 이어하기 데이터를 더 불러오지 않도록 합니다.
+		---------------------------------------------------------------------------------
+		local errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SavedData_%s", _PlayerDataLogic.SetVer), "FALSE")
+		for i = 1, 10 do
+			if errorCode == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				errorCode = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SavedData_%s", _PlayerDataLogic.SetVer), "FALSE")
+			end
+		end
+		---------------------------------------------------------------------------------
+	end
+
+end

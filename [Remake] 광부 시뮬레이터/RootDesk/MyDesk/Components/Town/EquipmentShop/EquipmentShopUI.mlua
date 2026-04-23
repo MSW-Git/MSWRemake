@@ -1,0 +1,886 @@
+@Component
+script EquipmentShopUI extends Component
+
+	property number filterIdx = 1
+
+	property Entity EquipmentGuidePanel = "3ecb8b15-75b0-4bf9-9978-3bd7877028eb"
+
+	property number recentBuyIndex = 0
+
+	property number recentBuyType = 0
+
+	property number beforeAbility1 = 0
+
+	property number beforeAbility2 = 0
+
+	property SyncTable<boolean> oneshot_checked
+
+	property boolean IsPlayingDirection = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 로컬라이징 (텍스트)
+		local EquipShopFilterList = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/Panel/FilterList")
+		for i=1, 4 do
+			EquipShopFilterList:GetChildByName("Filter_"..tostring(i)).TextComponent.Text = _LocalizationService:GetText("EquipType_"..tostring(i))
+		end
+		
+		local itemSlot = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/Panel/ListPanel/Slot")
+		itemSlot:GetChildByName("HavingItem"):GetChildByName("text").TextComponent.Text = _LocalizationService:GetText("Possession")
+		itemSlot:GetChildByName("EquipedItem").TextComponent.Text = _LocalizationService:GetText("Equiped")
+		
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup/Panel/Ability/UIText").TextComponent.Text = _LocalizationService:GetText("EquipedAbility_Title3")
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup/Panel/CostPanel/UIText").TextComponent.Text = _LocalizationService:GetText("PurchasePrice")
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup/Panel/Button_Buy/Title").TextComponent.Text = _LocalizationService:GetText("Purchase")
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/Button_Exit").TextComponent.Text = _LocalizationService:GetText("OK")
+		------------------------------------------------------------------------------------------------------------
+		-- 장비 리스트 슬롯 생성
+		local slotEntity = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/Panel/ListPanel/Slot")
+		
+		for i=1, 40 do
+			slotEntity:Clone("Slot_"..tostring(i))
+		end
+		
+		
+		local equipmentTable = _DataService:GetTable("Equipment")
+		
+		local bundleSlot = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup/Panel/ListPanel/Slot")
+		for i=1, 40 do
+			local clonedSlot = bundleSlot:Clone("Slot_"..tostring(math.floor(i)))
+			
+			clonedSlot:GetChildByName("MoneyPanel"):GetChildByName("Num").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(tonumber(equipmentTable:GetCell(i, 1)), nil)
+			
+			self.oneshot_checked[i] = false
+		end
+		
+		self:ChangeFilter(1)
+		self:RefreshUI()
+		------------------------------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- UI 새로고침이 필요할 때 매 프레임마다 실행
+		if self._T.refreshUI then
+			self:RefreshUI_Inner()
+			self._T.refreshUI = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI()
+		-- UI 새로고침 플래그를 설정하여 다음 프레임에 처리
+		self._T.refreshUI = true
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_Inner()
+		-- 장비샵 UI의 실제 새로고침 처리 (금액, 아이템 리스트 갱신)
+		local userData = _UserService.LocalPlayer.PlayerData
+		
+		-- 돈 수량 새로고침
+		local moneyNumUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/Panel/MoneyPanel/Num")
+		moneyNumUI.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(userData.Money, nil)
+		
+		-- 리스트 갱신
+		local itemListPanel = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/Panel/ListPanel")
+		local equipmentTable = _DataService:GetTable("Equipment")
+		local ruidTable = _DataService:GetTable("EquipmentAvatar")
+		local equipedSlotIdx = userData.equiped[self.filterIdx]
+		for i=1, 40 do
+			local slot = itemListPanel:GetChildByName("Slot_"..tostring(i))
+			
+			local ruid = ""
+			-- RUID 및 이름, 가격 표시
+			if self.filterIdx == 1 then
+				ruid = "thumbnail://"..ruidTable:GetCell(i+1, 1)
+			elseif self.filterIdx == 2 then
+				ruid = "thumbnail://"..ruidTable:GetCell(i+1, 5)
+			elseif self.filterIdx == 3 then
+				ruid = ruidTable:GetCell(i+1, 7)
+			elseif self.filterIdx == 4 then
+				ruid = "thumbnail://"..ruidTable:GetCell(i+1, 6)
+			end
+			
+			
+			
+			local cost = math.floor(tonumber(equipmentTable:GetCell(i, 1)))
+			local name = _LocalizationService:GetText(equipmentTable:GetCell(i, 3 * self.filterIdx - 1))
+			--local name = _LocalizationService:GetText("102"..string.format("%02d", i))
+			slot:GetChildByName("Bg_Icon"):GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = ruid
+			slot:GetChildByName("MoneyPanel"):GetChildByName("Num").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(cost, nil)
+			slot:GetChildByName("ItemName").TextComponent.Text = name
+			
+			-- '보유중' 정보 표시
+			if userData.haveEquipment[40*(self.filterIdx-1)+i] == true then
+				slot.ButtonComponent.Enable = false
+				slot:GetChildByName("HavingItem").Enable = true
+			else 
+				slot.ButtonComponent.Enable = true
+				slot:GetChildByName("HavingItem").Enable = false
+			end
+			
+			-- 장착중인 아이템에 '장착중' 표시
+			local equipedItemUI = 	slot:GetChildByName("EquipedItem")
+			if i == equipedSlotIdx then
+				slot:GetChildByName("EquipedItem").Enable = true
+			else
+				slot:GetChildByName("EquipedItem").Enable = false
+			end
+		end
+		
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void ChangeFilter(number filterIdx)
+		-- 장비 타입 필터를 변경하고 번들 구매 체크 상태 초기화
+		self.filterIdx = filterIdx
+		self:RefreshUI()
+		
+		local filterListUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/Panel/FilterList")
+		
+		for i=1, 4 do
+			local slot = filterListUI:GetChildByName("Filter_"..tostring(i))
+			
+			slot.ButtonComponent.Enable = true
+			slot.TextComponent.FontColor = Color.FromHexCode("#FFE398")
+			
+			if i == filterIdx then
+				slot.ButtonComponent.Enable = false
+				slot.TextComponent.FontColor = Color.FromHexCode("#653122")
+			end
+		end
+		
+		for i=1, 40 do
+			self.oneshot_checked[i] = false
+		end
+		self:RefreshBundlePurchasePopup()
+	end
+
+	@ExecSpace("Client")
+	method void ShowDetailPopup(number slotIdx)
+		-- 선택한 장비 아이템의 상세 정보 팝업 표시
+		local popupUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup")
+		
+		local ruidTable = _DataService:GetTable("EquipmentAvatar")
+		local equipTable = _DataService:GetTable("Equipment")
+		---------------------------------------------------------------------------------
+		-- 정보를 반영할 엔티티를 불러옵니다.
+		local panel = popupUI:GetChildByName("Panel")
+		
+		local iconUI = panel:GetChildByName("IconBack"):GetChildByName("Icon")
+		local nameUI = panel:GetChildByName("Name")
+		local levelNTypeUI = panel:GetChildByName("Level&Type")
+		local abilityUI = panel:GetChildByName("Ability")
+		local flavorTextUI = panel:GetChildByName("FlavorText")
+		---------------------------------------------------------------------------------
+		-- 반영할 정보를 가져옵니다.
+		local iconRUID = ""
+		if self.filterIdx == 1 then
+			iconRUID = "thumbnail://"..ruidTable:GetCell(slotIdx+1, 1)
+		elseif self.filterIdx == 2 then
+			iconRUID = "thumbnail://"..ruidTable:GetCell(slotIdx+1, 5)
+		elseif self.filterIdx == 3 then
+			iconRUID = ruidTable:GetCell(slotIdx+1, 7)
+		elseif self.filterIdx == 4 then
+			iconRUID = "thumbnail://"..ruidTable:GetCell(slotIdx+1, 6)
+		end
+		
+		local name = _LocalizationService:GetText(equipTable:GetCell(slotIdx, 3*self.filterIdx-1))
+		local abilityNum = equipTable:GetCell(slotIdx, self.filterIdx*3)
+		local flavorText = _LocalizationService:GetText(equipTable:GetCell(slotIdx, 3*self.filterIdx+1))
+		local equipType = _LocalizationService:GetText(string.format("EquipType_%d", self.filterIdx))
+		local abilityText = _LocalizationService:GetText(string.format("%d", 8000+self.filterIdx)).." +"
+		---------------------------------------------------------------------------------
+		-- 각 엔티티에 정보를 반영합니다.
+		iconUI.SpriteGUIRendererComponent.ImageRUID = iconRUID
+		nameUI.TextComponent.Text = name 
+		levelNTypeUI.TextComponent.Text = string.format("Lv.%d ", slotIdx)..equipType
+		if self.filterIdx == 4 then
+			abilityText = abilityText..string.format("%.2f%%", tonumber(abilityNum)*100)
+			abilityText = abilityText.."\n".._LocalizationService:GetText("8005").." +"..equipTable:GetCell(slotIdx, 3*self.filterIdx+2)
+			abilityUI.TextComponent.Text = abilityText
+		else
+			abilityUI.TextComponent.Text = abilityText.._ThousandsSeparator:ConvertToMetricPrefixString(tonumber(abilityNum), nil)
+		end
+		flavorTextUI.TextComponent.Text = flavorText
+		
+		-- cost num
+		local costUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup/Panel/CostPanel/Num")
+		local cost = tonumber(equipTable:GetCell(slotIdx, 1))
+		costUI.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(cost, nil).."G"
+		
+		local buyButton = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup/Panel/Button_Buy")
+		
+		if _UserService.LocalPlayer.PlayerData.Money >= cost then
+			buyButton.ButtonComponent.Enable = true
+			buyButton:GetChildByName("Title").TextComponent.FontColor = Color.FromHexCode("#303F23")
+		else 
+			buyButton.ButtonComponent.Enable = false
+			buyButton:GetChildByName("Title").TextComponent.FontColor = Color.FromHexCode("#434343")
+			_UIToast:ShowMessage(_LocalizationService:GetText("Message_NoEnoughMoney"))
+		end
+		
+		-- set enable
+		popupUI.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void SetPurchaseCheckUI()
+		-- 장비 구매 완료 시 능력치 증가 정보를 표시하는 팝업 설정
+		--------------- '구매 성공 확인 팝업' 내용 변경 및 활성화 ---------------
+		local beforeAmount = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/beforeAmount")
+		local afterAmount = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/afterAmount")
+		
+		-- 증가한 능력치 계산
+		local equipmentTable = _DataService:GetTable("Equipment")
+		local addedAbility1 = tonumber(equipmentTable:GetCell(self.recentBuyIndex, self.recentBuyType*3))
+		local addedAbility2 = 0
+		if self.recentBuyType == 4 then
+			addedAbility2 = tonumber(equipmentTable:GetCell(self.recentBuyIndex, 14))
+		end
+		
+		-- UI에 적용
+		local abilityNameUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/abilityName")
+		local beforeAmountUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/beforeAmount")
+		local afterAmountUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/afterAmount")
+		local arrorUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/arrow")
+		
+		local beforeAmountText = ""
+		local afterAmountText = ""
+		beforeAmountText = beforeAmountText.._ThousandsSeparator:ConvertToMetricPrefixString(self.beforeAbility1, nil)
+		afterAmountText = afterAmountText.._ThousandsSeparator:ConvertToMetricPrefixString(self.beforeAbility1 + addedAbility1, nil)
+		if self.recentBuyType == 1 then
+			abilityNameUI.TextComponent.Text = _LocalizationService:GetText("8001")
+			arrorUI.TextComponent.Text = "▶"
+		elseif self.recentBuyType == 2 then
+			abilityNameUI.TextComponent.Text = _LocalizationService:GetText("8002")
+			arrorUI.TextComponent.Text = "▶"
+		elseif self.recentBuyType == 3 then
+			abilityNameUI.TextComponent.Text = _LocalizationService:GetText("8003")
+			arrorUI.TextComponent.Text = "▶"
+		elseif self.recentBuyType == 4 then
+			beforeAmountText = string.format("%.4f", self.beforeAbility1)
+			afterAmountText = string.format("%.4f", self.beforeAbility1 + addedAbility1)
+			abilityNameUI.TextComponent.Text = _LocalizationService:GetText("8004").."\n".._LocalizationService:GetText("8005")
+			beforeAmountText = beforeAmountText.."\n".._ThousandsSeparator:ConvertToMetricPrefixString(self.beforeAbility2, nil)
+			afterAmountText = afterAmountText .."\n".._ThousandsSeparator:ConvertToMetricPrefixString(self.beforeAbility2 + addedAbility2, nil)
+			arrorUI.TextComponent.Text = "▶\n▶"
+		end
+		
+		beforeAmountUI.TextComponent.Text = beforeAmountText
+		afterAmountUI.TextComponent.Text = afterAmountText
+		
+		
+		-- 구매 완료 팝업(=연출) 활성화
+		self:PlayPurchaseDirection()
+		-------------------------------------------------------------------------
+		-- 레벨업 사운드 재생
+		_SoundService:PlaySound("c198d87b06b24707864b1ac73345cca8", 1)
+	end
+
+	@ExecSpace("Client")
+	method void PlayPurchaseDirection()
+		-- 장비 구매 완료 시 애니메이션 효과 재생
+		-------------------------------------------------------
+		self.IsPlayingDirection = true
+		local title = nil
+		local titleEntity_kr = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/img_powerup_Kr")
+		local titleEntity_en = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/img_powerup_En")
+		
+		if _LocalizationService.CurrentLocaleId == "ko" then
+			titleEntity_kr.Enable = true
+			titleEntity_en.Enable = false
+			title = titleEntity_kr
+		else 
+			titleEntity_kr.Enable = false
+			titleEntity_en.Enable = true
+			title = titleEntity_en	
+		end
+		-------------------------------------------------------
+		-- (1) 타이틀을 화면 중앙에 띄운다 (점점 커지는 연출)
+		local titleSizeRate = 0
+		local originTitleSize = title.UITransformComponent.RectSize 
+		local t1 = 0
+		local c1 = 1.70158
+		local c3 = c1 + 1
+		local setTitleEnable = function()
+			t1 = t1 + 1/30
+			titleSizeRate = 1+c3*(t1-1)^3+c1*(t1-1)^2
+			title.UITransformComponent.RectSize = originTitleSize*titleSizeRate
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setTitleEnable, i/60)
+		end
+		
+		-------------------------------------------------------
+		-- (2) 타이틀이 화면 상단으로 올라간다
+		local originPosY = title.UITransformComponent.anchoredPosition.y - 340 
+		title.UITransformComponent.anchoredPosition.y = originPosY
+		local t2 = 0
+		local adjustedRate = 0
+		local adjustedValue = 0
+		local setTitleMoveUp = function()
+			t2 = t2 + 1/30
+			adjustedRate = -(t2-1)^2 + 1
+			adjustedValue = 340 * adjustedRate 
+			title.UITransformComponent.anchoredPosition.y = originPosY + adjustedValue
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setTitleMoveUp, 0.85+i/60)
+		end
+		
+		-------------------------------------------------------
+		
+		-- (3) 나머지 UI들의 투명도가 올라간다
+		
+		-- sprite
+		local abilityIncrementUI = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement")
+		
+		-- only text
+		local desc = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/Title")
+		local abilityName = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/abilityName")
+		local befAmount = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/beforeAmount")
+		local aftAmount = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/afterAmount")
+		local arrow = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/AbilityIncrement/arrow")
+		
+		-- preset
+		local alpha = 0 
+		abilityIncrementUI.SpriteGUIRendererComponent.Color.a = alpha
+		desc.TextComponent.FontColor.a = alpha
+		desc.TextComponent.OutlineColor.a = alpha
+		abilityName.TextComponent.FontColor.a = alpha
+		befAmount.TextComponent.FontColor.a = alpha
+		aftAmount.TextComponent.FontColor.a = alpha
+		arrow.TextComponent.FontColor.a = alpha
+		
+		local setAlphaUp = function()
+			alpha = alpha + 1/30
+			
+			abilityIncrementUI.SpriteGUIRendererComponent.Color.a = alpha
+			
+			desc.TextComponent.FontColor.a = alpha
+			desc.TextComponent.OutlineColor.a = alpha
+			abilityName.TextComponent.FontColor.a = alpha
+			befAmount.TextComponent.FontColor.a = alpha
+			aftAmount.TextComponent.FontColor.a = alpha
+			arrow.TextComponent.FontColor.a = alpha
+		end
+		
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setAlphaUp, 1.1+i/60)
+		end
+		
+		---------------------------------
+		-- (4) '확인' 버튼이 활성화된다
+		local exitButton = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup/Panel/Button_Exit")
+		exitButton.SpriteGUIRendererComponent.Color.a = 0
+		exitButton.TextComponent.FontColor.a = 0
+		exitButton.Enable = false
+		
+		local alpha2 = 0
+		local setExitButtonEnable = function()
+			alpha2 = alpha2 + 1/30
+			exitButton.SpriteGUIRendererComponent.Color.a = alpha2
+			exitButton.TextComponent.FontColor.a = alpha2
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setExitButtonEnable, 1.4+i/60)
+		end
+		
+		local enableExitButton = function()
+			exitButton.Enable = true
+			self.IsPlayingDirection = false 
+		end
+		_TimerService:SetTimerOnce(enableExitButton, 1.35)
+		---------------------------------
+		local buyCheckPopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup")
+		buyCheckPopup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void RefreshBundlePurchasePopup()
+		-- 번들 구매 팝업의 내용을 갱신하고 체크 상태 반영
+		local equipmentTable = _DataService:GetTable("Equipment")
+		local avatarTable = _DataService:GetTable("EquipmentAvatar")
+		
+		-- 체크 여부에 따라 가격을 결정합니다.
+		local totalCost = 0
+		local purchaseCount = 0
+		for i=1, 40 do
+			if self.oneshot_checked[i] == true then
+				totalCost = totalCost + tonumber(equipmentTable:GetCell(i, 1))
+				purchaseCount = purchaseCount + 1
+			end
+		end
+		
+		-- 전체 리스트를 갱신합니다.
+		local scrollTragetIdx = 41
+		local listPanel = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup/Panel/ListPanel")
+		for i=1, 40 do
+			local slot = listPanel:GetChildByName("Slot_"..tostring(i))
+			
+			-- 아이콘
+			local ruid = ""
+			if self.filterIdx == 1 then
+				ruid = "thumbnail://"..avatarTable:GetCell(i+1, 1)
+			elseif self.filterIdx == 2 then
+				ruid = "thumbnail://"..avatarTable:GetCell(i+1, 5)
+			elseif self.filterIdx == 3 then
+				ruid = avatarTable:GetCell(i+1, 7)
+			elseif self.filterIdx == 4 then
+				ruid = "thumbnail://"..avatarTable:GetCell(i+1, 6)
+			end
+			-- 이름
+			local name = _LocalizationService:GetText(equipmentTable:GetCell(i, 3 * self.filterIdx - 1))
+		
+			
+			-- 아이콘 및 이름 적용
+			slot:GetChildByName("Bg_Icon"):GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = ruid
+			slot:GetChildByName("ItemName").TextComponent.Text = name
+			
+			local cost = tonumber(equipmentTable:GetCell(i, 1))
+			-- 보유 여부에 따라 '보유중' 표시
+			if _UserService.LocalPlayer.PlayerData.haveEquipment[40*(self.filterIdx-1)+i] == true then
+				slot:GetChildByName("HavingItem").Enable = true
+				slot:GetChildByName("IsSelected").Enable = false
+				slot:GetChildByName("Selectable").Enable = false
+				slot:GetChildByName("Unselectable").Enable = false
+				slot.ButtonComponent.Enable = false
+			else 
+				slot:GetChildByName("HavingItem").Enable = false
+			
+				-- 가격 지불 불가하다면 선택 불가능
+				if cost > (_UserService.LocalPlayer.PlayerData.Money - totalCost) then
+					-- 단 이미 선택된 아이템이라면
+					if self.oneshot_checked[i] == true then
+						slot:GetChildByName("IsSelected").Enable = true
+						slot:GetChildByName("Selectable").Enable = false
+						slot:GetChildByName("Unselectable").Enable = false
+						slot.ButtonComponent.Enable = true
+					else 
+						slot:GetChildByName("IsSelected").Enable = false
+						slot:GetChildByName("Selectable").Enable = false
+						slot:GetChildByName("Unselectable").Enable = true
+						slot.ButtonComponent.Enable = false
+					end
+					
+				-- 가격 지불 가능하면 선택 가능
+				else 
+					-- 단 이미 선택된 아이템이라면
+					if self.oneshot_checked[i] == true then
+						slot:GetChildByName("IsSelected").Enable = true
+						slot:GetChildByName("Selectable").Enable = false
+						slot:GetChildByName("Unselectable").Enable = false
+						slot.ButtonComponent.Enable = true
+					else 
+						slot:GetChildByName("IsSelected").Enable = false
+						slot:GetChildByName("Selectable").Enable = true
+						slot:GetChildByName("Unselectable").Enable = false
+						slot.ButtonComponent.Enable = true
+						
+						if i < scrollTragetIdx then
+							scrollTragetIdx = i
+						end
+					end
+				end
+			end
+		
+			
+			-- 장착 여부에 따라 '장착중' 표시
+			if i == _UserService.LocalPlayer.PlayerData.equiped[self.filterIdx] then
+				slot:GetChildByName("EquipedItem").Enable = true
+			else 
+				slot:GetChildByName("EquipedItem").Enable = false
+			end	
+		
+		end
+		
+		
+		-- 구매 가능한 첫번째 아이템으로 스크롤을 강제 이동합니다.
+		if scrollTragetIdx < 41 then
+			local lineIdx = math.floor((scrollTragetIdx-1)/5)+1
+			local absolutePosition = 330*(lineIdx-1) - 20*(lineIdx-1) -6 + 330*(lineIdx/8) 
+			local relatePosition = absolutePosition / 2500
+			listPanel.ScrollLayoutGroupComponent:SetScrollNormalizedPosition(UITransformAxis.Vertical, relatePosition) --relatePosition)
+		else 
+			
+		end
+		
+		
+		
+		-- 구매 가격 갱신 및 버튼 활성화
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup/Panel/CostPanel/Num").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(totalCost, nil).." G"
+		local buyBtn = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup/Panel/Button_Buy")
+		if totalCost <= 0 or totalCost > _UserService.LocalPlayer.PlayerData.Money then
+			buyBtn.ButtonComponent.Enable = false
+		elseif totalCost <= _UserService.LocalPlayer.PlayerData.Money then 
+			buyBtn.ButtonComponent.Enable = true
+		end
+		
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup/Panel/CountPanel/Num").TextComponent.Text = tostring(purchaseCount)
+	end
+
+	@ExecSpace("Client")
+	method void Oneshot_CheckboxButtonClicked(number checkboxIdx)
+		-- 번들 구매에서 체크박스 클릭 시 선택 상태 토글
+		if self.oneshot_checked[checkboxIdx] == true then
+			self.oneshot_checked[checkboxIdx] = false
+		else
+			self.oneshot_checked[checkboxIdx] = true
+		end
+		
+		self:RefreshBundlePurchasePopup()
+	end
+
+	@ExecSpace("Client")
+	method void PlayPurchaseBundleDirection()
+		-- 번들 구매 완료 시 애니메이션 효과 및 결과 표시
+		local popup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup")
+		
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup").Enable = false
+		------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------
+		_SoundService:PlaySound("c198d87b06b24707864b1ac73345cca8", 1)
+		local title = nil
+		local title_ko = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup/Panel/img_powerup_Kr") 
+		local title_en = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup/Panel/img_powerup_En")
+		if _LocalizationService.CurrentLocaleId == "ko" then
+			title = title_ko
+			title_ko.Enable = true
+			title_en.Enable = false
+		elseif _LocalizationService.CurrentLocaleId == "en" then
+			title = title_en
+			title_ko.Enable = false
+			title_en.Enable = true
+		end
+		-------------------------------------------------------
+		self.IsPlayingDirection = true
+		
+		-- (1) 타이틀을 화면 중앙에 띄운다 (점점 커지는 연출)
+		local titleSizeRate = 0
+		local originTitleSize = title.UITransformComponent.RectSize 
+		local t1 = 0
+		local c1 = 1.70158
+		local c3 = c1 + 1
+		local setTitleEnable = function()
+			t1 = t1 + 1/30
+			titleSizeRate = 1+c3*(t1-1)^3+c1*(t1-1)^2
+			title.UITransformComponent.RectSize = originTitleSize*titleSizeRate
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setTitleEnable, i/60)
+		end
+		
+		-------------------------------------------------------
+		-- (2) 타이틀이 화면 상단으로 올라간다
+		local originPosY = title.UITransformComponent.anchoredPosition.y - 340 
+		title.UITransformComponent.anchoredPosition.y = originPosY
+		local t2 = 0
+		local adjustedRate = 0
+		local adjustedValue = 0
+		local setTitleMoveUp = function()
+			t2 = t2 + 1/30
+			adjustedRate = -(t2-1)^2 + 1
+			adjustedValue = 340 * adjustedRate 
+			title.UITransformComponent.anchoredPosition.y = originPosY + adjustedValue
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setTitleMoveUp, 0.85+i/60)
+		end
+		-------------------------------------------------------
+		-- (3) 구매한 장비 아이콘 리스트 갱신
+		local bundle = {}
+		for i=1, 40 do
+			if self.oneshot_checked[i] == true then
+				table.insert(bundle, 40*(self.filterIdx-1) + i)
+			end
+		end
+		local slot = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup/Panel/EquipmentIconList/Slot")
+		local equipmentAvatarTable = _DataService:GetTable("EquipmentAvatar")
+		
+		table.sort(bundle)
+		
+		local i = 0
+		local cloneSlot = function()
+			i = i + 1
+			local equipmentIdx = bundle[i]
+			local level = (equipmentIdx-1)%40 +1
+			local type = math.floor((equipmentIdx-1)/40) + 1
+			local iconRUID = ""
+			if type == 1 then
+				iconRUID = "thumbnail://"..equipmentAvatarTable:GetCell(level+1, 1)
+			elseif type ==2 then
+				iconRUID = "thumbnail://"..equipmentAvatarTable:GetCell(level+1, 5)
+			elseif type ==3 then
+				iconRUID = "thumbnail://"..equipmentAvatarTable:GetCell(level+1, 7)
+			elseif type ==4 then
+				iconRUID = "thumbnail://"..equipmentAvatarTable:GetCell(level+1, 6)
+			end
+			
+			local clonedEntity = slot:Clone("Slot_"..tostring(math.floor(i)))
+			local iconEntity = clonedEntity:GetChildByName("Icon")
+			
+			iconEntity.SpriteGUIRendererComponent.ImageRUID = iconRUID
+			
+			_SoundService:PlaySound("2fe5ae4eea8c493198063e38141c9a4a", 1)
+		end
+		local timeCost = 1.5 + (0.1*#bundle)
+		for i=1, #bundle do
+			_TimerService:SetTimerOnce(cloneSlot, 1.5 + 0.1*i)
+		end
+		-------------------------------------------------------
+		-- (4) 나머지 UI들의 투명도 올림
+		local abilityPanel = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup/Panel/AbilityIncrement")
+		local exitButton = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup/Panel/Button_Exit")
+		local desc = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup/Panel/Title")
+		
+		local alpha = 0
+		local setAlphaUp = function()
+			alpha = alpha + 1/30
+			abilityPanel.SpriteGUIRendererComponent.Color.a = alpha
+			for i=1, #abilityPanel.Children do
+				abilityPanel.Children[i].TextComponent.FontColor.a = alpha
+			end
+			desc.TextComponent.FontColor.a = alpha
+			desc.TextComponent.OutlineColor.a = alpha
+		end
+		
+		local alpha2 = 0 
+		local extiButtonAlphaUp = function()
+			alpha2 = alpha2 + 1/30
+			exitButton.SpriteGUIRendererComponent.Color.a = alpha2
+			exitButton.TextComponent.FontColor.a = alpha2
+		end
+		
+		-- 모든 알파값을 0으로 지정합니다.
+		abilityPanel.SpriteGUIRendererComponent.Color.a = alpha
+		for i=1, #abilityPanel.Children do
+			abilityPanel.Children[i].TextComponent.FontColor.a = alpha
+		end
+		desc.TextComponent.FontColor.a = alpha
+		desc.TextComponent.OutlineColor.a = alpha
+		exitButton.SpriteGUIRendererComponent.Color.a = alpha2
+		exitButton.TextComponent.FontColor.a = alpha2
+		
+		
+		
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setAlphaUp, timeCost + i/60)
+			_TimerService:SetTimerOnce(extiButtonAlphaUp, timeCost + 0.35 + i/60)
+		end
+		
+		-- 버튼을 활성화시키고 연출을 종료합니다.
+		exitButton.ButtonComponent.Enable = false
+		local SetEnableExitButton = function()
+			exitButton.ButtonComponent.Enable = true
+			self.IsPlayingDirection = false
+		end
+		_TimerService:SetTimerOnce(SetEnableExitButton, timeCost + 0.85)
+		------------------------------------------------------------------------------------
+		-- 현재 수치에 맞게 능력치 텍스트를 변경합니다.
+		local abilityName = _LocalizationService:GetText("800"..tostring(math.floor(self.filterIdx)))
+		if self.filterIdx == 4 then
+			abilityName = abilityName.."\n".._LocalizationService:GetText("8005")
+		end
+		
+		local equipTable = _DataService:GetTable("Equipment")
+		
+		local abilityAmount = 0
+		local abilityAmount2 = 0
+		for i=1, 40 do
+			if self.oneshot_checked[i] == true then
+				abilityAmount = abilityAmount + tonumber(equipTable:GetCell(i, self.filterIdx*3))
+				if self.filterIdx == 4 then
+					abilityAmount2 = abilityAmount2 + tonumber(equipTable:GetCell(i, 14))
+				end
+			end
+		end
+		
+		local abilityAmountTxt = ""
+		if self.filterIdx == 4 then
+			abilityAmountTxt = string.format("+ %.2f%%\n+ %.2f", abilityAmount, abilityAmount2)
+		else 
+			abilityAmountTxt = "+ ".._ThousandsSeparator:ConvertToMetricPrefixString(abilityAmount, nil)
+		end
+		
+		
+		abilityPanel:GetChildByName("abilityName").TextComponent.Text = abilityName
+		abilityPanel:GetChildByName("abilityAmount").TextComponent.Text = abilityAmountTxt
+		------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------
+		popup.Enable = true
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- ESC 키 입력 시 단계적으로 팝업 또는 UI 닫기
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if key== KeyboardKey.Escape and self.Entity.Enable and self.IsPlayingDirection == false then
+			
+			local detailInfoPopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup")
+			local buyCheckPopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BuyCheckPopup")
+			local bundlePurchasePopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup")
+			local bundlePurchaseDirectionPopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup")
+			
+			if detailInfoPopup.Enable == true then
+				detailInfoPopup.Enable = false
+			
+			elseif buyCheckPopup.Enable == true then
+				bundlePurchasePopup.Enable = false
+				
+			elseif bundlePurchaseDirectionPopup.Enable == true then
+				bundlePurchaseDirectionPopup.Enable = false
+				
+			else
+				bundlePurchasePopup.Enable = false
+				buyCheckPopup.Enable = false
+				bundlePurchaseDirectionPopup.Enable = false
+				self.Entity.Enable = false
+				
+				-- 상점을 닫으면 묶음구매 선택지를 리셋합니다.
+				for i=1, 40 do
+					self.oneshot_checked[i] = false
+				end
+			end
+			
+			_UserService.LocalPlayer.MovementComponent.Enable = true
+		end
+	end
+
+	@EventSender("Entity", "bfdd825a-19b4-4f39-8126-088e2b5fd119")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 필터 버튼 1번(무기) 클릭 시 해당 장비 종류로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:ChangeFilter(1)
+	end
+
+	@EventSender("Entity", "acc33c57-c3d1-4e80-a3ed-79f8d3638ce3")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 필터 버튼 2번(방어구) 클릭 시 해당 장비 종류로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:ChangeFilter(2)
+	end
+
+	@EventSender("Entity", "18bc30cf-a6b1-4a62-8e0d-20672fbabb1f")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 필터 버튼 3번(액세서리) 클릭 시 해당 장비 종류로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:ChangeFilter(3)
+	end
+
+	@EventSender("Entity", "b504628b-1dc7-4e54-a54c-e877e1ec2a2a")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 필터 버튼 4번(스킹) 클릭 시 해당 장비 종류로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:ChangeFilter(4)
+	end
+
+	@EventSender("Entity", "ef25004f-25f8-4d49-b4c6-4048d15da3b6")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 장비 상세 정보 팝업에서 구매 버튼 클릭 시 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		local LvNTypeTxt = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup/Panel/Level&Type").TextComponent.Text
+		local toolStr_S, toolStr_E = string.find(LvNTypeTxt, " ")
+		
+		local level = tonumber(string.sub(LvNTypeTxt, 4, toolStr_S-1))
+		
+		-- 증가한 능력치 및 레벨을 데이터 추가 전 미리 계산
+		local beforeAbility1 = 0
+		local beforeAbility2 = 0
+		
+		
+		-- 구매한 장비 타입에 따라 증가한 능력치가 다르므로 구분해줌
+		if self.filterIdx == 1 then
+			self.beforeAbility1 = _UserService.LocalPlayer.PlayerIngameData.MiningPower
+			_UserService.LocalPlayer.PlayerData:AddEquipment(1, level)
+			self.recentBuyType = 1
+		elseif self.filterIdx == 2 then
+			self.beforeAbility1 = _UserService.LocalPlayer.PlayerIngameData.HPMax
+			_UserService.LocalPlayer.PlayerData:AddEquipment(2, level)
+			self.recentBuyType = 2
+		elseif self.filterIdx == 3 then
+			self.beforeAbility1 = _UserService.LocalPlayer.PlayerBackpack.maxStorageNum
+			_UserService.LocalPlayer.PlayerData:AddEquipment(3, level)
+			self.recentBuyType = 3
+		elseif self.filterIdx == 4 then
+			self.beforeAbility1 = _UserService.LocalPlayer.MovementComponent.InputSpeed
+			self.beforeAbility2 = _UserService.LocalPlayer.PlayerIngameData.MPMax
+			_UserService.LocalPlayer.PlayerData:AddEquipment(4, level)
+			self.recentBuyType = 4
+		end
+		
+		self.recentBuyIndex = level
+		------------------------------------------------------------
+		-- 상세 정보 팝업 닫기
+		local detailInfoPopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/DetailInfoPopup")
+		detailInfoPopup.Enable = false
+		-------------------------------------------------------------------------
+	end
+
+	@EventSender("Entity", "363707fb-de14-4f62-9da8-01c313c305e5")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 번들 구매 버튼 클릭 시 체크 상태 초기화하고 팝업 표시
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		for i=1, 40 do
+			self.oneshot_checked[i] = false
+		end
+		self:RefreshBundlePurchasePopup()
+		_EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup").Enable = true
+	end
+
+	@EventSender("Entity", "fa2281ca-ea10-4c42-991d-2a78cfc5af35")
+	handler HandleButtonClickEvent11(ButtonClickEvent event)
+		-- 번들 구매 팝업에서 구매 확정 버튼 클릭 시 실제 구매 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		local parameterTable = _UtilLogic:TableToString(self.oneshot_checked)
+		_UserService.LocalPlayer.PlayerData:PurchaseEquipmentBundle(self.filterIdx,parameterTable)
+	end
+
+	@EventSender("Entity", "412c763f-222c-4374-9be3-b63722147f63")
+	handler HandleButtonClickEvent12(ButtonClickEvent event)
+		-- 구매 결과창에 생성해두었던 슬롯들을 모두 제거
+		local purchasedList = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchaseResultPopup/Panel/EquipmentIconList")
+		
+		for i=#purchasedList.Children, 1, -1 do
+			local childName = purchasedList.Children[i].Name
+			if childName ~= "Slot" then
+				purchasedList.Children[i]:Destroy()
+			end
+		end
+		
+		-- 체크 해제
+		for i=1, 40 do
+			self.oneshot_checked[i] = false
+		end
+	end
+
+	@EventSender("Entity", "e49e92f8-f380-4cad-89b3-fadcb4efffea")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 상점을 닫으면 묶음구매를 닫습니다.
+		for i=1, 40 do
+			self.oneshot_checked[i] = false
+		end
+		local bundlePurchasePopup = _EntityService:GetEntityByPath("/ui/EquipShopGroup/EquipShop/BundlePurchasePopup")
+		bundlePurchasePopup.Enable = false
+	end
+
+end

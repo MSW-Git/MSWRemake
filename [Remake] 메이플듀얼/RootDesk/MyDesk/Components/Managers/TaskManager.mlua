@@ -1,0 +1,1605 @@
+@Component
+script TaskManager extends Component
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property Duel duel = nil
+
+	property ActionManager actionManager = nil
+
+	property CommandManager commandManager = nil
+
+	property TriggerManager triggerManager = nil
+
+	property History history = nil
+
+	property table coreDelayTable = {}
+
+	property number delay = 0
+
+	property any validSelector = nil
+
+	property any liveSelector = nil
+
+	property any openSelector = nil
+
+	property any damagedSelector = nil
+
+	property any nonDamagedSelector = nil
+
+	property any freezeSelector = nil
+
+	property any nonFreezeSelector = nil
+
+	property any stunSelector = nil
+
+	property any nonStunSelector = nil
+
+	property any barrierSelector = nil
+
+	property any nonBarrierSelector = nil
+
+	property any venomSelector = nil
+
+	property any minionSelector = nil
+
+	property any skillSelector = nil
+
+	property any alienSelector = nil
+
+	property any dragonSelector = nil
+
+	property any mushroomSelector = nil
+
+	property any bossSelector = nil
+
+	property any nonBossSelector = nil
+
+	property any npcSelector = nil
+
+	property any devilSelector = nil
+
+	property any plantSelector = nil
+
+	property any petSelector = nil
+
+	property any attackComparer = nil
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 각종 셀렉터와 비교 함수들을 초기화
+		self.validSelector = function(object)
+			if object:IsUnit() then
+				return not object.isDead
+			elseif object:IsCard() then
+				return not _Table:IsEmpty(object.info)
+			else
+				return true
+			end
+		end
+		
+		self.liveSelector = function(unit)
+			return not unit.isDead
+		end
+		
+		self.openSelector = function(card)
+			return not _Table:IsEmpty(card.info)
+		end
+		
+		self.damagedSelector = function(minion)
+			return minion:IsDamaged()
+		end
+		
+		self.nonDamagedSelector = function(minion)
+			return not minion:IsDamaged()
+		end
+		
+		self.freezeSelector = function(minion)
+			return minion.isFreeze
+		end
+		
+		self.nonFreezeSelector = function(minion)
+			return not minion.isFreeze
+		end
+		
+		self.stunSelector = function(minion)
+			return minion.isStun
+		end
+		
+		self.nonStunSelector = function(minion)
+			return not minion.isStun
+		end
+		
+		self.barrierSelector = function(minion)
+			return minion.hasBarrier
+		end
+		
+		self.nonBarrierSelector = function(minion)
+			return not minion.hasBarrier
+		end
+		
+		self.venomSelector = function(minion)
+			return minion.hasVenom
+		end
+		
+		self.minionSelector = function(card)
+			return card.category == "Minion"
+		end
+		
+		self.skillSelector = function(card)
+			return card.category == "Skill"
+		end
+		
+		self.alienSelector = function(object)
+			return _Table:Contains(object.tagArray, "Alien")
+		end
+		
+		self.dragonSelector = function(object)
+			return _Table:Contains(object.tagArray, "Dragon")
+		end
+		
+		self.mushroomSelector = function(object)
+			return _Table:Contains(object.tagArray, "Mushroom")
+		end
+		
+		self.bossSelector = function(object)
+			return _Table:Contains(object.tagArray, "Boss")
+		end
+		
+		self.npcSelector = function(object)
+			return _Table:Contains(object.tagArray, "Npc")
+		end
+		
+		self.devilSelector = function(object)
+			return _Table:Contains(object.tagArray, "Devil")
+		end
+		
+		self.plantSelector = function(object)
+			return _Table:Contains(object.tagArray, "Plant")
+		end
+		
+		self.petSelector = function(object)
+			return _Table:Contains(object.tagArray, "Pet")
+		end
+		
+		self.attackComparer = function(left, right)
+			return left.atk < right.atk
+		end
+		
+		self.coreDelayTable = {
+			BeginDuel = 4.75,
+			EndDuel = 3.25,
+			BeginRound = 2,
+			
+			Summon = 0.75,
+			Kill = 0.75,
+			Dead = 0.5,
+			Damage = 0.75,
+			Transform = 0.7,
+			
+			Draw = 1,
+			Overdraw = 0.7,
+			Add = 1,
+			Discard = 0.7,
+		}
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 서버에서 딜레이 시간을 업데이트하여 감소시킴
+		self.delay = math.max(self.delay - delta, 0)
+	end
+
+	method void RunProcess(any process, string actionName)
+		-- 프로세스를 실행하고 관련 애니메이션과 딜레이를 처리
+		local receiver = self.triggerManager.receiver
+		
+		self:AddDelay(self.actionManager:GetProcessDelay(actionName))
+		if receiver:IsMinion() then
+			self:AddDelay(0.3)
+		end
+		
+		if self:IsClient() then
+			if receiver:IsMinion() then
+				receiver:PlaceFront()
+				_Tween:MoveAndScaleTo(receiver.actor.Entity, 0.3 * Vector2.up, receiver:GetInverseScale(), 0.15, EaseType.QuadEaseOut, EaseType.QuadEaseOut, false)
+				
+				wait(0.15)
+				
+				_TimerService:SetTimerOnce(function()
+						if not isvalid(receiver.actor) then
+							return
+						end
+					
+						_Tween:MoveAndScaleTo(receiver.actor.Entity, Vector2.zero, Vector2.one, 0.15, EaseType.QuadEaseIn, EaseType.QuadEaseIn, false)
+						
+						wait(0.15)
+						
+						receiver:PlaceBack()
+					end, self.actionManager:GetProcessDelay(actionName))
+			end
+			
+			self.actionManager:PlayPreProcessAction(actionName)
+		end
+		
+		process()
+		
+		if self:IsClient() then
+			self.actionManager:PlayPostProcessAction(actionName)	
+		
+			if receiver:IsMinion() then
+				wait(0.15)
+			end	
+		end
+	end
+
+	method table RunBatch(table objectArray, string taskName, table args, table eachArgs, string actionName, number interval)
+		-- 여러 객체에 대해 일괄적으로 작업을 수행하고 결과를 반환
+		local resultTable = {}
+		
+		if self:IsServer() then
+			self:AddDelay(self:GetBatchDelay(objectArray, taskName, actionName or "", interval or 0))
+			for i, object in ipairs(objectArray) do
+				resultTable[object] = _Util:Call(object, taskName, eachArgs and eachArgs[object] or args)
+			end
+		else
+			local coroutineArray = {}
+			for i, object in ipairs(objectArray) do
+				if i > 1 then
+					wait(interval or 0)
+				end
+				coroutineArray[i] = _Util:RunCoroutine(self, "RunCore", 
+					{object, taskName, eachArgs and eachArgs[object] or args, actionName or ""})
+			end
+			_Util:WaitCoroutines(coroutineArray)
+			for i, object in ipairs(objectArray) do
+				resultTable[object] = coroutineArray[i].result
+			end
+		end
+		
+		self.duel:UpdateEnchantments(objectArray, taskName, args, nil)
+		
+		return resultTable
+	end
+
+	@ExecSpace("ClientOnly")
+	method any RunCore(Object object, string taskName, table args, string actionName)
+		-- 클라이언트에서 개별 객체의 핵심 작업을 실행하고 액션을 재생
+		self.actionManager:PlayPreCoreAction(actionName, object, args)
+		local result = _Util:Call(object, taskName, args)
+		self.actionManager:PlayPostCoreAction(actionName, object, args)
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddDelay(number delay)
+		-- 서버에서 전체 딜레이 시간에 추가 딜레이를 더함
+		self.delay += delay
+	end
+
+	method number GetCoreDelay(string taskName)
+		-- 특정 작업의 기본 딜레이 시간을 반환
+		return self.coreDelayTable[taskName] or 0
+	end
+
+	method number GetBatchDelay(table objectArray, string taskName, string actionName, number interval)
+		-- 일괄 작업의 총 딜레이 시간을 계산하여 반환
+		local delay = 0
+		for i, object in ipairs(objectArray) do
+			delay = math.max(delay, (i - 1) * interval + self:GetCoreDelay(taskName) +
+				self.actionManager:GetCoreDelay(actionName))
+		end
+		
+		return delay
+	end
+
+	method void BeginDuel()
+		-- 듀얼 시작 시 초기 설정과 첫 번째 라운드 시작을 처리
+		local objectArray = {self.duel}
+		local taskName = "BeginDuel"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "BeginDuel", args, nil, nil)
+		
+		while self.duel:HasDeadMinion() do
+			self:Dead()
+		end
+		
+		local roundPlayer
+		local tutorial = self.duel.tutorial
+		if isvalid(tutorial) then
+			local duelId = tutorial.duelId
+			if duelId == 1 or duelId == 2 then
+				roundPlayer = tutorial.bot.Entity.Character.player.opponent
+			end
+		else
+			roundPlayer = self.duel:ShareRandomPlayer()
+		end
+		
+		self:BeginRound(roundPlayer)
+	end
+
+	method void EndDuel(Player winner)
+		-- 듀얼 종료 시 승자 처리와 후속 작업을 수행
+		local objectArray = {self.duel}
+		local taskName = "EndDuel"
+		local args = {winner}
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		local tutorial = self.duel.tutorial
+		if self:IsClient() and isvalid(tutorial) then
+			_Server:Request(tutorial, "Progress", {"PostEndDuel"})
+		end
+	end
+
+	method void DeclareEndRound(Player player, boolean isTimeout)
+		-- 플레이어가 라운드 종료를 선언할 때의 처리 로직
+		local objectArray = {player}
+		local taskName = "DeclareEndRound"
+		local args = {isTimeout}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "DeclareEndRound", args, nil, nil)
+		
+		while self.duel:HasDeadMinion() do
+			self:Dead()
+		end
+		
+		if player.opponent.isEndRoundDeclared then
+			local roundPlayer = self.duel.roundPlayer
+			self:EndRound(isTimeout)
+			if not self.duel:HasDeadPlayer() then
+				self:BeginRound(roundPlayer.opponent)
+			end
+		else
+			self:EndTurn(isTimeout)
+			self:BeginTurn(player.opponent)
+		end
+	end
+
+	method void BeginRound(Player roundPlayer)
+		-- 새로운 라운드 시작 시 MP 지급과 카드 드로우를 처리
+		local objectArray = {self.duel}
+		local taskName = "BeginRound"
+		local args = {roundPlayer}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "BeginRound", args, nil, nil)
+		
+		while self.duel:HasDeadMinion() do
+			self:Dead()
+		end
+		
+		self:GainMp(self.duel:GetPlayers(), 6, nil, nil, nil)
+		self:Draw({[self.duel.playerArray[1]] = 1, [self.duel.playerArray[2]] = 1}, nil, false)
+		self:BeginTurn(roundPlayer)
+	end
+
+	method void EndRound(boolean isTimeout)
+		-- 라운드 종료 시 전투 단계와 얼음 해제를 처리
+		local objectArray = {self.duel}
+		local taskName = "EndRound"
+		local args = {isTimeout}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		self:EndTurn(isTimeout)
+		if self.duel:HasBattler() then
+			self:BattlePhase()
+		end
+		
+		self:Thaw(self.duel:GetMinions(nil), nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "EndRound", args, nil, nil)
+		
+		while self.duel:HasDeadMinion() do
+			self:Dead()
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		for _, player in ipairs(self.duel.playerArray) do
+			self.history:ClearThisRoundCard(player)
+			self.history:ClearThisRoundDeadMinion(player)
+		end
+	end
+
+	method void BeginTurn(Player turnPlayer)
+		-- 플레이어의 턴 시작 시 초기 설정과 트리거 발동
+		local objectArray = {self.duel}
+		local taskName = "BeginTurn"
+		local args = {turnPlayer}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "BeginTurn", args, nil, nil)
+		
+		while self.duel:HasDeadMinion() do
+			self:Dead()
+		end
+	end
+
+	method void EndTurn(boolean isTimeout)
+		-- 플레이어의 턴 종료 시 후속 처리와 트리거 발동
+		local objectArray = {self.duel}
+		local taskName = "EndTurn"
+		local args = {isTimeout}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "EndTurn", args, nil, nil)
+		
+		while self.duel:HasDeadMinion() do
+			self:Dead()
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+	end
+
+	method void BattlePhase()
+		-- 전투 단계에서 미니언들의 전투와 직접 공격을 처리
+		if self:IsClient() then
+			self.duel.turnSign:SetState("Battle")
+			
+			wait(0.75)
+		end
+		self:AddDelay(0.75)
+		
+		local objectArray = {self.duel}
+		local taskName = "BattlePhase"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "BattlePhase", args, nil, nil)
+		
+		while self.duel:HasBattlerBoth() do
+			self:Battle(self.duel:GetFrontBattlers())
+			
+			while self.duel:HasDeadMinion() do
+				self:Dead()
+			end
+			
+			if self.duel:HasDeadPlayer() then
+				return
+			end
+		end
+		
+		local minionArray = self.duel:GetDirectAttackers()
+		for _, minion in ipairs(minionArray) do
+			self:DirectAttack(minion)
+		end
+		
+		while self.duel:HasDeadMinion() do
+			self:Dead()
+		end
+	end
+
+	method void Battle(table minionArray)
+		-- 두 미니언 간의 전투를 실행하고 데미지를 처리
+		local objectArray = {self.duel}
+		local taskName = "Battle"
+		local args = {minionArray}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "PreBattle", args, nil, nil)
+		
+		for _, minion in ipairs(minionArray) do
+			if minion.isDead then
+				while self.duel:HasDeadMinion() do
+					self:Dead()
+				end
+				
+				return
+			end
+		end
+		
+		local drawLengthArray = {}
+		if self:IsClient() then
+			for i, minion in ipairs(minionArray) do
+				minion:PlaceFront()
+				if minion.atk >= 6 then
+					drawLengthArray[i] = -0.45
+				elseif minion.atk >= 4 then
+					drawLengthArray[i] = -0.3
+				else
+					drawLengthArray[i] = -0.15
+				end
+			end
+			_Tween:Lerp(minionArray[1].actor.Entity, minionArray[1].anchorEntity, minionArray[2].anchorEntity, 0, drawLengthArray[1], 0.2, EaseType.Linear, nil, nil)
+			_Tween:Lerp(minionArray[2].actor.Entity, minionArray[2].anchorEntity, minionArray[1].anchorEntity, 0, drawLengthArray[2], 0.2, EaseType.Linear, nil, nil)
+			
+			wait(0.3)
+		end
+		self:AddDelay(0.3)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		if self:IsClient() then
+			local resource = self.resourceManager:GetResource("Battle")
+			
+			minionArray[1]:PlaceFront()
+			minionArray[2]:PlaceFront()
+			_Tween:Lerp(minionArray[1].actor.Entity, minionArray[1].anchorEntity, minionArray[2].anchorEntity, drawLengthArray[1], 0.45, 0.4, EaseType.QuintEaseIn, nil, nil)
+			_Tween:Lerp(minionArray[2].actor.Entity, minionArray[2].anchorEntity, minionArray[1].anchorEntity, drawLengthArray[2], 0.45, 0.4, EaseType.QuintEaseIn, nil, nil)
+			
+			wait(0.3)
+			
+			_SoundService:PlaySound(resource.hookSound, 0.5)
+			
+			wait(0.1)
+			
+			local middlePosition = Vector3.Lerp(minionArray[1].anchorEntity.TransformComponent.WorldPosition, 
+				minionArray[2].anchorEntity.TransformComponent.WorldPosition, 0.5)
+			local intensity
+			local hitAnimation
+			local hitSound
+			local volume
+			local maxAtk = math.max(minionArray[1].atk, minionArray[2].atk)
+			if maxAtk >= 6 then
+				intensity = 1
+				hitAnimation = resource.veryStrongHitAnimation
+				hitSound = resource.veryStrongHitSound
+				volume = 1
+			elseif maxAtk >= 4 then
+				intensity = 0.25
+				hitAnimation = resource.strongHitAnimation
+				hitSound = resource.strongHitSound
+				volume = 0.5
+			else
+				intensity = 0
+				hitAnimation = resource.hitAnimation
+			end
+			_CameraService:GetCurrentCameraComponent():ShakeCamera(intensity, 0.75)
+			_Effect:PlayEffect(hitAnimation, middlePosition, nil, _Effect:GetUnitLayerOptions(nil))
+			if not _UtilLogic:IsNilorEmptyString(hitSound) then
+				_SoundService:PlaySound(hitSound, volume)
+			end
+			
+			_Tween:Lerp(minionArray[1].actor.Entity, minionArray[1].anchorEntity, minionArray[2].anchorEntity, 0.45, 0, 0.6, EaseType.QuintEaseOut, nil, nil)
+			_Tween:Lerp(minionArray[2].actor.Entity, minionArray[2].anchorEntity, minionArray[1].anchorEntity, 0.45, 0, 0.6, EaseType.QuintEaseOut, nil, nil)
+			
+			_TimerService:SetTimerOnce(function()
+					minionArray[1]:PlaceBack()
+					minionArray[2]:PlaceBack()
+				end, 0.6)
+		end
+		self:AddDelay(0.4)
+		
+		local damageArray = {minionArray[2].atk, minionArray[1].atk}
+		if minionArray[1].isImmuneToStrong and minionArray[1].atk < minionArray[2].atk then
+			damageArray[1] = 0
+		end
+		if minionArray[2].isImmuneToStrong and minionArray[2].atk < minionArray[1].atk then
+			damageArray[2] = 0
+		end
+		self:Damage(minionArray, nil, nil,
+			{[minionArray[1]] = {minionArray[2], damageArray[1]}, [minionArray[2]] = {minionArray[1], damageArray[2]}}, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "PostBattle", args, nil, nil)
+	end
+
+	method void GainMp(table playerArray, integer delta, table eachArgs, string actionName, number interval)
+		-- 플레이어들에게 MP를 지급하여 마나 자원을 증가시킴
+		local objectArray = playerArray
+		local taskName = "GainMp"
+		local args = {delta}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void LoseMp(table playerArray, integer delta, table eachArgs, string actionName, number interval)
+		-- 플레이어들의 MP를 차감하여 마나 자원을 소모시킴
+		local objectArray = playerArray
+		local taskName = "LoseMp"
+		local args = {delta}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void Play(Card card, Unit target, Minion pivot)
+		-- 카드를 플레이하여 미니언 소환 또는 스킬 사용을 처리
+		local objectArray = {card}
+		local taskName = "Play"
+		local args = {target}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		card:Open()
+		card:SetActorEnable(false)
+		self:LoseMp({card.player}, card.cost, nil, nil, nil)
+		card.hand:RemoveCards(objectArray)
+		self.duel:ShowCard(card)
+		self:AddDelay(0.75)
+		
+		self.history:AddThisGameCard(card.player, card.name)
+		self.history:AddThisRoundCard(card.player, card.name)
+		self.history:AddThisGameMp(card.player, card.cost)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "PrePlay", args, nil, nil)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		if card.category == "Minion" then
+			self:Place({card}, pivot, false, true)
+		elseif card.category == "Skill" then
+			self:Cast(card, target, true)
+		end
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "PostPlay", args, nil, nil)
+		
+		while self.duel:HasDeadMinion() do
+			self:Dead()
+		end
+		
+		if not card.player.opponent.isEndRoundDeclared then
+			self:EndTurn(false)
+			self:BeginTurn(card.player.opponent)
+		end
+		
+		card:Clear()
+		self.duel:ApplyAuras()
+	end
+
+	method void Place(table cardArray, Minion pivot, boolean betray, boolean isPlaying)
+		-- 카드들을 필드에 배치하여 미니언으로 소환
+		local objectArray = {}
+		local taskName = "Place"
+		local args = {}
+		
+		local cardTable = {}
+		for _, card in ipairs(cardArray) do
+			local owner = betray and card.player.opponent or card.player
+			local cards = cardTable[card.player] or {}
+			cardTable[card.player] = cards
+			if #cards < owner.field.capacity - #owner.field.minionArray then
+				table.insert(cards, card)
+			end
+		end
+		
+		if not isPlaying then
+			for player, cards in pairs(cardTable) do
+				local owner = betray and player.opponent or player
+				for _, card in ipairs(cards) do
+					card:Open()
+					card:SetActorEnable(false)
+				end
+				player.hand:RemoveCards(cards)
+			end
+		end
+		
+		local blueprintTable = {}
+		for player, cards in pairs(cardTable) do
+			local owner = betray and player.opponent or player
+			local blueprintArray = {}
+			blueprintTable[owner] = blueprintArray
+			for i, card in ipairs(cards) do
+				blueprintArray[i] = card:GetMinionBlueprint()
+			end
+			
+			_Table:Append(objectArray, cards)
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self:Summon(blueprintTable, pivot, isPlaying)
+		
+		if not isPlaying then
+			for _, card in ipairs(objectArray) do
+				card:Clear()
+			end
+			self.duel:ApplyAuras()
+		end
+	end
+
+	method void Cast(Card card, Unit target, boolean isPlaying)
+		-- 스킬 카드를 사용하여 대상에게 효과를 적용
+		local objectArray = {card}
+		local taskName = "Cast"
+		local args = {target}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		if not isPlaying then
+			card:Open()
+			card:SetActorEnable(false)
+			self.duel:ShowCard(card)
+			self:AddDelay(0.5)
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Cast", args, nil, nil)
+		
+		if not isPlaying then
+			while self.duel:HasDeadMinion() do
+				self:Dead()
+			end
+			
+			card:Clear()
+			self.duel:ApplyAuras()	
+		end
+	end
+
+	method void Put(table blueprintTable, any source, table eachSource)
+		-- 블루프린트를 이용해 새로운 카드를 덱에 추가
+		local objectArray = {}
+		local taskName = "Put"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		for player, blueprintArray in pairs(blueprintTable) do
+			local count = #blueprintArray
+			local cardArray = self.duel:ShareAcquiredCards(count)
+			for i, card in ipairs(cardArray) do
+				local blueprint = blueprintArray[i]
+				card:SetPlayer(player)
+				if not _Table:IsEmpty(blueprint) then
+					card:SetInfo(blueprint.info)
+					card.enchantmentArray = _Table:DeepCopy(blueprint.enchantmentArray)
+				end
+			end
+			player.deck:InsertCards(cardArray)
+			_Table:Append(objectArray, cardArray)
+			
+			if self:IsClient() then
+				local delay = 0
+				local delta = 0.25 / #cardArray
+				for i, card in ipairs(cardArray) do
+					local origin = eachSource and eachSource[player][i] or source
+					local fromPosition = origin and origin:GetActorPosition() or Vector2.zero
+					local transform = card.actor.Entity.TransformComponent
+					transform.WorldPosition.x = fromPosition.x
+					transform.WorldPosition.y = fromPosition.y
+					transform.Scale.x = 0
+					transform.Scale.y = 0
+					
+					local toPosition = Vector2((-0.5 * count + i - 0.5) * 1.5, player.isOurs and -1.4 or 1.6)
+					_TimerService:SetTimerOnce(function()
+							_Tween:MoveAndScaleTo(card.actor.Entity, toPosition, Vector2.one, 0.75, EaseType.CubicEaseOut, EaseType.CubicEaseOut, true)
+						end, delay)
+					delay = delay + delta
+				end
+			end
+		end
+		if self:IsClient() then
+			wait(1.5)
+		end
+		self:AddDelay(1.5)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, 0.1)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Put", args, nil, nil)
+	end
+
+	method table Add(table blueprintTable, any source, table eachSource)
+		-- 블루프린트를 이용해 새로운 카드를 손에 추가
+		local objectArray = {}
+		local taskName = "Add"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		local cardTable = {}
+		for player, blueprintArray in pairs(blueprintTable) do
+			local cardArray = self.duel:ShareAcquiredCards(math.min(#blueprintArray, player.hand.capacity - #player.hand.cardArray))
+			cardTable[player] = cardArray
+			for i, card in ipairs(cardArray) do
+				local blueprint = blueprintArray[i]
+				card:SetPlayer(player)
+				if not _Table:IsEmpty(blueprint) and (self:IsServer() or card:IsAlly()) then
+					card:SetInfo(blueprint.info)
+					card.enchantmentArray = _Table:DeepCopy(blueprint.enchantmentArray)
+				end
+			end
+			player.hand:InsertCards(cardArray)
+			_Table:Append(objectArray, cardArray)
+			
+			if self:IsClient() then
+				for i, card in ipairs(cardArray) do
+					local origin = eachSource and eachSource[player][i] or source
+					local position = origin and origin:GetActorPosition() or Vector2.zero
+					local transform = card.actor.Entity.TransformComponent
+					transform.WorldPosition.x = position.x
+					transform.WorldPosition.y = position.y
+					transform.Scale.x = 0
+					transform.Scale.y = 0
+				end
+			end
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, 0.1)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Add", args, nil, nil)
+		
+		return cardTable
+	end
+
+	method table Draw(table countTable, any selector, boolean betray)
+		-- 덱에서 카드를 드로우하여 손에 가져오거나 오버드로우 처리
+		local objectArray = {}
+		local taskName = "Draw"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		local drawCardTable = {}
+		local overdrawCardTable = {}
+		local fatigueCountTable = {}
+		for player, count in pairs(countTable) do 
+			local owner = betray and player.opponent or player
+			local cardArray = player.deck:ShareTopCards(count, selector)
+			local drawCardArray = {}
+			local overdrawCardArray = {}
+			local fatigueCount = selector and 0 or count - #cardArray
+			drawCardTable[owner] = drawCardArray
+			overdrawCardTable[owner] = overdrawCardArray
+			fatigueCountTable[owner] = fatigueCount
+			local spareCount = owner.hand.capacity - #owner.hand.cardArray
+			for i = 1, spareCount do
+				table.insert(drawCardArray, cardArray[i])
+			end
+			for i = spareCount + 1, #cardArray do
+				table.insert(overdrawCardArray, cardArray[i])
+			end
+			
+			if betray then
+				for _, card in ipairs(cardArray) do
+					card:ClearPlayer()
+					card:SetPlayer(owner)
+				end
+			end
+			for _, card in ipairs(drawCardArray) do
+				card:PrivateOpen()
+				card:SetFace(false)
+			end
+			player.deck:RemoveCards(cardArray)
+			owner.hand:InsertCards(drawCardArray)
+			_Table:Append(objectArray, drawCardArray)
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, 0.1)
+		
+		self:Overdraw(overdrawCardTable)
+		self:Fatigue(fatigueCountTable)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Draw", args, nil, nil)
+		
+		return drawCardTable
+	end
+
+	method void Overdraw(table cardTable)
+		-- 손이 가득할 때 초과 드로우된 카드들을 처리
+		local objectArray = {}
+		local taskName = "Overdraw"
+		local args = {}
+		
+		for player, cardArray in pairs(cardTable) do
+			for _, card in ipairs(cardArray) do
+				card:Open()
+				card:SetFace(false)
+			end
+			_Table:Append(objectArray, cardArray)
+			
+			if self:IsClient() then
+				local size = #cardArray
+				local delay = 0
+				local delta = 0.25 / size
+				for i, card in ipairs(cardArray) do
+					local toPosition = Vector2((-0.5 * size + i - 0.5) * 1.5, player.isOurs and -1.4 or 1.6)
+					_TimerService:SetTimerOnce(function()
+							player.deck:AddCardsCount(-1)
+							card:SetFace(true)
+							_Tween:TransformTo(card.actor.Entity, toPosition, 0, Vector2.one, 0.75, EaseType.CubicEaseOut, EaseType.CubicEaseOut, EaseType.CubicEaseOut, true)
+						end, delay)
+					delay = delay + delta
+				end
+			end
+		end
+		if not _Table:IsEmpty(objectArray) then
+			if self:IsClient() then
+				wait(1.5)
+			end
+			self:AddDelay(1.5)
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		for _, cardArray in pairs(cardTable) do
+			for _, card in ipairs(cardArray) do
+				card:Clear()
+			end
+		end
+		self.duel:ApplyAuras()
+	end
+
+	method void Fatigue(table countTable)
+		-- 덱이 비었을 때 피로 데미지를 적용
+		local objectArray = {}
+		local taskName = "Fatigue"
+		local args = {}
+		
+		local eachArgs = {}
+		local fatigueArray = {}
+		for player, count in pairs(countTable) do
+			if count <= 0 then
+				continue
+			end
+			eachArgs[player] = {self.duel, 3 * count}
+			table.insert(objectArray, player)
+			
+			if self:IsClient() then
+				local delay = 0
+				local delta = 0.25 / count
+				for i = 1, count do
+					local fatigue = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Fatigue"), "Fatigue", Vector3.zero, player.deck.slotEntity).Fatigue
+					table.insert(fatigueArray, fatigue)
+					fatigue.Entity:Detach()
+					fatigue.nametag.Name = _LocalizationService:GetText("Fatigue")
+					fatigue.costume.DefaultEquipUserId = player.character.Entity.Name
+					fatigue.Entity.TransformComponent.WorldPosition.z -= i
+					local toPosition = Vector2((-0.5 * count + i - 0.5) * 1.5, player.isOurs and -1.4 or 1.6)
+					_TimerService:SetTimerOnce(function()
+							_Tween:TransformTo(fatigue.Entity, toPosition, 0, Vector2.one, 0.75, EaseType.CubicEaseOut, EaseType.CubicEaseOut, EaseType.CubicEaseOut, true)
+						end, delay)
+					delay = delay + delta
+					
+				end
+			end
+		end
+		if not _Table:IsEmpty(eachArgs) then
+			if self:IsClient() then
+				wait(2)
+			end
+			self:AddDelay(2)
+		end
+		
+		if self:IsClient() then
+			for _, fatigue in ipairs(fatigueArray) do
+				fatigue.Entity:Destroy()
+			end
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		if not _Table:IsEmpty(eachArgs) then
+			self:Damage(objectArray, nil, nil, eachArgs, nil, nil)
+		end
+	end
+
+	method void Return(table cardArray, boolean betray)
+		-- 손에 있는 카드들을 덱으로 돌려보내기
+		local objectArray = {}
+		local taskName = "Return"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		local cardTable = {}
+		for _, card in ipairs(cardArray) do
+			local owner = betray and card.player.opponent or card.player
+			local cards = cardTable[card.player] or {}
+			cardTable[card.player] = cards
+			table.insert(cards, card)
+		end
+		
+		for player, cards in pairs(cardTable) do
+			local owner = betray and player.opponent or player
+			if betray then
+				for _, card in ipairs(cards) do
+					card:ClearPlayer()
+					card:SetPlayer(owner)
+				end
+			end
+			player.hand:RemoveCards(cards)
+			owner.deck:InsertCards(cards)
+			_Table:Append(objectArray, cards)
+			
+			if self:IsClient() then
+				local zRotation = player.hand.Entity.TransformComponent.WorldZRotation
+				for i, card in ipairs(cards) do
+					local position = card:GetActorPosition() + Vector2.up
+					_Tween:MoveAndRotateTo(card.actor.Entity, position, zRotation, 0.75, EaseType.CubicEaseOut, EaseType.CubicEaseOut, true)
+				end
+			end
+		end
+		if not _Table:IsEmpty(objectArray) then
+			if self:IsClient() then
+				wait(1.5)
+			end
+			self:AddDelay(1.5)
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, 0.1)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Return", args, nil, nil)
+	end
+
+	method void Discard(table cardArray)
+		-- 손에 있는 카드들을 버리기 처리하고 기록 저장
+		local objectArray = cardArray
+		local taskName = "Discard"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		local cardTable = {}
+		for _, card in ipairs(cardArray) do
+			local cards = cardTable[card.player] or {}
+			cardTable[card.player] = cards
+			table.insert(cards, card)
+		end
+		
+		for player, cardArray in pairs(cardTable) do
+			player.hand:RemoveCards(cardArray)
+		end
+		
+		for _, card in ipairs(cardArray) do
+			card:Open()
+			
+			self.history:AddThisGameDiscardedCard(card.player, card.name)
+			
+			if self:IsClient() then
+				local transform = card.actor.Entity.TransformComponent
+				transform.WorldPosition.z -= 10
+				transform.ZRotation = 0
+				
+				local toPosition = transform.WorldPosition:ToVector2() + (card.player.isOurs and Vector2(0, 1) or Vector2(0, -1))
+				_Tween:MoveTo(card.actor.Entity, toPosition, 0.75, EaseType.CubicEaseOut, true)
+			end
+		end
+		if not _Table:IsEmpty(objectArray) then
+			if self:IsClient() then
+				wait(1.25)
+			end
+			self:AddDelay(1.25)
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Discard", args, nil, nil)
+		
+		for _, card in ipairs(cardArray) do
+			card:Clear()
+		end
+		self.duel:ApplyAuras()
+	end
+
+	method void InsertAddCostEnchantment(table cardArray, integer delta, table remover, table eachArgs, string actionName, number interval)
+		-- 카드들에 비용 증가 인챈트먼트를 추가
+		local objectArray = _Table:Select(cardArray, self.openSelector)
+		local taskName = "InsertAddCostEnchantment"
+		local args = {delta, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void InsertSetCostEnchantment(table cardArray, integer cost, table remover, table eachArgs, string actionName, number interval)
+		-- 카드들에 비용 고정 인챈트먼트를 추가
+		local objectArray = _Table:Select(cardArray, self.openSelector)
+		local taskName = "InsertSetCostEnchantment"
+		local args = {cost, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void Summon(table blueprintTable, Minion pivot, boolean isPlaying)
+		-- 블루프린트를 이용해 미니언을 필드에 소환
+		local objectArray = {}
+		local taskName = "Summon"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		local minionTable = {}
+		if isPlaying then
+			local player = table.keys(blueprintTable)[1]
+			local minion = self.duel:SharePlacingMinion()
+			self.duel:SpawnAndSetPlacingMinion()
+			minionTable[player] = {minion}
+		else
+			for player, blueprintArray in pairs(blueprintTable) do
+				local minionArray = self.duel:ShareAcquiredMinions(math.min(#blueprintArray, player.field.capacity - #player.field.minionArray))
+				minionTable[player] = minionArray
+			end
+		end
+		
+		for player, minionArray in pairs(minionTable) do
+			local blueprintArray = blueprintTable[player]
+			for i, minion in ipairs(minionArray) do
+				local blueprint = blueprintArray[i]
+				minion:SetPlayer(player)
+				minion:SetInfo(blueprint.info)
+				minion.enchantmentArray = _Table:DeepCopy(blueprint.enchantmentArray)
+			end
+			
+			player.field:InsertMinions(minionArray, pivot)
+			_Table:Append(objectArray, minionArray)
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Summon", args, nil, nil)
+	end
+
+	method void Dead()
+		-- 죽은 미니언들을 처리하고 필드에서 제거
+		local objectArray = {}
+		local taskName = "Dead"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		local minionTable = {}
+		for _, player in ipairs(self.duel.playerArray) do
+			local minionArray = player.field:GetDeadMinions()
+			minionTable[player] = minionArray
+			_Table:Append(objectArray, minionArray)
+			
+			for _, minion in ipairs(minionArray) do
+				self.history:AddThisGameDeadMinion(player, minion.name)
+				self.history:AddThisRoundDeadMinion(player, minion.name)
+			end
+		end
+		self.duel:Sort(objectArray)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Dead", args, nil, nil)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		for player, minionArray in pairs(minionTable) do
+			player.field:RemoveMinions(minionArray)
+			for _, minion in ipairs(minionArray) do
+				minion:Clear()
+			end
+		end
+		self.duel:ApplyAuras()
+	end
+
+	method table Kick(table minionArray, boolean betray, string actionName, number interval)
+		-- 미니언들을 필드에서 손으로 되돌려보내기
+		local objectArray = {}
+		local taskName = "Kick"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		local minionTable = {}
+		local eachSource = {}
+		for _, minion in ipairs(minionArray) do
+			local owner = betray and minion.player.opponent or minion.player
+			local minions = minionTable[minion.player] or {}
+			local sources = eachSource[owner] or {}
+			minionTable[minion.player] = minions
+			eachSource[owner] = sources
+			if #minions < owner.hand.capacity - #owner.hand.cardArray then
+				table.insert(minions, minion)
+				table.insert(sources, minion)
+			end
+		end
+		
+		local blueprintTable = {}
+		for player, minions in pairs(minionTable) do
+			local owner = betray and player.opponent or player
+			local blueprintArray = {}
+			blueprintTable[owner] = blueprintArray
+			for i, minion in ipairs(minions) do
+				blueprintArray[i] = minion:GetBlueprintByName(minion.name)
+			end
+			
+			_Table:Append(objectArray, minions)
+		end
+		
+		self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+		
+		local cardTable = self:Add(blueprintTable, nil, eachSource)
+		
+		for player, minions in pairs(minionTable) do
+			local owner = betray and player.opponent or player
+			player.field:RemoveMinions(minions)
+			for _, minion in ipairs(minions) do
+				minion:Clear()
+			end
+		end
+		self.duel:ApplyAuras()
+		
+		return cardTable
+	end
+
+	method void Vanish(table minionArray, string actionName, number interval)
+		-- 미니언들을 필드에서 완전히 사라지게 처리
+		local objectArray = _Table:Select(minionArray, self.liveSelector)
+		local taskName = "Vanish"
+		local args = {}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+		
+		local minionTable = {}
+		for _, minion in ipairs(objectArray) do
+			local minions = minionTable[minion.player] or {}
+			minionTable[minion.player] = minions
+			table.insert(minions, minion)
+		end
+		for player, minions in pairs(minionTable) do
+			player.field:RemoveMinions(minions)
+			for _, minion in ipairs(minions) do
+				minion:Clear()
+			end
+		end
+		self.duel:ApplyAuras()
+	end
+
+	method void Transform(table minionArray, table blueprint, table eachArgs, string actionName, number interval)
+		-- 미니언들을 다른 미니언으로 변신시키기
+		local objectArray = _Table:Select(minionArray, self.liveSelector)
+		local taskName = "Transform"
+		local args = {blueprint}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+		
+		self.duel:ApplyAuras()
+	end
+
+	method void DirectAttack(Minion minion)
+		-- 미니언이 상대 플레이어에게 직접 공격을 가하기
+		local objectArray = {minion}
+		local taskName = "DirectAttack"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		
+		local player = minion.player.opponent
+		if player.isDead then
+			return
+		end
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "PreDirectAttack", args, nil, nil)
+		
+		local resource = self.resourceManager:GetResource("DirectAttack")
+		local drawLength
+		if self:IsClient() then
+			minion:PlaceFront()
+			if minion.atk >= 6 then
+				drawLength = -0.25
+			elseif minion.atk >= 4 then
+				drawLength = -0.2
+			else
+				drawLength = -0.15
+			end
+			_Tween:Lerp(minion.actor.Entity, minion.anchorEntity, player.actor.Entity, 0, drawLength, 0.2, EaseType.Linear, nil, nil)
+			
+			wait(0.3)
+		end
+		self:AddDelay(0.3)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		if self:IsClient() then
+			minion:PlaceFront()
+			
+			_Tween:Lerp(minion.actor.Entity, minion.anchorEntity, player.actor.Entity, drawLength, 1, 0.4, EaseType.QuartEaseIn, nil, nil)
+			
+			wait(0.3)
+			
+			_SoundService:PlaySound(resource.hookSound, 0.5)
+			
+			wait(0.1)
+			
+			local intensity
+			local hitAnimation
+			local hitSound
+			local volume
+			if minion.atk >= 6 then
+				intensity = 1
+				hitAnimation = resource.veryStrongHitAnimation
+				hitSound = resource.veryStrongHitSound
+				volume = 1
+			elseif minion.atk >= 4 then
+				intensity = 0.25
+				hitAnimation = resource.strongHitAnimation
+				hitSound = resource.strongHitSound
+				volume = 0.5
+			else
+				intensity = 0
+				hitAnimation = resource.hitAnimation
+			end
+			_CameraService:GetCurrentCameraComponent():ShakeCamera(intensity, 0.75)
+			_Effect:PlayHitEffect(hitAnimation, player, Vector3.zero, minion, nil)
+			if not _UtilLogic:IsNilorEmptyString(hitSound) then
+				_SoundService:PlaySound(hitSound, volume)
+			end
+			
+			_Tween:Lerp(minion.actor.Entity, minion.anchorEntity, player.actor.Entity, 1, 0, 0.6, EaseType.QuartEaseOut, nil, nil)
+			_TimerService:SetTimerOnce(function()
+					minion:PlaceBack()
+				end, 0.6)
+		end
+		self:AddDelay(0.4)
+		
+		self:Damage({player}, minion, player.isImmuneToDirectAttack and 0 or minion.atk, nil, nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "PostDirectAttack", args, nil, nil)
+	end
+
+	method void Kill(table unitArray, string actionName, number interval)
+		-- 살아있는 유닛들을 즉시 죽이기
+		local objectArray = _Table:Select(unitArray, self.liveSelector)
+		local taskName = "Kill"
+		local args = {}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+	end
+
+	method table Damage(table unitArray, any attacker, integer damage, table eachArgs, string actionName, number interval)
+		-- 유닛들에게 데미지를 가하고 관련 효과들을 처리
+		local objectArray = _Table:Select(unitArray, self.liveSelector)
+		local taskName = "Damage"
+		local args = {attacker, damage}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		self.duel:Sort(objectArray)
+		
+		local resultTable = self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+		
+		local minionArray = {}
+		for unit, result in pairs(resultTable) do
+			if result.loseBarrier then
+				table.insert(minionArray, unit)
+			end
+		end
+		self:LoseBarrier(minionArray, nil, nil)
+		
+		minionArray = {}
+		for unit, result in pairs(resultTable) do
+			if result.isFreeze then
+				table.insert(minionArray, unit)
+			end
+		end
+		self:Freeze(minionArray, nil, nil)
+		
+		local minionTable = {}
+		for unit, result in pairs(resultTable) do
+			if result.loseStun then
+				minionTable[eachArgs and eachArgs[unit][1] or attacker] = true
+			end
+		end
+		self:Awake(table.keys(minionTable), nil, nil)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Damage", args, eachArgs, resultTable)
+		
+		return resultTable
+	end
+
+	method void Heal(table unitArray, integer delta, table eachArgs, string actionName, number interval)
+		-- 유닛들의 체력을 회복시켜 생명력을 증가시키기
+		local objectArray = _Table:Select(unitArray, self.liveSelector)
+		local taskName = "Heal"
+		local args = {delta}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		self.duel:Sort(objectArray)
+		
+		local resultTable = self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "Heal", args, eachArgs, resultTable)
+	end
+
+	method void Freeze(table minionArray, string actionName, number interval)
+		-- 미니언들에게 빙결 상태를 적용하여 움직임을 제한
+		local objectArray = _Table:Select(minionArray, self.liveSelector)
+		local taskName = "Freeze"
+		local args = {}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+	end
+
+	method void Thaw(table minionArray, string actionName, number interval)
+		-- 빙결된 미니언들의 얼음을 녹여 상태를 해제
+		local objectArray = _Table:Select(_Table:Select(minionArray, self.freezeSelector), self.liveSelector)
+		local taskName = "Thaw"
+		local args = {}
+		self.duel:Sort(objectArray)
+		
+		local resultTable = self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+	end
+
+	method void Stun(table minionArray, string actionName, number interval)
+		-- 미니언들에게 기절 상태를 적용하여 행동을 불가능하게 하기
+		local objectArray = _Table:Select(minionArray, self.liveSelector)
+		local taskName = "Stun"
+		local args = {}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+	end
+
+	method void Scare(table minionArray, string actionName, number interval)
+		-- 미니언들에게 공포 상태를 적용하여 전투를 방해
+		local objectArray = _Table:Select(minionArray, self.liveSelector)
+		local taskName = "Scare"
+		local args = {}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+	end
+
+	method void Awake(table minionArray, string actionName, number interval)
+		-- 기절된 미니언들을 깨워 상태를 해제하고 활성화
+		local objectArray = _Table:Select(_Table:Select(minionArray, self.stunSelector), self.liveSelector)
+		local taskName = "Awake"
+		local args = {}
+		self.duel:Sort(objectArray)
+		
+		local resultTable = self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+	end
+
+	method void GainBarrier(table minionArray, string actionName, number interval)
+		-- 미니언들에게 방어막 효과를 부여하여 보호 능력 강화
+		local objectArray = _Table:Select(minionArray, self.liveSelector)
+		local taskName = "GainBarrier"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		self.duel:Sort(objectArray)
+		
+		local resultTable = self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "GainBarrier", args, nil, resultTable)
+	end
+
+	method void LoseBarrier(table minionArray, string actionName, number interval)
+		-- 미니언들의 방어막을 제거하여 보호 효과 제거
+		local objectArray = _Table:Select(_Table:Select(minionArray, self.barrierSelector), self.liveSelector)
+		local taskName = "LoseBarrier"
+		local args = {}
+		local receiverArray = _Table:ShallowCopy(self.duel.objectArray)
+		self.duel:Sort(objectArray)
+		
+		local resultTable = self:RunBatch(objectArray, taskName, args, nil, actionName, interval)
+		
+		self.triggerManager:InvokeTriggers(objectArray, receiverArray, "LoseBarrier", args, nil, resultTable)
+	end
+
+	method void InsertAddTriggerNameEnchantment(table objectArray, string triggerName, table remover, table eachArgs, string actionName, number interval)
+		-- 객체들에 트리거 추가 인챈트먼트를 적용하여 새로운 능력 부여
+		objectArray = _Table:Select(objectArray, self.validSelector)
+		local taskName = "InsertAddTriggerNameEnchantment"
+		local args = {triggerName, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void InsertAddAuraNameEnchantment(table objectArray, string auraName, table remover, table eachArgs, string actionName, number interval)
+		-- 객체들에 아우라 추가 인챈트먼트를 적용하여 지속 효과 부여
+		objectArray = _Table:Select(objectArray, self.validSelector)
+		local taskName = "InsertAddAuraNameEnchantment"
+		local args = {auraName, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void InsertAddMaxHpEnchantment(table objectArray, integer delta, table remover, table eachArgs, string actionName, number interval)
+		-- 객체들에 최대 체력 증가 인챈트먼트를 적용
+		objectArray = _Table:Select(objectArray, self.validSelector)
+		local taskName = "InsertAddMaxHpEnchantment"
+		local args = {delta, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void InsertSetMaxHpEnchantment(table objectArray, integer maxHp, table remover, table eachArgs, string actionName, number interval)
+		-- 객체들에 최대 체력 고정 인챈트먼트를 적용
+		objectArray = _Table:Select(objectArray, self.validSelector)
+		local taskName = "InsertSetMaxHpEnchantment"
+		local args = {maxHp, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void InsertAddAtkEnchantment(table objectArray, integer delta, table remover, table eachArgs, string actionName, number interval)
+		-- 객체들에 공격력 증가 인챈트먼트를 적용
+		objectArray = _Table:Select(objectArray, self.validSelector)
+		local taskName = "InsertAddAtkEnchantment"
+		local args = {delta, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void InsertSetAtkEnchantment(table objectArray, integer atk, table remover, table eachArgs, string actionName, number interval)
+		-- 객체들에 공격력 고정 인챈트먼트를 적용
+		objectArray = _Table:Select(objectArray, self.validSelector)
+		local taskName = "InsertSetAtkEnchantment"
+		local args = {atk, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void InsertSetVenomEnchantment(table objectArray, boolean hasVenom, table remover, table eachArgs, string actionName, number interval)
+		-- 객체들에 독 효과 인챈트먼트를 설정하여 특수 능력 부여
+		objectArray = _Table:Select(objectArray, self.liveSelector)
+		local taskName = "InsertSetVenomEnchantment"
+		local args = {hasVenom, remover}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, eachArgs, actionName, interval)
+	end
+
+	method void SortMinions(table fieldArray, any comparer)
+		-- 필드의 미니언들을 주어진 비교 함수로 정렬
+		local objectArray = fieldArray
+		local taskName = "SortMinions"
+		local args = {comparer}
+		self.duel:Sort(objectArray)
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.commandManager:InputGate()
+	end
+
+	method void MoveMinionToFarLeft(Minion minion)
+		-- 미니언을 필드의 가장 왼쪽 끝으로 이동
+		local objectArray = {minion.field}
+		local taskName = "MoveMinionToFarLeft"
+		local args = {minion}
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.commandManager:InputGate()
+	end
+
+	method void MoveMinionToFarRight(Minion minion)
+		-- 미니언을 필드의 가장 오른쪽 끝으로 이동
+		local objectArray = {minion.field}
+		local taskName = "MoveMinionToFarRight"
+		local args = {minion}
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+		
+		self.commandManager:InputGate()
+	end
+
+	method void Cross(Minion minion, string actionName)
+		-- 미니언을 상대방 필드로 이동시켜 소유권 변경
+		if minion.player.opponent.field:IsFull() then
+			return
+		end
+		
+		local objectArray = {minion}
+		local taskName = "Cross"
+		local args = {}
+		
+		self:RunBatch(objectArray, taskName, args, nil, actionName, nil)
+		
+		local fromField = minion.player.field
+		local toField = minion.player.opponent.field
+		
+		fromField:RemoveMinions(objectArray)
+		toField:InsertMinions(objectArray, nil)
+		minion:SetPlayer(minion.player.opponent)
+		minion:TransformToAnchor()
+		
+		self.commandManager:InputGate()
+	end
+
+	method void InsertSetRandomBattleEnchantment(boolean isRandomBattle, boolean remover)
+		-- 듀얼에 랜덤 전투 인챈트먼트를 설정하여 전투 방식 변경
+		local objectArray = {self.duel}
+		local taskName = "InsertSetRandomBattleEnchantment"
+		local args = {isRandomBattle, remover}
+		
+		self:RunBatch(objectArray, taskName, args, nil, nil, nil)
+	end
+
+end

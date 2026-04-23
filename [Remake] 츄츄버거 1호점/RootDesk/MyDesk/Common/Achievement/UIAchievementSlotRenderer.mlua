@@ -1,0 +1,126 @@
+@Component
+script UIAchievementSlotRenderer extends Component
+
+	property integer type = 0
+
+	property integer id = 0
+
+	property Entity RewardButton = nil
+
+	property Entity RewardItemSlot = nil
+
+	property TextComponent TitleText = nil
+
+	property Entity GaugeBar = nil
+
+	property Entity CompleteSprite = nil
+
+	property Entity Dim = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 컴포넌트들을 초기화하고 보상 버튼 이벤트 설정
+		self.RewardButton = self.Entity:GetChildByName("Btn")
+		self.Dim = self.Entity:GetChildByName("Dim")
+		
+		self.RewardItemSlot = self.Entity:GetChildByName("Item")
+		
+		self.TitleText = self.Entity:GetChildByName("Title").TextComponent
+		
+		self.GaugeBar = self.Entity:GetChildByName("Gauge")
+		
+		self.CompleteSprite = self.Entity:GetChildByName("CompleteSprite")
+		
+		self.RewardButton:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+			    return
+			end
+			
+			local progress = _UserService.LocalPlayer.PlayerAchievement:ReturnAchievementProgress(self.type)
+			---@type AchievementIdData
+			local idData = _AchievementDataSetLogic.AchiIdData[self.id]
+			if progress < _AchievementLogic:GetFixedTypeValue(_UserService.LocalPlayer, idData.Type, idData.TypeValue) then
+				_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("AchievementToast1")) 
+				return
+			end
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			_UserService.LocalPlayer.PlayerAchievement:RequestSetComplete(self.id, true)
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init(integer type)
+		-- 업적 슬롯을 특정 업적 타입으로 초기화하고 보상 정보 설정
+		self.Entity.Enable = true
+		self.type = type
+		
+		local playerAchievement = _UserService.LocalPlayer.PlayerAchievement
+		self.id = playerAchievement:ReturnAchievementIdByType(type)
+		
+		---@type AchievementIdData
+		local idData = _AchievementDataSetLogic.AchiIdData[self.id]
+		
+		local rewardType = idData.RewardType
+		local rewardValue = idData.RewardAmount
+		
+		if rewardType == "G0001" then
+			local stageConfig = _BalanceDataSetLogic:GetStageConfigData(_UserService.LocalPlayer.PlayerStage.NowStage)
+			rewardValue = rewardValue * (1 + stageConfig.AchievementMoneyRate)
+		end
+		
+		self.RewardItemSlot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = _ItemDataSetLogic:GetItemData(rewardType).IconRUID
+		self.RewardItemSlot:GetChildByName("TxtNum").TextComponent.Text = _StringUtilLogic:FormatNumber(math.floor(rewardValue))
+		
+		self:RefreshGauge()
+		self:RefreshComplete()
+		
+		local typeValue = _AchievementLogic:GetFixedTypeValue(_UserService.LocalPlayer, idData.Type, idData.TypeValue)
+		self.TitleText.Text = _AchievementLogic:ReturnAchievementNameText(type, typeValue)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Clear()
+		-- 업적 슬롯을 초기화하고 비활성화
+		self.type = 0
+		self.id = 0
+		
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshGauge()
+		-- 업적 진행도 게이지와 텍스트를 현재 상태로 갱신
+		---@type AchievementIdData
+		local idData = _AchievementDataSetLogic.AchiIdData[self.id]
+		
+		if idData == nil then
+			return
+		end
+		
+		local typeValue = _AchievementLogic:GetFixedTypeValue(_UserService.LocalPlayer, idData.Type, idData.TypeValue)
+		
+		local playerAchievement = _UserService.LocalPlayer.PlayerAchievement
+		local userTypeValue = playerAchievement:ReturnAchievementProgress(self.type)
+		local sliderValue = userTypeValue/typeValue
+		if sliderValue > 1 then
+			sliderValue = 1
+		end
+		
+		self.GaugeBar.SliderComponent.Value = sliderValue
+		local userTypeValueText = _AchievementLogic:ReturnConvertedTypeValue(self.type, userTypeValue)
+		local typeValueText = _AchievementLogic:ReturnConvertedTypeValue(self.type, typeValue)
+		self.GaugeBar:GetChildByName("Text").TextComponent.Text = userTypeValueText.."/"..typeValueText
+		
+		self.RewardButton:GetChildByName("Disabled").Enable = typeValue > userTypeValue
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshComplete()
+		-- 업적 완료 상태에 따른 UI 표시 갱신
+		local isComplete = _UserService.LocalPlayer.PlayerAchievement:IsAchievementComplete(self.id)
+		self.RewardButton.Enable = not isComplete
+		self.Dim.Enable = isComplete
+		self.CompleteSprite.Enable = isComplete
+	end
+
+end

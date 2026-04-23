@@ -1,0 +1,282 @@
+@Component
+script TimeManager extends Component
+
+	property any Utc = nil
+
+	property Entity Time = "c1408b69-dd6b-43c5-a247-8d71ae1cef7a"
+
+	property number RealTimeSec = 0
+
+	property number GameTimeSec = 6
+
+	@TargetUserSync
+	property boolean canTimeFlows = true
+
+	property integer TrainingAvailableCountPerPeriod = 0
+
+	property integer FestivalPeriodForTraining = 0
+
+	@TargetUserSync
+	property SyncTable<string, integer> FirstEnterUtc
+
+	@TargetUserSync
+	property boolean debugTimeFlows = true
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 시간 데이터를 DB에 저장하는 함수
+		local timeData = {}
+		
+		timeData["Day"] = tostring(self.Utc.Day)
+		timeData["Month"] = tostring(self.Utc.Month)
+		timeData["Year"] = tostring(self.Utc.Year)
+		
+		saveData["TimeData"] = timeData
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- DB에서 로드한 데이터를 처리하는 함수
+		local timeTable = loadedData["TimeData"]
+		if timeTable == nil then
+			timeTable = {}
+		end
+		
+		if #table.keys(timeTable) > 0 then 
+			if timeTable["Year"] then
+				local loadTime = DateTime(tonumber(timeTable["Year"]),tonumber(timeTable["Month"]),tonumber(timeTable["Day"]) )
+				self:UpdateTime(loadTime)
+			end
+			
+		else 
+			self:UpdateTime(DateTime(0))
+		end
+		
+		if self._T.firstEnter == true then
+			self.FirstEnterUtc["Year"] = self.Utc.Year
+			self.FirstEnterUtc["Month"] = self.Utc.Month
+			self.FirstEnterUtc["Day"] = self.Utc.Day
+			self._T.firstEnter = false
+		end
+		
+		self.RealTimeSec = 0
+		
+		self.TrainingAvailableCountPerPeriod = _GetConfigDataLogic:GetConfigNumDataByKey("TrainingAvailableCountPerPeriod", self.Entity.PlayerComponent.UserId)
+		self.FestivalPeriodForTraining = _GetConfigDataLogic:GetConfigNumDataByKey("FestivalPeriodForTraining", self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 컴포넌트를 초기화하는 함수
+		self.Utc = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 첫 입장 플래그를 설정하는 함수
+		self._T.firstEnter = true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 시간을 업데이트하는 함수
+		if self:CheckCanTimeFlows() == false then return end 
+		if not isvalid(self.Utc) then return end 
+		
+		self.RealTimeSec = self.RealTimeSec + delta 
+		
+		if self.RealTimeSec >= self.GameTimeSec then 
+			
+			self.RealTimeSec = 0 
+			
+			local updateTime = self.Utc + TimeSpan.FromDays(1)  
+		
+			self:UpdateTime(updateTime)
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 맵 진입 시 처리하는 함수
+		if _UtilLogic:Contains(enteredMap.Name, "Lobby") then  
+			self:TimeFlowsChange(true)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapLeave(Entity leftMap)
+		-- 맵을 떠날 때 처리하는 함수
+		if _UtilLogic:Contains(leftMap.Name, "Lobby") then  
+			self:TimeFlowsChange(false)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void UpdateTime(any updateTime)
+		-- 시간을 업데이트하는 함수
+		local lastTime
+		if self.Utc ~= nil then
+			lastTime = self.Utc
+			
+		end
+		
+		self.Utc = updateTime
+		local day = self.Utc.Day 
+		local month = self.Utc.Month
+		local year = self.Utc.Year
+		
+		if lastTime ~= nil then
+			local lastDay = lastTime.Day
+			local lastMonth = lastTime.Month
+			local lastYear = lastTime.Year
+			
+			if lastYear ~= year then
+				self:OnYearChanged(year)
+			end
+			
+			if lastMonth ~= month then
+				self:OnMonthChanged(month)
+			end
+			
+			if lastDay ~= day then
+				self:OnDayChanged(day)
+			end	
+		end
+		
+		_TimeUIService:UpdateUI(day,month,year,self.Entity.PlayerComponent.UserId)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMonthChanged(number changedMonth)
+		-- 월이 변경될 때 처리하는 함수
+		local progress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_RecordAchievementTypeEnum.MonthChange)
+		self.Entity.PlayerAchievement:ChangeProgress(_RecordAchievementTypeEnum.MonthChange, progress + 1)
+		
+		self.Entity.PlayerSettlement:MonthlySnapLog()
+		self.Entity.PlayerSettlement:MonthlyResourceLog()
+		self.Entity.PlayerSettlement:Settlement(self.Utc)
+		
+		self.Entity.PlayerRecipe:ChangeTrialBuffProgress()
+		self.Entity.PlayerRecipe:ChangeTrendProgress()
+		
+		table.clear(self.Entity.PlayerSettlement.LeaveCustomerTag)
+		
+		if changedMonth == 1 or changedMonth == 1 + self.FestivalPeriodForTraining then
+			self.Entity.PlayerInventory:ModifyTrainingTicket(self.TrainingAvailableCountPerPeriod)
+		end
+		self.Entity.PlayerTrainingManager:ChangeMonth_HalfYear(changedMonth)
+		self.Entity.MenuManager:AllClearSalesBurger()
+		self.Entity.CustomerManager:RefreshSpawnTable() 
+		
+		self.Entity.PlayerVIPOrder:CheckStartNewSeason(changedMonth)
+		
+		if changedMonth%2 == 0 then
+			self.Entity.PlayerTrial:SetUnofficialTrials()
+		end
+		
+		self.Entity.CustomerManager:ResetLeaveCustomerAttractive(self.Entity.PlayerComponent.UserId)
+		
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnYearChanged(number changedYear)
+		-- 년도가 변경될 때 처리하는 함수
+		self.Entity.PlayerAchievement:ChangeProgress(_RecordAchievementTypeEnum.YearChange, changedYear)
+		self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.YearCount, changedYear)
+		
+		_ReportMessageMaker:RequestAddToReportQueue(8002, self.Entity.PlayerOutgameManager.StoreName, tostring(changedYear), "", self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerRecipe:SetYearlyPlan()
+		
+		self.Entity.PlayerManagement.YearlyIncome = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnDayChanged(number changedDay)
+		-- 날짜가 변경될 때 처리하는 함수
+		if changedDay > 3 then
+			_EventManager:CallEventOnDayChanged(self.Entity)
+		end
+		
+		self.Entity.PlayerInventory:AddLunchBoxGaugePerDay()
+		self.Entity.PlayerRecipe:CheckTrialProgressExpiry(changedDay)
+		self.Entity.PlayerRecipe:CheckTrendExpiry(changedDay)
+		
+		local salary = self.Entity.EmployeeManager:ReturnDailySalary()
+		local maintenanceCost = _ManagementDataSetLogic:ReturnMaintenance(self.Entity , self.Entity.PlayerComponent.UserId )
+		
+		self.Entity.PlayerRecipe:CheckYearlyPlan(self.Utc.Month, changedDay)
+		
+		self.Entity.PlayerManagement:CheckRankingAnnounceDay(self.Utc)
+		
+		self.Entity.PlayerAutoTrainingManager:UpdateTimer()
+		
+		self.Entity.PlayerSettlement:AddValueForSettlement ( _SettlementPropertyEnum.M_AccumSalary , salary )
+		self.Entity.PlayerSettlement:AddValueForSettlement ( _SettlementPropertyEnum.M_AccumMaintenance , maintenanceCost )
+		
+		self.Entity.PlayerManagement:UpdateReputationLogOnDayChanged()
+		self.Entity.PlayerStoreManage:CoolDown(self.Entity.PlayerComponent.UserId)
+		self.Entity.PlayerVIPOrder:CheckVIPOrderResetCool()
+		_VIPOrderDataSetLogic:RefreshSeasonInfoLeftDayText(self.Utc.Elapsed, self.Entity.PlayerComponent.UserId)
+		
+		_SubscriptionService:IngreBoxService(self.Entity)
+		
+		self.Entity.PlayerDebugMonitor:UpdateMonitor()
+	end
+
+	@ExecSpace("Server")
+	method void TimeFlowsChange(boolean bool)
+		-- 시간 흐름 상태를 변경하는 함수
+		if self.debugTimeFlows then
+			self.canTimeFlows = bool
+		else
+			self.canTimeFlows = self.debugTimeFlows
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void RequestTimeFlowClient()
+		-- 클라이언트에서 시간 흐름을 요청하는 함수
+		if _UIGroupManager:IsOnLobby(true) then
+			self:TimeFlowsChange(true)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetTimeText()
+		-- 시간을 텍스트로 변환하는 함수
+		local day = self.Utc.Day 
+		local month = self.Utc.Month
+		local year = self.Utc.Year
+		
+		return year.."/"..month.."/"..day
+	end
+
+	method boolean CheckCanTimeFlows()
+		-- 시간이 흐를 수 있는지 확인하는 함수
+		local packetDelayCheck = self.Entity.PacketDelayCheckComponent
+		if packetDelayCheck ~= nil then
+			packetDelayCheck:CheckClientDelayed()
+			if packetDelayCheck:CheckClientPaused() == true then
+				return false
+			end
+		end
+		
+		
+		return self.canTimeFlows
+		
+	end
+
+	@ExecSpace("Server")
+	method void debugTimeFlow(boolean bool)
+		-- 디버그 시간 흐름을 설정하는 함수
+		self.debugTimeFlows = bool
+		self:TimeFlowsChange(bool)
+	end
+
+end

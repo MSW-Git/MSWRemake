@@ -1,0 +1,363 @@
+@Logic
+script MonsterLogic extends Logic
+
+	property table ruidData = {}
+
+	property table expGems = {}
+
+	property table monsterData = {}
+
+	property number totalMonsterCnt = 0
+
+	property number maxExpGemCount = 200
+
+	property table tileMapMonster = {}
+
+	property string baseModel = "model://ddeda0f7-c183-4ecc-8dea-6273a90be638"
+
+	property table aliveMonsters = {}
+
+	property boolean allowOverlap = true
+
+	property number overlapThresholdSpeed = 0.5
+
+	property number friction = 0
+
+	property number restitution = 0.1
+
+	property table monsterIds = {}
+
+	property table killedMonsters = {}
+
+	property table fieldMosnterData = {}
+
+	method void OnBeginPlay()
+		-- 몬스터 데이터와 필드 몬스터 데이터를 초기화
+		
+		self.baseModel = "model://68302c76-7599-4447-beab-8c8ac6c1bab8"
+		
+		local data = _DataService:GetTable("MonsterData")
+		
+		for i = 1, data:GetRowCount() do
+			local monster = {}
+			monster.id = data:GetCell(i,"id")
+			monster.name = data:GetCell(i, "name")
+			
+			monster.type = data:GetCell(i,"type")
+			monster.model = data:GetCell(i,"model")
+			if monster.type == "monster" then
+				monster.model = self.baseModel
+			end
+			
+			monster.attack = tonumber(data:GetCell(i,"attack"))
+			monster.criticalRate = tonumber(data:GetCell(i, "criticalRate"))
+			monster.criticalRatio = tonumber(data:GetCell(i, "criticalRatio"))
+			monster.hp = tonumber(data:GetCell(i,"hp"))
+			monster.exp = tonumber(data:GetCell(i,"exp"))
+			monster.dieSound = data:GetCell(i, "dieSound")
+		
+		
+			if _UtilLogic:IsNilorEmptyString(data:GetCell(i,"thumbnailOffset")) == false then
+				
+				monster.thumbnailOffset = tonumber(data:GetCell(i,"thumbnailOffset"))
+				
+			else
+				monster.thumbnailOffset = 0
+			end
+			
+		
+			if _UtilLogic:IsNilorEmptyString(data:GetCell(i,"thumbnailScale")) == false then
+				monster.thumbnailScale = tonumber(data:GetCell(i,"thumbnailScale"))
+				
+			else
+				monster.thumbnailScale = 1
+			end
+			monster.purpose = data:GetCell(i, "purpose")
+			
+			local skill = data:GetCell(i,"skill")
+			if _UtilLogic:IsNilorEmptyString(skill) == false then
+				monster.skill = _GameUtil:GetStringTableSplitBySlash(skill,false)
+			else
+				monster.skill = {}
+			end	
+			monster.phase = _GameUtil:GetNumberSplitBySlash(data:GetCell(i,"phase"))
+		
+			monster.CircleRadius = tonumber(data:GetCell(i,"CircleRadius"))
+			monster.ColliderOffset = self:StringToVector2(data:GetCell(i,"ColliderOffset"))
+			monster.stand_ruid = data:GetCell(i,"stand-ruid")
+			monster.move_ruid = data:GetCell(i,"move-ruid")
+			monster.attack_ruid = data:GetCell(i,"attack-ruid")
+			monster.hit_ruid = data:GetCell(i,"hit-ruid")
+			monster.die_ruid = data:GetCell(i,"die-ruid")
+			monster.speed = tonumber(data:GetCell(i,"speed"))
+			monster.attackCoolTime = tonumber(data:GetCell(i,"attackCoolTime"))
+			monster.interval = tonumber(data:GetCell(i,"interval"))
+			monster.stopMovingAfterSkillDuration = tonumber(data:GetCell(i,"stopMovingAfterSkillDuration"))
+			local scale =  tonumber(data:GetCell(i,"Scale"))
+			monster.Scale = Vector3(scale,scale,1)
+			
+			monster.thumbnail = _UtilLogic:Trim(data:GetCell(i, "thumbnail")," ")
+			
+			
+			if _UtilLogic:IsNilorEmptyString(monster.thumbnail) then
+				monster.thumbnail = monster.stand_ruid
+			end
+			self.monsterData[monster.id] = monster
+			table.insert(self.monsterIds,monster.id)
+			
+		end
+		
+		
+		
+		local fieldMosnterData = _DataService:GetTable("FieldMonsterData")
+		
+		for i = 1, fieldMosnterData:GetRowCount() do
+			local monster = {}
+			monster.id = fieldMosnterData:GetCell(i,"id")
+			monster.attack = tonumber(fieldMosnterData:GetCell(i,"attack"))
+			monster.hp = tonumber(fieldMosnterData:GetCell(i,"hp")) 
+			monster.exp = tonumber(fieldMosnterData:GetCell(i,"exp"))
+			monster.dropId = fieldMosnterData:GetCell(i, "dropId")
+			monster.level = tonumber(fieldMosnterData:GetCell(i,"monsterLevel"))
+			monster.fieldSpeedRatio = tonumber(fieldMosnterData:GetCell(i,"fieldSpeedRatio"))
+			local minGem = tonumber(fieldMosnterData:GetCell(i,"minGem"))
+			local maxGem = tonumber(fieldMosnterData:GetCell(i,"maxGem"))
+			
+			monster.type = fieldMosnterData:GetCell(i,"type")
+			monster.getFieldGem = function() 
+				return _UtilLogic:RandomIntegerRange(minGem,maxGem)	
+			end
+			if monster.type == "monster" then
+				monster.model = self.baseModel
+			end
+			self.monsterData[monster.id].fieldData = monster
+		end
+		
+		
+		
+		
+		
+		
+		
+	end
+
+	method table GetMonsterData(string id)
+		-- 몬스터 ID로 몬스터 데이터 반환
+		return self.monsterData[id]
+	end
+
+	method void ChangeMonsterCount(number change)
+		-- 몬스터 수를 변경하고 변경 이벤트 전송
+		self.totalMonsterCnt = self.totalMonsterCnt + change 
+		self:SendEvent(MonsterCountChange(self.totalMonsterCnt, false))
+	end
+
+	method void ClearAll()
+		-- 모든 경험치 젬과 몬스터 수 초기화
+		table.clear(self.expGems)
+		self.totalMonsterCnt = 0
+	end
+
+	method table GetStringTableSplitBySlash(string data)
+		-- 슬래시로 구분된 문자열을 파싱하여 테이블로 변환
+		local stringData = {}
+		local split = _UtilLogic:Split(data,"/")
+		
+		for _,v in pairs(split) do
+			local eachSplit = _UtilLogic:Split(v,"_")
+			local eachData = {}
+			eachData[1] = eachSplit[1]
+			for i = 2, #eachSplit do
+				eachData[i] = tonumber(eachSplit[i])
+			end
+			table.insert(stringData,eachData)
+		end
+		
+		return stringData
+	end
+
+	method void MoveTileMap(number x, number y, Entity monster)
+		-- 타일맵 좌표에 몬스터를 추가하여 위치 관리
+		if self.tileMapMonster[Vector2Int(x,y)] == nil then
+			self.tileMapMonster[Vector2Int(x,y)] = {}
+		end
+		
+		table.insert(self.tileMapMonster[Vector2Int(x,y)],monster)
+	end
+
+	method void OnEditorMonsterModelToData()
+		-- 에디터에서 몬스터 모델 데이터를 데이터 테이블로 동기화
+		if Environment:IsPlay() then
+			return
+		end
+		
+		local data = _DataService:GetTable("MonsterData")
+		
+		local propertys = {}
+		table.insert(propertys,{component="TriggerComponent";propertys = "CircleRadius";data = "CircleRadius"})
+		table.insert(propertys,{component="TriggerComponent";propertys = "ColliderOffset";data = "ColliderOffset"})
+		table.insert(propertys,{component="MonsterObject";propertys = "exp";data = "exp"})
+		table.insert(propertys,{component="MonsterObject";propertys = "stand";data = "stand-ruid"})
+		table.insert(propertys,{component="MonsterObject";propertys = "move";data = "move-ruid"})
+		table.insert(propertys,{component="MonsterObject";propertys = "attack";data = "attack-ruid"})
+		table.insert(propertys,{component="MonsterObject";propertys = "hit";data = "hit-ruid"})
+		table.insert(propertys,{component="MonsterObject";propertys = "die";data = "die-ruid"})
+		table.insert(propertys,{component="MonsterObject";propertys = "speed";data = "speed"})
+		table.insert(propertys,{component="MonsterObject";propertys = "attackCoolTime";data = "attackCoolTime"})
+		table.insert(propertys,{component="MonsterObject";propertys = "interval";data = "interval"})
+		table.insert(propertys,{component="MonsterObject";propertys = "stopMovingAfterSkillDuration";data = "stopMovingAfterSkillDuration"})
+		table.insert(propertys,{component="TransformComponent";propertys = "Scale";data = "Scale"})
+		
+		for i = 1, data:GetRowCount() do
+			local monster = {}
+			monster.id = data:GetCell(i,"id")
+			monster.name = data:GetCell(i, "name")
+			monster.model = data:GetCell(i,"model")
+			monster.type = data:GetCell(i,"type")
+			for k,v in pairs(propertys) do
+				local comp = v.component
+				if v.component == "MonsterObject" and monster.type == "boss" then
+					comp = "BossObject"
+				end
+				_EditorService:GetModelProperty(monster.model,comp,v.propertys,function(value)		
+						if value == false then
+							return
+						end
+					if v.propertys == "exp" and value == "0" then
+							value = "3"
+					elseif v.propertys == "speed" and value == "0" then
+							value = "5"
+					elseif v.propertys == "attackCoolTime" and value == "0" then
+							value = "5"
+					elseif v.propertys == "interval" and value == "0" then
+							value = "0.1"
+					elseif v.propertys == "stopMovingAfterSkillDuration" and value == "0" then
+							value = "0.5"
+					elseif v.propertys == "SpeedFactor" and value == "(0.000, 0.000)" then
+							value = "(1.000, 1.000)"			
+					end
+					_EditorService:DataSetSetCell("MonsterData",i,v.data,value)	
+					 end)
+			end
+		
+		end
+		
+	end
+
+	method void OnEditorDataToBossModel()
+		-- 에디터에서 데이터를 보스 모델에 적용하여 물리 속성 설정
+		if Environment:IsPlay() then
+			return
+		end
+		
+		local data = _DataService:GetTable("MonsterData")
+		
+		local defaultProperty = {
+			{component="PhysicsColliderComponent";propertys = "IsLegacy";value = "false"},
+			{component="PhysicsRigidbodyComponent";propertys = "Friction";value = "0"},
+			{component="PhysicsRigidbodyComponent";propertys = "Restitution";value = "1"},
+			{component="PhysicsRigidbodyComponent";propertys = "FixedRotation";value = "true"}
+		}
+		local metadataFromTrigger = {
+			{component="PhysicsColliderComponent";propertys = "ColliderType"},
+			{component="PhysicsColliderComponent";propertys = "CircleRadius"},
+			{component="PhysicsColliderComponent";propertys = "ColliderOffset"},
+			{component="PhysicsColliderComponent";propertys = "BoxSize"},
+		}
+		for i = 1, data:GetRowCount() do
+			local type = data:GetCell(i,"type")
+			if type ~= "boss" then
+				continue
+			end
+			local model = data:GetCell(i,"model")
+			for _, data in ipairs(defaultProperty) do
+				if not _EditorService:SetModelProperty(model, data.component, data.propertys, data.value) then
+				end
+			end
+			
+			for _, info in ipairs(metadataFromTrigger) do
+				local value = true
+				local func = function(valueStr)
+					if not _EditorService:SetModelProperty(model, info.component, info.propertys, valueStr) then
+					end
+				end
+				local result = _EditorService:GetModelProperty(model, "TriggerComponent", info.propertys, func)
+				if not result then 
+				end
+			end
+		end
+		
+	end
+
+	method Vector2 StringToVector2(string str)
+		-- 문자열을 Vector2로 변환
+		if _UtilLogic:IsNilorEmptyString(str) then
+			return Vector2.zero
+		end
+		
+		local x, y = str:match("%((-?%d+%.%d+), (%-?%d+%.%d+)%)")
+		local vector2 = Vector2(tonumber(x), tonumber(y))
+		
+		return vector2
+		
+	end
+
+	method Vector3 StringToVector3(string str)
+		-- 문자열을 Vector3로 변환
+		local x, y, z = str:match("%((-?%d+%.%d+), (%-?%d+%.%d+), (%-?%d+%.%d+)%)")
+		local vector3 = Vector3(tonumber(x), tonumber(y),tonumber(z))
+		
+		return vector3
+		
+	end
+
+	method void InsertMonsterInTable(string entityId, Entity entity)
+		-- 살아있는 몬스터 테이블에 몬스터 추가
+		self.aliveMonsters[entityId] = entity
+	end
+
+	method void RemoveMonsterInTable(string entityId)
+		-- 살아있는 몬스터 테이블에서 몬스터 제거
+		self.aliveMonsters[entityId] = nil
+	end
+
+	@EventSender("Entity", "b94fd5f9-5a78-4233-a0f1-0641d4ee2b90")
+	handler HandleButtonClickEditorEvent(ButtonClickEditorEvent event)
+		-- 에디터 버튼 클릭 시 보스 모델 데이터 적용
+		
+		local Entity = event.Entity
+		
+		self:OnEditorDataToBossModel()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleMonsterInitEvent(MonsterInitEvent event)
+		-- 몬스터 초기화 이벤트 처리
+		
+		local entityId = event.entityId
+		local entity = event.entity
+		
+		self:InsertMonsterInTable(entityId, entity)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleMonsterDieEvent(MonsterDieEvent event)
+		-- 몬스터 사망 이벤트 처리
+		
+		local entityId = event.entityId
+		local entity = event.entity
+		
+		self:RemoveMonsterInTable(entityId)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "StageLogic")
+	handler HandleStageStartEvent(StageStartEvent event)
+		-- 스테이지 시작 시 몬스터 관련 초기화
+		
+		table.clear(self.killedMonsters)
+	end
+
+end

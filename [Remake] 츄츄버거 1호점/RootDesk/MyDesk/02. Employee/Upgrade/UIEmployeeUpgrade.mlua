@@ -1,0 +1,961 @@
+@Component
+script UIEmployeeUpgrade extends Component
+
+	property Entity UIEmployeeDetail = "371b8e50-9b6c-4a6c-b354-8772104e1812"
+
+	property Entity UIItemSlot = "afb4f1ab-af87-4969-afe9-2e6c59c87299"
+
+	property Entity LevelUpGroup = "36431daf-7458-412f-ac32-f0cbf0afe67c"
+
+	property Entity UICategory = "67e1ff6b-271c-431f-acd9-965c0403788c"
+
+	property Entity AutoBtn = "4c9e041c-9d81-43b8-9893-a888a0c2bc18"
+
+	property Entity LevelUpBtn = "7b720ef0-b262-4208-887b-10cf20820e98"
+
+	property Entity ResetBtn = "1089cba8-4af6-4ba6-abb9-94fd9395690e"
+
+	property boolean HasItem = false
+
+	property table ExpItem = {}
+
+	property string CurStatCategory = "Cook"
+
+	property string EmployeeID = ""
+
+	property integer ChuChuLvBef = 0
+
+	property SyncTable<string, integer> selectItems
+
+	property number EffectDelay = 0.6
+
+	property string Category_LevelUp = "LevelUp"
+
+	property string Category_OverLimit = "OverLimit"
+
+	property Entity UIOverLimitGroup = "37f91326-b66d-4fe5-b8e7-eab2a85ba4a5"
+
+	property Entity UIFinishOverLimitGroup = "d0653033-e5ab-47de-ba79-9ad4606d10b8"
+
+	property Entity UIItemSlot_Selected = "191e80dd-2af3-410a-a4c0-d98130d07ebd"
+
+	property Entity OverLimitBtn = "ddd45232-3b8e-47c2-8f9a-3cc7d0a4de19"
+
+	property Entity OverLimitJemToolTip = "6b3adbbf-9096-49d6-a3a2-f1a152ec0fb6"
+
+	property Entity ItemSlotMsg_Nothing = "36abb5ad-b87d-4ac5-b91c-4bd13b052c3c"
+
+	property Entity ItemSlotNewMsg_Nothing = "ac387570-67ec-4754-963f-40fa59d3c3f9"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 직원 업그레이드 UI를 초기화하는 함수
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void Upgrade()
+		-- 직원 업그레이드를 실행하는 함수
+		local itemSlots = self.UIItemSlot.Children
+		local player =_UserService.LocalPlayer
+		
+		player.EmployeeUpgradeManager:SelectEmployee(self.EmployeeID)
+		
+		for id,count in pairs(self.selectItems) do 
+		
+			
+			if count > 0 then 
+				player.PlayerInventory:RequestUseItem(id, count,"Employee upgrade","Employee upgarde popup", self.EmployeeID)
+			end
+		end 
+		local tutorialProgress = player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmployeeUpgradeCount)
+		player.PlayerAchievement:RequestChangeProgress(_TutorialAchievementTypeEnum.EmployeeUpgradeCount, tutorialProgress+1)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetStatCategory()
+		-- 직원의 능력 카테고리를 설정하는 함수
+			local statCategory = _EmployeeService:GetData(self.EmployeeID).Type
+			self.CurStatCategory = statCategory
+			
+			self:SetUIItem()
+			
+			self:SetUICurPreview()
+			self:SetUINextPreview()
+			self:SetUIExpSlider(false)
+			self:SetUICategory(self.Category_LevelUp)
+			
+			self.AutoBtn.UIEmployeeUPgradeAuto.UIPannel.Enable = true 
+			self.AutoBtn.UIEmployeeUPgradeAuto:RefreshAutoPannel()
+			
+			self:RefreshLevelUpBtn()
+			_EmployeeUpgradeUIServcie.UIUpgradeAuto:RefreshAutoBtn()
+			self:RefreshResetBtn()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUIDetail()
+		-- 직원의 상세 정보 UI를 설정하는 함수
+		
+		local detailData = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID)
+		if not isvalid(detailData) then return end 
+		local data = _EmployeeService:GetData(self.EmployeeID)
+		if not isvalid(data) then return end 
+		
+		local ui = self.UIEmployeeDetail
+		
+		local portraitImage = ui:GetChildByName("ChuChuSprite")
+		_EmployeeUIService:DrawPortraitWithEquip(portraitImage,portraitImage, data)
+		
+		ui:GetChildByName("Name").TextComponent.Text = _GetLocalizationTextLogic:GetText(data.NameKey) 
+		
+		ui:GetChildByName("Type"):GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = _EmployeeRUID:ReturnIconRUIDByStatType(data.Type) 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUICurPreview()
+		-- 현재 능력치 미리보기 UI를 설정하는 함수
+		local detailData = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID)
+		local data = _EmployeeService:GetData(self.EmployeeID)
+		
+		local chuLevel = self.UIEmployeeDetail:GetChildByName("Level"):GetChildByName("Now")
+		local maxLevel = detailData.MaxLevel
+		local chuchuLevel = _EmployeeService:ReturnChuchuLevel(self.EmployeeID, _UserService.LocalPlayer)
+		if isvalid(chuLevel) then 
+			chuLevel.TextComponent.Text = tostring(chuchuLevel).."/"..tostring(maxLevel)
+		end
+		
+		local salary = _UserService.LocalPlayer.EmployeeManager:ReturnEmployeeSalary(self.EmployeeID, chuchuLevel) 
+		self.UIEmployeeDetail:GetChildByName("Salary"):GetChildByName("Now").TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(salary)
+		
+		local info1Entity = self.UIEmployeeDetail:GetChildByName("Info_1")
+		local info2Entity = self.UIEmployeeDetail:GetChildByName("Info_2")
+		local info1Value = info1Entity:GetChildByName("Now")
+		local info2Value = info2Entity:GetChildByName("Now")
+		
+		if isvalid(info1Entity) and isvalid(info2Entity) then
+			local info1Text = info1Entity:GetChildByName("Text")
+			local info2Text = info2Entity:GetChildByName("Text")
+			
+			local dataSet = _DataService:GetTable("EmployeeStatByLevelDataSet")
+			local level = _EmployeeService:ReturnChuchuLevel(self.EmployeeID, _UserService.LocalPlayer)
+			local row = dataSet:FindRow("Level", tostring(level))
+			local count = row:GetItem(data.Type.."Count")
+			local speed = row:GetItem(data.Type.."Speed")
+			if data.Type == _EmployeeTypeEnum.Serving then
+				info1Text.TextComponent.Text = _LocalizationService:GetText("EmployeeDetailInfoCount_Serving") 
+			else
+				info1Text.TextComponent.Text = _LocalizationService:GetText("EmployeeDetailInfoCount_Cook") 
+			end
+			info2Text.TextComponent.Text = _LocalizationService:GetText("EmployeeDetailInfoSpeed") 
+			
+			info1Value.TextComponent.Text = _LocalizationService:GetTextFormat("Things_Format", count)
+			info2Value.TextComponent.Text = _LocalizationService:SmartFormat("{0}", speed)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetUINextPreview()
+		-- 다음 능력치 미리보기 UI를 설정하는 함수
+		local detailData = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID)
+		local data = _EmployeeService:GetData(self.EmployeeID)
+		
+		if not isvalid(detailData) then 
+			return
+		end
+		local detail = detailData:ConvertToTable()
+		
+		local potionExp = _EmployeeUpgradeUIServcie:ReturnSelecteItemTotalExp()
+		
+		local expTable = _EmployeeUpgradeService:CalcNextUpgradeData(self.CurStatCategory,self.EmployeeID,potionExp,_UserService.LocalPlayer)
+		local changeExp = expTable[1]
+		local nextLevel = expTable[2]
+		local changeLevel = expTable[3]
+		
+		
+		local chuLevel = self.UIEmployeeDetail:GetChildByName("Level"):GetChildByName("Next")
+		local maxLevel = detailData.MaxLevel
+		if isvalid(chuLevel) then 
+			chuLevel.TextComponent.Text = tostring(changeLevel).."/"..tostring(maxLevel)
+		end
+		
+		local salary = _UserService.LocalPlayer.EmployeeManager:ReturnEmployeeSalary(self.EmployeeID, changeLevel)
+		local salaryEntity = self.UIEmployeeDetail:GetChildByName("Salary"):GetChildByName("Next")
+		salaryEntity.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(salary)
+		
+		local info1Entity = self.UIEmployeeDetail:GetChildByName("Info_1")
+		local info2Entity = self.UIEmployeeDetail:GetChildByName("Info_2")
+		local info1Value = info1Entity:GetChildByName("Next")
+		local info2Value = info2Entity:GetChildByName("Next")
+		
+		if isvalid(info1Entity) and isvalid(info2Entity) then
+			local info1Text = info1Entity:GetChildByName("Text")
+			local info2Text = info2Entity:GetChildByName("Text")
+			
+			local dataSet = _DataService:GetTable("EmployeeStatByLevelDataSet")
+			local level = _EmployeeService:ReturnChuchuLevel(self.EmployeeID, _UserService.LocalPlayer)
+			local row = dataSet:FindRow("Level", tostring(changeLevel))
+			local count = row:GetItem(data.Type.."Count")
+			local speed = row:GetItem(data.Type.."Speed")
+			if data.Type == _EmployeeTypeEnum.Serving then
+				info1Text.TextComponent.Text = _LocalizationService:GetText("EmployeeDetailInfoCount_Serving") 
+			else
+				info1Text.TextComponent.Text = _LocalizationService:GetText("EmployeeDetailInfoCount_Cook") 
+			end
+			info2Text.TextComponent.Text = _LocalizationService:GetText("EmployeeDetailInfoSpeed") 
+			
+			info1Value.TextComponent.Text = _LocalizationService:GetTextFormat("Things_Format", count)
+			info2Value.TextComponent.Text = _LocalizationService:SmartFormat("{0}", speed)
+		end
+		
+		local curLevel = detail[self.CurStatCategory.."Level"]
+		
+		local fontColor 
+		local outlinColor 
+		
+		if changeLevel == curLevel then 
+			fontColor = _ColorCodeEnum:GetColor("#ffffff")
+			outlinColor  = _ColorCodeEnum:GetColor("#987f5f")  
+		else
+			fontColor = _ColorCodeEnum:GetColor("#d6ff30") 
+			outlinColor = _ColorCodeEnum:GetColor("#987f5f") 
+			
+		end
+		
+		chuLevel.TextComponent.FontColor = fontColor
+		chuLevel.TextComponent.OutlineColor = outlinColor
+		salaryEntity.TextComponent.FontColor = fontColor
+		salaryEntity.TextComponent.OutlineColor = outlinColor
+		info1Value.TextComponent.FontColor = fontColor
+		info1Value.TextComponent.OutlineColor = outlinColor
+		info2Value.TextComponent.FontColor = fontColor
+		info2Value.TextComponent.OutlineColor = outlinColor
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUIExpSlider(boolean isPotionSelected)
+		-- 경험치 슬라이더 UI를 설정하는 함수
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID):ConvertToTable()
+		local curStatExp = detail[self.CurStatCategory.."Exp"]
+		
+		local data = _EmployeeService:GetData(self.EmployeeID):ConvertToTable()
+		local maxLevel = detail["MaxLevel"]
+		
+		
+		local potionExp = _EmployeeUpgradeUIServcie:ReturnSelecteItemTotalExp()
+		local expTable = _EmployeeUpgradeService:CalcNextUpgradeData(self.CurStatCategory,self.EmployeeID,potionExp,_UserService.LocalPlayer)
+		local changeExp = expTable[1]
+		local nextLevel =  expTable[2]
+		local changeLevel = expTable[3]
+		
+		local nextExp = _EmployeeUpgradeService:GetExpData(nextLevel):GetExp(_UserService.LocalPlayer)
+		
+		local sliderText = math.floor(changeExp).."/"..math.floor(nextExp)
+		
+		if changeLevel == maxLevel then 
+			sliderText = "max"
+			nextExp = 1 
+			changeExp = 1
+		end
+		
+		self.LevelUpGroup:GetChildByName("ExpSliderValue").TextComponent.Text = sliderText
+		self.LevelUpGroup:GetChildByName("ExpSlider").SliderComponent.MaxValue = tonumber(nextExp)
+		self.LevelUpGroup:GetChildByName("ExpSlider").SliderComponent.Value = tonumber(changeExp)
+		
+		if isPotionSelected then 
+			local slider = self.LevelUpGroup:GetChildByName("ExpSlider")
+			_ResourceManager:ChangeMaterial(slider, _IconRuidEnum.ScorePreviewMaterial, 2)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUIItem()
+		-- 업그레이드 아이템 UI를 설정하는 함수
+		table.clear(self.selectItems)
+		
+		local expItem = _EmployeeUpgradeService.ExpItem[self.CurStatCategory]
+		local playerInven = _UserService.LocalPlayer.PlayerInventory
+		self.HasItem = false
+		
+		for idx=1,#expItem do 
+			local slot = self.UIItemSlot:GetChildByName("Slot"..idx) 
+			local slotNew = self.UIItemSlot_Selected:GetChildByName("Slot"..idx) 
+			slot.EmployeeUpgradeItemRenderer:Init(expItem[idx])
+			slotNew.EmployeeUpgradeItemRenderer:Init0(expItem[idx])
+			if isvalid(playerInven:GetItemCount(expItem[idx])) then 
+				self.HasItem = true 
+			end
+		end
+		
+		if self.HasItem then
+			self.ItemSlotMsg_Nothing.Enable = false
+		else
+			self.ItemSlotMsg_Nothing.Enable = true
+		end
+		self.ItemSlotNewMsg_Nothing.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUICategory(string categoryName)
+		-- UI 카테고리를 설정하는 함수 (레벨업/한계돌파)
+		for k,v in pairs(self.UICategory.Children) do
+			if categoryName == v.Name then
+				v:GetChildByName("UIText").TextComponent.FontColor = _ColorCodeEnum:GetColor("#ffffff")
+				v:GetChildByName("UIText").TextComponent.UseOutLine = true 
+				v:GetChildByName("UIText").TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#985F05")
+				v:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.CategoryTabBg_Selected
+				v:GetChildByName("Icon"):GetChildByName("UISprite").SpriteGUIRendererComponent.Color.a = 1
+				
+			else
+				v:GetChildByName("UIText").TextComponent.FontColor = _ColorCodeEnum:GetColor("#BB9A59")
+				v:GetChildByName("UIText").TextComponent.UseOutLine = false
+				v:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.CategoryTabBg_Selected
+				v:GetChildByName("Icon"):GetChildByName("UISprite").SpriteGUIRendererComponent.Color.a = 0.5
+				self.LevelUpGroup.Enable = false
+			end
+		end
+		
+		if categoryName == self.Category_LevelUp then
+			self.LevelUpGroup.Enable = true
+			self.UIOverLimitGroup.Enable = false
+			self.UIFinishOverLimitGroup.Enable = false
+			
+		else
+			self:DisplayOverLimitPanel()
+			self.LevelUpGroup.Enable = false
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayLevelUpEffect()
+		-- 레벨업 이팩트를 재생하는 함수
+		local level = _EntityService:GetEntityByPath("/ui/EmployeeUpgradeGroup/Main/ChangeStatGroup/CurData/Level")
+		local chuchu = _EntityService:GetEntityByPath("/ui/EmployeeUpgradeGroup/Main/Model_EmployeeDetail/Portrait/UISpriteCardBg")
+		local origin = _EntityService:GetEntityByPath("/ui/EmployeeUpgradeGroup/LevelUpEffect") 
+		local origin2 = _EntityService:GetEntityByPath("/ui/EmployeeUpgradeGroup/LevelUpEffect2") 
+		
+		local effect1 = _SpawnService:SpawnByEntity(origin, "LevelUpEffect",origin.UITransformComponent.Position)
+		local effect2 = _SpawnService:SpawnByEntity(origin2, "LevelUpEffect2", origin2.UITransformComponent.Position)
+		effect1.Enable = true
+		effect2.Enable = true
+		
+		_TimerService:SetTimerOnce(function() 
+			effect1:Destroy()
+			effect2:Destroy()
+		end, self.EffectDelay)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSkillProduce(integer chuchuLv, boolean isUpgrade)
+		-- 츄츄 레벨에 따라 스킬 UI를 설정하는 함수
+		
+		for i=1,2 do 
+			
+			local skillUI = self.UIEmployeeDetail:GetChildByName("Skill"..i)
+			local diable = skillUI:GetChildByName("Disable")
+		
+			if chuchuLv >= _EmployeeSkillService.UnLockLevel[i] and self.ChuChuLvBef < _EmployeeSkillService.UnLockLevel[i] then 
+				diable.Enable = false
+				_ResourceManager:ChangeMaterial(skillUI, _IconRuidEnum.RainbowMaterial, 2)
+				if isUpgrade then 
+					local data  = _EmployeeService:GetData(self.EmployeeID):ConvertToTable()
+					local skillID = data["Skill"..i.."Type"]
+					local skillName = _EmployeeSkillService:GetData(data["Skill"..i.."Type"]).NameKey
+					_EmployeeUpgradeUIServcie.UISkillOpenPopup:Open(self.EmployeeID, skillID, false)
+				end
+			elseif self.ChuChuLvBef >= _EmployeeSkillService.UnLockLevel[i] then 
+				diable.Enable = false	
+			else
+				diable.Enable = true	
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshAfterLevelUp()
+		-- 레벨업 후 UI를 새로고침하는 함수
+		
+		self:SetUIItem()
+		
+		self:SetUICurPreview()
+		self:SetUINextPreview()
+		local slider = self.LevelUpGroup:GetChildByName("ExpSlider")
+		_ResourceManager:ChangeMaterial(slider, _IconRuidEnum.ScorePreviewMaterial, 3)
+		
+		
+		
+		local data = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID)
+		local changeLv = _EmployeeService:ReturnChuchuLevel(self.EmployeeID, _UserService.LocalPlayer)
+		
+		
+		self.ChuChuLvBef = changeLv
+		
+		self:RefreshLevelUpBtn()
+		
+		_EmployeeUpgradeUIServcie.UIUpgradeAuto:RefreshAutoBtn()
+		_EmployeeUpgradeUIServcie.UIUpgradeAuto:RefreshAutoPannel()
+		self:RefreshResetBtn()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickLevelUpBtn()
+		-- 레벨업 버튼 클릭 시 처리하는 함수
+		local result = _TutorialManager:CheckForceTo()
+		if result == false then
+			return
+		end
+		
+		local data = _EmployeeService:GetData(self.EmployeeID):ConvertToTable()
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID):ConvertToTable()
+		local disable = self.LevelUpBtn:GetChildByName("Disabled")
+		local noneSelectItem = true 
+		
+		for k,v in pairs(self.selectItems)do 
+			if isvalid(v) then 
+				if v ~= 0 then 
+					noneSelectItem = false 
+				end		
+			end
+		end
+		
+		if data[self.CurStatCategory.."Level"] == detail["MaxLevel"] then 
+			
+			_UIToast:ShowMessage(_LocalizationService:GetText("EmployeeUpgradeMsg_MaxLevel"))	
+			
+		elseif not self.HasItem  then 
+		
+			_UIToast:ShowMessage(_LocalizationService:GetText("EmployeeUpgradeMsg_Empty"))	
+			
+		elseif noneSelectItem then 
+		
+			_UIToast:ShowMessage(_LocalizationService:GetText("EmployeeUpgradeMsg_Select"))	
+			
+		else
+			
+			self:Upgrade()	
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshLevelUpBtn()
+		-- 레벨업 버튼 상태를 새로고침하는 함수
+		local data = _EmployeeService:GetData(self.EmployeeID):ConvertToTable()
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID):ConvertToTable()
+		local disable = self.LevelUpBtn:GetChildByName("Disabled")
+		
+		if detail["MaxLevel"] == detail[self.CurStatCategory.."Level"] then 
+			disable.Enable = true 
+		elseif not self.HasItem then 
+			disable.Enable = true 
+		else
+			disable.Enable = false
+		end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickResetBtn()
+		-- 리셋 버튼 클릭 시 처리하는 함수
+		if not self.HasItem then 
+			_UIToast:ShowMessage(_LocalizationService:GetText("EmployeeUpgradeMsg_Empty"))	
+			
+		else
+			self:AllClearSelectItems()
+			_EmployeeUpgradeUIServcie.UIUpgradeAuto:RefreshAutoPannel()
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshResetBtn()
+		-- 리셋 버튼 상태를 새로고침하는 함수
+		local data = _EmployeeService:GetData(self.EmployeeID):ConvertToTable()
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID):ConvertToTable()
+		local disable = self.ResetBtn:GetChildByName("Disabled")
+		
+		if detail["MaxLevel"] == detail[self.CurStatCategory.."Level"] then 
+			disable.Enable = true
+		elseif not self.HasItem then 
+			disable.Enable = true 
+		else
+			disable.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ModifySelectItems(string ItemID, integer Count)
+		-- 선택된 아이템 수량을 수정하는 함수
+		if not isvalid(self.selectItems[ItemID]) then 
+			self.selectItems[ItemID] = 0	
+		end
+		self.selectItems[ItemID] += Count
+		
+		local itemLevel =  string.sub(ItemID,5,6) 
+		
+		local slot = self.UIItemSlot:GetChildByName("Slot"..itemLevel) 
+		slot.EmployeeUpgradeItemRenderer:RefreshSlectedCountText(self.selectItems[ItemID])
+		self:SetSelectedItemSlot(self.selectItems)
+		
+		self:SetUINextPreview()
+		self:SetUIExpSlider(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSelcetItems(table items)
+		-- 선택된 아이템 목록을 설정하는 함수
+		table.clear(self.selectItems)
+		
+		if not isvalid(items) then
+			return
+		end
+		
+		for ItemID, count in pairs(items) do
+			
+			if not isvalid(self.selectItems) then 
+				self.selectItems[ItemID] = 0	
+			end
+			self.selectItems[ItemID] = count
+		
+			local itemLevel =  string.sub(ItemID,5,6) 
+			
+			local slot = self.UIItemSlot:GetChildByName("Slot"..itemLevel) 
+			slot.EmployeeUpgradeItemRenderer:RefreshSlectedCountText(self.selectItems[ItemID])
+			self:SetSelectedItemSlot(self.selectItems)
+		end
+		
+		self:SetUINextPreview()
+		self:SetUIExpSlider(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AllClearSelectItems()
+		-- 선택된 모든 아이템을 초기화하는 함수
+		table.clear(self.selectItems)
+		
+		
+		local playerInven = _UserService.LocalPlayer.PlayerInventory
+		local expItems = _EmployeeUpgradeService.ExpItem[self.CurStatCategory]
+		
+		
+		for i = 1, #expItems do
+			
+			local itemID = expItems[i]
+		
+			self.selectItems[itemID] = 0
+		
+			local itemLevel =  string.sub(itemID,5,6) 
+			local slot = self.UIItemSlot:GetChildByName("Slot"..itemLevel) 
+			slot.EmployeeUpgradeItemRenderer:RefreshSlectedCountText(0)
+			self:SetSelectedItemSlot(self.selectItems)
+		end
+		
+		
+		self:SetUINextPreview()
+		self:SetUIExpSlider(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSelectedItemSlot(table items)
+		-- 선택된 아이템 슬롯 UI를 설정하는 함수
+		
+		local nothing = true 
+		
+		for ItemID, count in pairs(items) do
+			
+			local itemLevel =  string.sub(ItemID,5,6) 
+			
+			local slot = self.UIItemSlot_Selected:GetChildByName("Slot"..itemLevel) 
+			slot.EmployeeUpgradeItemRenderer:SetPotionCount(count)
+			if count > 0 then
+				slot.Enable = true
+				nothing = false
+			else
+				slot.Enable = false
+			end
+		end
+		
+		if nothing then
+			self.ItemSlotNewMsg_Nothing.Enable = true
+		else
+			self.ItemSlotNewMsg_Nothing.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnClickOverLimitBtn()
+		-- 한계돌파 버튼 클릭 시 처리하는 함수
+		_UserService.LocalPlayer.EmployeeUpgradeManager:CheckCanOverLimit(self.EmployeeID)
+	end
+
+	@ExecSpace("Client")
+	method void OverLimit(integer canOverLimit)
+		-- 한계돌파 가능 여부에 따라 처리하는 함수
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID)
+		
+		if canOverLimit == 0 then
+			
+			
+			local skillNum = detail.OverLimitLevel
+			
+			if skillNum == 2 then 
+				local data  = _EmployeeService:GetData(self.EmployeeID):ConvertToTable()
+				local skillID = data["Skill"..skillNum.."Type"]
+				if isvalid(skillID) then
+					_EmployeeUpgradeUIServcie.OverlimitPopup:Open(self.EmployeeID, skillID, true) 
+				end
+			else
+				_EmployeeUpgradeUIServcie.OverlimitPopup:Open(self.EmployeeID, nil, true) 
+			end
+			
+			self:OverLimitDone()
+			
+		elseif canOverLimit == 1 then
+			_UIToast:ShowMessage(_LocalizationService:GetText("CantOverlimitMsg1"))
+		elseif canOverLimit == 2 then
+			_UIToast:ShowMessage(_LocalizationService:GetText("CantOverlimitMsg2"))
+		elseif canOverLimit == 3 then 
+			_UIToast:ShowMessage(_LocalizationService:GetText("CantOverlimitMsg3"))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DisplayOverLimitPanel()
+		-- 한계돌파 패널 UI를 표시하는 함수
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID)
+		local data = _EmployeeService:GetData(self.EmployeeID)
+		local curData = self.UIOverLimitGroup:GetChildByName("CurData") 
+		local nextData = self.UIOverLimitGroup:GetChildByName("NextData") 
+		local overLimitLevel = detail.OverLimitLevel
+		local nowGroup
+		if overLimitLevel >= _EmployeeService.MaxOverLimitLevel then 
+			self.UIFinishOverLimitGroup.Enable = true
+			self.UIOverLimitGroup.Enable = false
+			self.UIFinishOverLimitGroup:GetChildByName("TextBig").TextComponent.Text = _LocalizationService:GetText("OverlimitMaxLevel")
+			self.UIFinishOverLimitGroup:GetChildByName("TextSmall").TextComponent.Text = _LocalizationService:GetText("OverlimitMaxLevelDesc")
+			nowGroup = self.UIFinishOverLimitGroup
+		else
+			self.UIFinishOverLimitGroup.Enable = false
+			self.UIOverLimitGroup.Enable = true
+			nowGroup = self.UIOverLimitGroup
+		end
+		
+		
+		local portraitImage = nowGroup:GetChildByName("ChuChu"):GetChildByName("Chu"):GetChildByName("Sprite")
+		_EmployeeUIService:DrawPortraitWithEquip(portraitImage,portraitImage, data)
+		
+		nowGroup:GetChildByName("ChuChu"):GetChildByName("Name"):GetChildByName("Name").TextComponent.Text = _GetLocalizationTextLogic:GetText(data.NameKey) 
+		
+		nowGroup:GetChildByName("ChuChu"):GetChildByName("Name"):GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = _EmployeeRUID:ReturnIconRUIDByStatType(data.Type) 
+		
+		
+		if self.UIOverLimitGroup.Enable == true then
+			
+			local chuLevel = self.UIOverLimitGroup:GetChildByName("Level"):GetChildByName("Now")
+			local chuNextLevel =  self.UIOverLimitGroup:GetChildByName("Level"):GetChildByName("Next")
+			local level = _EmployeeService:ReturnChuchuLevel(self.EmployeeID, _UserService.LocalPlayer)
+			local nextMaxLevel = _EmployeeSkillService.UnLockLevel[overLimitLevel+2]
+			local curMaxLevel = detail.MaxLevel
+			local moveSpeedTable = _UserService.LocalPlayer.EmployeeManager:ReturnEmployeeMoveSpeed(self.EmployeeID, false, detail) 
+			local speed = moveSpeedTable[1]
+			local nextMoveSpeedTable =  _UserService.LocalPlayer.EmployeeManager:ReturnEmployeeMoveSpeed(self.EmployeeID, true, detail) 
+			local nextMoveSpeed = nextMoveSpeedTable[1]
+		
+			local curWage =  _UserService.LocalPlayer.EmployeeManager:ReturnEmployeeWage(detail)
+			local curSalary = math.floor( (curMaxLevel * curWage) )
+			
+			local nextWage = _UserService.LocalPlayer.EmployeeManager:ReturnEmployeeNextOverLimitWage(self.EmployeeID)
+			local nextSalary = math.floor( (curMaxLevel * nextWage) )
+			
+			if isvalid(chuLevel) then 
+				chuLevel.TextComponent.Text = tostring(level).."/"..tostring(curMaxLevel)
+				chuNextLevel.TextComponent.Text = tostring(level).."/"..tostring(nextMaxLevel)
+			end
+			
+			curData:GetChildByName("MaxLevel").TextComponent.Text = tostring(curMaxLevel)
+			curData:GetChildByName("Speed").TextComponent.Text = tostring(speed)
+			curData:GetChildByName("Wage").TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(curSalary)
+			
+			nextData:GetChildByName("MaxLevel").TextComponent.Text = tostring(nextMaxLevel)
+			nextData:GetChildByName("Speed").TextComponent.Text = tostring(nextMoveSpeed)
+			nextData:GetChildByName("Wage").TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(nextSalary)
+			
+			local wageLvEntity = self.UIOverLimitGroup:GetChildByName("Text"):GetChildByName("WageText")
+			wageLvEntity.TextComponent.Text = _LocalizationService:GetTextFormat("WageText", curMaxLevel)
+			
+			local lvConditionText = self.UIOverLimitGroup:GetChildByName("LevelCost"):GetChildByName("UIText")
+			lvConditionText.TextComponent.Text = _LocalizationService:GetTextFormat("OverlimitConditionLvText", curMaxLevel)
+			if curMaxLevel > level then 
+				lvConditionText.TextComponent.FontColor = _ColorCodeEnum:GetColor("#FA5246")
+				lvConditionText.TextComponent.OutlineColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+			else
+				lvConditionText.TextComponent.FontColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+				lvConditionText.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#af7e28")
+			end
+			
+		
+			local skillEntity = self.UIOverLimitGroup:GetChildByName("EmployeeSkillSlot_Small")
+			local skillDesc =  self.UIOverLimitGroup:GetChildByName("SkillDesc")
+			local skillDescCenter =  self.UIOverLimitGroup:GetChildByName("SkillDesc_Center")
+			local skillDescOnlyText =  self.UIOverLimitGroup:GetChildByName("SkillDesc_OnlyText")
+			local nextOverLimitLevel = overLimitLevel + 1
+			
+			if nextOverLimitLevel < 2 then
+				skillDesc.Enable = false
+				skillDescCenter.Enable = false
+				skillEntity.Enable = false
+				skillDescOnlyText.Enable = true
+				skillDescOnlyText.TextComponent.Text = _LocalizationService:GetText("SkillOpenNotice1")
+				
+			elseif nextOverLimitLevel == 2 then
+				local dataTable  = _EmployeeService:GetData(self.EmployeeID):ConvertToTable()
+				local skillId = dataTable["Skill"..nextOverLimitLevel.."Type"]
+				skillEntity.UIEmployeeSkillSlotSmall:Refresh(self.EmployeeID, skillId)
+				skillEntity:GetChildByName("Disable").Enable = false
+				skillEntity.Enable = true
+				skillDesc.TextComponent.Text = _LocalizationService:GetTextFormat("SkillOpenNotice2", _StringUtilLogic:NumToString(nextOverLimitLevel))
+				skillDesc.Enable = true
+				skillDescCenter.Enable = false
+				skillDescOnlyText.Enable = false
+				
+			elseif nextOverLimitLevel > 2 then
+				skillDescCenter.TextComponent.Text = _LocalizationService:GetText("SkillOpenNotice3")
+				skillDesc.Enable = false
+				skillDescCenter.Enable = true
+				skillEntity.Enable = false
+				skillDescOnlyText.Enable = false
+			end
+			
+			self:DisplayOverLimitCost(overLimitLevel)
+		
+		else
+			self:DisplayOverLimitCost(-1)
+			
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void DisplayOverLimitCost(integer overLimitLevel)
+		-- 한계돌파 비용을 표시하는 함수
+		
+		local jemItemId = _EmployeeUpgradeService:ReturnOverLimitJemItemId(self.EmployeeID) 
+		self.UIOverLimitGroup:GetChildByName("JemCost"):GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = _ItemDataSetLogic:ReturnItemRuidFromId(jemItemId)
+		
+		if not isvalid(overLimitLevel) then
+			local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(self.EmployeeID)
+			overLimitLevel = detail.OverLimitLevel
+		end
+		
+		local noneText = "-"
+		if overLimitLevel == -1 then
+			self.UIOverLimitGroup:GetChildByName("MesoCost"):GetChildByName("Cost").TextComponent.Text = noneText
+			self.UIOverLimitGroup:GetChildByName("CloverCost"):GetChildByName("Cost").TextComponent.Text = noneText
+			self.UIOverLimitGroup:GetChildByName("JemCost"):GetChildByName("Cost").TextComponent.Text = noneText
+			return
+		end
+		
+		local costTable =  _EmployeeUpgradeService:ReturnOverLimitCost(overLimitLevel, _UserService.LocalPlayer)
+		local mesoCost = math.tointeger(tonumber(costTable[1]))
+		local cloverCost = math.tointeger(tonumber(costTable[2]))
+		local jemCost = math.tointeger(tonumber(costTable[3]))
+		
+		local inven = _UserService.LocalPlayer.PlayerInventory
+		local myJem = inven:GetItemCount(jemItemId)
+		if not isvalid(myJem) then
+			myJem = 0
+		end
+		
+		self.UIOverLimitGroup:GetChildByName("MesoCost"):GetChildByName("Cost").TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(mesoCost)
+		self.UIOverLimitGroup:GetChildByName("CloverCost"):GetChildByName("Cost").TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(cloverCost)
+		self.UIOverLimitGroup:GetChildByName("JemCost"):GetChildByName("Cost").TextComponent.Text = string.format("%s/%s", _StringUtilLogic:ReturnThousandsSeparatedString(myJem), 
+																														_StringUtilLogic:ReturnThousandsSeparatedString(jemCost))
+																														
+		_UserService.LocalPlayer.EmployeeUpgradeManager:CheckOverLimitCost(overLimitLevel, self.EmployeeID)  
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateOverLimitCostFontColor(boolean meso, boolean clover, boolean jem)
+		-- 한계돌파 비용 폰트 색상을 업데이트하는 함수
+		if meso then
+			self.UIOverLimitGroup:GetChildByName("MesoCost"):GetChildByName("Cost").TextComponent.FontColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+			self.UIOverLimitGroup:GetChildByName("MesoCost"):GetChildByName("Cost").TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#af7e28") 
+		else
+			self.UIOverLimitGroup:GetChildByName("MesoCost"):GetChildByName("Cost").TextComponent.FontColor = _ColorCodeEnum:GetColor("#FA5246") 
+			self.UIOverLimitGroup:GetChildByName("MesoCost"):GetChildByName("Cost").TextComponent.OutlineColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+		end
+		
+		if clover then
+			self.UIOverLimitGroup:GetChildByName("CloverCost"):GetChildByName("Cost").TextComponent.FontColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+			self.UIOverLimitGroup:GetChildByName("CloverCost"):GetChildByName("Cost").TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#af7e28") 
+		else
+			self.UIOverLimitGroup:GetChildByName("CloverCost"):GetChildByName("Cost").TextComponent.FontColor = _ColorCodeEnum:GetColor("#FA5246")
+			self.UIOverLimitGroup:GetChildByName("CloverCost"):GetChildByName("Cost").TextComponent.OutlineColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+		end
+		
+		if jem then
+			self.UIOverLimitGroup:GetChildByName("JemCost"):GetChildByName("Cost").TextComponent.FontColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+			self.UIOverLimitGroup:GetChildByName("JemCost"):GetChildByName("Cost").TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#af7e28") 
+		else
+			self.UIOverLimitGroup:GetChildByName("JemCost"):GetChildByName("Cost").TextComponent.FontColor = _ColorCodeEnum:GetColor("#FA5246")
+			self.UIOverLimitGroup:GetChildByName("JemCost"):GetChildByName("Cost").TextComponent.OutlineColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+		end
+		
+		if meso and clover and jem then
+			self.OverLimitBtn:GetChildByName("Disabled").Enable = false
+		else
+			self.OverLimitBtn:GetChildByName("Disabled").Enable = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OverLimitDone()
+		-- 한계돌파 완료 후 처리하는 함수
+		self:SetUICategory(self.Category_OverLimit)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenToolTipJemCostPanel()
+		-- 보석 비용 툴팁 패널을 여는 함수
+		local jemItemId = _EmployeeUpgradeService:ReturnOverLimitJemItemId(self.EmployeeID) 
+		local jemNameKey = _LocalizationService:GetText(_ItemDataSetLogic:GetItemData(jemItemId).NameKey)
+		local msg = _LocalizationService:GetTextFormat("OverlimitJemToolTipText", jemNameKey) 
+		
+		_TooltipService:OpenTooltip(self.OverLimitJemToolTip, msg)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "e934ad60-1fd4-4df3-ac20-d95e7456b551")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if _TutorialManager.target == self.LevelUpBtn then 
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		_EmployeeUpgradeUIServcie:UIClose()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "bdcfcb22-8ccc-4c63-a94b-326cf1e2d82b")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 스탯 카테고리 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:SetStatCategory()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "8d2300cd-5b00-4e9c-aa38-e232464211ef")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 한계돌파 카테고리 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if _TutorialManager.target == self.LevelUpBtn then 
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:SetUICategory(self.Category_OverLimit)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "7b720ef0-b262-4208-887b-10cf20820e98")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 레벨업 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickLevelUpBtn()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "1089cba8-4af6-4ba6-abb9-94fd9395690e")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 리셋 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self:OnClickResetBtn()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandlePlayerInventoryItemChangedEvent(PlayerInventoryItemChangedEvent event)
+		-- 플레이어 인벤토리 아이템 변경 이벤트를 처리하는 핸들러
+		if _EmployeeUpgradeUIServcie.EmployeeUpgrade.Enable then 
+			self:SetUIItem()
+			self:RefreshLevelUpBtn()
+			_EmployeeUpgradeUIServcie.UIUpgradeAuto:RefreshAutoBtn()
+			self:RefreshResetBtn()
+			self:DisplayOverLimitCost(nil)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEmployeeDetailChangeEvent(EmployeeDetailChangeEvent event)
+		-- 직원 상세 정보 변경 이벤트를 처리하는 핸들러
+		if not self.Entity.Parent.Enable then return end 
+		
+		if _UtilLogic:IsNilorEmptyString(self.EmployeeID) then 
+			
+			local data = _UserService.LocalPlayer.EmployeeManager.EmployeeDetailTable[1]
+			self.EmployeeID = data.Id
+		end
+		
+		self:RefreshAfterLevelUp()
+		self:SetUIDetail() 
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "ddd45232-3b8e-47c2-8f9a-3cc7d0a4de19")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 한계돌파 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		self:OnClickOverLimitBtn()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "eb1f39fa-9d9a-4ba6-8522-a210a04b87b9")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 보석 비용 툴팁 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		self:OpenToolTipJemCostPanel()
+	end
+
+end

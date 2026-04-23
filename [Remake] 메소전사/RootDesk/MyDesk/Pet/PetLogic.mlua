@@ -1,0 +1,514 @@
+@Logic
+script PetLogic extends Logic
+
+	property table petData = {}
+
+	property UIPetPopup petUI = "df83e758-fb96-4979-8241-2bed7c193f2c"
+
+	property integer randomPickPrice = 100
+
+	property table randomPickPercentData = {}
+
+	@HideFromInspector
+	property table pickedPets = {}
+
+	property table petLevelUpData = {}
+
+	property Entity petRandomPickGroup = "560a2100-9a96-4a26-9855-129677a73838"
+
+	method void OnBeginPlay()
+		-- 펫 데이터, 랜덤 뽑기 확률, 레벨업 데이터를 초기화
+		local data = _DataService:GetTable("PetData")
+		
+		for i = 1, data:GetRowCount() do
+			local pet = {}
+			pet.id = data:GetCell(i,"id")
+			pet.name = data:GetCell(i,"name")
+			pet.grade = data:GetCell(i,"grade")
+		
+			pet.skillDescription = data:GetCell(i,"skillDescription")
+			pet.statDescription = data:GetCell(i, "statDescription")
+			pet.petType = data:GetCell(i,"petType")
+			pet.skillInterval = tonumber(data:GetCell(i,"skillInterval"))
+			pet.effectAmount = tonumber(data:GetCell(i,"effectAmount"))
+			pet.itemDropBonus = tonumber(data:GetCell(i,"itemDropBonus"))
+			pet.expBonus = tonumber(data:GetCell(i,"expBonus"))
+			pet.goodsBonus = tonumber(data:GetCell(i,"goodsBonus"))
+			pet.moveRUID = data:GetCell(i,"moveRUID")
+			pet.ruid = data:GetCell(i, "ruid")
+			pet.pivotX = tonumber(data:GetCell(i, "pivotX"))
+			pet.pivotY = tonumber(data:GetCell(i, "pivotY"))
+			pet.set = tonumber(data:GetCell(i, "set"))
+			pet.exp = tonumber(data:GetCell(i, "exp"))
+			
+			self.petData[pet.id] = pet
+		end
+		
+		if self:IsServer() then
+			data = _DataService:GetTable("RandomPickPercent")
+			
+			for i = 1, data:GetRowCount() do
+				local randomPickData = {}
+				randomPickData.id = data:GetCell(i,"id")
+				randomPickData.grade = data:GetCell(i,"grade")
+				randomPickData.percent = tonumber(data:GetCell(i,"percent"))
+				
+				self.randomPickPercentData[randomPickData.id] = randomPickData
+			end
+			
+		end
+		
+		data = _DataService:GetTable("PetLevelUpData")
+		
+		for i = 1, data:GetRowCount() do
+			local petLevelUpData = {}
+			petLevelUpData.grade = data:GetCell(i,"grade")
+			petLevelUpData.needExp_2 = tonumber(data:GetCell(i,"needExp_2"))
+			petLevelUpData.needExp_3 = tonumber(data:GetCell(i,"needExp_3"))
+			
+			self.petLevelUpData[petLevelUpData.grade] = petLevelUpData
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitPetComponent(EntityRef petEntity, table petData, string uniqueKey)
+		-- 펫 유형에 따라 컴포넌트를 초기화하고 레벨에 따른 능력치 적용
+		local player = _UserService.LocalPlayer
+		local petStorage = player.PlayerPetStorageComponent
+		local level = petStorage.petInventory[uniqueKey].level
+		local increaseRatio = 1 + ((level - 1) * 0.15)
+		local decreaseRatio = 1 - ((level - 1) * 0.15)
+		
+		if petData.petType == "DiggingPet" then
+			petEntity.DiggingPetComponent.diggingTime = petData.skillInterval
+			petEntity.DiggingPetComponent.speed = petData.effectAmount * increaseRatio
+		elseif petData.petType == "CollectingPet" then
+			petEntity.TriggerComponent.CircleRadius = petData.effectAmount * increaseRatio
+		elseif petData.petType == "GatheringPet" then
+			local gatheringPet = petEntity.GatheringPetComponent
+			gatheringPet.gatherInterval = petData.skillInterval * decreaseRatio
+			gatheringPet.range = petData.effectAmount
+			gatheringPet:StartGather()
+		elseif petData.petType == "HealingPet" then
+			local healingPet = petEntity.HealingPetComponent
+			healingPet.healAmount = petData.effectAmount
+			healingPet.healInterval = petData.skillInterval * decreaseRatio
+			healingPet:StartHeal()
+		elseif petData.petType == "SlowingPet" then
+			local slowingPet = petEntity.SlowingPetComponent
+			slowingPet.slowInterval = petData.skillInterval * decreaseRatio
+			slowingPet.duration = petData.effectAmount
+			slowingPet:StartSlowing()
+		elseif petData.petType == "StunningPet" then
+			local slowingPet = petEntity.StunningPetComponet
+			slowingPet.stunIntreval = petData.skillInterval * decreaseRatio
+			slowingPet.duration = petData.effectAmount
+			slowingPet:StartStun()
+		elseif petData.petType == "PoisoningPet" then
+			local slowingPet = petEntity.PoisoningPetComponent
+			slowingPet.poisonInterval = petData.skillInterval * decreaseRatio
+			slowingPet.duration = petData.effectAmount
+			slowingPet:StartPoisoning()
+		elseif petData.petType == "BonusPet" then
+			local bonusPet = petEntity.BonusPetComponent
+			bonusPet.expBonus = petData.expBonus * increaseRatio
+			bonusPet.goodsBonus = petData.goodsBonus * increaseRatio
+			bonusPet.itemDropBonus = petData.itemDropBonus * increaseRatio
+			
+			_BuffLogic.appliedBuff.expRatio = _BuffLogic.appliedBuff.expRatio + bonusPet.expBonus / 100
+			player:SendEvent(ChangeExpRatioEvent())
+		end
+		
+		petEntity.SpriteRendererComponent.SpriteRUID = petData.moveRUID
+		petEntity.NameTagComponent.Name = _LocalizeLogic:GetPetName(petData.id) 
+	end
+
+	@ExecSpace("ClientOnly")
+	method number GetTotalExpBonus()
+		-- 장착된 모든 펫의 경험치 보너스 합계 계산
+		local total = 0
+		
+		
+		for _, entity in pairs(_UserService.LocalPlayer.BattlePlayer.pets) do
+			---@type BonusPetComponent
+			local bonusPet = entity.BonusPetComponent
+			
+			if isvalid(bonusPet) then
+				total = total + bonusPet.expBonus
+			end
+		end
+		
+		return total
+	end
+
+	method number GetTotalGoodsBonus(string userId)
+		-- 사용자의 장착된 펫들의 굿즈 보너스 합계 계산
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local petStorage = player.PlayerPetStorageComponent.petInventory
+		local total = 0
+		
+		for key, value in pairs(petStorage) do
+			if value.equippedSlotNum > 0 then
+				local petData = _PetLogic.petData[value.originalId]
+				
+				if isvalid(petData) then
+					total += petData.goodsBonus
+				end
+			end
+		end
+		
+		
+		
+		return total
+	end
+
+	method number GetTotalItemDropBonus(string userId)
+		-- 사용자의 장착된 펫들의 아이템 드롭 보너스 합계 계산
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local petStorage = player.PlayerPetStorageComponent.petInventory
+		local total = 0
+		
+		
+		for key, value in pairs(petStorage) do
+			if value.equippedSlotNum > 0 then
+				local petData = _PetLogic.petData[value.originalId]
+				
+				if isvalid(petData) then
+					total += petData.itemDropBonus
+				end
+			end
+		end
+		
+		
+		return total
+	end
+
+	method boolean CheckCanRandomPickPet(string userId, integer count, table outFailInfo)
+		-- 펫 랜덤 뽑기가 가능한지 펫 슬롯 수 확인
+		if not _CheckLogic:IsEnoughPetSlot(userId, count) then
+			_LocalizeLogic:ShowToast("toast223", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Pet slot is not enough to random pick. count: " .. tostring(count)
+			end
+			
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void RequestRandomPickPet(string userId, integer count)
+		-- 서버에서 펫 랜덤 뽑기 요청 처리
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local diamond = user.PlayerCurrencyData.diamond
+		
+		if diamond < count * self.randomPickPrice then
+			_LocalizeLogic:ShowToast("toast224", userId)
+		else
+			self:DoRandomPickPet(userId, count)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table DoRandomPickPet(string userId, integer count)
+		-- 실제 펫 랜덤 뽑기 실행 및 결과 표시
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local result = {}
+		table.clear(self.pickedPets)
+		
+		if count == 1 then
+			table.insert(result, self:PickRandomPet(userId))
+		elseif count == 11 then
+			for i = 1, 11 do
+				table.insert(result, self:PickRandomPet(userId))
+		
+			end
+		end
+		
+		self:ShowResult(_UtilLogic:TableToString(self.pickedPets), count, userId)
+		table.clear(self.pickedPets)
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PickRandomPet(string userId)
+		-- 랜덤 펫 선택하고 사용자 인벤토리에 추가
+		local petId = self:PickRandomPetId()
+		local user = _UserService:GetUserEntityByUserId(userId)
+		user.PlayerPetStorageComponent:RequestAddPet(_GameUtil:CreateGUID(), 1, petId, 1, userId, "Gatcha", "")
+		table.insert(self.pickedPets, petId)
+		
+		return petId
+	end
+
+	@ExecSpace("ServerOnly")
+	method string PickRandomPetId()
+		-- 확률에 따라 등급을 결정하고 해당 등급에서 랜덤 펫 ID 선택
+		local rand = _UtilLogic:RandomIntegerRange(1, 100000)
+		local sum = 0
+		local grade = "B"
+		
+		for i = 1, #table.keys(self.randomPickPercentData) do
+			sum = sum + self.randomPickPercentData[tostring(i)].percent
+			
+			if rand <= sum then
+				grade = self.randomPickPercentData[tostring(i)].grade
+		
+				break
+			end
+		end
+		
+		local tempTable = {}
+		
+		for key, value in pairs(self.petData) do
+			if value.grade == grade then
+				table.insert(tempTable, value.id)
+			end
+		end
+		
+		rand = _UtilLogic:RandomIntegerRange(1, #tempTable)
+		return tempTable[rand]
+	end
+
+	@ExecSpace("Client")
+	method void ShowResult(string convertedTable, integer count)
+		-- 펫 뽑기 결과를 클라이언트에 표시
+		local pickPets = _UtilLogic:StringToTable(convertedTable)
+		
+		self.petRandomPickGroup.Enable = true
+		
+		if count == 1 then
+			_RandomPickPetSceneLogic:NewPlayRandomPickScene(pickPets[1])
+		elseif count == 11 then
+		
+			_RandomPickPetSceneLogic:NewPlayManyRandomPickScene(pickPets)
+		end
+		
+		local petLists = {}
+		local index = 1
+		
+		for key, value in pairs(pickPets) do
+			local needExpand = true
+			
+			for k, v in pairs(petLists) do
+				if value == v.id then
+					v.count += 1
+					
+					needExpand = false
+				end
+			end
+			
+			if needExpand then
+				petLists[index] = {["itemType"] = "pet", ["id"] = value, ["count"] = 1}
+				index += 1
+			end
+		end
+		
+		_ItemListPopUp:Open(petLists, nil, "획득")
+	end
+
+	@ExecSpace("Server")
+	method void RequestPetLevelUp(string userId, string keyTable, string targetPetUniqueKey)
+		-- 펫 레벨업 요청 처리 - 재료 펫들을 소모하여 경험치 추가
+		local uniqueKeys = _UtilLogic:StringToTable(keyTable)
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local petStorage = user.PlayerPetStorageComponent
+		local sum = 0
+		
+		if petStorage.petInventory[targetPetUniqueKey].level > 2 then
+			_LocalizeLogic:ShowToast("toast222", userId)
+			
+			return
+		end
+		
+		for _, uniqueKey in pairs(uniqueKeys) do
+			local pet = petStorage.petInventory[uniqueKey]
+		
+			if isvalid(pet) then
+				local level = pet.level
+				
+				if level == 1 then
+					sum = sum + self.petData[pet.originalId].exp + petStorage.petInventory[uniqueKey].exp * 0.7
+				else
+					local grade = _PetLogic.petData[pet.originalId].grade
+					
+					if level == 2 then
+						sum = sum + _PetLogic.petLevelUpData[grade].needExp_2 + petStorage.petInventory[uniqueKey].exp * 0.7
+					elseif level == 3 then
+						sum = sum + _PetLogic.petLevelUpData[grade].needExp_2 + _PetLogic.petLevelUpData[grade].needExp_3 + petStorage.petInventory[uniqueKey].exp * 0.7
+					end
+				end
+				
+				petStorage:RemovePet(uniqueKey, "LevelUpMaterial")
+			end
+		end
+		petStorage:AddPetExp(targetPetUniqueKey, sum, userId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetDescription(string uniqueKey, table petData, boolean showStatDesc, boolean isSimpleDesc)
+		-- 펫의 상세 설명 텍스트를 레벨과 유형에 따라 생성
+		local player = _UserService.LocalPlayer
+		local petStorage = player.PlayerPetStorageComponent
+		
+		local level = 1
+		if not _UtilLogic:IsNilorEmptyString(uniqueKey) then
+			level = petStorage.petInventory[uniqueKey].level
+		end
+		
+		local increaseRatio = 1 + ((level - 1) * 0.15)
+		local decreaseRatio = 1 - ((level - 1) * 0.15)
+		local amount = 0.0
+		
+		local skillDescKey = ""
+		local statDescKey = "pet_statDesc_1"
+		
+		if petData.grade == "A" then
+			statDescKey = "pet_statDesc_2"
+		elseif petData.grade == "B" then
+			statDescKey = "pet_statDesc_3"
+		end
+		
+		if petData.petType == "DiggingPet" then
+			amount = petData.effectAmount * increaseRatio
+			skillDescKey = "pet_skillDesc_1"
+		elseif petData.petType == "CollectingPet" then
+			amount = petData.effectAmount * increaseRatio
+			skillDescKey = "pet_skillDesc_2"
+		elseif petData.petType == "GatheringPet" then
+			amount = petData.skillInterval * decreaseRatio
+			skillDescKey = "pet_skillDesc_3"
+		elseif petData.petType == "HealingPet" then
+			amount = petData.skillInterval * decreaseRatio
+			skillDescKey = "pet_skillDesc_4"
+		elseif petData.petType == "SlowingPet" then
+			amount = petData.skillInterval * decreaseRatio
+			skillDescKey = "pet_skillDesc_5"
+		elseif petData.petType == "StunningPet" then
+			amount = petData.skillInterval * decreaseRatio
+			skillDescKey = "pet_skillDesc_6"
+		elseif petData.petType == "PoisoningPet" then
+			amount = petData.skillInterval * decreaseRatio
+			skillDescKey = "pet_skillDesc_7"
+		elseif petData.petType == "BonusPet" then
+			if petData.expBonus ~= 0 then
+				amount = petData.expBonus * increaseRatio
+				skillDescKey = "pet_skillDesc_9"
+			elseif petData.goodsBonus ~= 0 then
+				amount = petData.goodsBonus * increaseRatio
+				skillDescKey = "pet_skillDesc_10"
+			elseif petData.itemDropBonus ~= 0 then
+				amount = petData.itemDropBonus * increaseRatio
+				skillDescKey = "pet_skillDesc_8"
+			end
+		end
+		
+		local str = string.format(_LocalizeLogic:GetText(skillDescKey), amount)
+		local statDesc = _LocalizeLogic:GetText(statDescKey)
+		
+		if isSimpleDesc then
+			if showStatDesc then
+				str = string.format("%s\n%s", str, statDesc)
+			end
+		else
+			if showStatDesc then
+				local newStatDesc = _UtilLogic:Split(statDesc, "(")[2]
+				newStatDesc = _UtilLogic:Split(newStatDesc, ")")[1]
+				str = string.format(_LocalizeLogic:GetText("etcStr115"), petData.grade, newStatDesc, str)
+			end
+			
+			str = string.format(_LocalizeLogic:GetText("etcStr114"), str)
+		end
+		
+		
+		return str
+	end
+
+	method table GetEquippedPets(Entity playerEntity)
+		-- 플레이어가 장착한 모든 펫의 고유 키 목록 반환
+		local petStorage = playerEntity.PlayerPetStorageComponent
+		local pets = {}
+		
+		for key, value in pairs(petStorage.petInventory) do
+			if value.equippedSlotNum > 0 then
+				table.insert(pets, key)
+			end
+		end
+		
+		return pets
+	end
+
+	method table GetPetDataBySlotNum(integer slotNum, string userId)
+		-- 특정 슬롯 번호에 장착된 펫 데이터 반환
+		local data = {}
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local petInventory = user.PlayerPetStorageComponent.petInventory
+			
+		for key, value in pairs(petInventory) do
+			if value.equippedSlotNum == slotNum then
+				return value
+			end
+		end
+		
+		return data
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CheckPetEquipped(string uniqueKey)
+		-- 펫이 장착되어 있는지 확인
+		local petStorage = _UserService.LocalPlayer.PlayerPetStorageComponent.petInventory
+		local result = false
+		if petStorage[uniqueKey].equippedSlotNum >= 1 then
+			result = true
+		end
+		
+		return result
+	end
+
+	method string GetCategoryColorRUID(string itemId)
+		-- 펫 등급에 따른 카테고리 색상 RUID 반환
+		
+		local grade = self.petData[itemId].grade
+		
+		
+		if grade == "B" then
+			return "f8410525a90f4e2e8be0ae22623944f3"
+		elseif grade == "A" then
+			return "6dcc398f8a4742cbbcef50c1beea4ecb"
+		elseif grade == "S" then
+			return "267e7186eac54d24a83968c66febc10c"
+		end
+		
+	end
+
+	method string GetGradeIconRUID(string itemId)
+		-- 펫 등급에 따른 등급 아이콘 RUID 반환
+		local grade = self.petData[itemId].grade
+		
+		if grade == "B" then
+			return "7a78a348c0e5489aabab7c6ecb8a79ff"
+		elseif grade == "A" then
+			return "07b9812308cc4ab3bc4fb3cc37ee4a9c"
+		elseif grade == "S" then
+			return "4092ae39304445099af844898ad8c5b1"
+		end
+	end
+
+	method string GetCategoryPanelColor(string itemId)
+		-- 펫 등급에 따른 카테고리 패널 색상 코드 반환
+		local grade = self.petData[itemId].grade
+		
+		
+		if grade == "B" then
+			return "#222630"
+		elseif grade == "A" then
+			return "#2860b1"
+		elseif grade == "S" then
+			return "#852821"
+		end
+	end
+
+end

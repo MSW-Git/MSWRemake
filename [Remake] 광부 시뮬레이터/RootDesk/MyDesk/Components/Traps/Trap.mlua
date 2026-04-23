@@ -1,0 +1,94 @@
+@Component
+script Trap extends Component
+
+	property number damage = 0
+
+	property string hitEffectId = ""
+
+	property string hitSoundId = ""
+
+	@Description("피격했을 때 플레이어에게 부여할 y축 힘입니다. 음수값이면 아래로 내려갑니다.")
+	property number hitForce = 0
+
+	@Description("이 함정 피해로 인해 중독되는지 여부입니다. 중독 지속시간은 5초로 고정입니다.")
+	property boolean IsToxic = false
+
+	property boolean canHit = true
+
+	property boolean isElectric = false
+
+	property number templeDamageRate = 0
+
+	property boolean collisionDestroy = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 함정 초기화 시 피격 가능 상태로 설정
+		self.canHit = true
+	end
+
+	@ExecSpace("Client")
+	method void MakeCanHit(boolean canHit)
+		-- 함정의 피격 가능 상태를 외부에서 설정
+		self.canHit = canHit
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 플레이어와 충돌 시 데미지, 이팩트, 중독, 널백 처리
+		-- Parameters
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		--------------------------------------------------------
+		if self.canHit == true and TriggerBodyEntity == _UserService.LocalPlayer then
+			self.canHit = false
+			if TriggerBodyEntity.TagComponent and
+				TriggerBodyEntity.TagComponent.Tags[1] == "player" then
+				--log("플레이어 충돌했습니다.")
+				-- hit sound
+				if self.hitSoundId ~= ""then
+					_SoundService:PlaySound(self.hitSoundId, 1)
+				end
+				-- hit effect
+				local hitPos = Vector3(TriggerBodyEntity.TransformComponent.WorldPosition.x,
+					TriggerBodyEntity.TransformComponent.WorldPosition.y + 0.15,
+					TriggerBodyEntity.TransformComponent.WorldPosition.z)
+				if self.hitEffectId ~= "" then
+					_EffectService:PlayEffect(self.hitEffectId, self.Entity, hitPos, 0, Vector3.one)
+				end
+			
+				-- give damage
+				if self.isElectric == true then 
+					TriggerBodyEntity.PlayerStateAtStage:ElectricDamage(self.damage, TriggerBodyEntity)
+				else
+					TriggerBodyEntity.PlayerIngameData:Hit(self.damage)
+				end	
+				if self.IsToxic == true then
+					TriggerBodyEntity.PlayerStateAtStage:Poisoned(5)
+				end
+			
+				-- change state 
+				if TriggerBodyEntity.StateComponent.CurrentStateName == "LADDER" 
+					or  TriggerBodyEntity.StateComponent.CurrentStateName == "ROPE" then
+					TriggerBodyEntity.StateComponent:ChangeState("FALL")
+				end
+			
+			-- apply force to rigidbody 
+				if self.hitForce ~= 0 then
+					self.hitForce = math.abs(self.hitForce) / self.hitForce
+				end
+			
+				TriggerBodyEntity.RigidbodyComponent:AddForce(Vector2(0, self.hitForce))
+			end
+			
+			if self.collisionDestroy then
+				_EntityService:Destroy(self.Entity)
+			end
+			local callback = function()
+				self.canHit = true
+			end
+			_TimerService:SetTimerOnce(callback, 1.5)
+		end
+	end
+
+end

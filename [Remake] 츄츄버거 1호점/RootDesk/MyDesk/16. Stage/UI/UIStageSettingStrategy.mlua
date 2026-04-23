@@ -1,0 +1,365 @@
+@Component
+script UIStageSettingStrategy extends Component
+
+	property integer SelectTab = 0
+
+	property table Tabs = {}
+
+	property Entity StrategyList = "a68c8062-801f-417e-9517-4ed9e751b737"
+
+	property Entity CurrentList = "77443643-e028-4ee6-b48f-27fad4e47147"
+
+	property Entity CurrentSideMenuSlot = "2073a411-cda2-44b8-97a5-7b51ab69eca8"
+
+	property TextComponent SPText = "16df0ea7-dac2-46bf-b4b1-40c92d33b372"
+
+	property integer UsedSP = 0
+
+	property SyncTable<integer, integer> SelectedStrategy
+
+	property integer SelectedSideMenu = 0
+
+	property Entity PassRedDot = "3175b45d-b180-42e3-b2c2-210700843dfd"
+
+	property Entity PassRedDotText = "b2401690-b28f-49ff-9572-b0e41775b6af"
+
+	property Entity NoText = "2519a040-7f64-4d10-a6f2-1edd1e40105b"
+
+	property Entity T2003TutorialTarget = "09f055e8-650a-4cf8-be9d-1f133ce1d68f"
+
+	property table OpenedStrategy = {}
+
+	property table OpenedSideMenu = {}
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 탭과 리사이클 뷰를 설정하는 함수
+		local getText = function(a)
+			if a == 1 then
+				return _GetLocalizationTextLogic:GetText("StageInfoTabStrategy")
+			elseif a == 2 then
+				return _GetLocalizationTextLogic:GetText("SideMenu")
+			end
+		end
+		
+		table.clear(self.Tabs)
+		local tabRoot = self.Entity:GetChildByName("MenuBar")
+		for i, child in pairs(tabRoot.Children) do
+			child.UIToggleTypeA:SetIndex(i)
+			child.UIToggleTypeA:SetText(getText(i))
+			child.UIToggleTypeA.OnClickedButton = function(event, index) self:SetSelectTab(index) end
+			
+			table.insert(self.Tabs, child)
+		end
+		
+		self.StrategyList.RecycleScrollView.onUpdateCell = function(index, entity)	
+			local id = index
+			if self.SelectTab == 1 then
+				id = self.OpenedStrategy[index]
+			elseif self.SelectTab == 2 then
+				id = self.OpenedSideMenu[index]
+			end
+			
+			entity.UIStrategySlot:Refresh(self.SelectTab, id)
+		end
+		
+		self.CurrentList.RecycleScrollView.onUpdateCell = function(index, entity)
+			local sortedKeys = table.keys(self.SelectedStrategy)
+			table.sort(sortedKeys)
+			local id = sortedKeys[index]
+			entity.UICurrentStrategySlot:Refresh(id)
+		end
+	end
+
+	method void Open()
+		-- 전략 설정 UI를 여는 함수
+		self:RefreshSideMenuTabRedDot()
+		
+		self:SetSelectTab(1)
+		self:Refresh()
+	end
+
+	method void SetSelectTab(integer selectTab)
+		-- 선택된 탭을 설정하는 함수
+		if _TutorialManager.target == self.T2003TutorialTarget then
+			return
+		end
+		
+		self.SelectTab = selectTab
+		self:OnSelectTab(selectTab)
+		self:Apply(selectTab)
+	end
+
+	method void OnSelectTab(integer selectTab)
+		-- 탭 선택 시 UI 상태를 변경하는 함수
+		for i, entity in ipairs(self.Tabs) do
+			---@type Entity
+			local tab = entity
+			local tabIndex = tab.UIToggleTypeA.index
+			local isSelect = tabIndex == selectTab
+			local textColor = isSelect and _ColorCodeEnum:GetColor("#FFFFFF") or _ColorCodeEnum:GetColor("#BB9A59")
+			
+			tab.UIToggleTypeA:SetSelect(isSelect)
+			tab.UIToggleTypeA:SetTextColor(textColor)
+			tab.UIToggleTypeA:SetTextOutLine(isSelect, _ColorCodeEnum:GetColor("#985F05"))
+			
+			tab:GetChildByName("UISpriteIcon").SpriteGUIRendererComponent.Color.a = isSelect and 1 or 0.5
+		end
+	end
+
+	method void Apply(integer selectTab)
+		-- 선택된 탭에 따라 데이터를 적용하는 함수
+		local player = _UserService.LocalPlayer
+		
+		if selectTab == 1 then
+			
+			table.clear(self.OpenedStrategy)
+			for id, bool in pairs(player.PlayerCollection.StrategyCollection) do
+				if bool == true then
+					table.insert(self.OpenedStrategy, id)
+				end
+			end
+			table.sort(self.OpenedStrategy)
+			
+			self.StrategyList.RecycleScrollView:SetTotalCount(#self.OpenedStrategy)
+			
+		elseif selectTab == 2 then
+			
+			table.clear(self.OpenedSideMenu)
+			for id, _ in pairs(_StrategyDataSetLogic.SideMenuData) do
+				local data = _StrategyDataSetLogic:GetSideMenuData(id)
+				if data.HideSlot == false then
+					table.insert(self.OpenedSideMenu, id)
+				end
+			end
+			table.sort(self.OpenedSideMenu)
+			
+			self.StrategyList.RecycleScrollView:SetTotalCount(#self.OpenedSideMenu)
+			
+			for id, bool in pairs(player.PlayerCollection.SideMenuChecked) do
+				if bool == false then
+					player.PlayerCollection:RequestSetSideMenuChecked(id, true)
+				end
+			end
+			
+		end
+		
+		self.CurrentList.RecycleScrollView:SetTotalCount(#table.keys(self.SelectedStrategy))
+		self._T.currentCount = #table.keys(self.SelectedStrategy)
+	end
+
+	method void Refresh()
+		-- 전략 설정 UI를 새로고침하는 함수
+		self:RefreshSPBar()
+		
+		self:RefreshCurrentSideMenuSlot()
+		self.CurrentList.RecycleScrollView:SetTotalCount(#table.keys(self.SelectedStrategy))
+		self._T.currentCount = #table.keys(self.SelectedStrategy)
+		
+		self.NoText.Enable = #table.keys(self.SelectedStrategy) == 0
+	end
+
+	method void RefreshSPBar()
+		-- SP 바를 새로고침하는 함수
+		self.SPText.Text = string.format("%d/%d", self.UsedSP, _UserService.LocalPlayer.PlayerOutgameManager.StrategyPoint)
+		
+		self:SetPassBtnRedDot()
+	end
+
+	method void RefreshCurrentSideMenuSlot()
+		-- 현재 사이드메뉴 슬롯을 새로고침하는 함수
+		self.CurrentSideMenuSlot.UICurrentSideMenuSlot:Refresh(self.SelectedSideMenu)
+	end
+
+	method void RequestSetStrategy(integer id)
+		-- 전략 설정을 요청하는 함수
+		local nowLevel = self.SelectedStrategy[id]
+		if nowLevel == nil then
+			nowLevel = 0
+		end
+		
+		local stData = _StrategyDataSetLogic:GetStrategyData(id)
+		local nextLevel = nowLevel + 1
+		if nextLevel > stData.MaxLevel then
+			return
+		end
+		
+		local player = _UserService.LocalPlayer
+		if player.PlayerOutgameManager.StrategyPoint - self.UsedSP < stData.SPCost then
+			return
+		end
+		
+		self.SelectedStrategy[id] = nextLevel
+		self:SetUsedSP()
+		
+		_TutorialManager:CheckForceTo()
+		
+		local e2 = StrategySettingChangedEvent()
+		e2:Init(id, self.SelectedStrategy[id])
+		_UserService.LocalPlayer:SendEvent(e2)
+	end
+
+	method void RequestSetSideMenu(integer id)
+		-- 사이드메뉴 설정을 요청하는 함수
+		if self.SelectedSideMenu == id then
+			return
+		end
+		
+		self.SelectedSideMenu = id
+		
+		-- 즉시 CurrentSideMenuSlot UI 갱신
+		self:RefreshCurrentSideMenuSlot()
+		
+		local e = SideMenuSettingChangedEvent()
+		e:Init(self.SelectedSideMenu)
+		_UserService.LocalPlayer:SendEvent(e)
+	end
+
+	method void ResetData()
+		-- 설정 데이터를 초기화하는 함수
+		self.UsedSP = 0
+		
+		self:RequestUnsetSideMenu()
+		for id, level in pairs(self.SelectedStrategy) do
+			self.SelectedStrategy[id] = nil
+			
+			local e = StrategySettingChangedEvent()
+			e:Init(id, self.SelectedStrategy[id])
+			_UserService.LocalPlayer:SendEvent(e)
+		end
+		
+	end
+
+	method void RequestUnsetSideMenu()
+		-- 사이드메뉴 설정 해제를 요청하는 함수
+		if self.SelectedSideMenu == 0 then
+			return
+		end
+		
+		self.SelectedSideMenu = 0
+		
+		-- 즉시 CurrentSideMenuSlot UI 갱신
+		self:RefreshCurrentSideMenuSlot()
+		
+		local e = SideMenuSettingChangedEvent()
+		e:Init(self.SelectedSideMenu)
+		_UserService.LocalPlayer:SendEvent(e)
+	end
+
+	method void RequestUnsetStrategy(integer id)
+		-- 전략 설정 해제를 요청하는 함수
+		if self.SelectedStrategy[id] == nil then
+			return
+		end
+		
+		local count = self.SelectedStrategy[id] - 1
+		if count <= 0 then
+			count = nil
+		end
+		
+		self.SelectedStrategy[id] = count
+		self:SetUsedSP()
+		
+		local e2 = StrategySettingChangedEvent()
+		e2:Init(id, self.SelectedStrategy[id])
+		_UserService.LocalPlayer:SendEvent(e2)
+	end
+
+	method void SetUsedSP()
+		-- 사용된 SP를 계산하여 설정하는 함수
+		local usedSP = 0
+		for id, level in pairs(self.SelectedStrategy) do
+			local stData = _StrategyDataSetLogic:GetStrategyData(id)
+			usedSP += stData.SPCost * level
+		end
+		
+		self.UsedSP = usedSP
+	end
+
+	@ExecSpace("Client")
+	method void SetPassBtnRedDot()
+		-- 패스 버튼의 빨간 점을 설정하는 함수
+		local redDotEnable = false
+		
+		local rewardList =_StagePassDataLogic.UIStagePassEntity.UIStagePass:GetEnableRewards(_UserService.LocalPlayer.PlayerComponent.UserId, nil) 
+		for i, id in pairs(rewardList) do
+		    ---@type StagePassRewardData
+		    local rewardData = _StagePassDataLogic.StagePassRewardData[id]
+		    if rewardData.RewardItemId == "G0008" and rewardData.RewardItemCount > 0 then
+		        redDotEnable = true
+		        break
+		    end
+		end
+		
+		self.PassRedDot.Enable = redDotEnable
+		self.PassRedDotText.Enable = redDotEnable
+	end
+
+	@ExecSpace("Client")
+	method void RefreshSideMenuTabRedDot()
+		-- 사이드메뉴 탭의 빨간 점을 새로고침하는 함수
+		local player = _UserService.LocalPlayer
+		local isRedDotEnable = false
+		
+		for id, bool in pairs(player.PlayerCollection.SideMenuChecked) do
+			if bool == false then
+				isRedDotEnable = true
+				break
+			end
+		end
+		
+		---@type Entity
+		local tabEntity = self.Tabs[2]
+		tabEntity:GetChildByName("RedDot"):SetEnable(isRedDotEnable)
+	end
+
+	@EventSender("Entity", "ec58ae44-b1a6-452b-b092-4ac88d98e57c")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 첫 번째 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+			
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Btn_Reroll"], 1)
+		self:ResetData()
+	end
+
+	@EventSender("Entity", "888d5852-fa17-4a92-98b7-5f107b45e8a7")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 두 번째 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+			
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_BMDropDownLogic.UIStagePass:Open(nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleStrategySettingChangedEvent(StrategySettingChangedEvent event)
+		-- 전략 설정 변경 이벤트를 처리하는 핸들러
+		self:Refresh()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleSideMenuSettingChangedEvent(SideMenuSettingChangedEvent event)
+		-- 사이드메뉴 설정 변경 이벤트를 처리하는 핸들러
+		self:Refresh()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandlePlayerSPChangedEvent(PlayerSPChangedEvent event)
+		-- 플레이어 SP 변경 이벤트를 처리하는 핸들러
+		if self.Entity.Enable == false then
+			return
+		end
+		
+		self:RefreshSPBar()
+	end
+
+end

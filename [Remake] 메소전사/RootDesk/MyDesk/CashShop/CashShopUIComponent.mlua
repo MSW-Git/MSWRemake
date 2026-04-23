@@ -1,0 +1,377 @@
+@Component
+script CashShopUIComponent extends UICommonPopup
+
+	property Entity exitButton = "b8ca84d2-e6ac-448d-9256-3b951b587c25"
+
+	property Entity categoryLayout = "af9db583-55e3-4c2c-aaf1-f6586c4f419f"
+
+	property Entity originalCategoryButton = "ea5bea32-3257-44a9-b9bf-3ca91f554d4d"
+
+	property Entity productScrollLayout = "829109c8-2013-4c61-86d9-08536678f96b"
+
+	property Entity originalProductSlot_Common = "411d3f44-79ef-436f-a6db-580c3b8bac94"
+
+	property Entity gatchaLayout = "d20da7d7-89df-43af-a408-a5009b14b247"
+
+	@HideFromInspector
+	property string currentShopCategory = "1"
+
+	@HideFromInspector
+	property number buttonClickedTime = 0
+
+	property table layouts = {}
+
+	property Entity productLayout = "f89a2247-806d-43a7-8290-c1b0a05158d1"
+
+	property Entity originalProductSlot_Main = "32b2c9ac-9dbb-494a-a785-d6e127ed55e3"
+
+	property table categorys = {}
+
+	property Entity promotionCategoryButton = nil
+
+	property Entity petCategoryButton = nil
+
+	property number purchaseRequestedTime = 0
+
+	property Entity decorationViewButton = "71dfc50f-e556-4f4d-a094-7b3641bba539"
+
+	property Entity storageCount = "980669bd-4804-40dc-94e8-500d9d506656"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 캐시샵 UI 컴포넌트를 초기화하고 카테고리 버튼들을 설정
+		__base:OnBeginPlay()
+		self.originalCategoryButton.Enable = false
+		self.originalProductSlot_Main.Enable = false
+		self.originalProductSlot_Common.Enable = false
+		
+		self.exitButton:ConnectEvent(ButtonClickEvent, function()
+				self:Hide()
+			end)
+		
+		self.currentShopCategory = "1"
+		self:InitCategoryButtons()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 현재 선택된 카테고리에 따라 UI를 새로고침
+		local shopData = _CashShopLogic.cashShopCategoryData[self.currentShopCategory]
+		
+		
+		self.productLayout.Enable = false
+		self.gatchaLayout.Enable = false
+		
+		if shopData.categoryType == "gatcha" then
+			self:SetGatchaLayout()
+		else
+			self:SetProductLayout()
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetProductLayout()
+		-- 상품 레이아웃을 설정하고 카테고리별 상품 목록을 표시
+		self.productLayout.Enable = false
+		
+		local player = _UserService.LocalPlayer
+		local accountLevel = player.PlayerAccount.accountTable.level
+		local stageStep = player.PlayerInfoComponent.playerInfo.stageStep
+		
+		if not isvalid(accountLevel) then
+			accountLevel = 1
+		end
+		
+		local data = _CashShopLogic.cashShopCategoryData[self.currentShopCategory]
+		local renderer = self.productScrollLayout.SpriteGUIRendererComponent
+		local originalSlot = self.originalProductSlot_Main
+		
+		local noteTextCompo = self.productLayout:GetChildByName("Background"):GetChildByName("UIText_note").TextComponent
+		if _LocalizationService.CurrentLocaleId == "ko" then
+			noteTextCompo.Text = ""
+		else
+			noteTextCompo.Text = _LocalizeLogic:GetText("AdminTool_133")
+		end
+		
+		self.productLayout:GetChildByName("Background").SpriteGUIRendererComponent.ImageRUID = data.backgroundRUID
+		self.decorationViewButton.Enable = false
+		
+		if self.currentShopCategory == "6" then
+			self.decorationViewButton.Enable = true
+		end
+		
+		if self.currentShopCategory == "1" then
+			renderer.ImageRUID = ""
+			renderer.Color = Color.FromHexCode("#ffffff")
+			renderer.Color.a = 0
+		else
+			renderer.ImageRUID = "f765a3f83a534b4ea4f7b309bb35103b"
+			renderer.Color = Color.FromHexCode("#a8766b")
+			renderer.Color.a = 0.89
+			originalSlot = self.originalProductSlot_Common
+		end
+		
+		self:DestroyProductSlots()
+		
+		
+		local products = {}
+		local limitedProducts = {}
+		local playerInfo = player.PlayerInfoComponent
+		
+		for key, value in pairs(_CashShopLogic.cashItemData) do
+			local categoryIds = _UtilLogic:Split(value.categoryId, ",")
+		
+			for i = 1, #categoryIds do
+				if categoryIds[i] == self.currentShopCategory then
+					
+					if accountLevel >= value.minAccountLevel and accountLevel <= value.maxAccountLevel and
+						stageStep + 1 >= value.displayMinStage and stageStep + 1 <= value.displayMaxStage then
+						
+						if self.currentShopCategory == "1" then
+							if stageStep + 1 >= value.mainDisplayMinStage and stageStep + 1 <= value.mainDisplayMaxStage then
+								table.insert(products, value)
+							end
+						else
+							if playerInfo:IsCanPurchaseLimitedProduct(value.id) then
+								table.insert(products, value)
+							else
+								table.insert(limitedProducts, value)
+							end
+						end
+					end 
+				end
+			end
+		end
+		
+		table.sort(products, function(a, b)  
+			if a.order == b.order then
+				return a.name < b.name
+			else
+				return a.order < b.order 
+			end
+		end)
+		
+		table.sort(limitedProducts, function(a, b)  
+			if a.order == b.order then
+				return a.name < b.name
+			else
+				return a.order < b.order 
+			end
+		end)
+		
+		for key, value in pairs(limitedProducts) do
+			table.insert(products, value)
+		end
+		
+		for i = 1, #products do
+			local productSlot = originalSlot:Clone("ProductSlot")
+			productSlot.CashShopProductSlotComponent:SetSlot(products[i].id)
+		end
+		
+		self.productLayout.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetGatchaLayout()
+		-- 가챠 레이아웃을 설정하고 가챠 버튼들을 배치
+		self.gatchaLayout.Enable = true
+		
+		local data = _CashShopLogic.cashShopCategoryData[self.currentShopCategory]
+		
+		local noteTextCompo = self.gatchaLayout:GetChildByName("Background"):GetChildByName("UIText_note").TextComponent
+		noteTextCompo.Text = ""
+		
+		local renderer = self.gatchaLayout:GetChildByName("Background").SpriteGUIRendererComponent
+		renderer.ImageRUID = data.backgroundRUID
+		renderer.LocalPosition = Vector2(0, data.offsetY)
+		
+		
+		local gatchaData = {}
+		
+		for key, value in pairs(_GatchaLogic.gatchaData) do
+			if value.cashShopCategoryId == self.currentShopCategory then
+				table.insert(gatchaData, value)
+			end
+		end
+		
+		local gatchaOnce = self.gatchaLayout:GetChildByName("Gatcha_Once", true)
+		local gatchaMany = self.gatchaLayout:GetChildByName("Gatcha_Many", true)
+		local gatchaOnceWorldCoin = self.gatchaLayout:GetChildByName("Gatcha_Once_WorldCoin", true)
+		local gatchaManyWorldCoin = self.gatchaLayout:GetChildByName("Gatcha_Many_WorldCoin", true)
+		
+		for key, value in pairs(gatchaData) do
+			if value.wealthType == "diamond" then
+				if value.gatchaNum == 1 then
+					gatchaOnce.CashShopGatchaButtonComponent:SetSlot(value.id)
+				else
+					gatchaMany.CashShopGatchaButtonComponent:SetSlot(value.id)
+				end
+			else
+				if value.gatchaNum == 1 then
+					gatchaOnceWorldCoin.CashShopGatchaButtonComponent:SetSlot(value.id)
+				else
+					gatchaManyWorldCoin.CashShopGatchaButtonComponent:SetSlot(value.id)
+				end
+			end
+		end
+		
+		local str = ""
+		
+		if self.currentShopCategory == "2" then
+			str = _LocalizeLogic:GetText("cashShopStr3")
+		elseif self.currentShopCategory == "3" then
+			str = _LocalizeLogic:GetText("cashShopStr4")
+		elseif self.currentShopCategory == "4" then
+			str = _LocalizeLogic:GetText("cashShopStr5")
+		end
+		
+		noteTextCompo.Text = str
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyProductSlots()
+		-- 기존 상품 슬롯들을 제거 (원본 슬롯 제외)
+		for _, entity in pairs(self.productScrollLayout.Children) do
+			if entity ~= self.originalProductSlot_Main and entity ~= self.originalProductSlot_Common then
+				entity:Destroy()
+			end
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitCategoryButtons()
+		-- 캐시샵 카테고리 버튼들을 생성하고 초기화
+		local data = _CashShopLogic.cashShopCategoryData
+		local categorys = {}
+		
+		for key, value in pairs(data) do
+			table.insert(categorys, value)
+		end
+		
+		table.sort(categorys, function(a, b) return a.id < b.id end)
+		
+		for i = 1, #categorys do
+			local clone = self.originalCategoryButton:Clone("categoryButton")
+			if _UtilLogic:IsNilorEmptyString(categorys[i].contentOpenId) == false then
+				clone.ContentLockComponent.uiName = categorys[i].contentOpenId
+			else
+				clone:RemoveComponent("ContentLockComponent")
+				clone:GetChildByName("ContentLock").Enable = false
+			end
+			clone.TextComponent.Text = _LocalizeLogic:GetCashShopCategory(categorys[i].id)
+			clone.CashShopCategoryButtonComponent.categoryId = categorys[i].id
+			
+			if categorys[i].id ~= "1" then
+				clone.SpriteGUIRendererComponent.ImageRUID = "75ff2132ace346358699f21009389b99"
+				clone.TextComponent.FontColor = Color.FromHexCode("#A0ACCA")
+			end
+			if categorys[i].id == "1" then
+				self.promotionCategoryButton = clone
+			elseif categorys[i].id == "4" then
+				self.petCategoryButton = clone
+			end
+			
+			table.insert(self.categorys, clone)
+		end
+	end
+
+	method void Show()
+		-- 캐시샵 UI를 표시하고 구매 카운트를 새로고침
+		if self.Entity:GetChildByName("popup").ContentLockComponent:CheckUIAvailable() then
+			self:SetCategory()
+			__base:Show()
+			_UserService.LocalPlayer.PlayerInfoComponent:RefreshPurchasedCount()
+		end
+	end
+
+	method void OnFinishHide()
+		-- 캐시샵 UI 숨김 완료 시 정리 작업 수행
+		__base:OnFinishHide()
+		self:DestroyProductSlots()
+		self.currentShopCategory = "1"
+		self:ChangeTapButton(self.promotionCategoryButton)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCategory()
+		-- 모든 카테고리 버튼을 기본 상태로 초기화
+		for _, entity in pairs(self.categorys) do
+			---@type Entity
+			local newEntity = entity
+			
+			newEntity.SpriteGUIRendererComponent.ImageRUID = "75ff2132ace346358699f21009389b99"
+			newEntity.TextComponent.FontColor = Color.FromHexCode("#A0ACCA")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ChangeTapButton(Entity button)
+		-- 선택된 카테고리 버튼의 스타일을 변경
+		self:RefreshCategory()
+		button.SpriteGUIRendererComponent.ImageRUID = "a98b037c6b0f45288ce63cb8414b83b5"
+		button.TextComponent.FontColor = Color.white
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCategory()
+		-- 현재 선택된 카테고리에 해당하는 버튼을 활성화
+		for _, entity in pairs(self.categorys) do
+			---@type Entity
+			local newEntity = entity
+			
+			if newEntity.CashShopCategoryButtonComponent.categoryId == self.currentShopCategory then
+				self:ChangeTapButton(newEntity)
+				
+				break
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PromptPurchasePopUp(string targetId)
+		-- 특정 상품의 구매 팝업을 표시
+		local productLayout = self.productLayout:GetChildByName("ProductLayout")
+		local index = 1
+		
+		for _, entity in pairs(productLayout.Children) do
+			if entity.CashShopProductSlotComponent.productId == targetId then
+				entity.CashShopProductSlotComponent:OpenPurchasePopUp()
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "be17c06b-8e9c-4159-8eda-259d27c98601")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 캐시샵 열기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		self:ShowByButtonClick()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "7a51c9b5-d863-462a-99cd-65666a5b31f6")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 두 번째 버튼 클릭 이벤트 처리 (빈 구현)
+		
+		local Entity = event.Entity
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "fbb855d0-1789-4f56-a704-284d54ade433")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 세 번째 버튼 클릭 이벤트 처리 (빈 구현)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "71dfc50f-e556-4f4d-a094-7b3641bba539")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 네 번째 버튼 클릭 이벤트 처리 (빈 구현)
+		
+		local Entity = event.Entity
+	end
+
+end

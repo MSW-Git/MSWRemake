@@ -1,0 +1,109 @@
+@Component
+script C30015_SecurityCamera_Skill extends Component
+
+	property number skillAnimLength = 1.98
+
+	property string HitEffectRUID = "5bcc9e1b489b4f83b79ca0fbf05dc870"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		
+		if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+			local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+			targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+		end
+		
+		if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+		end
+		
+		local function setSkill()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetSkill(targetUnit)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(setSkill, 0.93 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0230",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkill(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local getMAAmount = unitStatus.MagicalAttack * _S01_SkillDescLogic.C30015_Active_AbsorptionAttack_Int[unitInfo.level]
+			
+			-- 공격력 / 마력 중 높은 수치 훔침
+			if targetStatus.MagicalAttack >= targetStatus.PhysicalAttack then
+				_StatusChangeLogic:GetBuff(targetUnit, "Add_MagicalAttack", -getMAAmount, -1)
+			else
+				_StatusChangeLogic:GetBuff(targetUnit, "Add_PhysicalAttack", -getMAAmount, -1)
+			end
+			
+			-- 마력 증가
+			_StatusChangeLogic:GetBuff(myUnit, "Add_MagicalAttack", getMAAmount, -1)
+			
+			-- 상대 마법 피해 약화
+			local debuffTime = tonumber(_S01_SkillDescLogic.C30015_Active_DebuffTime_Int[unitInfo.level])
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0009", debuffTime)
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.HitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+end

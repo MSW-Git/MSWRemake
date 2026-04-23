@@ -1,0 +1,276 @@
+@Component
+script Hand extends Object
+
+	property Player player = nil
+
+	property number radius = 10
+
+	property boolean isOurs = false
+
+	property table cardArray = {}
+
+	property table localCardArray = {}
+
+	property integer capacity = 8
+
+	property any tweener = nil
+
+	property Entity centerEntity = nil
+
+	method table GetProperties()
+		-- 핸드의 속성들을 테이블로 반환
+		local propertyTable = {
+			cardArray = self.cardArray
+		}
+		
+		_Table:Assign(__base:GetProperties(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		-- 속성 동기화 시 카드 배치 및 핸드 위치 조정
+		__base:OnSyncProperties()
+		
+		self.localCardArray = _Table:ShallowCopy(self.cardArray)
+		self:PlaceCards()
+		
+		local transform = self.centerEntity.TransformComponent
+		if self.player.isEndRoundDeclared then
+			transform.Position.y = -0.4
+		elseif self.player:IsOurTurn() then
+			transform.Position.y = 0.6
+		end
+	end
+
+	method void Clear()
+		-- 핸드의 모든 카드를 제거하고 초기화
+		for _, card in ipairs(self.cardArray) do
+			card.hand = nil
+			self:DestroyAnchor(card)
+		end
+		
+		self.isOurs = false
+		self.cardArray = {}
+		self.localCardArray = {}
+	end
+
+	method boolean IsOwner()
+		-- 핸드 소유자인지 확인
+		return self.player:IsOwner()
+	end
+
+	method boolean IsEmpty()
+		-- 핸드가 비어있는지 확인
+		return _Table:IsEmpty(self.cardArray)
+	end
+
+	method boolean IsFull()
+		-- 핸드가 가득 찼는지 확인
+		return #self.cardArray >= self.capacity
+	end
+
+	method table GetCards(any selector)
+		-- 선택자 조건에 맞는 카드들 반환
+		local cardArray = _Table:ShallowCopy(self.cardArray)
+		return selector and _Table:Select(cardArray, selector) or cardArray
+	end
+
+	method table ShareRandomCards(integer count, any selector)
+		-- 조건에 맞는 카드들 중 랜덤으로 지정된 수만큼 공유
+		return self.commandManager:ShareRandomPermutationInArray(self:GetCards(selector), count)
+	end
+
+	method table ShareRandomBlueprints(integer count, any selector)
+		-- 조건에 맞는 카드들의 블루프린트를 랜덤으로 공유
+		local blueprintArray
+		if self:IsServer() then
+			blueprintArray = {}
+			local cardArray = _Table:GetRandomPermutation(self:GetCards(selector), count)
+			for i, card in ipairs(cardArray) do
+				blueprintArray[i] = card:GetBlueprint()
+			end
+			self.commandManager:PushPackage(blueprintArray)
+		else
+			blueprintArray = self.commandManager:PopPackage()
+		end
+		
+		return blueprintArray
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSide(boolean isOurs)
+		-- 핸드의 소속 설정 (우리편/상대편)
+		self.isOurs = isOurs
+		
+		local transform = self.layout:GetTransform(isOurs and "OurHand" or "EnemyHand")
+		self.Entity.TransformComponent.WorldPosition = transform.WorldPosition:Clone()
+		self.Entity.TransformComponent.WorldZRotation = transform.WorldZRotation
+	end
+
+	method void InsertCards(table cardArray)
+		-- 여러 카드를 핸드에 삽입하고 앵커에 배치
+		for _, card in ipairs(cardArray) do
+			self:InsertCard(card)
+			table.insert(self.localCardArray, card)
+			self:SpawnAndAttachToAnchor(card)
+		end
+		
+		self:DropAnchors(cardArray)
+	end
+
+	method void InsertCard(Card card)
+		-- 단일 카드를 핸드에 삽입
+		card.hand = self
+		table.insert(self.cardArray, card)
+	end
+
+	method void RemoveCards(table cardArray)
+		-- 여러 카드를 핸드에서 제거하고 앵커 파괴
+		for _, card in ipairs(cardArray) do
+			self:RemoveCard(card)
+			_Table:Remove(self.localCardArray, card)
+			self:DestroyAnchor(card)
+		end
+		
+		self:DropAnchors({})
+	end
+
+	method void RemoveCard(Card card)
+		-- 단일 카드를 핸드에서 제거
+		card.hand = nil
+		_Table:Remove(self.cardArray, card)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RemovePlayingCard(Card card)
+		-- 플레이 중인 카드를 로컬 배열에서 제거
+		_Table:Remove(self.localCardArray, card)
+		self:DestroyAnchor(card)
+		
+		self:DropAnchors({})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndAttachToAnchor(Card card)
+		-- 카드에 앵커를 생성하고 부착
+		self:SpawnAnchor(card)
+		card:AttachToAnchor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAnchor(Card card)
+		-- 카드에 앵커 엔티티를 생성
+		if isvalid(card.anchorEntity) then
+			return
+		end
+		
+		card.anchorEntity = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Anchor"), "Anchor", 
+			card.actor.Entity.TransformComponent.WorldPosition, self.centerEntity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyAnchor(Card card)
+		-- 카드의 앵커 엔티티를 파괴
+		if not isvalid(card.anchorEntity) then
+			return
+		end
+		
+		card:DestroyTweener()
+		card:DestroyAnchorTweener()
+		card.actor.Entity:Detach()
+		card.anchorEntity:Destroy()
+		card.anchorEntity = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DropAnchors(table newCardArray)
+		-- 카드들의 앵커를 원형으로 배치
+		local size = #self.localCardArray
+		if size == 0 then
+			return
+		end
+		
+		local delta = 12.5 / math.sqrt(size)
+		local total = delta * (size - 1)
+		local zRotation = total * 0.5
+		local zPosition = 0
+		for _, card in ipairs(self.localCardArray) do
+			local position = self:GetAnchorPosition(self.radius, zRotation)
+			card.anchorEntity.TransformComponent.Position.z = zPosition
+			if _Table:Find(newCardArray, card) then
+				card:SetAnchorTransform(position, zRotation)
+			else
+				card:TransformAnchorTo(position, zRotation)
+			end
+			
+			zRotation = zRotation - delta
+			zPosition = zPosition - 1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetAnchorPosition(number radius, number zRotation)
+		-- 반지름과 회전각도로 앵커 위치 계산
+		local angle = math.rad(zRotation + 90)
+		
+		return Vector2(radius * math.cos(angle), radius * math.sin(angle))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceCards()
+		-- 모든 카드를 앵커에 배치하고 위치 초기화
+		for _, card in ipairs(self.cardArray) do
+			self:SpawnAndAttachToAnchor(card)
+		end
+		
+		self:DropAnchors(self.cardArray)
+		
+		for _, card in ipairs(self.cardArray) do
+			local transform = card.actor.Entity.TransformComponent
+			transform.Position = Vector3.zero
+			transform.ZRotation = 0
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyTweener()
+		-- 핸드의 트위너를 파괴
+		if self.tweener then
+			self.tweener:Destroy()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformToPlay()
+		-- 핸드를 플레이 위치로 이동
+		self:DestroyTweener()
+		self.tweener = _Tween:MoveTo(self.centerEntity, Vector2(0, 0.6), 0.5, EaseType.CubicEaseOut, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformToRest()
+		-- 핸드를 휴식 위치로 이동
+		self:DestroyTweener()
+		self.tweener = _Tween:MoveTo(self.centerEntity, Vector2.zero, 0.5, EaseType.CubicEaseOut, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformToEndRound()
+		-- 핸드를 라운드 종료 위치로 이동
+		self:DestroyTweener()
+		self.tweener = _Tween:MoveTo(self.centerEntity, Vector2(0, -0.4), 0.5, EaseType.CubicEaseOut, false)
+	end
+
+	method Card GetLeftmostCard()
+		-- 가장 왼쪽 카드를 반환
+		return self.cardArray[1]
+	end
+
+	method Card GetRightmostCard()
+		-- 가장 오른쪽 카드를 반환
+		return self.cardArray[#self.cardArray]
+	end
+
+end

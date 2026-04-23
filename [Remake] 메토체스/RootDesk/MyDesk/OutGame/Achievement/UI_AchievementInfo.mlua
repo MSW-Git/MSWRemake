@@ -1,0 +1,322 @@
+@Component
+script UI_AchievementInfo extends Component
+
+	property UI_AchievementList AchievementUICompo = "2e06cc95-cfff-4a17-bc1a-45f1b31154a8"
+
+	property Entity ProgressSlider = nil
+
+	property Entity ProgressText = nil
+
+	property Entity RewardGroup = nil
+
+	property Entity UnlockDesc = nil
+
+	property string AchievementID = ""
+
+	property SyncTable<integer, string> RewardIds
+
+	property integer MaxConditionCount = 0
+
+	property integer Step = 0
+
+	property boolean onClick = false
+
+	property string State = "None"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-------------------------------------------------------------------
+		-- param
+		
+		self.ProgressSlider = self.Entity:GetChildByName("ProgressGroup"):GetChildByName("Progress") --진행도 슬라이더바 
+		self.ProgressText = self.Entity:GetChildByName("ProgressGroup"):GetChildByName("Progress"):GetChildByName("UIText") -- 진행도 텍스트
+		self.UnlockDesc = self.Entity:GetChildByName("ProgressGroup"):GetChildByName("UnLockDesc") -- 잠금 조건 텍스트
+		
+		self.RewardGroup = self.Entity:GetChildByName("RewardGroup") -- 보상 UI 그룹 
+		
+		-------------------------------------------------------------------
+		--업적 단계 UI를 열어주는 이벤트를 연결합니다. 
+		
+		
+		local AchieveStepBtn = self.Entity:GetChildByName("AchieveStepBtn")
+		
+		AchieveStepBtn:ConnectEvent(ButtonClickEvent,
+			function() 
+				_UI_AchievementStep:StepUIOpen(self.AchievementID) 
+			end)
+		
+		-------------------------------------------------------------------
+		--보상 버튼 클릭 이벤트를 연결합니다. 
+		
+		local btnGroup = self.Entity:GetChildByName("BtnGroup")
+		
+		for _,btn in pairs(btnGroup.Children) do 
+		
+		btn:ConnectEvent(ButtonClickEvent,
+				function() 
+						self:OnClickBtn_RewardEarned()
+				end	)
+		end
+		
+		-------------------------------------------------------------------
+		-- 보상 아이템 버튼 클릭 시 툴팁 팝업 이벤트 연결 
+		
+		local rewardItemBtn = self.Entity:GetChildByName("RewardGroup")
+		
+		
+		for i,btn in pairs(rewardItemBtn.Children) do 
+		
+		btn:ConnectEvent(UITouchEnterEvent,
+				function() 
+						self:OnClickBtn_RewardItem(i,btn.Path)
+				end	)
+		
+		btn:ConnectEvent(UITouchExitEvent,
+				function() 
+					_UI_AchievementService.ToolTip.Enable = false
+				end	)
+			
+		
+		end
+		
+		-------------------------------------------------------------------
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init(string achievementID, table data, integer curStep)
+		-------------------------------------------------------------------
+		-- func: 업적 cell을 data로 초기화 하는 함수입니다. 
+		-------------------------------------------------------------------
+		
+		--parameters
+		
+		local achievementData = _AchievementService:GetAchievementInfo(achievementID)
+		
+		self.AchievementID = achievementID
+		self.Step = curStep
+		self.State = data['state'][curStep]
+		self.MaxConditionCount = achievementData.Count[self.Step]
+		
+		-------------------------------------------------------------------
+		--보상 버튼 초기화 
+		
+		local rewarBtnGroup = self.Entity:GetChildByName("BtnGroup").Children
+		for _,btn in pairs(rewarBtnGroup) do 
+			
+			if btn.Name == self.State then 
+				btn.Enable = true
+			else
+				btn.Enable = false
+			end
+			
+		end
+		
+		-------------------------------------------------------------------
+		-- 업적 정보 버튼 초기화 
+		
+		if self.Entity.Parent.Parent.Name == "AchievementStep" then 
+			self.Entity:GetChildByName("AchieveStepBtn").Enable = false 
+		else
+			self.Entity:GetChildByName("AchieveStepBtn").Enable = true
+		end 
+		
+		-------------------------------------------------------------------
+		--진행도 
+		
+		self.ProgressSlider.Enable = true --default
+		self.UnlockDesc .Enable = false --default
+		
+		if self.State == _AchievementStateEnum.Lock then --업적이 잠금상태이면 진행도를 끄고 해금 조건을 출력한다. 
+			self.ProgressSlider.Enable = false
+			self.UnlockDesc .Enable = true
+			local characterId = achievementData.RewardTable[1][2]
+			local characterName = _LocalizationService:GetText(characterId.."_Name")
+			self.UnlockDesc .TextComponent.Text = _LocalizationService:GetTextFormat("AchievementLockConditionDesc",characterName)
+		
+		end
+		
+		-------------------------------------------------------------------
+		--dim & 완료 날짜 
+		self.Entity:GetChildByName("Dim").Enable = false --default
+		
+		if self.State == _AchievementStateEnum.Complete then --업적이 완료상태면 dim을 켜준다 
+			
+			self.Entity:GetChildByName("Dim").Enable = true
+		
+			local date = data['date'][self.Step] --업적 완료 날짜
+			self.Entity:GetChildByName("BtnGroup"):GetChildByName("Complete").TextComponent.Text = date.."\n".._LocalizationService:GetText("Complete")
+		
+		end
+		
+		-----------------------------------------------------------------------
+		--업적 점수 
+		
+		for i=1, 5 do 
+			if i <= achievementData.Score[self.Step] then 
+				self.Entity:GetChildByName("ScoreGroup"):GetChildByName("Icon"..i).SpriteGUIRendererComponent.Color = Color.FromHexCode("#21a09e")
+			else
+				self.Entity:GetChildByName("ScoreGroup"):GetChildByName("Icon"..i).SpriteGUIRendererComponent.Color = Color.FromHexCode("#0a2b4c")
+			end
+			
+		end
+		
+		-----------------------------------------------------------------------
+		--업적 이름
+		
+		self.Entity:GetChildByName("Name").TextComponent.Text = _UI_AchievementService:ReturnAchieveName(achievementID,self.Step)
+		
+		-----------------------------------------------------------------------
+		--업적 조건 
+		
+		self.Entity:GetChildByName("ConditionDesc").TextComponent.Text = _UI_AchievementService:ReturnAchieveCondition(achievementID,self.Step)
+		
+		-----------------------------------------------------------------------
+		--업적 슬라이더바 & 진행 횟수
+		
+		self:RenderProgressText(achievementData,data['count'])
+		-----------------------------------------------------------------------
+		--업적 보상 
+		
+		-- 업적 보상 UI 초기화
+		for i=1,2 do 
+			self.RewardGroup:GetChildByName("Reward"..i):GetChildByName("none").Enable = true
+			self.RewardGroup:GetChildByName("Reward"..i):GetChildByName("image").SpriteGUIRendererComponent.ImageRUID = ""
+			self.RewardGroup:GetChildByName("Reward"..i):GetChildByName("amount").TextComponent.Text = ""
+		end
+		table.clear(self.RewardIds)
+		
+		local rewardCount = 0
+		
+		for key, value in pairs (achievementData.RewardTable) do 
+		
+			if value[1] ~= tostring(self.Step) then 
+				continue
+			end
+			
+			local rewardId = value[2] 
+			local rewardAmount = value[3]
+			rewardCount +=1
+		
+			self.RewardGroup:GetChildByName("Reward"..rewardCount):GetChildByName("image").SpriteGUIRendererComponent.ImageRUID = _UI_AchievementService:ReturnAchieveRewardRUID(rewardId)
+			self.RewardGroup:GetChildByName("Reward"..rewardCount):GetChildByName("image").SpriteGUIRendererComponent.PlayRate = 0
+			self.RewardGroup:GetChildByName("Reward"..rewardCount):GetChildByName("amount").TextComponent.Text = rewardAmount
+			self.RewardGroup:GetChildByName("Reward"..rewardCount):GetChildByName("none").Enable = false
+			self.RewardIds[rewardCount] = rewardId
+			 
+		end
+		
+		---------------------------------------------------------
+		-- 업적 시즌 확인 (확장 시즌에 해당하는 내용이면 안 보이게 처리 ~ 1.2 마가티아까지만)
+		
+		--[[if achievementData.CategoryID == "8" then -- 캐릭터 도전과제
+			local charID = _UI_AchievementService:ReturnAchieveCharacterID(achievementID,self.Step)
+			local cDataList = _DictionaryDataManager.CharDataList
+			local cData = cDataList[charID]
+			if cData.ContainedSeason["1.0"] == true or cData.ContainedSeason["1.1"] == true or cData.ContainedSeason["1.2"] == true then
+				self.Entity.Enable = true
+			else
+				self.Entity.Enable = false
+			end
+		end]]
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateAchieveInfo(string achievementID, table data, integer curStep)
+		----------------------------------------------------------------------------------
+		--[func] 업적 진행 횟수가 변경되었을 때 슬라이더바와 횟수 텍스트를 변경하는 함수 
+		----------------------------------------------------------------------------------
+		
+		--Parameter
+		local achievementData = _AchievementService:GetAchievementInfo(achievementID)
+		
+		
+		if data['state'][curStep] ~= self.State or self.Step ~= curStep then 
+			self:Init(achievementID,data,curStep)
+		end
+		-------------------------------------------------------------------
+		--업적 슬라이더바 & 진행 횟수
+		--[[
+		if achievementData.IsCumulative == "TRUE" then -- 진행 횟수를 누적하는 업적인 경우 
+			local count = math.min(data['count'],self.MaxConditionCount)
+			--self.Entity:GetChildByName("ProgressGroup"):GetChildByName("Progress").SliderComponent.Value = count
+			--self.Entity:GetChildByName("ProgressGroup"):GetChildByName("Progress"):GetChildByName("UIText").TextComponent.Text = count.."/"..self.MaxConditionCount
+		
+			self.ProgressSlider.SliderComponent.Value = count
+			self.ProgressText.TextComponent.Text = count.."/"..self.MaxConditionCount
+		
+		else
+			
+		
+			
+			self.ProgressSlider.SliderComponent.Value = curvalue
+			self.ProgressText.TextComponent.Text = curvalue.."/1"
+			
+		end
+		
+		]]--
+		self:RenderProgressText(achievementData,data['count'])
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickBtn_RewardEarned()
+		----------------------------------------------------------------------------------
+		--[func] 업적 info UI의 보상 획득 버튼 클릭시, 상태별로 토스트 메세지 생성 함수 
+		----------------------------------------------------------------------------------
+		-- 버튼 중복 입력 방지 
+		
+		if not self.onClick then 
+			self.onClick = true
+			_TimerService:SetTimerOnce(function() self.onClick = false end,0.5)
+		else
+			return
+		end
+		
+		if self.State == _AchievementStateEnum.Lock then -- 업적 잠금
+			_UIToast:ShowMessageByLocalizingKey("AchievementLockDesc")
+			
+		elseif self.State == _AchievementStateEnum.InProgress then -- 업적 진행 중
+			_UIToast:ShowMessageByLocalizingKey("AchievementInProgressDesc")
+			
+		elseif self.State == _AchievementStateEnum.RewardEarned then -- 보상 획득
+			_UI_AchievementService:RequestEarnAchievementListReward(self.AchievementID,self.Step,_UserService.LocalPlayer)	
+			
+		elseif self.State == _AchievementStateEnum.Complete then -- 업적 완료 
+			_UIToast:ShowMessageByLocalizingKey("AchievementCompleteDesc")
+		end 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickBtn_RewardItem(integer rewardNum, string entityPath)
+		----------------------------------------------------------------------------------
+		--[func] 업적 info UI의 보상 아이템 버튼 클릭 시, 해당 아이템의 툴팁 요청 함수
+		----------------------------------------------------------------------------------
+		
+		_UI_AchievementService:ToolTipDataSetting(self.RewardIds[rewardNum],entityPath)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderProgressText(any achievementData, integer count)
+		if achievementData.IsCumulative == "TRUE" then -- 진행 횟수를 누적하는 업적인 경우 
+			local playerProgressCount =math.min(count,self.MaxConditionCount)
+		
+			self.ProgressSlider.SliderComponent.MaxValue = self.MaxConditionCount
+			self.ProgressSlider.SliderComponent.Value = playerProgressCount
+			self.ProgressText.TextComponent.Text = tostring(playerProgressCount).."/"..self.MaxConditionCount
+			
+		else
+		
+			local curvalue = 1
+			if self.State == _AchievementStateEnum.InProgress then 
+				curvalue = 0
+			end
+			
+			self.ProgressSlider.SliderComponent.MaxValue = 1	
+			self.ProgressSlider.SliderComponent.Value = curvalue
+			self.ProgressText.TextComponent.Text = curvalue.."/1"
+			
+		end
+	end
+
+end

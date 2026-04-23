@@ -1,0 +1,332 @@
+@Component
+script PlayerPet extends Component
+
+	@Sync
+	property Entity petEntity = nil
+
+	property SyncTable<number> havePet
+
+	@Sync
+	property number equipedIdx = 0
+
+	property SyncTable<boolean> useSkill
+
+	method void OnBeginPlay()
+		-- 플레이어 펫 시스템 초기화 및 펫 엔티티 생성
+		self._T.tableList = { 
+			havePet = self.havePet,
+			useSkill = self.useSkill,
+		}
+		self._T.tableType = { 
+			havePet = "number",
+			useSkill = "boolean",
+		}
+		
+		local petNum = _DataService:GetRowCount("Pet")
+		for i=1, petNum do
+			self.havePet[i] = 0
+		end
+		
+		if self:IsServer() then
+			
+			self.equipedIdx = 0
+			---------------
+			self.petEntity = _SpawnService:SpawnByModelId(
+				"model://8d924b3c-89e6-4c50-9464-aaf62178e526",
+				"Pet",
+				Vector3(-self.Entity.ExtendPlayerControllerComponent.LookDirectionX, 0, 0),
+				self.Entity)
+			
+			self.petEntity.PetComponent.ownerEntity = self.Entity
+			self.petEntity.NameTagComponent.Name = self.Entity.NameTagComponent.Name.."의 펫"
+			self.petEntity.NameTagComponent.Enable = false
+			
+			self:ChangePetEntityParameter()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 장착 펫 인덱스 동기화 시 펫 엔티티 설정 및 UI 업데이트
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if name == "equipedIdx" then
+			self:ChangePetEntityParameter()
+			self.Entity.PlayerData:ApplyPlayerStatus()
+			_EntityService:GetEntityByPath("/ui/PetShopGroup/PetStorage").PetStorageUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangePetEntityParameter()
+		-- 장착된 펫의 인덱스에 따라 펫 엔티티의 외관과 애니메이션 설정
+		local petIdx = self.equipedIdx
+		if isvalid(petIdx) == false then
+			return
+		end
+		
+		if petIdx == 0 then
+			self:EnablePetEntity(false)
+			return
+		else 
+			self:EnablePetEntity(true)
+		end
+		
+		local petTable = _DataService:GetTable("Pet")
+		local petRUID = petTable:GetCell(petIdx, 2)
+		
+		local petEntity = self.Entity:GetChildByName("Pet")
+		petEntity.SpriteRendererComponent.SpriteRUID = petRUID
+		
+		local animMove = petTable:GetCell(petIdx, 3)
+		local animStand = petTable:GetCell(petIdx, 4)
+		petEntity.StateAnimationComponent.ActionSheet:Clear()
+		petEntity.StateAnimationComponent.ActionSheet:Add("move", animMove)
+		petEntity.StateAnimationComponent.ActionSheet:Add("stand", animStand)
+	end
+
+	@ExecSpace("Multicast")
+	method void EnablePetEntity(boolean Enable)
+		-- 펫 엔티티의 활성화 상태를 설정하여 보이기/숨기기 제어
+		local petEntity = self.Entity:GetChildByName("Pet")
+		
+		if petEntity ~= nil then
+			petEntity.Enable = Enable
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangeEquipedPet(number idx)
+		-- 지정된 인덱스의 펫을 장착하고 능력치 적용
+		self.equipedIdx = idx
+		
+		-- 능력치 적용
+		self.Entity.PlayerData:ApplyPlayerStatus()
+	end
+
+	@ExecSpace("Server")
+	method void GetNewPet()
+		-- 펫 알을 소모하여 랜덤한 새 펫을 획득하고 결과 UI 표시
+		-- 재화(펫 알)가 부족한 경우
+		local havingEgg = self.Entity.PlayerData.PetEgg
+		if havingEgg <= 0 then
+			self:SetGettingNewPetResultUI("NotEnoughPetEggs", 0, 0, self.Entity.OwnerId)
+			return
+		end
+		------------------------------------------
+		-- 이미 모든 펫을 보유하고 있는 경우
+		local targetTable = {}
+		for i=1, #self.havePet do
+			if self.havePet[i] < 3 then
+				table.insert(targetTable, i)
+			end
+		end
+		if #targetTable < 0 then
+			self:SetGettingNewPetResultUI("haveAllPets", 0, 0, self.Entity.OwnerId)
+			return
+		end
+		
+		------------------------------------------------------------------------------------
+		-- 랜덤 뽑기
+		local randIdx = _UtilLogic:RandomIntegerRange(1, #targetTable)
+		local newPetIdx = targetTable[randIdx]
+		self.havePet[newPetIdx] = self.havePet[newPetIdx] + 1
+		_UIAlarmMarker:SetEnableMarker("pet", true, self.Entity.OwnerId)
+		
+		-- 재화 소모
+		self.Entity.PlayerData.PetEgg = self.Entity.PlayerData.PetEgg - 1
+		
+		-- 결과 UI띄우기
+		self:SetGettingNewPetResultUI("normal", newPetIdx, self.havePet[newPetIdx], self.Entity.OwnerId)
+		
+		-- 클라이언트에 테이블 반영
+		self:SetTableElementClient("havePet", newPetIdx, tostring(self.havePet[newPetIdx]), self.Entity.OwnerId)
+		
+		-- 능력치 적용
+		self.Entity.PlayerData:ApplyPlayerStatus()
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 클라이언트로 테이블 전체 데이터 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 클라이언트로 테이블의 특정 요소만 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트에서 테이블을 초기값으로 모두 초기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 테이블 변경 시 관련 UI들을 업데이트하고 능력치 적용
+		if name == "havePet" then
+			self.Entity.PlayerData:ApplyPlayerStatus()
+			_EntityService:GetEntity("2d01e548-a3d5-4e44-8974-1caa27cd33b8").PetShopUI:RefreshUI()
+			_EntityService:GetEntityByPath("/ui/PetShopGroup/PetStorage").PetStorageUI:RefreshUI()
+			self.Entity.ExtendPlayerControllerComponent.leftAirJumpCount = self.havePet[6]
+			
+		elseif name == "useSkill" then
+			_EntityService:GetEntityByPath("/ui/PetShopGroup/PetStorage").PetStorageUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllProperty()
+		-- 모든 펫 관련 속성을 초기값으로 리셋
+		self.equipedIdx = 0
+		
+		local petNum = _DataService:GetRowCount("Pet")
+		for i=1, petNum do
+			self.havePet[i] = 0
+		end
+		
+		self:ClearTableClient("havePet", "0", petNum, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadedUserData(string havePetStr, string equipedPetStr, string usePetSkill)
+		-- 사용자 데이터에서 펫 관련 정보를 로드하여 속성에 적용
+		local petKindNum = _DataService:GetRowCount("Pet")
+		----------------------------------------------------------------------
+		-- 보유 여부 갱신
+		if isvalid(havePetStr) == false then
+			for i=1, petKindNum do
+				self.havePet[i] = 0
+			end
+		else
+			local havePet = _UtilLogic:StringToTable(havePetStr)
+			for i=1, petKindNum do
+				if havePet[i] == nil then
+					self.havePet[i] = 0
+				else 
+					self.havePet[i] = tonumber(havePet[i])
+				end
+			end
+		end
+		----------------------------------------------------------------------
+		-- 장착 인덱스 갱신
+		if isvalid(tonumber(equipedPetStr)) == false then
+			self.equipedIdx = 0
+		else
+			self.equipedIdx = tonumber(equipedPetStr)
+		end
+		----------------------------------------------------------------------
+		-- 스킬 사용 여부 갱신
+		if usePetSkill == nil then
+			for i=1, petKindNum do
+				self.useSkill[i] = false
+			end
+		else
+			local usePetSkillTable = _UtilLogic:StringToTable(usePetSkill)
+			for i=1, petKindNum do
+				if usePetSkillTable[i] == nil then
+					self.useSkill[i] = false
+				else 
+					self.useSkill[i] = usePetSkillTable[i]
+				end
+			end
+		end
+		
+		self:SetTableClient("havePet", _UtilLogic:TableToString(self.havePet), self.Entity.OwnerId)
+		self:SetTableClient("useSkill", _UtilLogic:TableToString(self.useSkill), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetGettingNewPetResultUI(string type, number petIdx, number petGrade)
+		-- 펫 획득 결과 타입에 따라 적절한 UI 팝업 표시
+		local petshopUI = _EntityService:GetEntityByPath("/ui/PetShopGroup/PetShop")
+		
+		if type == "NotEnoughPetEggs" then
+			petshopUI.PetShopUI:SetWarningPopup("펫 알이 없습니다.")
+		elseif type == "haveAllPets" then
+			petshopUI.PetShopUI:SetWarningPopup("이미 모든 펫을 보유하고 있습니다.")
+		elseif type == "normal" then
+			petshopUI.PetShopUI:SetUIGettingNewPet(petIdx, petGrade)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangePetSkillUseState(number idx, boolean afterState)
+		-- 지정된 펫의 스킬 사용 상태를 변경하고 클라이언트에 동기화
+		self.useSkill[idx] = afterState
+		
+		self:SetTableElementClient("useSkill", idx, tostring(afterState), self.petEntity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleChangedLookAtEvent(ChangedLookAtEvent event)
+		-- 플레이어 보는 방향 변경 시 펫의 위치 조정
+		-- Parameters
+		local LookAtX = event.LookAtX
+		--------------------------------------------------------
+		local state = self.Entity.StateComponent.CurrentStateName
+		
+		if state ~= "LADDER" and state ~= "CLIMB" and self.petEntity ~= nil then
+			self.petEntity.PetComponent:ChangePos(LookAtX)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleStateChangeEvent(StateChangeEvent event)
+		-- 플레이어 상태 변경 시 펫의 대응 상태 및 애니메이션 조정
+		-- Parameters
+		local CurrentStateName = event.CurrentStateName
+		local PrevStateName = event.PrevStateName
+		--------------------------------------------------------
+		if self.petEntity == nil then
+			return
+		end
+		
+		if CurrentStateName == "MOVE" or  CurrentStateName == "JUMP" then
+			self.petEntity.PetComponent:ChangeState("Move")
+		elseif CurrentStateName == "IDLE" then
+			self.petEntity.PetComponent:ChangeState("Idle")
+		end
+		
+		if (PrevStateName == "LADDER" or PrevStateName == "CLIMB") then
+			self.petEntity.PetComponent:ChangeClimb(false)
+		elseif (CurrentStateName == "LADDER" or CurrentStateName == "CLIMB") then
+			self.petEntity.PetComponent:ChangeClimb(true)
+		end
+	end
+
+end

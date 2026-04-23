@@ -1,0 +1,554 @@
+@Logic
+script TrialSimpleRenderLogic extends Logic
+
+	property integer LayoutCount = 3
+
+	property Entity LayoutParent = "8792f26f-2d5e-4b32-ab18-69c9608e65b0"
+
+	property integer PhaseIndex = 0
+
+	property Entity ScreenUI = "5116559b-2543-473a-8718-331e868bc54b"
+
+	property integer UserLayoutIndex = 1
+
+	property integer phaseTimer = 0
+
+	property number CommentDelayDefault = 1.3
+
+	property number RenderTotalDuration = 8
+
+	property string MovementMaterialId = "material://b91162ef-e46c-4a2b-aee1-33fdd347ec84"
+
+	property string ReadyAnimRUID = ""
+
+	property string StartAnimRUID = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 Trial 렌더링에 필요한 애니메이션 리소스를 로드하는 클라이언트 전용 함수
+		self.ReadyAnimRUID = _ResourceLoadLogic:OptimizeMobileResource("cc7c004fe08f487fbe53f542932ea54e")
+		self.StartAnimRUID = _ResourceLoadLogic:OptimizeMobileResource("946d6bf93b09446d99e4de1681ec02f3") 
+	end
+
+	@ExecSpace("Client")
+	method void EnterTrialRender(string trialId)
+		-- Trial 렌더링을 시작하고 레이아웃과 화면 정보를 설정하는 클라이언트 함수
+		_FadeService:ShowFade("TrialEnter")
+		
+		
+		---@type TrialData
+		local trialData = _TrialDataSetLogic.TrialData[trialId]
+		
+		self.LayoutParent.UITrialLayout:SetLayouts()
+		self.ScreenUI.UITrialScreen:SetTrialInformation(trialId)
+		
+		_TrialResultUILogic:EnableTrialResultUI(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndTrialRender()
+		-- Trial 렌더링을 종료하고 결과 UI로 전환하는 클라이언트 전용 함수
+		self:ChangePhase(9)
+		
+		local uiLayout = self.LayoutParent.UITrialLayout
+		uiLayout:ClearChildEntities()
+		
+		table.clear(uiLayout.LastIngredientData)
+		table.clear(uiLayout.BurgerData)
+		table.clear(uiLayout.isSpawnDelay)
+		table.clear(uiLayout.IngreListData)
+		
+		_TrialResultUILogic:EnableTrialResultUI(true)
+		_TimerService:SetTimerOnce(function() 
+			_BGMService:ApplyBGM(_BGMService.TrialResultBGM)
+			_FadeService:HideFade() 
+		end, 1)
+		_UserService.LocalPlayer.PlayerTrial:ChangeConnectingStatus(false)
+	end
+
+	@ExecSpace("Client")
+	method void SkipTrialRender()
+		-- Trial 렌더링을 건너뛰고 바로 결과 화면으로 이동하는 클라이언트 함수
+		self:ChangePhase(9)
+		_FadeService:ShowFade("TrialResult")
+	end
+
+	@ExecSpace("Client")
+	method void FadeInFunction()
+		-- Trial 화면 페이드인 시 UI 그룹들을 설정하고 BGM을 적용하는 클라이언트 함수
+		_UIGroupManager:EnableTrialGroup(true)
+		_UIGroupManager:EnableMoneyBarGroup(false)
+		_UIGroupManager:EnableBackToLobbyBtn(false)
+		
+		if _UILobbyManager.MainMenuPanel.Enable then
+			_UILobbyManager.MainMenuPanel:SetEnable(false)
+		end
+		
+		_TrialUILogic.UITrialFrame.Enable = true
+		
+		_FadeService:HideFade()
+		_BGMService:ApplyBGM(_BGMService.TrialBGM)
+		_UserService.LocalPlayer.PlayerTrial:ChangeConnectingStatus(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangePhase(integer phase)
+		-- Trial 렌더링 페이즈를 변경하고 해당 페이즈의 UI와 로직을 초기화하는 클라이언트 전용 함수
+		self.PhaseIndex = phase
+		
+		local trialScreen = self.ScreenUI.UITrialScreen
+		trialScreen:SetScreenUI(phase)
+		
+		self:InitEntitiesForPhase(phase)
+		self:PhaseFunction(phase)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitEntitiesForPhase(integer phase)
+		-- 특정 페이즈에서 필요한 엔티티들을 초기화하고 설정하는 클라이언트 전용 함수
+		local player = _UserService.LocalPlayer
+		local playerTrial = player.PlayerTrial
+		
+		local trialId = playerTrial.SelectedTrialId
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, player, playerTrial.NowOfficialType)
+		
+		local missionValue = trialData:GetGradeData(challengingData.Grade).MissionCount
+		local renderType = trialData.Type
+		
+		local uiLayout = self.LayoutParent.UITrialLayout
+		local uiScreen = self.ScreenUI.UITrialScreen
+		for i = 1, self.LayoutCount do
+			local characterData = playerTrial.CharacterData[i]
+			local layoutIndex = characterData[4]
+			local ingreData = playerTrial.IngredientData[layoutIndex]
+			local score = playerTrial.RankData[i][3]
+			
+			local layout = uiLayout.Layouts[layoutIndex].UITrialLayoutSlot
+			if phase == 0 then
+				if renderType == 1 then 
+					uiLayout.IngreListData[layoutIndex] = ingreData["IngreList"]
+					uiLayout:SpawnBurger(layoutIndex, uiLayout.IngreListData[layoutIndex], missionValue)
+					
+					if trialData.Target == "Employee" then
+						layout:SetLayoutCustomerEntities(missionValue, trialData.TargetType)
+					elseif trialData.Target == "Recipe" then
+						
+					end
+					
+								
+				elseif renderType == 2 then 
+					uiLayout.IngreListData[layoutIndex] = ingreData["IngreList"]
+				end
+				
+				local targetName
+				layout.Char.Enable = false
+				layout.Avatar.Enable = false
+				if trialData.Target == "Employee" then
+					layout.Box.Enable = true
+					layout.VoteBoard.Enable = false
+					uiLayout:SetStackEntities(layoutIndex, missionValue, trialData.TargetStat)
+					
+					local charId = characterData[1]
+					targetName = _GetLocalizationTextLogic:GetText("Name"..charId)
+					
+					layout.Char.Enable = true
+					_TrialLogic:PlayUIEmployeeAnim(layout.Char, charId, "Stand", characterData[2], player)
+					
+					layout:SetStatLogData(score, trialData.TargetStat)
+					
+				elseif trialData.Target == "Recipe" then
+					targetName = ingreData["BurgerName"]
+					layout.Box.Enable = false
+					layout.VoteBoard.Enable = true
+					
+					if layoutIndex == self.UserLayoutIndex then 
+						layout.Avatar.Enable = true
+						layout.Avatar.AvatarGUIRendererComponent:PlayEmotion(EmotionalType.Default, 1)
+						local body = layout.Avatar.AvatarGUIRendererComponent:GetBodyEntity()
+						local event = ActionStateChangedEvent("sit", "sit",1, SpriteAnimClipPlayType.Loop)
+						body:SendEvent(event)
+					end
+					
+					layout:SetVoteEntities(score)
+					uiLayout.Customers.UITrialCustomers:SetStatIconEntities(layoutIndex, score, trialData.TargetStat)
+				end
+				
+				layout:SetNametag(_GetLocalizationTextLogic:GetText(characterData[3]), targetName, self.UserLayoutIndex ~= layoutIndex)
+				layout.Notify.Enable = false
+				layout.Firework.Enable = false
+				layout.ScoreBoard.Enable = false
+				layout.BoxSlider.Enable = false
+				layout.CustomerParent.Enable = false
+				uiLayout.Customers.Enable = false
+					
+			elseif phase == 2 then
+				
+				if trialData.Target == "Employee" then
+					layout:SetBoxSlider(1)
+					layout.BoxSlider.Enable = true
+					
+					if trialData.Type == 1 then
+						layout.CustomerParent.Enable = true
+						layout.CustomerEntities[1].UITrialCustomer:SpawnAndGetIn(nil, nil)
+						_TrialLogic:PlayUIEmployeeAnim(layout.Char, characterData[1], "Chat", characterData[2], player)
+					else
+						_TrialLogic:PlayUIEmployeeAnim(layout.Char, characterData[1], "Move", characterData[2], player)
+					end
+					
+				elseif trialData.Target == "Recipe" then
+					uiLayout.Customers.UITrialCustomers:Spawn()
+					
+				end
+				
+				
+			elseif phase == 3 then
+				if trialData.Target == "Employee" then
+					_TrialLogic:PlayUIEmployeeAnim(layout.Char, characterData[1], "Stand", characterData[2], player)
+					layout.BoxSlider.Enable = false
+					if trialData.Type == 1 then
+						for j = 1, #layout.CustomerEntities do
+							local customer = layout.CustomerEntities[j]
+							if customer.Enable then
+								customer.UITrialCustomer:RequestBuyState()
+							end
+						end
+					end
+				elseif trialData.Target == "Recipe" then
+					uiLayout.Customers.UITrialCustomers:Despawn()
+				end
+				
+						
+			elseif phase == 4 then
+				
+				layout:SetScoreboard(i, score)
+				
+			elseif phase == 5 then
+					
+				local duration = 10
+				if i == 1 then
+					_TrialLogic:PlayUIEmployeeAnim(layout.Char, characterData[1], "Love", characterData[2], player)
+					layout.Avatar.AvatarGUIRendererComponent:PlayEmotion(EmotionalType.Smile, duration)
+					layout.Firework.Enable = true
+					layout:SetNotifyEnable(true, _GetLocalizationTextLogic:GetText("TrialWinText"), duration, true)
+				
+				else
+					_TrialLogic:PlayUIEmployeeAnim(layout.Char, characterData[1], "Cry", characterData[2], player)
+					layout.Avatar.AvatarGUIRendererComponent:PlayEmotion(EmotionalType.Cry, duration)
+				end
+				
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PhaseFunction(integer phase)
+		-- 각 페이즈에서 실행할 타이머 기반 로직과 애니메이션을 처리하는 클라이언트 전용 함수
+		_TimerService:ClearTimer(self.phaseTimer)
+		
+		if phase == 9 then
+			return
+		end
+		
+		local playerTrial = _UserService.LocalPlayer.PlayerTrial
+		local trialId = playerTrial.SelectedTrialId
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		
+		local uiScreen = self.ScreenUI.UITrialScreen
+		local uiLayout = self.LayoutParent.UITrialLayout
+		
+		if phase == 0 then
+			local index = 1
+			self.phaseTimer = _TimerService:SetTimerRepeat(function()
+				if index == 1 then
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Audience"], 1)
+			
+					local text = ""
+					if trialData.Target == "Employee" then
+						if trialData.TargetStat == _EmployeeTypeEnum.Cook then
+							text = _GetLocalizationTextLogic:GetText("TrialComment3")
+						elseif trialData.TargetStat == _EmployeeTypeEnum.Serving then
+							text = _GetLocalizationTextLogic:GetText("TrialComment4")
+						end
+						
+					elseif trialData.Target == "Recipe" then
+						---@type RecipeTagData
+						local tagData = _RecipeTagDataSetLogic.RecipeTagData[trialData.TargetType]
+						text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("TrialComment5", _GetLocalizationTextLogic:GetText(tagData.TagNameKey))
+					end
+					
+					uiScreen:SetCommentEnable(true, text, self.CommentDelayDefault*0.95, true)
+					
+				elseif index == 2 then
+					uiScreen:SetCommentEnable(true, _GetLocalizationTextLogic:GetText("TrialComment1"), self.CommentDelayDefault*0.95, true)
+					self:ChangePhase(1)
+					
+				end
+				
+				index = index + 1
+				
+			end, self.CommentDelayDefault, 0.5)
+		
+		elseif phase == 1 then
+			local readyPhase = 0
+			self.phaseTimer = _TimerService:SetTimerRepeat(function()
+				
+				if readyPhase == 0 then
+					uiScreen.ImgReady.Enable = true
+					_UIEntityService:PlayUISpriteAnim(uiScreen.ImgReady, self.ReadyAnimRUID, 1)
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Snap"], 0.7)
+					
+				elseif readyPhase == 1 then
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Start"], 1)
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Audience"], 1)
+					uiScreen.ImgReady.Enable = false
+					uiScreen.ImgStart.Enable = true
+					_UIEntityService:PlayUISpriteAnim(uiScreen.ImgStart, self.StartAnimRUID, 1)			
+					
+				elseif readyPhase >= 2 then
+					uiScreen.ImgStart.Enable = false
+					self:ChangePhase(2)
+				end
+				readyPhase = readyPhase + 1
+						
+			end, 1, 1)
+			
+			
+		elseif phase == 2 then
+		 
+			local player = _UserService.LocalPlayer
+			local challengingData = _TrialLogic:GetChallengingTrialData(trialId, player, player.PlayerTrial.NowOfficialType)
+			local missionValue = trialData:GetGradeData(challengingData.Grade).MissionCount
+			
+			local playData = {}
+			local indexTable = {}
+			local indivTimeTable = {}
+			
+			local logIndexTable = {}
+			local logTimeTable = {}
+			local logDelayTable = {}
+				
+			for i = 1, self.LayoutCount do
+				local charData = playerTrial.CharacterData[i]
+				local layoutIndex = charData[4]
+				
+				indivTimeTable[i] = 0
+				indexTable[i] = 1
+				
+				logTimeTable[i] = 0
+				logIndexTable[i] = 1
+				
+				local logCount		
+				if trialData.Target == "Recipe" then
+					logCount = #table.keys(uiLayout.Layouts[layoutIndex].UITrialLayoutSlot.VoteEntities)
+				elseif trialData.Target == "Employee" then
+					logCount = #table.keys(uiLayout.Layouts[layoutIndex].UITrialLayoutSlot.StatLogEntities)
+				end
+				
+				logDelayTable[i] = self.RenderTotalDuration/logCount
+				
+				playData[i] = _UserService.LocalPlayer.PlayerTrial.PlayData[i]
+			end
+			
+			local logDuration = 1
+			
+			local time = 0
+			local isHalfCommented = false
+			local isAlmostCommented
+			self.phaseTimer = _TimerService:SetTimerRepeat(function()
+				time = time + 1/_UIEntityService.TimeFrame
+				if trialData.Target == "Recipe" then
+					uiScreen:SetTimeSlider(1 - time/self.RenderTotalDuration)
+					if trialData.Target == "Recipe" then
+						if time >= self.RenderTotalDuration/2 then
+							if isHalfCommented == false then
+								local comment = _GetLocalizationTextLogic:GetText("TrialComment6")
+								uiScreen:SetCommentEnable(true, comment, self.CommentDelayDefault, true)
+								isHalfCommented = true
+							end
+											
+						elseif time >= self.RenderTotalDuration*0.85 then
+							if isAlmostCommented == false then
+								local comment = _GetLocalizationTextLogic:GetText("TrialComment7")
+								uiScreen:SetCommentEnable(true, comment, self.CommentDelayDefault, true)
+								isAlmostCommented = true
+							end
+												
+						end
+					end
+				end
+				
+				for i = 1, self.LayoutCount do
+					local characterData = playerTrial.CharacterData[i]
+					local layoutIndex = characterData[4]
+					local layout = uiLayout.Layouts[layoutIndex].UITrialLayoutSlot
+					
+					logTimeTable[i] = logTimeTable[i] + 1/_UIEntityService.TimeFrame
+					indivTimeTable[i] = indivTimeTable[i] + 1/_UIEntityService.TimeFrame
+					
+					local index = indexTable[i]
+					local value = table.values(playData[i])[index]
+					
+					if trialData.Target == "Employee" then
+						local sliderValue = 1 - time / playerTrial.RankData[i][2]
+						layout:SetBoxSlider(sliderValue)
+					
+					end
+					
+					
+					local logDelay = logDelayTable[i]
+					if logDelay <= logTimeTable[i] then
+						if trialData.Target == "Employee" then
+							local logTb = logIndexTable[i]
+							if isvalid(logTb) == true then
+								local log = layout.StatLogEntities[logTb]
+								if isvalid(log) == true then
+									log.UITweenMoveFade:StartTween(Vector2(0, 1), logDuration, 0)
+								else
+								end
+							else
+							end
+							
+						end
+							
+						if trialData.Target == "Recipe" then
+							local vote = layout.VoteEntities[logIndexTable[i]]
+							vote.Enable = true
+							
+							local volume
+							if vote.UITransformComponent.RectSize.x < 50 then
+								volume = 0.3
+							else
+								volume = 0.6
+							end
+							
+							_SoundService:PlaySound(_ResourceManager.SFXTable["TrialAction"], volume)
+							uiLayout.Customers.UITrialCustomers:TweenLog(layoutIndex, logIndexTable[i], logDuration)
+						end
+						
+						logTimeTable[i] = 0
+						logIndexTable[i] = logIndexTable[i] + 1
+						
+					end
+					
+					if value[2] <= indivTimeTable[i] then
+										
+						uiLayout:SuccessFunction(layoutIndex, value[1], trialData)
+						
+						indexTable[i] = indexTable[i] + 1
+						indivTimeTable[i] = 0
+						
+						if trialData.Target == "Employee" then
+							local storeName = _GetLocalizationTextLogic:GetText(characterData[3])
+							if value[1] == math.floor(missionValue/2) then
+								local comment = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("TrialComment8", storeName)
+								uiScreen:SetCommentEnable(true, comment, self.CommentDelayDefault, true)
+								
+							elseif value[1] == math.floor(missionValue*0.85) then
+								local comment = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("TrialComment9", storeName)
+								uiScreen:SetCommentEnable(true, comment, self.CommentDelayDefault, true)
+								
+							end
+							
+						end
+						
+						
+						
+						if value[1] >= missionValue then
+							self:ChangePhase(3)
+							return					
+						end
+					end
+				end
+						
+			end, 1/_UIEntityService.TimeFrame)
+			
+		elseif phase == 3 then
+			local duration = 2
+			local index = 1
+			self.phaseTimer = _TimerService:SetTimerRepeat(function()
+				if index == 1 then
+					uiScreen:SetCommentEnable(true, _GetLocalizationTextLogic:GetText("TrialComment10"), duration*0.95, true)
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Whistle"], 1)
+					
+				elseif index == 2 then
+					uiScreen:SetCommentEnable(true, _GetLocalizationTextLogic:GetText("TrialComment11"), duration*0.95, true)
+					_SoundService:PlaySound(_ResourceManager.SFXTable["DrumShort"], 1)		
+					
+				elseif index == 3 then
+					self:ChangePhase(4)
+					
+				end
+				index = index + 1
+				
+			end, duration)
+			
+		elseif phase == 4 then
+			local duration = self.CommentDelayDefault
+			local index = self.LayoutCount
+			
+			self.phaseTimer = _TimerService:SetTimerRepeat(function()		
+				local charData = playerTrial.CharacterData[index]
+				local layoutIndex = charData[4]
+				
+				local layout = uiLayout.Layouts[layoutIndex].UITrialLayoutSlot
+				layout.ScoreBoard.Enable = true		
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["StickTo"], 1)		
+				if index == 1 then
+					
+					layout.SBImgStampWin.CanvasGroupComponent.GroupAlpha = 1
+					layout.SBImgStampWin.UITweenAlpha:Play()
+					layout.SBImgStampWin.UITweenScale:Play()
+					_SoundService:PlaySound(_ResourceManager.SFXTable["WinVoice"], 1)		
+					_SoundService:PlaySound(_ResourceManager.SFXTable["System_BattleField_Win"], 1)		
+				
+				end
+				
+				index = index - 1
+				if index <= 0 then
+					self:ChangePhase(5)
+					return
+				end
+				
+			end, duration)
+		
+			
+		elseif phase == 5 then
+			local winnerData = playerTrial.CharacterData[1]	
+			
+			local storeName = _GetLocalizationTextLogic:GetText(winnerData[3]) 
+			
+			local duration = 3
+			local text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("TrialComment12", storeName)
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Firework"], 1)
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Audience"], 1)
+			uiScreen:SetCommentEnable(true, text, duration, true)
+			
+			self.phaseTimer = _TimerService:SetTimerOnce(function()
+				_FadeService:ShowFade("TrialResult")
+			end, duration)
+			
+		end
+	end
+
+	@EventSender("Entity", "0955e2cb-d7a4-451b-b6ba-5c5cf81d9461")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- Trial 렌더링 중 스킵 버튼 클릭을 처리하는 이벤트 핸들러
+		
+		local Entity = event.Entity
+		local player = _UserService.LocalPlayer
+		local playerTrial = player.PlayerTrial
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		if playerTrial.IsServerProcessing then return end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Whistle"], 1)
+		playerTrial:ChangeConnectingStatus(true, _UserService.LocalPlayer.PlayerComponent.UserId)
+		self:SkipTrialRender(_UserService.LocalPlayer.PlayerComponent.UserId)
+	end
+
+end

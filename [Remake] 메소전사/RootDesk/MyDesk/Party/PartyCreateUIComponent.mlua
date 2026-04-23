@@ -1,0 +1,218 @@
+@Component
+script PartyCreateUIComponent extends Component
+
+	property Entity topPanel = nil
+
+	property Entity titlePanel = nil
+
+	property Entity memberPanel = nil
+
+	property Entity bottomPanel = nil
+
+	property integer curretMaxMemberCount = 4
+
+	property integer status = 0
+
+	property integer destroyTimer = 0
+
+	property Entity defaultCountPanel = nil
+
+	property Entity memberCountPanel = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 파티 생성 UI 초기화 및 버튼 이벤트 연결
+		
+		self.topPanel = self.Entity:GetChildByName("TopPanel")
+		self.titlePanel = self.Entity:GetChildByName("TitlePanel")
+		self.memberPanel = self.Entity:GetChildByName("MemberPanel")
+		self.defaultCountPanel = self.memberPanel:GetChildByName("MemberCountDefault")
+		self.memberCountPanel = self.memberPanel:GetChildByName("MemberCountPanel")
+		self.bottomPanel = self.Entity:GetChildByName("BottomPanel")
+		
+		if Environment:IsPCPlatform() then
+			self.Entity.MoveableUIComponent:SetTouchEntity(self.topPanel, self.Entity)
+		end
+		
+		
+		local closeButton = self.topPanel:GetChildByName("CloseButton")
+		local cancelButton = self.bottomPanel:GetChildByName("CancelButton")
+		local confirmButton = self.bottomPanel:GetChildByName("ConfirmButton")
+		
+		closeButton:ConnectEvent(ButtonClickEvent, function()
+			self.Entity.Enable = false
+		end)
+		
+		self.memberPanel:GetChildByName("MemberCountButton"):ConnectEvent(ButtonClickEvent, function()
+			self:SetMaxMemberCount(self.curretMaxMemberCount)
+			if self.memberCountPanel.Enable then
+				self:CollapseMemberCount()
+			else
+				self:ExpandMemberCount()
+			end
+		end)
+		
+		self.defaultCountPanel:ConnectEvent(ButtonClickEvent, function()
+			if self.memberCountPanel.Enable then
+				self:CollapseMemberCount()
+			else
+				self:ExpandMemberCount()
+			end
+		end)
+		
+		cancelButton:ConnectEvent(ButtonClickEvent, function()
+			self.Entity.Enable = false
+		end)
+		
+		confirmButton:ConnectEvent(ButtonClickEvent, function()
+			local userId = _UserService.LocalPlayer.PlayerComponent.UserId
+			
+			if _PartyLogic:IsInParty(userId) and _PartyLogic:IsLeader(userId, _UserService.LocalPlayer.PlayerFieldMapComponent.partyIndex) then
+				self:EditInfo()
+			else
+				self:CreateParty()
+			end
+		end)
+		
+		for _, entity in pairs(self.memberPanel:GetChildByName("MemberCountPanel").Children) do
+			local count = tonumber(_UtilLogic:Split(entity.Name, "_")[2])
+			if _UtilLogic:Contains(entity.Name, "_" .. tostring(self.curretMaxMemberCount)) then
+			end
+			
+			
+			entity:ConnectEvent(ButtonClickEvent, function()
+				self:SetMaxMemberCount(count)
+			end)
+		end
+		
+		self:SetMaxMemberCount(4)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ExpandMemberCount()
+		-- 멤버 수 선택 패널을 확장하여 표시
+		
+		self.memberCountPanel.Enable = true
+		self.defaultCountPanel.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CollapseMemberCount()
+		-- 멤버 수 선택 패널을 접어서 숨김
+		
+		self.memberCountPanel.Enable = false
+		self.defaultCountPanel.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetMaxMemberCount(integer count)
+		-- 파티 최대 멤버 수를 설정하고 유효성 검사
+		local player = _UserService.LocalPlayer
+		local userId = player.PlayerComponent.UserId
+		
+		if _PartyLogic:IsInParty(userId) then 
+			local memberCount = _PartyLogic:GetPartyMemberCount(player.PlayerFieldMapComponent.partyIndex)
+			
+			if memberCount > count then
+				_UIToast:ShowMessage(_LocalizeLogic:GetText("toast185"))
+				
+				self.defaultCountPanel.TextComponent.Text = string.format("%d", memberCount)
+				self:CollapseMemberCount()
+			else
+				self.curretMaxMemberCount = count
+				self.defaultCountPanel.TextComponent.Text = string.format("%d", count)
+				self:CollapseMemberCount()
+			end
+		else 
+			self.curretMaxMemberCount = count
+			self.defaultCountPanel.TextComponent.Text = string.format("%d", count)
+			self:CollapseMemberCount()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CreateParty()
+		-- 새로운 파티를 생성하고 서버에 요청
+		if not _PartyUILogic:IsCanRequestPartyLogic() then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast23"))
+			
+			return
+		end
+		
+		local inputText = self.titlePanel:GetChildByName("TitleInputText")
+		local partyName = inputText.TextComponent.Text
+		
+		
+		if partyName == "" then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast184"))
+			
+			return
+		else
+			_PartyLogic:RequestCreateParty(partyName, self.curretMaxMemberCount)
+			self:Hide()
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Show(boolean initTitle)
+		-- 파티 생성 UI를 표시하고 초기화
+		self:CollapseMemberCount()
+		
+		if initTitle then
+			self.titlePanel:GetChildByName("TitleInputText").TextComponent.Text = ""
+		end
+		
+		self:Refresh()
+		self.Entity.Enable = true
+		_PartyUILogic.bg.Enable = true
+		_TimerService:ClearTimer(self.destroyTimer)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 현재 파티 상태에 따라 UI 내용 갱신
+		local user = _UserService.LocalPlayer
+		local partyId = user.PlayerFieldMapComponent.partyIndex
+		
+		if _PartyLogic:IsInParty(user.PlayerComponent.UserId) then
+			local inputText = self.titlePanel:GetChildByName("TitleInputText")
+			inputText.TextComponent.Text = _PartyLogic.partyTable[partyId].name
+			_TimerService:SetTimerOnce(function() inputText.TextComponent.Text = _PartyLogic.partyTable[partyId].name end, 0.2)
+			
+			self.topPanel.TextComponent.Text = _LocalizeLogic:GetText("partyStr1")
+			self.bottomPanel:GetChildByName("ConfirmButton").TextComponent.Text = _LocalizeLogic:GetText("common_Confirm")
+		else
+			self.topPanel.TextComponent.Text = _LocalizeLogic:GetText("partyStr2")
+			self.bottomPanel:GetChildByName("ConfirmButton").TextComponent.Text = _LocalizeLogic:GetText("partyStr3")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EditInfo()
+		-- 기존 파티 정보를 수정하여 서버에 전송
+		if not _PartyUILogic:IsCanRequestPartyLogic() then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast23"))
+			
+			return
+		end
+		
+		local user = _UserService.LocalPlayer
+		local partyId = user.PlayerFieldMapComponent.partyIndex
+		
+		local inputText = self.titlePanel:GetChildByName("TitleInputText")
+		local partyName = inputText.TextComponent.Text
+		
+		_PartyLogic:SetPartyConfig(partyId, partyName, self.curretMaxMemberCount, self.status)
+		self:Hide()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Hide()
+		-- 파티 생성 UI를 숨기고 배경 비활성화
+		self.Entity.Enable = false
+		_PartyUILogic:HideBg()
+	end
+
+end

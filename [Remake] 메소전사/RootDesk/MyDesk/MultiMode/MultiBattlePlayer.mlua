@@ -1,0 +1,1733 @@
+@Component
+script MultiBattlePlayer extends BattlePlayer
+
+	@Sync
+	property SyncTable<number, string> syncWeaponData
+
+	property SyncTable<string, number> syncWeaponDamage
+
+	property string key = ""
+
+	property table weaponKeyboardKey = {KeyboardKey.Alpha1,KeyboardKey.Alpha2,KeyboardKey.Alpha3,KeyboardKey.Alpha4,KeyboardKey.Alpha5,KeyboardKey.Alpha6}
+
+	property table weaponCooltime = {false,false,false,false,false,false}
+
+	property Vector2 keyPos = Vector2(0,0)
+
+	@TargetUserSync
+	property number mp = 200
+
+	@TargetUserSync
+	property number maxMp = 200
+
+	property table serverWeaponId = {}
+
+	property boolean autoSkill = false
+
+	@TargetUserSync
+	property number maxHp = -1
+
+	@TargetUserSync
+	property number hp = -1
+
+	property boolean armorSkillEnable = false
+
+	property number buffAtk = 0
+
+	property number buffSpeed = 0
+
+	property number buffCritical = 0
+
+	property number buffEXP = 0
+
+	property number buffDash = 0
+
+	property table fieldBuff = {}
+
+	property boolean isInCampfire = false
+
+	property table weaponKeys = {}
+
+	property table cachedDamageBySlot = {}
+
+	property number avgManaCost = 0
+
+	property table weaponMana = {}
+
+	property number weaponCount = 0
+
+	property table willResetWeaponCoolTime = {}
+
+	@ExecSpace("ClientOnly")
+	method boolean GainEXP(number exp)
+		-- 멀티모드에서는 경험치 획득 비활성화
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LevelUp(boolean notLevelUp)
+		-- 멀티모드에서는 레벨업 비활성화
+		
+		
+	end
+
+	method void Init()
+		-- 멀티 배틀 플레이어 초기화
+		__base:Init()
+		
+		self._T.campfireHeal = false
+		self._T.campfireEffect = nil
+		
+		if self.Entity == _UserService.LocalPlayer then
+			self:SetAutoPotion()
+			_MultiHUDManager:SetEnable(true)
+			_MultiHUDManager:Refresh()
+			self.Entity.PlayerStorageComponent:ApplyArmorStatus(true)
+			_TimerService:SetTimerOnce(function() 
+				self.Entity:SendEvent(BattlePlayerHPChange(self.hp,self.maxHp))
+				
+			end,1)
+			
+		end
+	end
+
+	method void OnBeginPlay()
+		-- 멀티 배틀 플레이어 시작 시 초기화 및 그리드 시스템 설정
+		__base:OnBeginPlay()
+		self._T.lastSysMsgManaLogTime  = 0
+		local transform = self.Entity.TransformComponent
+		local width = _GameConfig:GetConfig().FIELD_AREA_WIDTH
+		local height = _GameConfig:GetConfig().FIELD_AREA_HEIGHT
+		
+		local ppsn = self.Entity.PlayerComponent.UserId
+		self.Entity.PlayerControllerComponent.Enable = false
+		local updateKey = function() 
+			
+			_TimerService:SetTimerRepeat(function() 
+				local battleMap = self.Entity.CurrentMap.MultiBattleMap
+				if isvalid(battleMap) == false then
+					return
+				end
+				local currentKey = string.format("%d,%d", math.tointeger(transform.Position.x / width),
+					math.tointeger(transform.Position.y) / height)
+		
+				if _UtilLogic:IsNilorEmptyString(self.key) == false then
+					if self.key ~= currentKey then
+						if battleMap.usersGridTable[self.key] == nil then
+							battleMap.usersGridTable[self.key] = {}
+						end
+						if battleMap.usersGridTable[currentKey] == nil then
+							battleMap.usersGridTable[currentKey] = {}
+						end
+						battleMap.usersGridTable[self.key][ppsn] = nil
+						battleMap.usersGridTable[currentKey][ppsn] = self.Entity
+					end
+				else
+					if battleMap.usersGridTable[currentKey] == nil then
+						battleMap.usersGridTable[currentKey] = {}
+					end
+					battleMap.usersGridTable[currentKey][ppsn] = self.Entity
+				end
+				self.key = currentKey
+				
+			end,0.2)
+			
+		end
+		if self:IsServer() then
+		
+			
+			updateKey()
+			self:InitRecovery()
+			
+			self:InitHPAndMP(ppsn)
+			local playerInfoComp = self.Entity.PlayerInfoComponent
+			local playerInfo = playerInfoComp.playerInfo
+			local fieldHp = playerInfo.fieldHp
+			if fieldHp ~=nil then
+				self.hp = math.min(self.maxHp, fieldHp)
+			end
+			local fieldSp = playerInfo.fieldSp
+			if fieldSp ~=nil then
+				self.sp = math.min(self.maxSp, fieldSp)
+			end
+			local elapsedSecond = _LocalTimeLogic:GetElapsedSecond()
+			local lastLogoutTime = playerInfo.fieldLogoutTime
+			if lastLogoutTime == nil then
+				lastLogoutTime = elapsedSecond
+			end
+			local deltaLogoutAfterTime = math.max(0,elapsedSecond - lastLogoutTime)
+			_TimerService:SetTimerOnce(function() 
+				if not isvalid(playerInfo) or not isvalid(playerInfoComp) then
+					return
+				end
+					
+				if playerInfo.fieldBuff ~= nil then
+					for k,v in pairs(playerInfo.fieldBuff) do
+						v.time += deltaLogoutAfterTime
+						if v.time > elapsedSecond then
+							self:SetBuff(v.id,v.time)
+						end 
+					end
+				end
+				 playerInfoComp:SetFieldLogoutTime()
+			end,1)
+			
+			self._T.checkLogOutTimer = _TimerService:SetTimerRepeat(function()
+				if not isvalid(playerInfoComp) then
+					_TimerService:ClearTimer(self._T.checkLogOutTimer)
+					return
+				end
+				 playerInfoComp:SetFieldLogoutTime()
+			end ,5,5)
+			
+			
+		else
+			self._T.hpSyncTimer = 0
+			
+			if _UserService.LocalPlayer ~= self.Entity then
+				return
+			end
+			
+			
+			self:ToggleAutoSkill()
+			
+			
+			_TimerService:SetTimerRepeat(function() 
+				self.keyPos.x = math.tointeger(transform.Position.x / width)		
+				self.keyPos.y = math.tointeger(transform.Position.y / height)
+			end,0.2)
+			
+		
+		
+			self._T.monsters = {}
+			local rader = _SpawnService:SpawnByModelId("model://ad57a1b5-c5c7-4a66-9c21-63a2cc750ffe","rader",Vector3.zero,self.Entity)
+			
+			---@type TriggerComponent
+			local raderTrigger = rader.TriggerComponent
+			raderTrigger.CollisionGroup = CollisionGroups.NonShieldWeapon
+			
+			raderTrigger.ColliderType = ColliderType.Circle
+			raderTrigger.CircleRadius = 5
+			
+			rader:ConnectEvent(TriggerEnterEvent,function(e) 
+				local entity = e.TriggerBodyEntity	
+				---@type MonsterObject
+				local monster = entity.MonsterObject
+				if monster == nil then
+					return
+				end
+				self._T.monsters[entity.Id] = entity
+			end)
+			
+			rader:ConnectEvent(TriggerLeaveEvent,function(e)
+				local entity = e.TriggerBodyEntity
+				---@type MonsterObject
+				local monster = entity.MonsterObject
+				if monster == nil then
+					return
+				end
+				self._T.monsters[entity.Id] = nil
+				
+			end)
+			
+			
+			local targetSearchedTime = 0
+			local resourceUnloadTime = _UtilLogic.ElapsedSeconds
+			local preRoom = -1
+			
+			
+			_TimerService:SetTimerRepeat(function() 
+				local multimap = self.Entity.CurrentMap.MultiBattleMap
+				if isvalid(multimap) == false then
+					return
+				end
+				if multimap:IsRoomTile(self:GetPosition()) == false then			
+					self.target = nil
+					return
+				end
+				local target = nil
+				local maxDist = 4
+				local playerPos = self:GetPosition()
+				local roomNumber = multimap:GetRoomNumber(playerPos)	
+				
+				if isvalid(self.target) then
+					local monsterPos = self.target.TransformComponent.WorldPosition
+					local currentDist =  (monsterPos - playerPos):Magnitude()
+					local monsterRoom = multimap:GetRoomNumber(monsterPos)		
+					if currentDist > 6 or monsterRoom ~= roomNumber then
+						self.target = nil
+					end
+				end
+				
+				
+				if isvalid(self.target) == false or targetSearchedTime + 1 > _UtilLogic.ElapsedSeconds then
+					for k,v in pairs(self._T.monsters) do
+						---@type MultiMonsterObject
+						local monster = v
+						local monsterPos = v.TransformComponent.WorldPosition
+						local monsterRoom = multimap:GetRoomNumber(monsterPos)		
+						if monsterRoom == roomNumber then
+							local dist = (monsterPos - playerPos):Magnitude()
+							if dist < maxDist then
+								maxDist = dist
+								target = v
+							end
+						end
+					end
+					self.target = target
+					
+					for key, value in pairs(self.equipGun) do
+						---@type MultiBattleGunObject
+						local gun = value.gun.MultiBattleGunObject
+						if isvalid(gun) then
+							gun.target = target
+						end
+					end
+					targetSearchedTime = _UtilLogic.ElapsedSeconds
+				end
+				
+				if isvalid(self.target) then
+					if isvalid(self._T.aim) == false then
+						local aim = _SpawnService:SpawnByModelId("model://2b363914-b7d2-48fb-974c-a40dcd392a9b","aim",Vector3.zero,self.Entity.CurrentMap)
+						self._T.aim = aim
+					end
+					
+					
+					self._T.aim.TransformComponent.Scale = self.target.TriggerComponent.CircleRadius * self.target.TransformComponent.Scale * 3
+					
+				end
+				
+			
+				
+			end,0.1)
+			
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화 프로퍼티 변경 시 처리
+		if name == "syncWeaponData" then
+			self:EquipSyncWeapon()
+		elseif name == "syncWeaponDamage" then
+			if _UserService.LocalPlayer ~= self.Entity then
+				for k, v in pairs(value) do
+					_CalcLogic.cachedPVPTable[k] = v
+				end
+			end
+		elseif name == "hp" or name == "maxHp" then
+			self.Entity:SendEvent(BattlePlayerHPChange(self.hp, self.maxHp))
+		elseif name == "sp" then
+			self.Entity:SendEvent(BattlePlayerSPChange(value,self.maxSp,true))
+		end
+	end
+
+	method void EquipSyncWeapon()
+		-- 동기화된 무기 장착 처리
+		for k,v in pairs(self.equipGun) do
+			v.gun:Destroy()
+		end
+		table.clear(self.equipGun)
+		
+		local dealy = 1
+		if self._T.syncWeaponInited then
+			
+			dealy = 0.01
+		end
+		self._T.syncWeaponInited = true
+		
+		
+		
+		
+		_TimerService:SetTimerOnce(function()
+			local weaponCount = 0
+			local totalMana = 0 
+			if self.Entity == _UserService.LocalPlayer then
+				local weaponData = self.Entity.PlayerStorageComponent:GetAllEquippedWeapon()
+				table.sort(weaponData,function(a,b) 
+					return a.equippedSlotNum < b.equippedSlotNum
+				end)
+				
+				for k,v in pairs(weaponData) do
+					
+					local slot = v.equippedSlotNum
+					self:EquipGun(slot,v.originalId,v.uniqueKey,false)
+					local weaponSpec = _WeaponSpecLogic:GetWeaponSpec(v.originalId)
+					totalMana = totalMana + weaponSpec.mana
+					self.weaponMana[slot] = weaponSpec.mana
+					weaponCount+=1
+					
+				end
+				
+			else
+				for k,v in pairs(self.syncWeaponData) do
+					local each = _HttpService:JSONDecode(v)
+					
+					local slot = each.equippedSlotNum
+					self:EquipGun(slot,each.originalId,each.uniqueKey,false)
+					local weaponSpec = _WeaponSpecLogic:GetWeaponSpec(each.originalId)
+					totalMana = totalMana + weaponSpec.mana
+					self.weaponMana[slot] = weaponSpec.mana
+					weaponCount+=1
+					
+				end
+			end
+			
+			self.avgManaCost = totalMana / weaponCount
+			
+			
+			if _UserService.LocalPlayer == self.Entity then
+				local damage = {}
+				for k,v in pairs(self.syncWeaponData) do
+					local each = _HttpService:JSONDecode(v)
+					damage[each.uniqueKey] = _CalcLogic:GetWeaponAttackDamageByKey(each.uniqueKey,self.Entity)
+				end
+				_MultiHUDManager:InitWeaponStatus()
+				self:ToggleAutoSkill()
+				self:ToggleAutoSkill()
+				
+			end
+			
+			
+		end,dealy)
+		
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void SendPlayerDamage(string data)
+		-- 서버에서 플레이어 데미지 정보 전송
+		local damage = _HttpService:JSONDecode(data)
+		for k,v in pairs(damage) do
+			self.syncWeaponDamage[k] = v
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Dead(boolean forceDead)
+		-- 클라이언트에서 플레이어 사망 처리 (현재 비어있음)
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestDead()
+		-- 서버에서 플레이어 사망 요청 처리 및 경험치 패널티 적용
+		
+		self.Entity.PlayerAbilityComponent:OnPlayerDeadExpPanalty()
+	end
+
+	method table EquipGun(number slot, string id, string uniqueKey, boolean replica)
+		-- 지정된 슬롯에 무기 장착 및 멀티배틀용 컴포넌트로 변환
+		local gun = self:EquipGun2(slot,id,uniqueKey,replica)
+		if gun ~= nil then
+			---@type BattleGunObject
+			local equipGun= gun.gun.BattleGunObject
+			
+			local isMeleeWeapon = equipGun.isMeleeWeapon
+			local rotateSpeed = equipGun.rotateSpeed
+			local childWeapon = equipGun.childWeapon
+			local bulletMelee = equipGun.bulletMelee
+			local meleeSpeed = equipGun.meleeSpeed
+			local meleeWeaponContinueAttackCount = equipGun.meleeWeaponContinueAttackCount
+			
+			
+			gun.gun:RemoveComponent("BattleGunObject")
+			gun.gun:AddComponent("MultiBattleGunObject")
+			local gunData = _WeaponSpecLogic:GetWeaponSpec(id)
+			if gunData == nil then
+				return nil
+			end
+			equipGun= gun.gun.BattleGunObject
+			
+			equipGun.isMeleeWeapon = isMeleeWeapon
+			equipGun.rotateSpeed = rotateSpeed
+			equipGun.childWeapon = childWeapon
+			equipGun.bulletMelee = bulletMelee
+			equipGun.meleeSpeed = meleeSpeed
+			equipGun.meleeWeaponContinueAttackCount = meleeWeaponContinueAttackCount
+			
+			equipGun:SetPlayer(self.Entity,slot,gunData, uniqueKey,false)
+		
+			equipGun:SetOriginalRange(gunData.range)
+			
+			
+		end
+		return gun
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 클라이언트 업데이트 처리 및 타겟 에임 관리
+		__base:OnUpdate(delta)
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		if isvalid(self._T.aim) then
+			if isvalid(self.target) then
+				self._T.aim.TransformComponent.Position = self.target.TransformComponent.WorldPosition
+				self._T.aim.Enable = true
+			else
+				self._T.aim.Enable = false
+			end
+		else
+			
+			local aim = _SpawnService:SpawnByModelId("model://2b363914-b7d2-48fb-974c-a40dcd392a9b","aim",Vector3.zero,self.Entity.CurrentMap)
+			self._T.aim = aim
+			
+		end
+		_MultiHUDManager:RefreshGauge()
+		
+	end
+
+	method table EquipGun2(number slot, string id, string uniqueKey, boolean replica)
+		-- 무기 데이터를 기반으로 무기 엔티티 생성 및 기본 설정
+		local gunData = _WeaponSpecLogic:GetWeaponSpec(id)
+		if gunData == nil then
+			return nil
+		end
+		local angle = slot / 6 * math.pi * 2 
+		local offsetPos = Vector3(math.cos(angle),math.sin(angle),0) * 1
+		local storage = self.Entity.PlayerStorageComponent.storage
+		local gun = _SpawnService:SpawnByModelId(gunData.model,"gun",self:GetPosition() + offsetPos,self.Entity.CurrentMap)
+		gun.SpriteRendererComponent.SpriteRUID = gunData.ruid
+		local equipGun = {}
+		equipGun.gun = gun
+		equipGun.id = id
+		equipGun.type = gunData.type
+		equipGun.mergeId = _ItemDataLogic:GetItemData(id).mergeId
+		equipGun.uniqueKey = uniqueKey
+		
+		equipGun.isPhysicalWeapon = gun.BattleGunObject.physicalWeapon
+		self.equipGun[slot] = equipGun
+		gun.BattleGunObject.angleOffset = -20 + (slot - 1) * -15
+		
+		return equipGun
+	end
+
+	@ExecSpace("Client")
+	method boolean UseSkill(number k)
+		-- 클라이언트에서 스킬 사용 처리 및 쿨타임 관리
+		local useMp = 10
+		
+		local weaponData = _WeaponSpecLogic:GetWeaponSpec(self.equipGun[k].id)
+		
+		if weaponData == nil then
+			return false
+		end
+		
+		
+		if not isvalid(self._T.usedMana) then
+			self._T.usedMana = {}
+		end
+		
+		local isLocalPlayer = _UserService.LocalPlayer == self.Entity
+		
+		if isLocalPlayer then
+			local target = self.target.MultiMonsterObject.monsterWrapper
+			if isvalid(target) == false then
+				if self.autoSkill == false then
+					_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage166"), "neg")
+				end
+				return false
+			end
+			
+			useMp = weaponData.mana
+			
+			if self.mp < useMp then
+				local multiBattleMap = self.Entity.CurrentMap.MultiBattleMap
+				local roomNumber = multiBattleMap:GetRoomNumber(self:GetPosition())
+				if roomNumber == multiBattleMap.safeAreaRoom then return end
+				if self.autoSkill == false then
+					_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage164"), "neg")
+				end
+				
+				return false
+			end
+			
+			if not isvalid(self._T.usedMana[weaponData.type]) then
+				self._T.usedMana[weaponData.type] = useMp
+			else
+				self._T.usedMana[weaponData.type] += useMp
+			end
+			
+			if self.equipGun[k].gun.fighting then
+				_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage161"), "neg")
+				return false
+			end
+			
+			for i, v in pairs(self.equipGun) do
+				if isvalid(v) and isvalid(v.gun) and isvalid(v.gun.MultiBattleGunObject) and v.gun.MultiBattleGunObject.fighting then
+					if v.mergeId == self.equipGun[k].mergeId then
+						return false
+					end
+				end
+			end
+			
+			self.mp = self.mp - useMp
+		end
+		
+		
+		local abillityValue = 0
+		if isLocalPlayer then
+			abillityValue = _AbilityLogic:GetAbilityReductCooltimeStatus(self.Entity.PlayerComponent.UserId)
+		end
+		
+		local coolTime =  math.max(0.01, weaponData.fieldCoolTime * (1 - abillityValue / 100))
+			
+			
+		
+		local activeTime = weaponData.spawnDuration
+		
+		local pos =  self.Entity.TransformComponent.Position 
+		self.equipGun[k].gun.MultiBattleGunObject:StartAttack(self.target,pos)
+		
+			
+		_TimerService:SetTimerOnce(function() 
+			if self.equipGun[k] == nil then
+				return
+			end
+			if isvalid(self.equipGun[k].gun) == false then
+				return
+			end
+			if self.equipGun[k].gun.MultiBattleGunObject.specialBuffOn == false then
+				self.equipGun[k].gun.Enable = false
+			else
+				self.equipGun[k].gun.Visible = false
+			end
+			self.equipGun[k].gun.MultiBattleGunObject.fighting = false
+			
+		end,activeTime)
+		
+		
+		self.willResetWeaponCoolTime[k] = _UtilLogic.ServerElapsedSeconds + activeTime + coolTime 
+		
+		_TimerService:SetTimerOnce(function() 
+			self.weaponCooltime[k] = false 
+		end,activeTime + coolTime)
+		
+		
+		if isLocalPlayer == false then
+			return false
+		end
+		
+		self:RequestSkill(k,self.target.MultiMonsterObject.monsterWrapper.Entity)
+		self.equipGun[k].gun.MultiBattleGunObject.fighting = true
+		
+		self.weaponCooltime[k] = true
+		
+		local weaponStatusUI = _MultiHUDManager.weaponStatusPanel.MultiPlayerWeaponStatusUIComponent
+		
+		if isvalid(weaponStatusUI.slots[k]) then
+			for i,v in pairs(self.equipGun) do
+				if v.mergeId == self.equipGun[k].mergeId then
+					self.weaponCooltime[i] = true
+					weaponStatusUI.slots[i].MultiWeaponSlotComponent:CoolTimeDeactive()
+				end
+			end
+			weaponStatusUI.slots[k].MultiWeaponSlotComponent:SetEnableActiveWeaponEff(true)
+			weaponStatusUI.slots[k].MultiWeaponSlotComponent:SetEnableActiveWeaponOutline(true)
+			
+			weaponStatusUI.slots[k].MultiWeaponSlotComponent:CoolTimeDeactive()
+			
+			_TimerService:SetTimerOnce(function()
+				local duplicatedWeaponFighting = false
+				
+				for i, v in pairs(self.equipGun) do
+					if isvalid(v) and isvalid(v.gun) and isvalid(v.gun.MultiBattleGunObject) and v.gun.MultiBattleGunObject.fighting then
+						if v.mergeId == self.equipGun[k].mergeId then
+							duplicatedWeaponFighting = true
+							
+							break
+						end
+					end
+				end
+				
+				if not duplicatedWeaponFighting then
+					for i,v in pairs(self.equipGun) do
+						if v.mergeId == self.equipGun[k].mergeId and i ~= k then 
+							if isvalid(self.willResetWeaponCoolTime[i]) then
+								if self.willResetWeaponCoolTime[i] <= _UtilLogic.ServerElapsedSeconds then 
+									self.weaponCooltime[i] = false
+									self.willResetWeaponCoolTime[i] = 0
+									weaponStatusUI.slots[i].MultiWeaponSlotComponent:CoolTimeOn(0)
+								else
+									local remainCoolTime = self.willResetWeaponCoolTime[i] - _UtilLogic.ServerElapsedSeconds
+									weaponStatusUI.slots[i].MultiWeaponSlotComponent:CoolTimeOn(remainCoolTime)
+								end
+							else
+								self.weaponCooltime[i] = false
+								self.willResetWeaponCoolTime[i] = 0
+								weaponStatusUI.slots[i].MultiWeaponSlotComponent:CoolTimeOn(0)
+							end
+						end
+					end
+				end
+				
+				weaponStatusUI.slots[k].MultiWeaponSlotComponent:SetEnableActiveWeaponOutline(false)
+				weaponStatusUI.slots[k].MultiWeaponSlotComponent:CoolTimeOn(coolTime)
+			end,activeTime)
+		end
+		return true
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestSkill(number slot, Entity target)
+		-- 서버에서 스킬 요청 처리 및 주변 플레이어에게 전파
+		local useMp = 10
+		
+		local weaponData = _WeaponSpecLogic:GetWeaponSpec(self.serverWeaponId[slot])
+		
+		if weaponData == nil then
+			return
+		end
+		
+		useMp = weaponData.mana
+		
+		if self.mp < useMp then
+			return
+		end
+		self.mp = self.mp - useMp
+		
+		target.MultiMonsterWrapper:SetTarget(self.Entity)
+		
+		local users = _UserService:GetUsersByMapComponent(self.Entity.CurrentMap.MapComponent)
+		for k,v in pairs(users) do
+			if v ~= self.Entity then
+				local diff = v.TransformComponent.Position - self.Entity.TransformComponent.Position
+				diff.z = 0
+				if diff:Magnitude() < 10 then
+					self:OnRecieveSkill(slot,target,v.PlayerComponent.UserId)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnRecieveSkill(number k, Entity target)
+		-- 다른 플레이어의 스킬 사용 신호 수신 및 동조 공격
+		self.target = target.MultiMonsterWrapper.monsterObject
+		if isvalid(self.target) then
+			self:UseSkill(k)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void CampfireHeal(boolean onoff)
+		-- 캠프파이어 힐링 효과 활성화/비활성화 처리
+		self.isInCampfire = onoff
+		if onoff then
+			self._T.campfireHeal = true
+			if self._T.campfireEffect == nil then
+				self._T.campfireEffect = _SpawnService:SpawnByModelId("model://f4e0ee2a-e8dc-4ec9-8fa3-9fe25a2396cc","healEffect",Vector3.zero,self.Entity)
+				self._T.campfireEffect.Enable = false
+			end
+			local timer = 0
+			timer = _TimerService:SetTimerRepeat(function()
+				if self._T.campfireHeal then
+					if self.hp < self.maxHp then
+						self:SetFieldHP(math.min(self.maxHp, self.hp + self.maxHp * 0.01))
+						if self._T.campfireEffect.Enable == false then
+							local temp = self._T.campfireEffect.SpriteRendererComponent.SpriteRUID
+							self._T.campfireEffect.SpriteRendererComponent.SpriteRUID = ""
+							self._T.campfireEffect.Enable = true
+							self._T.campfireEffect.SpriteRendererComponent.SpriteRUID = temp
+						end
+					end
+					
+					if self.mp < self.maxMp then
+						self.mp = math.min(self.maxMp, self.mp + self.maxMp * 0.01)
+						if self._T.campfireEffect.Enable == false then
+							local temp = self._T.campfireEffect.SpriteRendererComponent.SpriteRUID
+							self._T.campfireEffect.SpriteRendererComponent.SpriteRUID = ""
+							self._T.campfireEffect.Enable = true
+							self._T.campfireEffect.SpriteRendererComponent.SpriteRUID = temp
+						end
+					end
+					
+					if self.mp >= self.maxMp and self.hp >= self.maxHp then
+						self._T.campfireEffect.Enable = false
+					end
+					
+				else
+					if isvalid(self._T.campfireEffect) then
+						self._T.campfireEffect.Enable = false
+					end
+					_TimerService:ClearTimer(timer)
+				end
+			end,0.2)
+			
+		else
+			self._T.campfireHeal = false
+			if isvalid(self._T.campfireEffect) then
+				self._T.campfireEffect.Enable = false
+			end
+		end
+	end
+
+	method void OnDestroy()
+		-- 플레이어 파괴 시 정리 작업 및 리소스 해제
+		__base:OnDestroy()
+		
+		
+		
+		if self:IsServer() then
+			if _UtilLogic:IsNilorEmptyString(self.key) == false then
+				local battleMap = self.Entity.CurrentMap.MultiBattleMap
+				local ppsn = self.Entity.PlayerComponent.UserId
+				if isvalid(battleMap) and battleMap.usersGridTable ~=nil then
+					battleMap.usersGridTable[self.key][ppsn] = nil
+					self.key = ""
+				end
+			
+			end
+		else
+			for k,v in pairs(self.equipGun) do
+				v.gun:Destroy()
+			end
+			table.clear(self.equipGun)
+			if isvalid(self._T.aim) then
+				self._T.aim:Destroy()
+			end
+			if self.Entity == _UserService.LocalPlayer then
+				_MultiHUDManager:ClearBuffIcon()
+			end
+		end
+	end
+
+	method boolean CheckUseMultiSkill(integer index)
+		-- 멀티 스킬 사용 가능 여부 확인
+		if isvalid(self.target) == false then
+			return false
+		end
+		if self.equipGun[index] == nil then
+			return false
+		end
+		
+		if self.weaponCooltime[index] ~= nil and self.weaponCooltime[index] then
+			if self.autoSkill == false then		
+				_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage169"), "neg")
+			end
+				
+			return false
+		end	
+		return self:UseSkill(index)
+	end
+
+	method void ToggleAutoSkill()
+		-- 자동 스킬 사용 모드 토글 및 타이머 설정
+		
+		self.autoSkill = not self.autoSkill
+		
+		_MultiHUDManager.autoSkillTip.Enable = self.autoSkill
+		_MultiHUDManager.autoSkillTipMobile.Enable = self.autoSkill
+		
+		
+		if self.autoSkill then
+			
+			local nextSkill = 0
+			
+			local maxCost = 0
+			for k,v in pairs(self.weaponMana) do
+				maxCost = math.max(maxCost,v)
+			end
+		 	self._T.autoSkillEventId =	_TimerService:SetTimerRepeat(function()
+				if self.mp >= maxCost then
+					nextSkill = 0
+				end
+				if self.mp < self.avgManaCost then
+					
+					
+					if nextSkill == 0 then
+						local slots = table.keys(self.weaponMana)
+						nextSkill = slots[_UtilLogic:RandomIntegerRange(1,#slots)]
+					end
+					
+				end
+				if nextSkill > 0 then
+					
+					
+					if self.mp < self.weaponMana[nextSkill] then
+					
+						local delta = _UtilLogic.ElapsedSeconds - self._T.lastSysMsgManaLogTime 
+						
+						if delta > 5 then
+							_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage164"), "neg")
+							self._T.lastSysMsgManaLogTime = _UtilLogic.ElapsedSeconds
+							if _UtilLogic:RandomIntegerRange(0,100) < 10 then
+								nextSkill = 0
+							end
+							
+						end
+						
+						return
+					else
+						if self:CheckUseMultiSkill(nextSkill) then
+							nextSkill = 0
+						end
+						return
+					end
+				end
+				_InputService:SendEvent(KeyDownEvent(KeyboardKey.Alpha1))
+				_InputService:SendEvent(KeyDownEvent(KeyboardKey.Alpha2))
+				_InputService:SendEvent(KeyDownEvent(KeyboardKey.Alpha3))
+				_InputService:SendEvent(KeyDownEvent(KeyboardKey.Alpha4))
+				_InputService:SendEvent(KeyDownEvent(KeyboardKey.Alpha5))
+				_InputService:SendEvent(KeyDownEvent(KeyboardKey.Alpha6))
+				
+			 end,1)
+		else
+			if self._T.autoSkillEventId ~= nil then
+				_TimerService:ClearTimer(self._T.autoSkillEventId)
+				self._T.autoSkillEventId = nil
+			end
+		end
+		
+	end
+
+	method void InitRecovery()
+		-- MP 및 SP 자동 회복 시스템 초기화
+		_TimerService:SetTimerRepeat(function() 
+			self.mp = math.min(self.maxMp, self.mp + self.maxMp * 0.005)
+			self:SetSP(math.min(self.maxSp, self.sp + 1))
+		end,2)
+	end
+
+	method number GetMPRatio()
+		-- 현재 MP 비율 반환 (0~1)
+		return self.mp / self.maxMp
+	end
+
+	method void InitHPAndMP(string ppsn)
+		-- 플레이어 HP와 MP 초기화 및 파티 UI 업데이트
+		local mp = _AbilityLogic:GetAbilityManaStatus(ppsn) 
+		
+		self.mp = mp
+		self.maxMp = mp
+		
+		self.maxHp = self:CalculateMaxHp(ppsn) 
+		self.hp = self.maxHp
+		
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		if _PartyLogic:IsInParty(userId) then
+			local fieldPlayer = self.Entity.PlayerFieldMapComponent
+			_PartyUILogic:RequestRefreshHpBar(fieldPlayer.partyIndex, userId, self.hp, self.maxHp)
+		end
+	end
+
+	method void SetDamage(number damage, Vector2 knockback, number criticalRate, number criticalRatio, string attackType, Entity target)
+		-- 플레이어가 데미지를 받을 때 처리 및 무적 시간 설정
+		if self.isInvincible then return end
+		
+		__base:SetDamage(damage,knockback,criticalRate,criticalRatio,attackType,target)
+		self:RequestChangeHP(damage)
+		
+		self.Entity.TriggerComponent.Enable = false
+		_TimerService:SetTimerOnce(function() 
+			self.Entity.TriggerComponent.Enable = true
+		end,self.unDamagedTime)
+	end
+
+	@ExecSpace("Server")
+	method void RequestChangeHP(number damage)
+		-- 서버에서 HP 변경 요청 처리 및 사망 체크
+		if self.isInvincible then return end
+		
+		if self.Entity.StateComponent.CurrentStateName == "DEAD" then
+			return
+		end
+		
+		local userId = self.Entity.PlayerComponent.UserId
+		local hp = self.hp - damage
+		
+		self:SetFieldHP(hp)
+		
+		if self.hp <= 0 then
+			self.hp = 0
+			self:RequestDead()
+		
+			self.Entity.PlayerComponent:ProcessDead(userId)
+			self:OnDeadOnField(userId)
+			self.isInvincible = true
+			
+			_TimerService:SetTimerOnce(function()
+				if isvalid(self) and isvalid(self.Entity) then
+					self:SetFieldHP(self.maxHp * 0.05)
+					self:RefreshHp()
+				end
+			end, 5)
+			
+			_TimerService:SetTimerOnce(function()
+				if isvalid(self) and isvalid(self.Entity) then
+					self.isInvincible = false
+				end
+			end, 7)
+		end
+		
+		if _PartyLogic:IsInParty(userId) then
+			local fieldPlayer = self.Entity.PlayerFieldMapComponent
+			_PartyUILogic:RequestRefreshHpBar(fieldPlayer.partyIndex, userId, self.hp, self.maxHp)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void FieldLevelUp()
+		-- 필드에서 레벨업 처리 및 HP/MP 재설정
+		local ppsn = self.Entity.PlayerComponent.UserId
+		self:PlayLevelUpEff(ppsn)
+		self:InitHPAndMP(ppsn)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetFieldHP(number hp)
+		-- 필드에서 HP 설정 및 파티 UI 업데이트
+		self.hp = math.max(0, hp)
+		self.Entity.PlayerInfoComponent.playerInfo.fieldHp = self.hp
+		
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		if _PartyLogic:IsInParty(userId) then
+			local fieldPlayer = self.Entity.PlayerFieldMapComponent
+			_PartyUILogic:RequestRefreshHpBar(fieldPlayer.partyIndex, userId, self.hp, self.maxHp)
+		end
+	end
+
+	method void SetHP(number hp)
+		-- HP 설정 (현재 비어있음)
+		
+	end
+
+	method void SetMaxHP(number maxHP)
+		-- 최대 HP 설정 (현재 비어있음)
+		
+	end
+
+	@ExecSpace("Client")
+	method void UseSpecialBuff()
+		-- 특수 버프 사용 및 매칭 무기에 버프 적용
+		local equippedSoul = self.Entity.PlayerCharacterData.charIndex
+		
+		---@type WeaponSpecialBuff
+		local lastWeapon = nil
+		local count = 0
+		for i, weapon in pairs(self.equipGun) do
+			if _CharacterLogic:CheckMatchExWeapon(weapon.id, tostring(math.floor(equippedSoul))) then		
+				if count == 0 then weapon.gun.WeaponSpecialBuff:BuffOnForField(1) end
+				weapon.gun.WeaponSpecialBuff:BuffOnForField(2)
+				
+					lastWeapon = weapon.gun.WeaponSpecialBuff
+				count += 1
+			end
+		end
+		if isvalid(lastWeapon) then
+			lastWeapon:BuffOnForField(3)
+			_BattleUIManager:PlayUIEff("model://e6db2286-dc84-4efe-bf24-048398c985ea",1)
+		
+		end
+	end
+
+	method void OnUseQuickSlot(integer slot, boolean keyboard, boolean auto)
+		-- 퀴슬롯 아이템 사용 처리 및 유효성 검사
+		local playerInfo = self.Entity.PlayerInfoComponent.playerInfo
+		
+		if playerInfo.qSlot == nil and auto == false then
+			if keyboard == false then
+				_UIGroupManager.baggageUI:Show()	
+			end
+			return
+		end
+		
+		local storage = self.Entity.PlayerStorageComponent
+		local itemId = playerInfo.qSlot[slot]
+		local itemCount = storage:GetItemCount(itemId)
+		
+		if _UtilLogic:IsNilorEmptyString(playerInfo.qSlot[slot]) then
+			if keyboard == false and auto == false then
+				_UIGroupManager.baggageUI:Show()
+			end
+			return
+		end
+		
+		
+		if itemCount <= 0 then
+			if auto == false then
+				_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage168"),"neg")
+			end
+			return
+		end
+		
+		
+		
+		
+		
+		local findUniqueKey = _UserService.LocalPlayer.PlayerStorageComponent:GetMinimumCountUniqueKeyByItemId(itemId)
+		local cnt = self:GetEnableUseItemCount(findUniqueKey,1,auto)
+		
+		if cnt < 1 then
+			return
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(findUniqueKey) == false then
+			storage:RequestUseItem(findUniqueKey, 1)
+		else
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUseFieldItem(string itemId, number count)
+		-- 서버에서 필드 아이템 사용 효과 처리
+		local itemData = _ItemDataLogic:GetItemData(itemId)
+		local itemOption = itemData.option
+		
+		if itemOption.type == "HP" then
+			self:SetFieldHP(math.min(self.maxHp, self.hp + (itemOption.value * self.maxHp) * count))		
+		elseif itemOption.type == "MP" then
+			self.mp = math.min(self.maxMp, self.mp +  (itemOption.value * self.maxMp) * count)
+		elseif itemOption.type == "Buff" then
+			local time = _LocalTimeLogic:GetElapsedSecond() + itemOption.duration
+			self:SetBuff(itemId,time)	
+		elseif itemOption.type == "Teleport" then 
+			_EffectService:PlayEffectAttached("6f4ccc25e6d842e797839166fb67bcd3",self.Entity,Vector3(0,0.3,0),0,Vector3.one)
+			_TimerService:SetTimerOnce(function()	
+				self.Entity.PlayerFieldMapComponent:RespawnCurrentMap()
+			end,0.6)
+		
+		end
+		
+		self:OnUseFieldItemOnClient(itemId,count,self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void OnUseFieldItemOnClient(string itemId, number count)
+		-- 클라이언트에서 아이템 사용 이팩트 및 사운드 재생
+		local itemData = _ItemDataLogic:GetItemData(itemId)
+		local itemOption = itemData.option
+		
+		if itemOption.type == "HP" then
+			_EffectService:PlayEffectAttached("2f87ef597ba24957966f7638b3285a76",self.Entity,Vector3.zero,0,Vector3.one)
+			_SoundService:PlaySound("38c1a47d4fff4c39afffc81eea4122bd",1)
+		elseif itemOption.type == "MP" then
+			_EffectService:PlayEffectAttached("2f87ef597ba24957966f7638b3285a76",self.Entity,Vector3.zero,0,Vector3.one)
+			_SoundService:PlaySound("38c1a47d4fff4c39afffc81eea4122bd",1)
+		elseif itemOption.type == "Buff" then
+			_SoundService:PlaySound("03c8662f952b47cb9773532744abf92e",1)
+		elseif itemOption.type == "Teleport" then
+			_SoundService:PlaySound("9d82d9f5c50346d1a24119125d539b2e",1)
+		end
+		
+		
+		_MultiHUDManager:Refresh()
+	end
+
+	method void SetAutoPotion()
+		-- 자동 포션 사용 시스템 설정
+		
+		
+		local playerState = self.Entity.StateComponent
+		_TimerService:SetTimerRepeat(function()
+			local playerInfo = self.Entity.PlayerInfoComponent.playerInfo
+			local multiBattleMap = self.Entity.CurrentMap.MultiBattleMap
+			if not isvalid(multiBattleMap) then return end
+			if multiBattleMap.initedRoomNumber == false then
+				return
+			end
+			local roomNumber = multiBattleMap:GetRoomNumber(self:GetPosition())
+			if roomNumber == multiBattleMap.safeAreaRoom then
+				return
+			end
+			if playerState.CurrentStateName == "DEAD" then
+				return
+			end
+		
+		
+			if _OptionLogic.usedAutoPotion and playerInfo.qSlot ~= nil then
+				local percent = _OptionLogic.autoPotionAdjust 
+				if self.hp < self.maxHp * percent then
+					self:OnUseQuickSlot(1,false,true)			
+				end		
+			end
+			
+			if _OptionLogic.usedAutoMPPotion and playerInfo.qSlot ~= nil then
+				local percent = _OptionLogic.autoMPPotionAdjust 
+				if self.mp < self.maxMp * percent then
+					self:OnUseQuickSlot(2,false,true)
+				end
+			end
+			
+			
+		end, 1.1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnPets()
+		-- 펫 소환 (현재 비어있음)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyPets()
+		-- 펫 제거 (현재 비어있음)
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetBuffEnable(string itemId, number time)
+		-- 버프 활성화 설정
+		self:SetBuff(itemId,time)
+	end
+
+	method number GetBuffValue(string type)
+		-- 지정된 타입의 버프 값 반환
+		if self.fieldBuff[type] == nil then
+			return 0
+		end
+		if self.fieldBuff[type].time < _LocalTimeLogic:GetElapsedSecond() then
+			return 0
+		end
+		return self.fieldBuff[type].value
+	end
+
+	method void SetBuff(string itemId, number time)
+		-- 버프 설정 및 지속 시간 관리
+		local elapsed = _LocalTimeLogic:GetElapsedSecond() 
+		if time < elapsed then
+			return
+		end
+		local itemData = _ItemDataLogic:GetItemData(itemId)
+		local itemOption = itemData.option
+		
+		if self.fieldBuff[itemOption.buff] == nil then
+			self.fieldBuff[itemOption.buff] = {}
+		end
+		self.fieldBuff[itemOption.buff].value = itemOption.value
+		self.fieldBuff[itemOption.buff].time = time
+		if self:IsServer() then
+			local playerInfo = self.Entity.PlayerInfoComponent.playerInfo
+			if playerInfo.fieldBuff == nil then
+				playerInfo.fieldBuff = {}
+			end
+			
+			if playerInfo.fieldBuff[itemOption.buff] == nil then
+				 playerInfo.fieldBuff[itemOption.buff] = {
+					id = itemId,
+					time = time
+				}
+			else
+				 playerInfo.fieldBuff[itemOption.buff].id = itemId
+				playerInfo.fieldBuff[itemOption.buff].time = time
+			end
+			
+			self:SetBuffEnable(itemId,time,self.Entity.PlayerComponent.UserId)
+		else
+			if itemOption.buff == "Speed" then
+				if self._T.buffSpeedEventId  ~= nil then
+					_TimerService:ClearTimer(self._T.buffSpeedEventId)
+					self._T.buffSpeedEventId  = nil
+				end
+				self:SetMovementSpeed(self:GetSpeed())
+				self._T.buffSpeedEventId = _TimerService:SetTimerOnce(function()
+					self:SetMovementSpeed(self:GetSpeed() - self:GetBuffValue("Speed"))
+					self._T.buffSpeedEventId  = nil
+				 end,time - _LocalTimeLogic:GetElapsedSecond())
+				
+		
+			end
+			local duration = itemOption.duration
+			_MultiHUDManager:SetEnableBuffIcon(itemOption.buff,time,itemOption.icon,_LocalizeLogic:GetItemDesc(itemId),duration)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void LoadWeapon()
+		-- 서버에서 무기 데이터 로드 및 동기화
+		table.clear(self.syncWeaponData)
+		table.clear(self.serverWeaponId)
+		table.clear(self.weaponKeys)
+		table.clear(self.cachedDamageBySlot)
+		local weaponData = self.Entity.PlayerStorageComponent:GetAllEquippedWeapon()
+			table.sort(weaponData,function(a,b) 
+				return a.equippedSlotNum < b.equippedSlotNum
+			end)
+		for k,v in pairs(weaponData) do
+			self.syncWeaponData[v.equippedSlotNum] = _HttpService:JSONEncode(v)
+			self.serverWeaponId[v.equippedSlotNum] = v.originalId
+			self.weaponKeys[v.equippedSlotNum] = v.uniqueKey
+		end
+	end
+
+	method number GetWeaponDamageBySlot(integer slot)
+		-- 슬롯별 무기 데미지 계산 및 캐시 처리
+		if self.cachedDamageBySlot[slot] ~= nil then
+			return self.cachedDamageBySlot[slot]
+		end
+		local itemId = self.serverWeaponId[slot]
+		local accDamageRate= 1
+		local weaponSpec = _WeaponSpecLogic:GetWeaponSpec(itemId)
+		local uniqueKey = self.weaponKeys[slot]
+		local physicalWeapon = weaponSpec.attribute == "physical"
+		local isMeleeWeapon = false
+		local weaponType = weaponSpec.type
+		
+		local damageByLevel = _CalcLogic:GetWeaponAttackInFieldMap(uniqueKey, self.Entity.PlayerComponent.UserId)
+		local status = self.Entity.PlayerCharacterData.statusTable
+		
+		local playerCharacterData = self.Entity.PlayerCharacterData
+		if playerCharacterData == nil then
+			return 1
+		end
+		
+		local accStat = _AccessoryLogic:GetStatusTable(self.Entity.PlayerComponent.UserId)
+		
+		if weaponType == "pistol" then 
+			accDamageRate += accStat["1"]
+		elseif weaponType == "wristband" then
+			accDamageRate += accStat["10"]
+		elseif weaponType == "fireStaff" then
+			accDamageRate += accStat["7"]
+		elseif weaponType == "polearm" then
+			accDamageRate += accStat["13"]
+			isMeleeWeapon = true
+		elseif weaponType == "bow" then
+			accDamageRate += accStat["4"]
+		elseif weaponType == "fan" then
+			accDamageRate += accStat["11"]
+		elseif weaponType == "demonSword" then
+			accDamageRate += accStat["15"]
+			isMeleeWeapon = true
+		elseif weaponType == "cannon" then
+			accDamageRate += accStat["2"]
+		elseif weaponType == "breathShooter" then
+			accDamageRate += accStat["5"]
+		elseif weaponType == "lightningWand" then
+			accDamageRate += accStat["8"]
+		elseif weaponType == "soundShooter" then
+			accDamageRate += accStat["3"]
+		elseif weaponType == "chessPiece" then
+			accDamageRate += accStat["9"]
+		elseif weaponType == "hammer" then
+			accDamageRate += accStat["14"]
+			isMeleeWeapon = true
+		elseif weaponType == "birdBow" then
+			accDamageRate += accStat["6"]
+		elseif weaponType == "dagger" then
+			accDamageRate += accStat["12"]
+			isMeleeWeapon = true
+		end
+		
+		if accDamageRate ~= 0 then
+			accDamageRate /= 100
+		end
+		
+		local totalDamage = 1 * (1 + status["totalDamage"])
+		local typeDamage = 1 * (1 + status["physicalDamage"])
+		
+		if not physicalWeapon then 
+			typeDamage = 1 * (1 + status["magicalDamage"])
+		end
+		
+		
+		
+		
+		local damageRate = accDamageRate + totalDamage + typeDamage
+		
+		if isMeleeWeapon == false then 
+			local damage = (damageRate) * 
+				(
+					damageByLevel 
+				)
+			return damage
+		else 
+			
+			local damage = (damageRate) *
+				(
+					damageByLevel
+				)
+		
+			return damage
+		end
+	end
+
+	method number GetWeaponCriticalDamageMultiflyBySlot(integer slot)
+		-- 슬롯별 무기 크리티컬 데미지 배율 반환
+		local itemId = self.serverWeaponId[slot]
+		local weaponSpec = _WeaponSpecLogic:GetWeaponSpec(itemId)
+		
+		return weaponSpec.criticalDamage / weaponSpec.damage
+	end
+
+	method boolean IsEnableUsedPotion(string type)
+		-- 포션 사용 가능 여부 확인 (쿨다운 처리)
+		if self._T.lastUsedQuickSlotTime == nil then
+			self._T.lastUsedQuickSlotTime = {}
+		end
+		if self._T.lastUsedQuickSlotTime[type] == nil then
+			self._T.lastUsedQuickSlotTime[type] = 0
+		end
+		if (_UtilLogic.ServerElapsedSeconds - self._T.lastUsedQuickSlotTime[type]) < 0.99 then
+			return false
+		end
+		
+		self._T.lastUsedQuickSlotTime[type] = _UtilLogic.ServerElapsedSeconds
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapLeave(Entity leftMap)
+		-- 맵 떠날 때 그리드 시스템에서 제거
+		if _UtilLogic:IsNilorEmptyString(self.key) == false then
+			local battleMap = leftMap.MultiBattleMap
+			local ppsn = self.Entity.PlayerComponent.UserId
+			if isvalid(battleMap) then
+				battleMap.usersGridTable[self.key][ppsn] = nil
+				self.key = ""
+			end
+		end
+	end
+
+	method void AddSP(number sp)
+		-- SP 추가 (현재 비어있음)
+		
+	end
+
+	method void SetSP(number sp)
+		-- SP 설정 및 필드 데이터 업데이트
+		__base:SetSP(sp)
+		if self:IsServer() then
+			self.Entity.PlayerInfoComponent.playerInfo.fieldSp = self.sp
+		end
+	end
+
+	method void UseChargeSkill()
+		-- 차지 스킬 사용 및 유효성 검사
+		if self.hp <= 0 then 
+			return 
+		end
+		if self:IsEnableSoulSkill() == false then
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage165"),"neg")
+			return
+		end
+		local battleMap = self.Entity.CurrentMap.MultiBattleMap 
+		local room = battleMap:GetRoomNumber(self:GetPosition())
+		if room < 0 then
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage170"),"neg")
+			return
+		end
+		if room == battleMap.safeAreaRoom then
+			_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage160"),"neg")
+			return
+		end
+		if self.sp < self.maxSp then
+			_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage158"),(self.maxSp - self.sp)*2),"neg")
+			return
+		end
+		
+		self:RequestSoulSkill()
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestSoulSkill()
+		-- 서버에서 소울 스킬 요청 처리
+		if self.sp < self.maxSp then
+			return
+		end
+		self:SetSP(0)
+		self:UseSpecialBuff(self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 맵 진입 시 무기 로드
+		self:LoadWeapon()
+	end
+
+	method boolean IsEnableSuperDash()
+		-- 슈퍼 대시 사용 가능 여부 확인
+		return self:GetBuffValue("Range") > 0
+	end
+
+	method number GetSuperDashSpeed()
+		-- 슈퍼 대시 속도 반환
+		return self:GetBuffValue("Range")
+	end
+
+	method number GetSpeed()
+		-- 버프를 고려한 현재 이동 속도 반환
+		return __base:GetSpeed() * (1 + self:GetBuffValue("Speed"))
+	end
+
+	method boolean IsEnableSoulSkill()
+		-- 소울 스킬 사용 가능 여부 확인 (매칭 무기 체크)
+		local equippedSoul = self.Entity.PlayerCharacterData.charIndex
+		
+		for i, weapon in pairs(self.equipGun) do
+			if _CharacterLogic:CheckMatchExWeapon(weapon.id, tostring(math.floor(equippedSoul))) then		
+				return true
+			end
+		end
+		return false
+	end
+
+	method number CalculateMaxHp(string ppsn)
+		-- 최대 HP 계산 (능력치 + 액세서리 스테이터스 반영)
+		local player = _UserService:GetUserEntityByUserId(ppsn)
+		local playerStatus = player.PlayerCharacterData.statusTable
+		local accessoryStatus = _AccessoryLogic:GetStatusTable(ppsn)
+		
+		local abilityHp = _AbilityLogic:GetAbilityHpStatus(ppsn) 
+		local outgameHp = playerStatus["maxHp"]
+		
+		return (abilityHp + outgameHp) * (1 + accessoryStatus["16"] / 100)
+	end
+
+	method void UnequipGun(number slot)
+		-- 무기 장착 해제 (현재 비어있음)
+		
+	end
+
+	method number GetEnableUseItemCount(string uniqueKey, integer cnt, boolean auto)
+		-- 아이템 사용 가능 개수 계산 및 유효성 검사
+		local itemId = self.Entity.PlayerStorageComponent.storage[uniqueKey].originalId
+		local itemData = _ItemDataLogic:GetItemData(itemId)
+		if itemData == nil then
+			return 0
+		end
+		local storageCnt = self.Entity.PlayerStorageComponent.storage[uniqueKey].count
+		local itemOption = itemData.option
+		local itemCnt = cnt
+		if itemOption.type == "HP" then
+			if self.Entity.StateComponent.CurrentStateName == "DEAD" then
+				return 0
+			end
+			if self.hp == self.maxHp then
+				if auto == false then
+					_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage171"),"pos")
+				end
+				return 0
+			end
+			if self:IsEnableUsedPotion(itemOption.type) == false then
+				return 0
+			end
+			_MultiHUDManager:BlinkPosionIcon(itemOption.type)
+			itemCnt = math.max(1,math.min(cnt,math.ceil((self.maxHp - self.hp) / (self.maxHp*itemOption.value))))
+			if itemCnt > 0 and itemCnt > cnt then
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage159"),itemCnt),"pos")
+			end
+		elseif itemOption.type == "MP" then
+			if self.Entity.StateComponent.CurrentStateName == "DEAD" then
+				return 0
+			end
+			if self.mp == self.maxMp then
+				if auto == false then
+					_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage157"),"pos")
+				end
+				return 0
+			end
+			if self:IsEnableUsedPotion(itemOption.type) == false then
+				return 0
+			end
+			_MultiHUDManager:BlinkPosionIcon(itemOption.type)
+			itemCnt = math.max(1,math.min(cnt,math.ceil((self.maxMp - self.mp) / (self.maxMp*itemOption.value))))
+			if itemCnt > 0 and itemCnt > cnt then
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage159"),itemCnt),"pos")
+			end
+		elseif itemOption.type == "Buff" then
+			if cnt > 1 then
+				_UIOnlyConfirmPopUp:Open(_LocalizeLogic:GetText("confirmPopup13"),"",nil)
+				return 0
+			else
+				if self:GetBuffValue(itemOption.buff) > 0 then
+					_UIPopup:Open("",_LocalizeLogic:GetText("popup12"),function()
+						self.Entity.PlayerStorageComponent:RequestUseItem(uniqueKey,1)
+					end,nil)
+					return 0
+				end
+			end
+		elseif itemOption.type == "Teleport" then
+			local multiBattleMap = self.Entity.CurrentMap.MultiBattleMap
+		
+			local roomNumber = multiBattleMap:GetRoomNumber(self:GetPosition())
+			if roomNumber == multiBattleMap.safeAreaRoom then
+				_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage160"), "neg")
+				return 0
+			end
+			
+		end
+		
+		return itemCnt
+	end
+
+	@ExecSpace("Client")
+	method void OnDeadOnField()
+		-- 필드에서 사망 시 클라이언트 처리 및 리스폰
+		
+		self.Entity:SendEvent(BattlePlayerHPChange(0, self.maxHp))
+		self.Entity.PlayerControllerComponent.Enable = false
+		self.isInvincible = true
+		self.Entity.MovementComponent.Enable = false
+		_MultiHUDManager:PlayDieTween()
+		_InputService:SendEvent(KeyDownEvent(KeyboardKey.Escape))
+		_InputLogic.joystick.canControl = false
+		_InputLogic.joystick:ForceKeyRelease()
+		self.Entity.MovementComponent:Stop()
+		
+		_TimerService:SetTimerOnce(function() 
+			self.Entity.MovementComponent:Stop()
+			self.Entity:SendEvent(BattlePlayerHPChange(self.maxHp * 0.05, self.maxHp))
+			_InputLogic.joystick:ForceKeyRelease()
+			self.Entity.PlayerControllerComponent.Enable = true
+			self.Entity.PlayerComponent:Respawn()
+			self.Entity.MovementComponent.Enable = true
+			self.isInvincible = true
+			self.Entity.PlayerFieldMapComponent:RespawnCurrentMap()
+			_ResourceService:UnloadUnusedResources(0)
+			_InputLogic.joystick.canControl = true
+		end,5)
+		
+	end
+
+	method void Dash()
+		-- 대시 스킬 사용 및 이동 처리
+		if self.hp <= 0 then 
+			return 
+		end
+		if self.stamina < self.needDashStamina then
+			return
+		end
+		
+		if self.Entity.KinematicbodyComponent.MoveVelocity:Magnitude() == 0 then
+			return
+		end
+		
+		
+		if not self.Entity.PlayerControllerComponent.Enable then return end
+		
+		self._T.lastDashTime = _UtilLogic.ElapsedSeconds
+		
+		local option = { ["FlipX"] = true, ["PlayRate"] = 2 }
+		local moveDelta = self.Entity.KinematicbodyComponent.MoveVelocity:Normalize() * 3 * 1.5
+		self.Entity.ExtendKinematicbodyComponent:SetVelocityRatio(3 * 1.5)
+		local duration =  0.06
+		
+		if self:IsEnableSuperDash() then
+			moveDelta = moveDelta * self:GetSuperDashSpeed()
+			self.Entity.ExtendKinematicbodyComponent:SetVelocityRatio(3 * 1.5 * 2)
+		end
+		local lookDirection = self.Entity.PlayerControllerComponent.LookDirectionX
+		
+		if lookDirection < 0 then
+			option.FlipX = false
+		else
+			option.FlipX = true
+		end
+		
+		if moveDelta.x < 0 then
+			option.FlipX = false
+		end
+		
+		_EffectService:PlayEffectAttached("d78c0195e5b9452fbc01aef903ff590a",self.Entity,Vector3.zero,0,Vector3.one, false, option)
+		self:ApplyInvincible(0.3)
+		self.isDashingNow = true
+		self.stamina = self.stamina - self.needDashStamina
+		
+		self.Entity.PlayerControllerComponent.Enable = false
+		self.Entity.KinematicbodyComponent.MoveVelocity = moveDelta
+		
+		_TimerLogic:SetTimerOnce(function()
+			
+				self.Entity.KinematicbodyComponent.MoveVelocity = Vector2.zero
+			
+				local isOpenPoup = _UIGroupManager:IsOpenPlayerControlBlockPopup()
+				if isOpenPoup then
+					self.Entity.PlayerControllerComponent.Enable = false		
+				else
+					self.Entity.PlayerControllerComponent.Enable = true
+				end
+			
+				
+			
+		end, 0.2, "BattlePlayer.Dash_knockback")
+		
+		_TimerLogic:SetTimerOnce(function()
+				self.isDashingNow = false 
+				self.Entity.ExtendKinematicbodyComponent:SetVelocityRatio(1)
+				local animEvent = BodyActionStateChangeEvent()
+				animEvent.needResetAction = true
+				if self.Entity.ExtendKinematicbodyComponent.MoveVelocity:Magnitude() == 0 then
+					animEvent.ActionState = MapleAvatarBodyActionState.Stand
+				else
+					animEvent.ActionState = MapleAvatarBodyActionState.Walk
+				end
+				self.Entity:SendEvent(animEvent)
+		end, 0.3, "BattlePlayer.Dash_actionInit")
+		
+		local animEvent = BodyActionStateChangeEvent()
+		animEvent.needResetAction = true
+		animEvent.ActionState = MapleAvatarBodyActionState.Fly
+		self.Entity:SendEvent(animEvent)
+		self.usedDashCount += 1
+		
+		
+		
+		_TimerLogic:SetTimerOnce(function()
+				_EffectService:PlayEffectAttached("e95dc8def28745c8b8d436ccbfb4c949",self.Entity,Vector3.zero,0,Vector3.one * 1.5)
+			end, duration, "BattlePlayer.Dash_PlayerEffect")
+		
+		if _BuffLogic.appliedBuff.trickery then
+			self:UntargetedDash()
+			_TimerLogic:SetTimerOnce(function()
+					self:SetTargetAfterDash()
+				end, 2, "BattlePlayer.Dash_trickeryReset")
+		end
+		
+		
+		self.Entity:SendEvent(UseDashEvent())
+	end
+
+	@ExecSpace("Server")
+	method void RefreshHp()
+		-- 서버에서 HP 새로고침 및 비율 유지
+		local userId = self.Entity.PlayerComponent.UserId
+		local playerStatus = self.Entity.PlayerCharacterData.statusTable
+		local accessoryStatus = _AccessoryLogic:GetStatusTable(userId)
+		
+		local abilityHp = _AbilityLogic:GetAbilityHpStatus(userId) 
+		local outgameHp = playerStatus["maxHp"]
+		self.hp = math.min(self.maxHp, self.hp)
+		
+		if self.hp < 0 then
+			self:SetFieldHP(0)
+		else
+			local ratio = self.hp / self.maxHp
+			 
+			self.maxHp = (abilityHp + outgameHp) * (1 + accessoryStatus["16"] / 100)
+			self:SetFieldHP(self.maxHp * ratio)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleChangePlayerAbilityData(ChangePlayerAbilityData event)
+		-- 플레이어 능력치 변경 이벤트 처리 시 MP 및 HP 업데이트
+		local ability = event.ability
+		local ppsn = event.userId
+		self.maxMp = _AbilityLogic:GetAbilityManaStatus(ppsn)
+		self.mp = math.min(self.maxMp, self.mp)
+		self:RefreshHp()
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleCalculateStatusEvent(CalculateStatusEvent event)
+		-- 스테이터스 계산 이벤트 처리 시 HP 새로고침
+		local ppsn = event.ppsn
+		self:RefreshHp()
+	end
+
+end

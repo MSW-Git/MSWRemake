@@ -1,0 +1,124 @@
+@Component
+script PacketDelayCheckComponent extends Component
+
+	@TargetUserSync
+	property number lastReceievedClientPacketTime = 0
+
+	property number ResponseLimitTime = 5000
+
+	property number SendPacketDelay = 0.5
+
+	property any CheckClientDelayTimer = nil
+
+	@TargetUserSync
+	property boolean IsClientPackeDelayed_Server = false
+
+	property boolean IsSynced = false
+
+	property boolean IsLogged = false
+
+	@TargetUserSync
+	property boolean IsClientPaused = false
+
+	property any CheckClientDelayTimer_ForServer = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 맵 진입 시 패킷 지연 체크를 위한 타이머 설정 및 초기화
+		self.lastReceievedClientPacketTime = DateTime.UtcNow.Elapsed
+		
+		if self.CheckClientDelayTimer ~= nil then
+			_TimerService:ClearTimer(self.CheckClientDelayTimer)
+			self.CheckClientDelayTimer = nil
+		end
+		
+		self.CheckClientDelayTimer = _TimerService:SetTimerRepeat(
+			function() 
+				self:PacketTimeCheck_Client()
+			end, self.SendPacketDelay, 20)
+		
+		
+		if self.CheckClientDelayTimer_ForServer ~= nil then
+			_TimerService:ClearTimer(self.CheckClientDelayTimer_ForServer)
+			self.CheckClientDelayTimer_ForServer = nil
+		end
+		
+		self.CheckClientDelayTimer_ForServer = _TimerService:SetTimerRepeat(
+		    function() 
+		        self:PacketTimeCheck_Server()
+			end, self.SendPacketDelay, 20)
+	end
+
+	@ExecSpace("Client")
+	method void PacketTimeCheck_Client()
+		-- 클라이언트에서 패킷 시간을 체크하고 서버로 응답 전송
+		if self.Entity.PlayerComponent.UserId ~= _UserService.LocalPlayer.PlayerComponent.UserId then
+			return
+		end
+		
+		self:UpdateReceivedClientPacketTime()
+	end
+
+	@ExecSpace("Server")
+	method void PacketTimeCheck_Server()
+		-- 서버에서 클라이언트 패킷 지연 시간을 체크하고 일시정지 상태 판단
+		local delay = DateTime.UtcNow.Elapsed - self.lastReceievedClientPacketTime
+		if delay > self.ResponseLimitTime then
+			self.IsClientPaused = true
+		else
+			self.IsClientPaused = false
+		end 
+	end
+
+	method void CheckClientDelayed()
+		-- 클라이언트 지연 상태를 체크하고 서버-클라이언트 간 동기화 상태 관리
+		if self.CheckClientDelayTimer == nil then
+			return
+		end
+		
+		local utcTime = DateTime.UtcNow.Elapsed
+		if self.lastReceievedClientPacketTime + self.ResponseLimitTime < utcTime then
+			if self:IsServer() then
+				self.IsClientPackeDelayed_Server = true
+				self.IsSynced = false
+			end
+			
+			if self:IsClient() then
+				self.IsClientPackeDelayed_Server = false
+				if self.IsClientPackeDelayed_Server == false and self.IsSynced == true then
+					self:PacketDelayCheckLogging()
+				end
+			end
+		else
+			if self:IsServer() then
+				self.IsClientPackeDelayed_Server = false
+				self.IsSynced = true
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PacketDelayCheckLogging()
+		-- 패킷 지연 발생 시 로그를 기록하고 시간 흐름 상태를 체크
+		if self.IsLogged then
+			return
+		end
+		
+		self.IsLogged = true
+		
+		local playerUserId = self.Entity.PlayerComponent.UserId
+		_PurchaseLogLogic:CheckCanTimeFlowsLog(playerUserId, self.Entity.TimeManager.canTimeFlows, self.lastReceievedClientPacketTime, self.ResponseLimitTime, DateTime.UtcNow.Elapsed)
+	end
+
+	method boolean CheckClientPaused()
+		-- 클라이언트의 일시정지 상태를 반환
+		return self.IsClientPaused
+	end
+
+	@ExecSpace("Server")
+	method void UpdateReceivedClientPacketTime()
+		-- 클라이언트로부터 패킷을 받은 시간을 업데이트
+		self.lastReceievedClientPacketTime = DateTime.UtcNow.Elapsed
+	end
+
+end

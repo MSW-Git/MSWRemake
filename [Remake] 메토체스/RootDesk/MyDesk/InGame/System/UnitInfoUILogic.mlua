@@ -1,0 +1,277 @@
+@Logic
+script UnitInfoUILogic extends Logic
+
+	property number synergyPageNum = 1
+
+	property Entity syListUI = "fa007c33-8e36-4762-a860-529803e310d4"
+
+	@ExecSpace("ClientOnly")
+	method void SetBar(Entity unit)
+		-- 유닛의 HP, MP, 보호막 바를 UI에 업데이트하는 함수
+		local unitStatus = unit.UnitStatus
+		local statInfoUI = unit:GetChildByName("StatInfo")
+		
+		if isvalid(statInfoUI) then
+			local hpBar = statInfoUI:GetChildByName("HPBar")
+			local mpBar = statInfoUI:GetChildByName("MPBar")
+			local shieldBar = statInfoUI:GetChildByName("ShieldBar")
+		
+			if unitStatus.HP + unitStatus.Shield > unitStatus.MaxHP then
+				shieldBar.SpriteGUIRendererComponent.FillAmount = 1
+				hpBar.SpriteGUIRendererComponent.FillAmount = unitStatus.HP / (unitStatus.MaxHP + unitStatus.Shield)
+			else
+				shieldBar.SpriteGUIRendererComponent.FillAmount = (unitStatus.HP + unitStatus.Shield) / unitStatus.MaxHP
+				hpBar.SpriteGUIRendererComponent.FillAmount = unitStatus.HP / unitStatus.MaxHP
+			end
+		
+			mpBar.SpriteGUIRendererComponent.FillAmount = unitStatus.MP / unitStatus.MaxMP
+			
+			
+			local hpBarShrink = statInfoUI:GetChildByName("HPBar_dir")
+			hpBarShrink.UI_HPShrinkBar.ShrinkTime = 1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetBarcode(Entity unit)
+		-- 유닛의 HP와 MP 바 위에 눈금 가이드를 표시하는 함수
+		local unitStatus = unit.UnitStatus
+		local statInfoUI = unit:GetChildByName("StatInfo")
+		
+		if isvalid(statInfoUI) then
+			local hpBarcode = statInfoUI:GetChildByName("HPBar_Guide")
+			local mpBarcode = statInfoUI:GetChildByName("MPBar_Guide")
+		
+			-- HP Barcode
+			local HPMax = unitStatus.MaxHP
+			if (unitStatus.HP <= unitStatus.MaxHP) and (unitStatus.Shield + unitStatus.HP > HPMax) then
+				HPMax = unitStatus.Shield + unitStatus.HP
+			end
+			
+			local hpBarSizeX = 153.75
+			local barcodeSize = 1.875
+			local barcodeMaxCount = math.floor(hpBarSizeX / barcodeSize)
+			
+			local barCount = math.floor(HPMax / 300)
+			if barCount > barcodeMaxCount then
+				barCount = barcodeMaxCount
+			end
+			
+			
+			local originPos = hpBarcode.UITransformComponent.WorldPosition.x
+			for i=1, barCount do
+				-- Entity
+				local lineEntity = hpBarcode:GetChildByName(string.format("Line_%d", i))
+				if isvalid(lineEntity) == false then
+					lineEntity = hpBarcode:GetChildByName("Line_1"):Clone(string.format("Line_%d", i))
+				end
+				
+				lineEntity.Enable = true
+				
+				-- Set Position
+				local pxPos = hpBarSizeX * (300*i) / HPMax
+				local worldPos = pxPos * 0.0045
+				lineEntity.UITransformComponent.WorldPosition.x = originPos + worldPos
+			end
+		
+			for i=barCount+1, #hpBarcode.Children do
+				local lineEntity = hpBarcode:GetChildByName(string.format("Line_%d", i))
+				
+				if isvalid(lineEntity) == false then
+					break
+				else
+					lineEntity.Enable = false
+				end
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetItemList(Entity unit)
+		-- 유닛 체력바의 '장착 아이템 목록'을 갱신하는 함수입니다.
+		----------------------------------------------------------
+		local unitInfo = unit.UnitInfo
+		local unitStatus = unit.UnitStatus
+		local statInfoUI = unit:GetChildByName("StatInfo")
+		
+		if isvalid(statInfoUI) then
+			local itemDataSet = _DataService:GetTable("ItemStatus")
+			local itemBackgroundDataSet = _DataService:GetTable("ItemUI_Background")
+			local itemListUI = statInfoUI:GetChildByName("ItemList")
+			local itemCount = #unitStatus.EquippedItemIDList
+			
+			if itemCount > 3 then
+				log_warning("itemCount에 문제가 있습니다!:", itemCount)
+				itemCount = 3
+			end
+			
+			for i=1, itemCount do
+				local ui_itemSlot = itemListUI:GetChildByName(string.format("Item_%d", i))
+				local ui_background = ui_itemSlot:GetChildByName("Background")
+				local ui_icon = ui_itemSlot:GetChildByName("Icon")
+				
+				local itemID = _UtilLogic:Split(unitStatus.EquippedItemIDList[i], "_")[1]
+				
+				local itemInfoRow = itemDataSet:FindRow("ItemID", itemID)
+				local iconRUID = itemInfoRow:GetItem("RUID")
+				local itemType = itemInfoRow:GetItem("Type")
+				
+				ui_background.SpriteGUIRendererComponent.ImageRUID = itemBackgroundDataSet:FindRow("Type", itemType):GetItem("RUID")
+				ui_icon.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				ui_itemSlot.Enable = true
+			end
+			
+			for i=itemCount+1, 3 do
+				local ui_itemSlot = itemListUI:GetChildByName(string.format("Item_%d", i))
+				local ui_icon = ui_itemSlot:GetChildByName("Icon")
+				
+				ui_itemSlot.Enable = false
+			end
+			
+			if itemCount == 0 then
+				itemListUI.Enable = false
+			else
+				itemListUI.Enable = true
+			end
+			
+			unit.UnitInfo:SetTransformScale(1)
+		else
+			log("error : statInfoUI not isvalid")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshSynergy(SyncTable<string, number> syTable)
+		-- 시너지 정보를 UI에 업데이트하고 페이지를 관리하는 함수
+		local synergyDB = _DataService:GetTable("SynergyInfo")
+		local colorDB = _DataService:GetTable("GradeColor")
+		
+		local checkTable = {}
+		
+		for syID, count in pairs(syTable) do
+			local syRow = synergyDB:FindRow("SynergyID", syID)
+		
+			-- 우선 순위 체크
+			-- 1. 시너지 완성 단계
+			-- 2. 시너지 내 유닛 개수
+			local priority = count
+			
+			local checkStep = 0
+			for i = 1, 5 do
+				local needCount = syRow:GetItem("NeedCount_step" .. math.floor(i))
+				if needCount ~= "" then
+					if tonumber(needCount) <= count then
+						checkStep = i
+					else
+						break
+					end
+				end 
+			end
+			
+			priority += checkStep * 100
+			
+			table.insert(checkTable, {syID, priority})
+		end
+		
+		-- 테이블 정렬
+		table.sort(checkTable, function(a,b) return a[2] > b[2] end)
+		
+		
+		-- UI 갱신
+		if self.synergyPageNum > (math.floor(#checkTable/7 - 0.1) + 1) then
+			self.synergyPageNum = math.floor(#checkTable/7 - 0.1) + 1
+		end
+		
+		if self.synergyPageNum == 0 then
+			self.synergyPageNum = 1
+		end 
+		
+		local slotNum = 1
+		local syNum = 0
+		for _, checkSy in pairs(checkTable) do
+			syNum += 1
+			if (self.synergyPageNum * 7) >= syNum and syNum > ((self.synergyPageNum-1) * 7) then
+				local syID = checkSy[1]
+				local syRow = synergyDB:FindRow("SynergyID", syID)
+				local syStep = math.floor(checkSy[2] / 100)
+				local syAmount = checkSy[2]%100
+			
+				local slot = self.syListUI:GetChildByName("Slot_" .. math.floor(slotNum))
+				if not isvalid(slot) then
+					slot = self.syListUI:GetChildByName("Slot"):Clone("Slot_" .. math.floor(slotNum))
+				end
+				
+				local iconBG = slot:GetChildByName("Icon_Back")
+				local iconImg = iconBG:GetChildByName("Icon")
+				local amountTxt = slot:GetChildByName("Amount")
+				local nameTxt = slot:GetChildByName("Name")
+				local levelTxt = slot:GetChildByName("Level") 
+				
+				local stepColor = {"#5f5f5f", "#785300", "#d5d5d5", "#eeb167", "#ffd348", "#e5a6ea"}
+				iconBG.SpriteGUIRendererComponent.Color = Color.FromHexCode(stepColor[syStep+1])
+				
+				iconImg.SpriteGUIRendererComponent.ImageRUID = syRow:GetItem("IconRUID")
+				
+				amountTxt.TextComponent.Text = tostring(math.floor(syAmount))
+				
+				nameTxt.TextComponent.Text = syRow:GetItem("Name")
+				
+				local lvTxt = ""
+				for i = 1, 5 do
+					local addAmount = ""
+					local needAmount = syRow:GetItem("NeedCount_step" .. math.floor(i))
+					if i == syStep then
+						if lvTxt == "" then
+							addAmount = "<color=white>" .. needAmount .. "</color>"
+						else
+							addAmount = " > " .. "<color=white>" .. needAmount .. "</color>"
+						end
+					elseif i ~= 3 then
+						if needAmount ~= "" then
+							if lvTxt == "" then
+								addAmount = needAmount
+							else
+								addAmount = " > " .. needAmount
+							end
+						end
+					end
+					lvTxt = lvTxt .. addAmount
+				end
+				
+				levelTxt.TextComponent.Text = lvTxt
+				
+				slotNum += 1
+				slot:SetEnable(true)
+				slot.UI_HUD_HoverSynergy.ConnectedSynergyID = syID
+			end
+			
+			if slotNum > 7 then
+				break
+			end
+		end
+		
+		-- 안쓰는 슬롯 안보이게 하기
+		-- log("Enable False Num : " .. slotNum)
+		for i = slotNum, 7 do
+			local slot = self.syListUI:GetChildByName("Slot_" .. math.floor(i))
+			if isvalid(slot) then
+				slot:SetEnable(false)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetLevelMaterial(Entity unit)
+		-- 유닛의 레벨과 등급에 따른 재료 정보를 UI에 표시하는 함수
+		local statInfoUI = unit:GetChildByName("StatInfo")
+		local materialID = {
+			"material://9be0aad8-086c-4194-8a06-446aea41c585",
+			"material://ab5e26aa-9511-4108-9756-f66777262db9",
+			"material://bb6e31a7-6d3b-4a7b-95f6-ac0e800673da",
+		}
+		
+		statInfoUI:GetChildByName("GradeBackground").SpriteGUIRendererComponent:ChangeMaterial(materialID[unit.UnitInfo.level])
+	end
+
+end

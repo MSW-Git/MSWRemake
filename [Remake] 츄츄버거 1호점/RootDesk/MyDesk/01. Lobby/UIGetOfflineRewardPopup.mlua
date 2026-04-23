@@ -1,0 +1,193 @@
+@Component
+script UIGetOfflineRewardPopup extends Component
+
+	property Entity ClearedStageList = nil
+
+	property SpriteGUIRendererComponent MoneySprite = nil
+
+	property Entity EmployeeSprite1 = nil
+
+	property Entity EmployeeSprite2 = nil
+
+	property SliderComponent TimeSlider = nil
+
+	property TextComponent RewardTimeText = nil
+
+	property TextComponent TimeLimitValueText = nil
+
+	property TextComponent RewardMoneyText = nil
+
+	property TextComponent BonusText = nil
+
+	property Entity ClearedStageSlotOrigin = nil
+
+	property Entity GetRewardButton = nil
+
+	property TextComponent CommentText = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 팝업을 비활성화하는 함수
+		self.Entity.Enable = false
+	end
+
+	method void Init()
+		-- UI 컴포넌트들을 초기화하는 함수
+		local area = self.Entity:GetChildByName("Area")
+		self.ClearedStageList = area:GetChildByName("ClearedStageList")
+		self.ClearedStageSlotOrigin = self.ClearedStageList:GetChildByName("ClearedStageSlot")
+		self.ClearedStageSlotOrigin.Enable = false
+		
+		self.MoneySprite = area:GetChildByName("MoneySprite").SpriteGUIRendererComponent
+		self.EmployeeSprite1 = area:GetChildByName("EmployeeSprite1")
+		self.EmployeeSprite2 = area:GetChildByName("EmployeeSprite2")
+		self.CommentText = area:GetChildByName("CommentText").TextComponent
+		self.RewardMoneyText = area:GetChildByName("RewardMoney"):GetChildByName("RewardMoneyText").TextComponent
+		self.BonusText = area:GetChildByName("BonusTitle"):GetChildByName("BonusText").TextComponent
+		
+		self.TimeSlider = self.Entity:GetChildByName("TimeSlider").SliderComponent
+		self.RewardTimeText = self.TimeSlider.Entity:GetChildByName("RewardTimeText").TextComponent
+		
+		self.TimeLimitValueText = self.Entity:GetChildByName("TimeLimit"):GetChildByName("TimeLimitValueText").TextComponent
+		
+		self.GetRewardButton = self.Entity:GetChildByName("GetRewardButton")
+		self.GetRewardButton:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Coin"], 1)
+			_UserService.LocalPlayer.PlayerSettlement:RequestGetOfflineReward()
+			_OfflineRewardLogic:PlayAnimOnClickGetRewardButton(self.GetRewardButton.UITransformComponent.WorldPosition, self._T.rewardAmount)
+			self:Close()
+		end)
+	end
+
+	method void Open(integer rewardTimeSec, integer rewardAmount, table clearedStageList, integer maxRewardTime)
+		-- 오프라인 보상 팝업을 여는 함수
+		if rewardAmount == 0 then
+			self:Close()
+			return
+		end
+		
+		self.Entity.Enable = true
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)
+		
+		self._T.rewardAmount = rewardAmount
+		
+		self:Refresh(rewardTimeSec, rewardAmount, clearedStageList, maxRewardTime)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh(integer rewardTimeSec, integer rewardAmount, table clearedStageList, integer maxRewardTime)
+		-- UI를 새로고침하는 함수
+		if self.ClearedStageList == nil then
+			self:Init()
+		end
+		
+		if #_UserService.LocalPlayer.EmployeeManager.EmployeeDetailTable < 2 then
+			_TimerService:SetTimerOnce(function()
+				self:Refresh(rewardTimeSec, rewardAmount, clearedStageList, maxRewardTime)
+			end, 0.2)
+			return
+		end
+		
+		self.MoneySprite.ImageRUID = _OfflineRewardLogic:GetMoneyRUIDByRewardAmount(rewardAmount)
+		
+		local empIndexTable = self:GetRandomEmployeeTable()
+		for i, index in pairs(empIndexTable) do
+		    ---@type EmployeeDetailData
+		    local empDetail = _UserService.LocalPlayer.EmployeeManager.EmployeeDetailTable[index]
+		    
+		    local animTypes = {"Stand", "Move", "Chat", "Love"}
+		    local animType = animTypes[_UtilLogic:RandomIntegerRange(1, #animTypes)]
+		    
+		    if i == 1 then
+		        _TrialLogic:PlayUIEmployeeAnim(self.EmployeeSprite1, empDetail.Id, animType, true, _UserService.LocalPlayer)
+		    elseif i == 2 then
+		        _TrialLogic:PlayUIEmployeeAnim(self.EmployeeSprite2, empDetail.Id, animType, true, _UserService.LocalPlayer)
+		    end
+		end
+		
+		self.CommentText.Text = _GetLocalizationTextLogic:GetText("OfflineRewardChuchuText".._UtilLogic:RandomIntegerRange(1, 3))
+		
+		self.TimeSlider.Value = rewardTimeSec / maxRewardTime
+		self.RewardTimeText.Text = DateTime(rewardTimeSec*1000):ToFormattedString("HH:mm:ss")
+		
+		local maxRewardTimeDefault = _GetConfigDataLogic:GetConfigNumDataByKey("OfflineRewardMaxTimeDefault")
+		
+		local timeLimitText = DateTime(maxRewardTime*1000):ToFormattedString("HH:mm:ss")
+		local extraRewardTime = maxRewardTime - maxRewardTimeDefault
+		if extraRewardTime > 0 then
+			timeLimitText = string.format("%s <color=%s>(+%s)</color>", timeLimitText, "#488D04", DateTime(extraRewardTime*1000):ToFormattedString("HH:mm:ss"))
+		end
+		self.TimeLimitValueText.Text = timeLimitText
+		
+		self.ClearedStageList.Enable = #clearedStageList > 0
+		self.BonusText.Entity.Enable = #clearedStageList > 0
+		for i, child in pairs(self.ClearedStageList.Children) do
+			child.Enable = false
+		end
+		
+		if #clearedStageList > 0 then
+			local bonusPercent = 0
+			
+			for i, stageId in pairs(clearedStageList) do
+				local stageData = _StageDataSetLogic:GetStageData(stageId)
+				local stageConfigData = _BalanceDataSetLogic:GetStageConfigData(stageId)
+				if stageData == nil then
+					continue
+				end
+				
+				local slot = _UIEntityService:GetOrCreateClonedEntityByName(self.ClearedStageList, self.ClearedStageSlotOrigin.Name..i, self.ClearedStageSlotOrigin)
+				slot:GetChildByName("StageIconSprite").SpriteGUIRendererComponent.ImageRUID = stageData.BadgeIconRUID
+				
+				bonusPercent += stageConfigData.OfflineRewardBonusPercent
+			end
+			
+			local percentInt = math.tointeger(bonusPercent * 100 + 0.01)
+			
+			self.BonusText.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("OfflineRewardStageBonusText", percentInt)
+		end
+		
+		self.RewardMoneyText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(rewardAmount)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 팝업을 닫는 함수
+		_LobbyHUDService:OpenStartDayToast()
+		
+		self.Entity.Enable = false
+		_UserService.LocalPlayer.TimeManager:RequestTimeFlowClient()
+		
+		self.Entity:Destroy()
+	end
+
+	method table GetRandomEmployeeTable()
+		-- 랜덤 직원 테이블을 가져오는 함수
+		local player = _UserService.LocalPlayer
+		local count = 2
+		local indexTable = {}
+		
+		while (#indexTable < count) do
+			local index = _UtilLogic:RandomIntegerRange(1, #player.EmployeeManager.EmployeeDetailTable)	
+			
+			local isContained = false
+			for _, idx in pairs(indexTable) do
+				if index == idx then
+					isContained = true
+					break
+				end
+			end
+			
+			if isContained == false then
+				table.insert(indexTable, index)
+			end	
+		end
+		
+		return indexTable
+		
+	end
+
+end

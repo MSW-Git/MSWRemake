@@ -1,0 +1,117 @@
+@Component
+script S10036_RollingDollion_projectileInfo extends Component
+
+	property string TeamType = ""
+
+	property SyncTable<Entity, boolean> AttackedEnemy
+
+	property number projectile_speed = 1
+
+	property Vector2 moveVec = Vector2(0,0)
+
+	property number zRotation = 0
+
+	property number firstDistanceX = 0
+
+	property number destroyTime = 0
+
+	property SyncTable<Entity> TargetTiles
+
+	property Vector2 setPos = Vector2(0,0)
+
+	property table Enemies = {}
+
+	property number targetY = 0
+
+	property number SetDamage = 0
+
+	@ExecSpace("Server")
+	method void SetProjectile(Entity onwerTile, Entity targetTile, number speed, number scale, number vecY, number targetY, number setDmg, string teamType)
+		local shotCompo = self.Entity.SkillShotCheckComponent
+		
+		self.Entity:SetEnable(true)
+		shotCompo.Shots = true
+		
+		self.TeamType = teamType
+		self.projectile_speed = speed * _BTLogic_New.SSpeedValue
+		self.Entity.TransformComponent.Scale = Vector3.one * scale
+		self.setPos = onwerTile.TransformComponent.WorldPosition:ToVector2() + Vector2(0, vecY)
+		local targetVec = targetTile.TransformComponent.WorldPosition:ToVector2() + Vector2(0, targetY)
+		self.targetY = targetY
+		self.SetDamage = setDmg
+		
+		self.moveVec = Vector2.Normalize(targetVec - self.setPos)
+		
+		if self.moveVec.x >= 0 then
+			if self.moveVec.y >= 0 then
+				self.zRotation = Vector2.Angle(Vector2(1,0), self.moveVec)
+			else
+				self.zRotation = - Vector2.Angle(Vector2(1,0), self.moveVec)
+			end
+		else
+			if self.moveVec.y >= 0 then
+				self.zRotation = Vector2.Angle(Vector2(1,0), self.moveVec)
+			else
+				self.zRotation = - Vector2.Angle(Vector2(1,0), self.moveVec)
+			end
+		end
+		
+		local user = _UserService:GetUserEntityByUserId(shotCompo.ProjOwnerID)
+		if self.TeamType == "Enemy" then
+			self.Enemies = user.TeamManager.OwnUnits
+		elseif self.TeamType == "User" then
+			self.Enemies = user.TeamManager.EnemyUnits
+		end
+		
+		self.Entity.SpriteRendererComponent.FlipX = true
+		
+		local interval = 0.01
+		local destroy = false
+		local function ShotsFnc()
+			self.destroyTime += interval
+			if self.destroyTime >= 5 then
+				_TimerService:ClearTimer(shotCompo.ShotTimer)
+				self:Destroy()
+				return
+			end
+			
+			local checkEnemy = _BTLogic_New:getEntities(self.Enemies, "AttackAble")
+			for _, enemy in pairs(checkEnemy) do
+				local selfVec2 = self.setPos
+				local enemyVec2 = enemy.UnitStatus.SetPos + Vector2(0, self.targetY)
+				
+				local dis = Vector2.Distance(enemyVec2, selfVec2)
+				
+				if dis <= 0.5 and not isvalid(self.AttackedEnemy[enemy]) then
+					log("데미지 줘~~~~")
+					self.AttackedEnemy[enemy] = true
+					_StatusChangeLogic:HitDamage(nil, enemy, 0, 0, self.SetDamage, "synergy")
+					_EffectService:PlayEffectAttached("f80b952186d84a68b763126b5c83d64b", enemy, Vector3(0,0.3,0), 0, Vector3.one, false)
+				end
+			end
+			
+			local posX = self.setPos.x + (self.moveVec.x * self.projectile_speed * interval * 20)
+			local posY = self.setPos.y + (self.moveVec.y * self.projectile_speed * interval * 20)
+			self.setPos = Vector2(posX, posY)
+			self:SetPosition(posX, posY, self.zRotation, shotCompo.ProjOwnerID)
+		end
+		
+		shotCompo.ShotTimer = _TimerService:SetTimerRepeat(ShotsFnc, interval, 0)
+	end
+
+	@ExecSpace("Server")
+	method void Destroy()
+		self.destroyTime = 0
+		self:SetPosition(999, 999, 0)
+		self.Entity.SkillShotCheckComponent.Shots = false
+		self.Entity:SetEnable(false)
+		self.Entity:RemoveComponent(S10036_RollingDollion_projectileInfo)
+	end
+
+	@ExecSpace("Client")
+	method void SetPosition(number x, number y, number zR)
+		self.Entity.TransformComponent.WorldPosition = Vector3(x,y,0)
+		self.Entity.TransformComponent.WorldZRotation = zR
+	end
+
+end

@@ -1,0 +1,399 @@
+@Component
+script UIEventRankingAnnounce extends Component
+
+	property Entity Title = nil
+
+	property Entity RecordText = nil
+
+	property Entity RecordScoreText = nil
+
+	property Entity RankingList = nil
+
+	property Entity MyRankText = nil
+
+	property integer phase = 0
+
+	property integer phaseTimer = 0
+
+	property table slotIndexTable = {}
+
+	property number renderDuration = 5
+
+	property Entity BestRecord = nil
+
+	property Entity EffRoulette = nil
+
+	property Vector2 RectSize = Vector2(579,114)
+
+	property Entity WinEffect = nil
+
+	property SoundComponent CountingSFX = nil
+
+	property Entity SkipButton = nil
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- 랭킹 발표 이벤트 UI 요소들을 초기화하는 함수
+		self.Title = self.Entity:GetChildByName("Title")
+		self.Title.TextComponent.Text = _GetLocalizationTextLogic:GetText("RankingEventTitleText")
+		
+		self.RankingList = self.Entity:GetChildByName("RankingList")
+		
+		local myRankTextHolder = self.Entity:GetChildByName("MyRankTextHolder")
+		myRankTextHolder:GetChildByName("TitleText").TextComponent.Text = _GetLocalizationTextLogic:GetText("RankingEventMyRankText")
+		self.MyRankText = myRankTextHolder:GetChildByName("RankText")
+		self.BestRecord = myRankTextHolder:GetChildByName("BestRecord")
+		
+		local recordTextHolder = self.Entity:GetChildByName("RecordTextHolder")
+		recordTextHolder:GetChildByName("TitleText").TextComponent.Text = _GetLocalizationTextLogic:GetText("RankingEventRecordText")
+		self.RecordText = recordTextHolder:GetChildByName("RankText")
+		self.RecordScoreText = recordTextHolder:GetChildByName("ScoreText")
+		
+		self.WinEffect = self.Entity:GetChildByName("WinEffect")
+		self.CountingSFX = self.Entity:GetChildByName("CountingSFX").SoundComponent
+		
+		self.SkipButton = self.Entity:GetChildByName("SkipBtn")
+		self.SkipButton:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			self:ChangePhase(2)
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartRender()
+		-- 랭킹 발표 렌더링을 시작하고 데이터를 준비하는 함수
+		if self.Title == nil then
+			self:Init()
+		end
+		
+		self._T.nowIndex = 0
+		
+		self:ClearDatas()
+		self:SetInitialInformations()
+		
+		self:SetListEntities()
+		
+		self:ChangePhase(0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndRender()
+		-- 렌더링을 종료하고 다음 단계로 이동을 허용하는 함수
+		_EventManager:SetCanMoveNext(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetInitialInformations()
+		-- 이전 랭킹 기록 정보를 초기 설정하는 함수
+		local playerMg = _UserService.LocalPlayer.PlayerManagement
+		local lastRecordRank = playerMg.LastStoreRanking
+		
+		if lastRecordRank == 0 then
+			self.RecordText.TextComponent.Text = _GetLocalizationTextLogic:GetText("RankingEventNoRecordText")
+			self.RecordScoreText.TextComponent.Text = "-"
+		else
+			local lastRecordRankText = _StringUtilLogic:ReturnThousandsSeparatedString(lastRecordRank)
+			self.RecordText.TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Ranking_Format", lastRecordRankText)
+				
+			local lastData = _UtilLogic:Split(playerMg.LastSurroundings[lastRecordRank], ",")
+			local lastRecordScore = math.floor(tonumber(lastData[2]))
+			self.RecordScoreText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(lastRecordScore)
+		end
+		
+		self.MyRankText.Enable = false
+		self.BestRecord.Enable = false
+		self.WinEffect.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetListEntities()
+		-- 랭킹 리스트 엔티티들을 생성하고 배치하는 함수
+		local playerMg = _UserService.LocalPlayer.PlayerManagement
+		local lastRecordRank = playerMg.LastStoreRanking
+		local lastSR = playerMg.LastSurroundings
+		
+		if lastRecordRank == 0 or lastRecordRank == nil then
+			lastRecordRank = _StoreRankingDataSetLogic.MaxIdx
+		end
+		
+		local height = self.RectSize.y
+		local modelIdx = 0
+		
+		for i = (lastRecordRank-4), (lastRecordRank+4) do
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_StoreRankingSlot", modelIdx, self.RankingList)
+			entity.UITransformComponent.RectSize = Vector2(self.RectSize.x, self.RectSize.y)
+			
+			if i > _StoreRankingDataSetLogic.MaxIdx or i < _StoreRankingDataSetLogic.MinIdx then
+				entity.Enable = false
+			end
+			
+			if lastSR[i] ~= nil then
+				entity.UIStoreRankingSlotRenderer:RefreshInfo(i, i == lastRecordRank, false, true, false, true)
+			else
+				entity.UIStoreRankingSlotRenderer:RefreshInfo(i, i == lastRecordRank, true, true, false, true)
+			end
+			
+			local index = i - lastRecordRank
+			entity.UITransformComponent.Pivot = Vector2(0.5, 0.5)
+			entity.UITransformComponent.AnchorsMax = Vector2(0.5, 0.5)
+			entity.UITransformComponent.AnchorsMin = Vector2(0.5, 0.5)
+			entity.UITransformComponent.AlignmentOption = AlignmentType.Center
+			entity.UITransformComponent.anchoredPosition = Vector2(entity.UITransformComponent.anchoredPosition.x, -height*index)
+			
+			modelIdx = modelIdx + 1
+			
+			table.insert(self.slotIndexTable, {entity, i})
+		end
+		
+		self.RankingList.UITransformComponent.RectSize = Vector2(self.RankingList.UITransformComponent.RectSize.x, height*5)
+		
+		table.sort(self.slotIndexTable, function(a, b)
+			return a[2] < b[2]
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetNoise()
+		-- 랭킹 슬롯에 노이즈 효과를 설정하는 함수
+		for i = 1, #self.slotIndexTable do
+			---@type Entity
+			local entity = self.slotIndexTable[i][1]
+			local index = self.slotIndexTable[i][2]
+			entity.UIStoreRankingSlotRenderer:RefreshInfo(index, false, true, true, false, true)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AnnounceResult()
+		-- 랭킹 결과를 발표하고 현재 순위를 표시하는 함수
+		local playerMg = _UserService.LocalPlayer.PlayerManagement
+		local nowRanking = playerMg.StoreRanking
+		local nowSR = playerMg.Surroundings
+		
+		local idxData = _StoreRankingDataSetLogic:ReturnIndexsByRanking(nowRanking)
+		local startIdx = idxData[1]
+		local endIdx = idxData[2]
+		
+		local height = self.RectSize.y
+		for i = 1, #self.RankingList.Children do
+			local entity = self.RankingList.Children[i]
+			local entityIndex = -5+i
+			local rankIndex = nowRanking + entityIndex
+				
+			if nowSR[rankIndex] ~= nil then
+				entity.UIStoreRankingSlotRenderer:RefreshInfo(rankIndex, rankIndex == nowRanking, false, false, false, true)
+			else
+				entity.UIStoreRankingSlotRenderer:RefreshInfo(rankIndex, rankIndex == nowRanking, true, false, false, true)
+			end
+			
+			entity.UITransformComponent.anchoredPosition = Vector2(entity.UITransformComponent.anchoredPosition.x, -height*entityIndex)
+			
+			if rankIndex > _StoreRankingDataSetLogic.MaxIdx or rankIndex < _StoreRankingDataSetLogic.MinIdx then
+				entity.Enable = false
+			else
+				entity.Enable = true
+			end
+		end
+		
+		local nowRankingText = _StringUtilLogic:ReturnThousandsSeparatedString(nowRanking)
+		self.MyRankText.TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Ranking_Format", nowRankingText)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearDatas()
+		-- 랭킹 데이터와 타이머를 초기화하는 함수
+		table.clear(self.slotIndexTable)
+		for i = 1, #self.RankingList.Children do
+			self.RankingList.Children[i].Enable = false
+		end
+		
+		_TimerService:ClearTimer(self.phaseTimer)
+		self.phaseTimer = 0
+		
+		self.CountingSFX:Stop()
+		self.CountingSFX.Pitch = 1
+		
+		self.SkipButton.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangePhase(integer phase)
+		-- 랭킹 발표 단계를 변경하는 함수
+		self.phase = phase
+		
+		self:PhaseFunction(phase)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PhaseFunction(integer phase)
+		-- 단계별 랭킹 발표 로직을 실행하는 함수
+		_TimerService:ClearTimer(self.phaseTimer)
+		
+		if phase == 9 then
+			return
+		end
+		
+		local playerMg = _UserService.LocalPlayer.PlayerManagement
+		local lastRanking = playerMg.LastStoreRanking
+		if lastRanking == 0 or lastRanking == nil then
+			lastRanking = _StoreRankingDataSetLogic.MaxIdx
+		end
+		
+		local nowRanking = playerMg.StoreRanking
+		
+		if phase == 0 then 
+			
+			self.phaseTimer = _TimerService:SetTimerOnce(function()
+		        self:ChangePhase(1)
+			end, 1)
+			
+			
+			
+				
+		elseif phase == 1 then 
+			
+			local middleIndex = 5
+			local height = self.RectSize.y
+			
+			
+			local rankSub = math.abs(nowRanking - lastRanking)
+			if rankSub <= 0 then
+				self:ChangePhase(2)
+				return
+			end
+			
+			self.SkipButton.Enable = true
+			
+			local originSpeed = 5 * math.floor(rankSub/5)
+			if rankSub < 5 then
+				originSpeed = rankSub
+			end
+			
+			local speedLimit = height*9
+		    if originSpeed > speedLimit then
+		        originSpeed = speedLimit
+		    end
+			
+			local moveRankLimit = 1000 
+			local tempRankSub = rankSub > moveRankLimit and moveRankLimit or rankSub
+			
+			
+			local totalDuration = 5
+			
+			local speedEndValue = 5
+			if originSpeed < speedEndValue then
+				speedEndValue = originSpeed
+			end
+			
+			local time = 0
+			local moveSpeed = originSpeed
+			
+			
+			self.CountingSFX:Play()
+			self.CountingSFX.Enable = true
+			self.phaseTimer = _TimerService:SetTimerRepeat(function()
+		        
+				local tempSlotIndexTable = {}
+				for i = 1, #self.slotIndexTable do
+					---@type Entity
+					local entity = self.slotIndexTable[i][1]
+					local index = self.slotIndexTable[i][2]
+								
+					entity.UITransformComponent:Translate(0, -moveSpeed)
+								
+					if entity.UITransformComponent.anchoredPosition.y < -height*4 then
+						entity.UITransformComponent.anchoredPosition = Vector2(entity.UITransformComponent.anchoredPosition.x, entity.UITransformComponent.anchoredPosition.y + height*9)
+						index = index - 9
+						
+						entity.UIStoreRankingSlotRenderer:RefreshInfo(index, false, true, true, false, true)
+						
+						if index <= _StoreRankingDataSetLogic.MaxIdx and index >= _StoreRankingDataSetLogic.MinIdx then
+							entity.Enable = true
+						else
+							entity.Enable = false
+						end
+						
+						if index < nowRanking-4 then
+							self:ChangePhase(2)
+							return
+						end
+						
+					end
+					table.insert(tempSlotIndexTable, {entity, index})
+				end
+					
+				self.slotIndexTable = tempSlotIndexTable
+				table.sort(self.slotIndexTable, function(a, b)
+					return a[2] < b[2]
+				end)
+				
+				if self.slotIndexTable[middleIndex][2] <= nowRanking-1 then
+					self:ChangePhase(2)
+					return
+				end
+				
+		        local gap = math.abs(nowRanking - self.slotIndexTable[middleIndex][2])
+		        if gap < tempRankSub then
+		            if time <= totalDuration then
+						moveSpeed = _TweenLogic:Ease(originSpeed, speedEndValue, totalDuration, EaseType.SineEaseOut, time)
+		                time = time + 1/_UIEntityService.TimeFrame
+						if time > totalDuration then
+							time = totalDuration
+						end
+						
+						self.CountingSFX.Pitch = 1 - (0.7 * time/totalDuration) 
+		            end
+		        end
+				
+			end, 1/_UIEntityService.TimeFrame)
+			
+			
+			
+			
+		elseif phase == 2 then 
+			
+			self.SkipButton.Enable = false
+			self.CountingSFX:Stop()
+			self.CountingSFX.Enable = false
+			
+		    self:AnnounceResult()
+			_SoundService:PlaySound(_ResourceManager.SFXTable["ShowGachaResult"], 1)
+			
+		    self.phaseTimer = _TimerService:SetTimerOnce(function()
+		        self.MyRankText.Enable = true
+				
+		        if lastRanking > nowRanking then
+		            self.BestRecord.Enable = true
+					self.BestRecord.UITweenAlpha:Play()
+					self.BestRecord.UITweenScale:Play()
+					_EventUIManager.ConfettiSpawner.UIEventConfettiSpawner:StartSpawnConfetties()
+								
+					_SoundService:PlayLoopSound(_ResourceManager.SFXTable["Firework"], 1)
+					_SoundService:PlaySound(_ResourceManager.SFXTable["System_BattleField_Win"], 1)
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Audience"], 1)
+					
+					self.WinEffect.Enable = true
+		        end
+				
+		        self:ChangePhase(3)
+		    end, 1)
+				
+			
+			
+			
+		elseif phase == 3 then
+			
+			_ReportMessageMaker:RequestAddToReportQueue(6009, _UserService.LocalPlayer.PlayerOutgameManager.StoreName, _StringUtilLogic:ReturnThousandsSeparatedString(nowRanking), "")
+			
+			self.phaseTimer = _TimerService:SetTimerOnce(function()
+				self:EndRender()
+			end, 2)
+			
+		end
+	end
+
+end

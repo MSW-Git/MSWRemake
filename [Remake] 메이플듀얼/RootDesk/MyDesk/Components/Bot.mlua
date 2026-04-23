@@ -1,0 +1,211 @@
+@Component
+script Bot extends Component
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property Duel duel = nil
+
+	property CommandManager commandManager = nil
+
+	property ScoreManager scoreManager = nil
+
+	property TaskManager taskManager = nil
+
+	property string name = ""
+
+	property string nickName = ""
+
+	property any behaviorComparer = nil
+
+	property string difficulty = ""
+
+	property integer chatTimer = 0
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 봇 AI 초기화 및 듀얼 시스템의 각종 매니저 연결 설정
+		self.duel = self.Entity.CurrentMap.Map.duel
+		if isvalid(self.duel) then
+			self.commandManager = self.duel.commandManager
+			self.scoreManager = self.duel.scoreManager
+			self.taskManager = self.duel.taskManager
+		end
+		
+		if self:IsServer() then	
+			if self.Entity.CurrentMap.Map.mode == "Practice" then
+				self:Run()
+			end
+		else
+			self.Entity.NameTagComponent.Name = _LocalizationService:GetText(self.nickName)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table SelectBehavior()
+		-- 봇 AI가 현재 상황에서 가능한 모든 행동을 분석하고 점수를 매겨 최적의 행동 선택
+		local player = self.Entity.Character.player
+		
+		local behaviorArray = {}
+		
+		table.insert(behaviorArray, {name = "DeclareEndRound", score = 0})
+		
+		for _, card in ipairs(player.hand.cardArray) do
+			local inputState = card:GetInputState(player.character)
+			if not inputState.isPlayable then
+				continue
+			end
+			
+			if card.category == "Skill" then
+				if card.requiresTarget then
+					for _, target in ipairs(card.targetableArray) do
+						local behavior = {name = "Play", card = card, target = target, score = self.scoreManager:GetScore(card, target, nil)}
+						table.insert(behaviorArray, behavior)
+					end
+				else
+					local behavior = {name = "Play", card = card, score = self.scoreManager:GetScore(card, nil, nil)}
+					table.insert(behaviorArray, behavior)
+				end
+			elseif card.category == "Minion" then
+				for i = 0, #player.field.minionArray do
+					local pivot = player.field.minionArray[i]
+					local behavior = {name = "Play", card = card, pivot = pivot, score = self.scoreManager:GetScore(card, nil, pivot)}
+					table.insert(behaviorArray, behavior)
+				end
+			end
+		end
+		
+		_Table:Shuffle(behaviorArray)
+		table.sort(behaviorArray, self.behaviorComparer)
+		
+		
+		local rate = 0.3
+		if self.difficulty == "Easy" then
+			rate = 0.3
+		elseif self.difficulty == "Normal" then
+			rate = 0.6
+		elseif self.difficulty == "Hard" then
+			rate = 1
+		end
+		
+		local behavior
+		for _, item in ipairs(behaviorArray) do
+			if item.score < 0 then
+				break
+			end
+			
+			behavior = item
+			
+			if _UtilLogic:RandomDouble() < rate then
+				break
+			end
+		end
+		
+		return behavior
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDifficulty(string difficulty)
+		-- 봇의 게임 난이도를 설정하여 AI 행동 패턴과 랭크 포인트를 조정
+		self.difficulty = difficulty
+		
+		local character = self.Entity.Character
+		if difficulty == "Easy" then
+			character:SetRank(500, 0)
+		elseif difficulty == "Normal" then
+			character:SetRank(900, 0)
+		elseif difficulty == "Hard" then
+			character:SetRank(1300, 0)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Play(Card card, Unit target, Minion pivot)
+		-- 봇이 선택한 카드를 대상이나 위치에 맞춰 실제로 플레이하는 동작 실행
+		card:BeginPlaying()
+		wait(1)
+		card:EndPlaying()
+		
+		self.commandManager:RunCommand("Play", {card, target, pivot}, {})
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DeclareEndRound()
+		-- 봇이 더 이상 플레이할 카드가 없을 때 라운드 종료를 선언
+		local player = self.Entity.Character.player
+		
+		self.commandManager:RunCommand("DeclareEndRound", {player, false}, {})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChatOnce(string message, number duration)
+		-- 봇이 지정된 시간 동안 한 번만 채팅 말풍선에 메시지를 표시
+		_TimerService:ClearTimer(self.chatTimer)
+		
+		local chatBalloon = self.Entity.Character.player.chatBalloon
+		
+		chatBalloon.AutoShowEnabled = true
+		chatBalloon.BalloonScale = 2
+		chatBalloon.FontSize = 1
+		chatBalloon.FontColor = Color.black
+		chatBalloon.Message = message
+		
+		self.chatTimer = _TimerService:SetTimerOnce(function()
+			chatBalloon.AutoShowEnabled = false
+		end, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChatRepeat(string message, number showDuration, number hideDuration)
+		-- 봇이 지정된 주기로 반복해서 채팅 말풍선에 메시지를 표시하고 숨김
+		_TimerService:ClearTimer(self.chatTimer)
+		
+		local chatBalloon = self.Entity.Character.player.chatBalloon
+		
+		chatBalloon.AutoShowEnabled = true
+		chatBalloon.BalloonScale = 2
+		chatBalloon.FontSize = 1
+		chatBalloon.FontColor = Color.FromHexCode("#AD1E00")
+		chatBalloon.Message = message
+		chatBalloon.ShowDuration = showDuration
+		chatBalloon.HideDuration = hideDuration
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StopChat()
+		-- 봇의 채팅 말풍선 표시를 완전히 중지하고 메시지를 지움
+		_TimerService:ClearTimer(self.chatTimer)
+		
+		local chatBalloon = self.Entity.Character.player.chatBalloon
+		
+		chatBalloon.Message = ""
+		chatBalloon.AutoShowEnabled = false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Run()
+		-- 봇 AI 메인 루프 실행 - 3초마다 현재 상황을 분석하여 최적의 행동을 선택하고 실행
+		self.behaviorComparer = function(left, right) return left.score > right.score end
+			
+		local behave = function()
+			local player = self.Entity.Character.player
+			if not isvalid(player) or not player:IsOurTurn() or self.taskManager.delay > 0 then
+				return
+			end
+			
+			local behavior = self:SelectBehavior()
+			local name = behavior.name
+			if name == "DeclareEndRound" then
+				self:DeclareEndRound()
+			elseif name == "Play" then
+				local inputState = behavior.card:GetInputState(player.character)
+				if not inputState.isPlayable then
+					return
+				end
+				
+				self:Play(behavior.card, behavior.target, behavior.pivot)
+			end
+		end
+		
+		_TimerService:SetTimerRepeat(behave, 3)
+	end
+
+end

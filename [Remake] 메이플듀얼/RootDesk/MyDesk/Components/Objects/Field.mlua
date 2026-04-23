@@ -1,0 +1,409 @@
+@Component
+script Field extends Object
+
+	property table minionArray = {}
+
+	property table localMinionArray = {}
+
+	property Player player = nil
+
+	property boolean isOurs = false
+
+	property integer capacity = 6
+
+	property boolean isPlaceable = false
+
+	method table GetProperties()
+		-- 필드의 속성들을 테이블로 반환
+		local propertyTable = {
+			minionArray = self.minionArray,
+		}
+		
+		_Table:Assign(__base:GetProperties(), propertyTable)
+		
+		return propertyTable
+	end
+
+	@ExecSpace("Client")
+	method void OnSyncProperties()
+		-- 속성 동기화 시 로컬 미니언 배열 복사 및 배치
+		__base:OnSyncProperties()
+		
+		self.localMinionArray = _Table:ShallowCopy(self.minionArray)
+		self:PlaceMinions()
+	end
+
+	method void Clear()
+		-- 필드의 모든 미니언을 제거하고 초기화
+		for _, minion in ipairs(self.minionArray) do
+			minion.field = nil
+			self:DestroyAnchor(minion)
+		end
+		
+		self.isOurs = false
+		self.minionArray = {}
+		self.localMinionArray = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetInputState(Character character)
+		-- 캐릭터가 이 필드에 미니언을 배치할 수 있는지 확인
+		local isPlaceable = character.player == self.player and self.player:IsOurTurn() and not self:IsFull()
+		return {isPlaceable = isPlaceable}
+	end
+
+	method void SetInputState(table inputState)
+		-- 입력 상태를 설정하여 배치 가능 여부 결정
+		if _Table:IsEmpty(inputState) then
+			self.isPlaceable = false
+		else
+			self.isPlaceable = inputState.isPlaceable
+		end
+	end
+
+	method boolean IsOwner()
+		-- 필드 소유자인지 확인
+		return self.player:IsOwner()
+	end
+
+	method boolean IsEmpty()
+		-- 필드가 비어있는지 확인
+		return _Table:IsEmpty(self.minionArray)
+	end
+
+	method boolean IsFull()
+		-- 필드가 가득 찼는지 확인
+		return #self.minionArray >= self.capacity
+	end
+
+	method table GetMinions(any selector)
+		-- 선택자 조건에 맞는 미니언들을 반환
+		local minionArray = _Table:ShallowCopy(self.minionArray)
+		return selector and _Table:Select(minionArray, selector) or minionArray
+	end
+
+	method table ShareRandomMinions(integer count, any selector)
+		-- 조건에 맞는 살아있는 미니언들 중 랜덤으로 지정된 수만큼 공유
+		return self.commandManager:ShareRandomPermutationInArray(_Table:Select(self:GetMinions(selector), self.taskManager.liveSelector), count)
+	end
+
+	method Minion GetLeftmostMinion()
+		-- 가장 왼쪽에 있는 미니언 반환
+		return self.minionArray[1]
+	end
+
+	method Minion GetRightmostMinion()
+		-- 가장 오른쪽에 있는 미니언 반환
+		return self.minionArray[#self.minionArray]
+	end
+
+	method Minion GetFrontMinion()
+		-- 가장 앞에 있는 미니언 반환 (첫 번째 미니언)
+		return self.minionArray[1]
+	end
+
+	method boolean HasDeadMinion()
+		-- 죽은 미니언이 있는지 확인
+		for _, minion in ipairs(self.minionArray) do
+			if minion.isDead then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	method table GetDeadMinions()
+		-- 죽은 미니언들을 모두 반환
+		local deadMinionArray = {}
+		for _, minion in ipairs(self.minionArray) do
+			if minion.isDead then
+				table.insert(deadMinionArray, minion)
+			end
+		end
+		
+		return deadMinionArray
+	end
+
+	method boolean HasBattler()
+		-- 전투 가능한 미니언이 있는지 확인
+		for _, minion in ipairs(self.minionArray) do
+			if minion:IsBattler() then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	method table GetBattlers()
+		-- 전투 가능한 미니언들을 모두 반환
+		local battlerArray = {}
+		for _, minion in ipairs(self.minionArray) do
+			if minion:IsBattler() then
+				table.insert(battlerArray, minion)
+			end
+		end
+		
+		return battlerArray
+	end
+
+	method table GetDirectAttackers()
+		-- 직접 공격 가능한 미니언들을 모두 반환
+		local directAttackerArray = {}
+		for _, minion in ipairs(self.minionArray) do
+			if minion:IsDirectAttacker() then
+				table.insert(directAttackerArray, minion)
+			end
+		end
+		
+		return directAttackerArray
+	end
+
+	method Minion GetFrontBattler()
+		-- 최전방 전투 미니언을 반환 (랜덤 전투 시 랜덤 선택)
+		if self.duel.isRandomBattle then
+			return self.commandManager:ShareRandomElementInArray(self:GetBattlers())
+		end
+		
+		for _, minion in ipairs(self.minionArray) do
+			if minion:IsBattler() then
+				return minion
+			end
+		end
+		
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSide(boolean isOurs)
+		-- 필드의 소속을 설정하고 위치 조정
+		self.isOurs = isOurs
+		
+		local transform = self.layout:GetTransform(isOurs and "OurField" or "EnemyField")
+		self.Entity.TransformComponent.WorldPosition = transform.WorldPosition:Clone()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceMinions()
+		-- 모든 미니언을 앵커에 배치하고 위치 초기화
+		for _, minion in ipairs(self.minionArray) do
+			self:SpawnAndAttachToAnchor(minion)
+		end
+		
+		self:DropAnchors(self.minionArray)
+		
+		for _, minion in ipairs(self.minionArray) do
+			local transform = minion.actor.Entity.TransformComponent
+			transform.Position = Vector3.zero
+		end
+	end
+
+	method void InsertMinions(table minionArray, Minion pivot)
+		-- 피벗 미니언 뒤에 여러 미니언들을 삽입
+		local index = (_Table:Find(self.minionArray, pivot) or 0) + 1
+		local localIndex = (_Table:Find(self.localMinionArray, pivot) or 0) + 1
+		for i = localIndex, #self.localMinionArray do
+			local minion = self.localMinionArray[i]
+			if not minion.isPivotable then
+				continue
+			elseif isvalid(self.localMinionArray[i].field) then
+				break
+			else
+				localIndex = i + 1
+			end
+		end
+		
+		local newMinionArray = _Table:ShallowCopy(minionArray)
+		for i = #minionArray, 1, -1 do
+			local minion = minionArray[i]
+			self:InsertMinion(minion, index)
+			if _Table:Find(self.localMinionArray, minion) then
+				_Table:Remove(newMinionArray, minion)
+			else
+				table.insert(self.localMinionArray, localIndex, minion)
+			end
+			self:SpawnAndAttachToAnchor(minion)
+		end
+		
+		self:DropAnchors(newMinionArray)
+	end
+
+	method void InsertMinion(Minion minion, integer index)
+		-- 단일 미니언을 지정된 인덱스에 삽입
+		minion.field = self
+		table.insert(self.minionArray, index, minion)
+	end
+
+	method void RemoveMinions(table minionArray)
+		-- 여러 미니언들을 필드에서 제거
+		for _, minion in ipairs(minionArray) do
+			self:RemoveMinion(minion)
+			_Table:Remove(self.localMinionArray, minion)
+			self:DestroyAnchor(minion)
+		end
+		
+		self:DropAnchors({})
+	end
+
+	method void RemoveMinion(Minion minion)
+		-- 단일 미니언을 필드에서 제거
+		minion.field = nil
+		_Table:Remove(self.minionArray, minion)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InsertPlacingMinon(number x)
+		-- 배치 중인 미니언을 X 좌표에 따라 적절한 위치에 삽입
+		local minion = self.duel.placingMinion
+		local currentIndex = self:GetCurrentPlaceIndex()
+		local nextIndex = self:GetNextPlaceIndex(x)
+		if currentIndex == nextIndex then
+			return
+		end
+		
+		_Table:Remove(self.localMinionArray, minion)
+		table.insert(self.localMinionArray, nextIndex, minion)
+		self:SpawnAnchor(minion)
+		
+		self:DropAnchors({minion})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RemovePlacingMinion()
+		-- 배치 중인 미니언을 제거
+		local minion = self.duel.placingMinion
+		_Table:Remove(self.localMinionArray, minion)
+		self:DestroyAnchor(minion)
+		
+		self:DropAnchors({})
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAndAttachToAnchor(Minion minion)
+		-- 미니언에 앵커를 생성하고 부착
+		self:SpawnAnchor(minion)
+		minion:AttachToAnchor()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnAnchor(Minion minion)
+		-- 미니언에 앵커 엔티티를 생성
+		if isvalid(minion.anchorEntity) then
+			return
+		end
+		
+		minion.anchorEntity = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Anchor"), "Anchor", 
+			minion.actor.Entity.TransformComponent.WorldPosition, self.Entity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyAnchor(Minion minion)
+		-- 미니언의 앵커 엔티티를 파괴
+		if not isvalid(minion.anchorEntity) then
+			return
+		end
+		
+		minion:DestroyTweener()
+		minion:DestroyAnchorTweener()
+		minion.actor.Entity:Detach()
+		minion.anchorEntity:Destroy()
+		minion.anchorEntity = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DropAnchors(table newMinionArray)
+		-- 모든 미니언의 앵커를 일렬로 배치
+		local size = #self.localMinionArray
+		if size == 0 then
+			return
+		end
+		
+		local zPosition = 0
+		for i, minion in ipairs(self.localMinionArray) do
+			local position = Vector2((-0.5 * size + i - 0.5) * 1.2, 0)
+			minion.anchorEntity.TransformComponent.Position.z = zPosition
+			if _Table:Find(newMinionArray, minion) then
+				minion:SetAnchorTransform(position)
+			else
+				minion:TransformAnchorTo(position)
+			end
+			
+			zPosition = zPosition - 1
+		end
+	end
+
+	method integer GetCurrentPlaceIndex()
+		-- 현재 배치 중인 미니언의 인덱스 반환
+		return _Table:Find(self.localMinionArray, self.duel.placingMinion)
+	end
+
+	method integer GetNextPlaceIndex(number x)
+		-- X 좌표를 기준으로 다음 배치 인덱스 계산
+		local size = #self.localMinionArray - 1
+		if not self:GetCurrentPlaceIndex() then
+			size += 1
+		end
+		local gap = 1.2
+		local border = (size - 1) * gap * -0.5
+		local index = size + 1
+		for i = 1, size do
+			if x < border then
+				index = i
+				break
+			end
+			border = border + gap
+		end
+		return index
+	end
+
+	@ExecSpace("ClientOnly")
+	method Minion FindPlacePivot()
+		-- 배치 기준이 될 피벗 미니언을 찾아 반환
+		local index = self:GetCurrentPlaceIndex()
+		for i = index - 1, 1, -1 do
+			local minion = self.localMinionArray[i]
+			if minion.isPivotable then
+				return minion
+			end
+		end
+		
+		return nil
+	end
+
+	method void SortMinions(any comparer)
+		-- 미니언들을 정렬하고 앵커 재배치
+		_Table:StableSort(self.minionArray, comparer)
+		_Table:StableSort(self.localMinionArray, comparer)
+		
+		self:DropAnchors({})
+	end
+
+	method void MoveMinionToFarLeft(Minion minion)
+		-- 미니언을 가장 왼쪽으로 이동
+		_Table:Remove(self.minionArray, minion)
+		table.insert(self.minionArray, 1, minion)
+		
+		_Table:Remove(self.localMinionArray, minion)
+		table.insert(self.localMinionArray, 1, minion)
+		
+		self:DropAnchors({})
+	end
+
+	method void MoveMinionToFarRight(Minion minion)
+		-- 미니언을 가장 오른쪽으로 이동
+		_Table:Remove(self.minionArray, minion)
+		table.insert(self.minionArray, minion)
+		
+		_Table:Remove(self.localMinionArray, minion)
+		table.insert(self.localMinionArray, minion)
+		
+		self:DropAnchors({})
+	end
+
+	method integer GetEmptySlotCount()
+		-- 필드의 빈 슬롯 수 반환
+		return self.capacity - #self.minionArray
+	end
+
+end

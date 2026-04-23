@@ -1,0 +1,241 @@
+@Component
+script UISpecialShopProduct extends Component
+
+	property string ProductId = ""
+
+	property string UISlotModel = ""
+
+	property Entity Amount = nil
+
+	property TextComponent AmountText = nil
+
+	property Entity AmountBonus = "0"
+
+	property Entity AmountSaleCloud = "0"
+
+	property Entity PriceSaleCloud = "0"
+
+	property Entity PriceDiscount = "0"
+
+	property Entity ItemThumbnail = "0"
+
+	property TextComponent PriceBeforeDiscount = nil
+
+	property TextComponent PriceAfterDiscount = nil
+
+	property TextComponent AmountDefaultText = nil
+
+	property TextComponent AmountBonusText = nil
+
+	property EntityRef BlockBuyText = nil
+
+	property Entity FirstBenefitEntity = nil
+
+	property EntityRef BlockStorageText = nil
+
+	property EntityRef WelcomeBenefitEntity = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 컴포넌트 초기화 및 자식 엔티티들 참조 설정
+		self.Amount = self.Entity:GetChildByName("Amount")
+		self.AmountBonus = self.Entity:GetChildByName("AmountBonus")
+		self.AmountSaleCloud = self.Entity:GetChildByName("AmountSaleCloud")
+		self.PriceSaleCloud = self.Entity:GetChildByName("PriceSaleCloud")
+		self.PriceDiscount = self.Entity:GetChildByName("PriceDiscount")
+		self.ItemThumbnail = self.Entity:GetChildByName("ItemThumnail")
+		
+		self.PriceBeforeDiscount = self.PriceDiscount:GetChildByName("OriginalPrice").TextComponent
+		self.PriceAfterDiscount = self.PriceDiscount:GetChildByName("PriceText_Discounted").TextComponent
+		
+		self.AmountDefaultText = self.Amount:GetChildByName("AmountTextDummy").TextComponent
+		self.AmountBonusText = self.AmountBonus:GetChildByName("Amount").TextComponent
+		self.AmountText = self.AmountBonusText.Entity:GetChildByName("AmountText").TextComponent
+		
+		self.BlockBuyText = self.Entity:GetChildByName("BlockBuyComponent"):GetChildByName("BlockBuyText")
+		self.BlockStorageText = self.Entity:GetChildByName("BlockBuyComponent"):GetChildByName("BlockStorageText")
+		self.FirstBenefitEntity = self.Entity:GetChildByName("FirstBenefitEntity")
+		self.WelcomeBenefitEntity = self.PriceSaleCloud:GetChildByName("WelcomeBenefitEntity")
+	end
+
+	@ExecSpace("Client")
+	method void Init(SpecialShopProductData productData)
+		-- 특별 상점 상품 UI를 초기화하고 데이터에 따라 설정
+		self.ProductId = productData.Id
+		
+		if self.UISlotModel ~= productData.UISlotModel then
+			local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+			self.Entity.UIShopProductRenderer.ItemNameText.Text = _LocalizationService:GetText(itemData.NameKey)
+			
+		    ---@type SpecialShopProductModelData
+		    local modelData = _SpecialShopDataLogic.SpecialShopProductModelData[productData.UISlotModel]
+		    self.Amount.Enable = modelData.Amount
+		    self.AmountBonus.Enable = modelData.AmountDiscount
+		    self.AmountSaleCloud.Enable = modelData.AmountSaleCloud
+		    self.PriceSaleCloud.Enable = modelData.PriceSaleCloud
+		    self.PriceDiscount.Enable = modelData.PriceDiscount
+		    self.FirstBenefitEntity.Enable = modelData.FirstBenefit
+		    
+		    if self.Amount.Enable == true then
+		        local amount = _ItemDataSetLogic:GetItemData(productData.ItemId).funcUseItemParam[2]
+		        self.AmountDefaultText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(math.floor(tonumber(amount)))
+		        
+		        if self.AmountBonus.Enable == true then
+		            self.AmountBonusText.Text = "+".._StringUtilLogic:ReturnThousandsSeparatedString(productData.BonusDiamondValue).." (".._LocalizationService:GetText("AmountBonusText")..")"
+		            self.AmountText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(math.floor(tonumber(amount)) - productData.BonusDiamondValue)
+		        end
+		    end
+		    
+		    if self.PriceDiscount.Enable == true then
+		        self.Entity.UIShopProductRenderer.PriceText.Entity.Enable = false
+		        self.PriceBeforeDiscount.Text = _StringUtilLogic:ReturnThousandsSeparatedString(productData.Price * 2)
+		        self.PriceAfterDiscount.Text = _StringUtilLogic:ReturnThousandsSeparatedString(productData.Price)
+		    else
+		        self.Entity.UIShopProductRenderer.PriceText.Entity.Enable = true
+		    end
+		    
+		    if self.AmountSaleCloud.Enable == true then
+		        self.AmountSaleCloud:GetChildByName("SalePercent").TextComponent.Text = "X"..tostring(productData.PackageBenefitValue)
+		    end
+			
+		end
+		self.UISlotModel = productData.UISlotModel
+		
+		local purchaseCount = _UserService.LocalPlayer.PlayerOutgameManager:GetPurchaseCount(self.ProductId)
+		self:ResetProductPurhaseState(purchaseCount)
+	end
+
+	@ExecSpace("Client")
+	method void SetUINextLevelProduct()
+		-- 다음 레벨 상품으로 UI를 업데이트
+		local condition = function(e)
+		
+			---@type SpecialShopProductData
+			local data = e
+			---@type SpecialShopProductData
+			local myData = _SpecialShopDataLogic.SpecialShopProductData[self.ProductId]
+			
+			if myData.ProductLevel == 0 then
+				return nil
+			end
+			
+			return data.SlotNum == myData.SlotNum and data.LinkedShopId == myData.LinkedShopId and data.ProductLevel == myData.ProductLevel + 1 and data.ItemCount ~= 0
+		end
+		
+		local nextLevelData = _SpecialShopDataLogic:FilterSpecialProductDataByCondition(condition)
+		if nextLevelData == nil then
+			_SpecialShopDataLogic:CommonLog('조건을 만족하는 상품이 없습니다. 노출할 상품 조건을 다시 확인하세요.')
+			return
+		end
+		
+		self:Init(nextLevelData)
+	end
+
+	@ExecSpace("Client")
+	method void SetUIBlock(boolean enable, boolean isCompleted)
+		-- 상품 UI를 차단하거나 활성화 상태로 설정
+		self.Entity.UIShopProductRenderer:SetBlockComponent(enable)
+		self:ResetEntitiesByBlockUI(enable)
+		if isCompleted == nil then
+			return
+		end
+		
+		self.BlockBuyText.Enable = isCompleted
+		self.BlockStorageText.Enable = not isCompleted
+	end
+
+	@ExecSpace("Client")
+	method void ResetProductPurhaseState(integer purchaseCount)
+		-- 상품 구매 상태에 따라 UI 상태를 리셋
+		if purchaseCount == nil then
+			purchaseCount = 0
+		end
+		
+		if _SpecialShopDataLogic:HasRemainingStock(self.ProductId, purchaseCount) == true then
+			self:SetUIBlock(false, nil)
+		else 
+			if _SpecialShopDataLogic.SpecialShopProductData[self.ProductId].ProductLevel == 0 then
+				self:SetUIBlock(true, true)
+			else 
+				local purchaseCompletedCount = purchaseCount
+					self:SetUINextLevelProduct()
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenPurchaseCheckPopup()
+		-- 구매 확인 팝업을 열고 상품 타입에 따라 처리
+		
+		---@type SpecialShopProductData
+		local productData = _SpecialShopDataLogic.SpecialShopProductData[self.ProductId]
+		---@type ItemData
+		local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+		
+		local remainPurchaseCount = productData.ItemCount - _UserService.LocalPlayer.PlayerOutgameManager:GetPurchaseCount(productData.Id)
+		
+		local isSpecialItem = tonumber(self.ProductId) ~= nil and tonumber(self.ProductId) > 0 and tonumber(self.ProductId) < 4
+		local popupMsg = ""
+		
+		if isSpecialItem == false then
+			local onOK = function()
+				_PaidLogic:RequestPurchaseWorldShopProduct_SpecialShop(self.ProductId, _UserService.LocalPlayer.PlayerComponent.UserId)
+			end
+			_UIPurchasePopupLogic:OpenPurchaseConfirmPopup_Immediately(itemData.NameKey, onOK)
+		else
+			_UILobbyManager.UISpecialShopPurchasePopup.UIShopPurchasePopup:Popup_SpecialShop(self.Entity.UISpecialShopProduct.ProductId)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickPurchaseButton()
+		-- 구매 버튼 클릭 시 사운드 재생 및 팝업 열기
+		_SoundService:PlaySound(_ResourceManager.SFXTable["System_SubButton_Click_01"], 1)
+		
+		self:OpenPurchaseCheckPopup()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetEntitiesByBlockUI(boolean flag)
+		-- 차단 UI 상태에 따라 관련 UI 요소들을 리셋
+		if flag == true then
+			self.FirstBenefitEntity.Enable = false
+			self.AmountBonus.Enable = false
+			self.WelcomeBenefitEntity.Enable = false
+		else
+			---@type SpecialShopProductData
+			local productData = _SpecialShopDataLogic.SpecialShopProductData[self.ProductId]
+			---@type SpecialShopProductModelData
+			local modelData = _SpecialShopDataLogic.SpecialShopProductModelData[productData.UISlotModel]
+			self.FirstBenefitEntity.Enable = modelData.FirstBenefit
+			self.AmountBonus.Enable = modelData.AmountDiscount
+			self.WelcomeBenefitEntity.Enable = modelData.PriceSaleCloud
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 상품 클릭 시 패키지 또는 일반 상품에 따라 처리 분기
+		---@type SpecialShopProductData
+		local productData = _SpecialShopDataLogic.SpecialShopProductData[self.ProductId]
+		if string.sub(productData.ItemId, 1, 1) == "P" then
+			_SpecialShopDataLogic.UISpecialShop.UISpecialShop.RewardInfoPopup.Extend_UIRewardInfoSpecialShop:Init(self)
+		else
+			self:OnClickPurchaseButton()
+		end
+		
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerDiamondChangedEvent(PlayerDiamondChangedEvent event)
+		-- 플레이어 다이아몬드 변경 시 가격 텍스트 색상 업데이트
+		if _UtilLogic:IsNilorEmptyString(self.ProductId) then
+			return
+		end 
+		
+		---@type SpecialShopProductData
+		local productData = _SpecialShopDataLogic.SpecialShopProductData[self.ProductId]
+		self.Entity.UIShopProductRenderer:UpdatePriceTextColor(event.Value, productData.Price)
+	end
+
+end

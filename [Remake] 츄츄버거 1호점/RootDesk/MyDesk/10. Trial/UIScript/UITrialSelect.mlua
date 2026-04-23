@@ -1,0 +1,214 @@
+@Component
+script UITrialSelect extends Component
+
+	property integer SelectTab = 0
+
+	property table Tabs = {}
+
+	property Entity TrialList = "151c2f17-c31f-43a7-9950-5163f5b53187"
+
+	property TextComponent TabTitle = "c570c723-32ae-4c8e-93de-08793263ca68"
+
+	property Entity MenuBar = "377ea9da-d9ab-41e0-9517-3f336b90519d"
+
+	property SyncTable<integer, Entity> TabRedDots
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 탭 버튼들을 설정하고 이벤트를 연결하는 클라이언트 전용 함수
+		local tabRoot = self.Entity:GetChildByName("MenuBar")
+		
+		table.clear(self.Tabs)
+		for i, entity in pairs(tabRoot.Children) do
+			if isvalid(entity.UIToggleTypeA) then
+				entity.UIToggleTypeA:SetIndex(i)
+				entity.UIToggleTypeA.OnClickedButton = function(event, index) self:SetSelectTab(index) end
+				
+				table.insert(self.Tabs, entity)
+				
+				self.TabRedDots[i] = entity:GetChildByName("RedDot")	
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(integer tab)
+		-- Trial 선택 UI를 열고 지정된 탭으로 전환하는 클라이언트 전용 함수
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)
+		
+		self._T.isProcessing = false
+		
+		self.Entity.Enable = true
+		if tab == nil then
+			tab = _TrialOfficialTypeEnum.Official
+		end
+		
+		self:SetSelectTab(tab)
+		
+		_UIEntityService:PlayUIOpenAnim(self.TabTitle.Entity, self.TabTitle.Entity.UITransformComponent.anchoredPosition, Vector2.down, nil, nil, nil, nil, nil)
+		_UIEntityService:PlayUIOpenAnim(self.MenuBar, self.MenuBar.UITransformComponent.anchoredPosition, Vector2.right, nil, nil, nil, nil, nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- Trial 선택 UI를 닫고 시간 흐름을 정상화하는 클라이언트 전용 함수
+		_UIGroupManager:EnableTrialGroup(false)
+		_UserService.LocalPlayer.TimeManager:RequestTimeFlowClient()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSelectTab(integer selectTab)
+		-- 선택된 탭을 설정하고 해당 탭의 콘텐츠를 로드하는 클라이언트 전용 함수
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self.SelectTab = selectTab
+		self:OnSelectTab(selectTab)
+		self:Apply(selectTab)
+		
+		if selectTab == _TrialOfficialTypeEnum.Unofficial then
+			_UserService.LocalPlayer.PlayerTrial:RequestSetTrialTab2RedDotChecked(true) 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSelectTab(integer selectTab)
+		-- 탭 선택 시 탭 버튼들의 비주얼 상태를 업데이트하는 클라이언트 전용 함수
+		for i, entity in ipairs(self.Tabs) do
+			---@type Entity
+			local tab = entity
+			local tabIndex = tab.UIToggleTypeA.index
+			local isSelect = tabIndex == selectTab
+			local textColor = isSelect and _ColorCodeEnum:GetColor("#FFFFFF") or _ColorCodeEnum:GetColor("#BB9A59")
+			
+			tab.UIToggleTypeA:SetSelect(isSelect)
+			tab.UIToggleTypeA:SetTextColor(textColor)
+			tab.UIToggleTypeA:SetTextOutLine(isSelect, _ColorCodeEnum:GetColor("#985F05"))
+			
+			tab:GetChildByName("UISpriteIcon").SpriteGUIRendererComponent.Color.a = isSelect and 1 or 0.5
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Apply(integer selectTab)
+		-- 선택된 탭에 따라 Trial 목록을 로드하고 표시하는 클라이언트 전용 함수
+		for i, child in pairs(self.TrialList.Children) do
+			child.Enable = false
+		end
+		
+		self._T.isProcessing = true
+		
+		if selectTab == _TrialOfficialTypeEnum.Unofficial then
+			self:SetTabRedDot(selectTab, false)
+		end
+		
+		self.TabTitle.Text = selectTab == _TrialOfficialTypeEnum.Official and _GetLocalizationTextLogic:GetText("TrialCategoryOfficial") or _GetLocalizationTextLogic:GetText("TrialCategoryUnofficial")
+		
+		local player = _UserService.LocalPlayer
+		if selectTab == _TrialOfficialTypeEnum.Official then
+			for i = 1, #player.PlayerTrial.OfficialTrials do
+				local trialId = player.PlayerTrial.OfficialTrials[i]
+				local trialProgress = _TrialLogic:GetChallengingOfficialTrialProgress(trialId, player)
+				
+				local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_TrialSelectSlot", i, self.TrialList)
+				slot.UITrialSelectSlot:Refresh(trialId, trialProgress, selectTab, false)
+				
+				local contents = slot:GetChildByName("Contents")
+				contents.CanvasGroupComponent.GroupAlpha = 0
+						
+				_TimerService:SetTimerOnce(function()
+					_SoundService:PlaySound(_ResourceManager.SFXTable["ShowFlower_2"], 1)
+					
+					_UIEntityService:ClearUIOpenAnim(contents)
+					_UIEntityService:PlayUIOpenAnim(contents, Vector2.zero, Vector2.up, nil, nil, nil, nil, nil)
+					if i == #player.PlayerTrial.OfficialTrials then
+						_TimerService:SetTimerOnce(function()
+							self._T.isProcessing = false
+						end, 0.5)
+					end
+				end, 0.2 * (i-1))
+			end
+			
+		elseif selectTab == _TrialOfficialTypeEnum.Unofficial then
+			local sortedTable = table.keys(player.PlayerTrial.UnofficialTrials)
+			table.sort(sortedTable)	
+			for i = 1, #sortedTable do
+				local key = sortedTable[i]
+				local split = _UtilLogic:Split(key, "&")
+				local trialId = split[1]
+				local trialProgress = split[2]
+				local isComplete = player.PlayerTrial.UnofficialTrials[key]
+				
+				local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_TrialSelectSlot", i, self.TrialList)
+				slot.UITrialSelectSlot:Refresh(trialId, trialProgress, selectTab, isComplete)
+				
+				local contents = slot:GetChildByName("Contents")
+				contents.CanvasGroupComponent.GroupAlpha = 0
+				
+				_TimerService:SetTimerOnce(function()
+					_SoundService:PlaySound(_ResourceManager.SFXTable["ShowFlower_2"], 1)
+					
+					_UIEntityService:ClearUIOpenAnim(contents)
+					_UIEntityService:PlayUIOpenAnim(contents, Vector2.zero, Vector2.up, nil, nil, nil, nil, nil)
+					if i == #sortedTable then
+						_TimerService:SetTimerOnce(function()
+							self._T.isProcessing = false
+						end, 0.5)
+					end
+				end, 0.2 * (i-1))
+			end	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTabRedDot(integer selectTab, boolean enable)
+		-- 탭에 빨간 점 표시를 설정하고 메인 메뉴 알림도 업데이트하는 클라이언트 전용 함수
+		local player = _UserService.LocalPlayer
+		
+		local isRedDotEnable = false
+		if _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.MainMenuTrial, player) == false then
+			enable = false
+		end
+		
+		local redDot = self.TabRedDots[selectTab]
+		if isvalid(redDot) == true then
+			redDot.Enable = enable
+		end
+		
+		local isMainMenuRedDotEnable = false
+		for i, rd in pairs(self.TabRedDots) do
+			if rd.Enable == true then
+				isMainMenuRedDotEnable = true
+				break
+			end
+		end
+		
+		_MainMenuRedDotManager:EnableTrialRedDot(isMainMenuRedDotEnable)
+	end
+
+	@EventSender("Entity", "ca1f333d-2d80-4562-96c9-940206b9c52c")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 시 Trial 선택 UI를 닫는 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleEmployeeDetailChangeEvent(EmployeeDetailChangeEvent event)
+		-- 직원 상세 정보 변경 시 Trial 빨간 점 표시를 업데이트하는 이벤트 핸들러
+		_TrialUILogic:CheckTrialRedDotEnable(_UserService.LocalPlayer)
+	end
+
+end

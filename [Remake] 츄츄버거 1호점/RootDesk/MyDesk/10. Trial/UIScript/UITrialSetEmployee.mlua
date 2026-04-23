@@ -1,0 +1,278 @@
+@Component
+script UITrialSetEmployee extends Component
+
+	property Entity TopBar = "3df3f598-1a81-467a-86e3-ba58a0f54b23"
+
+	property Entity EmployeeDetail = "f56827d8-562d-4b6e-8340-7ce7a02cda1e"
+
+	property string SelectedEmployeeId = ""
+
+	property string nowTrialId = ""
+
+	property table SortCriteria = {}
+
+	property Entity NoEmployeeText = "6cb17a17-177b-484c-80dc-bf2ff552813b"
+
+	property Entity ResultGuess = "264a6faf-204f-4276-9e75-a86e95aea7c2"
+
+	property Entity SubTitle = "110a1bdb-b4ee-458a-aed5-f11abbfd8abf"
+
+	property Entity SelectBtnDim = "8b53d975-e2c5-4143-82be-82512a9e89de"
+
+	property Entity ListSlotOrigin = "cab0be9d-58f8-48f2-a850-7e10ad44dcf8"
+
+	property Entity BG = "a16e7c14-8428-4ad4-bc87-b540830ad1cc"
+
+	property RecycleScrollView EmployeeScroll = "8ed3b55a-ac37-49e8-b397-07ddb4ed3a80"
+
+	property table DrawEmployeeList = {}
+
+	@ExecSpace("ClientOnly")
+	method void Open(string trialId)
+		-- Trial에 참여할 직원 선택 UI를 열고 초기화하는 클라이언트 전용 함수
+		if self.Entity.Enable then
+			return
+		end
+		
+		self.SelectedEmployeeId = nil
+		self.nowTrialId = trialId
+		
+		self.SubTitle.Enable = _TrialUILogic.UITrialSelect.UITrialSelect.SelectTab == _TrialOfficialTypeEnum.Official
+		
+		self.Entity.Enable = true
+		_UIGroupManager.MoneyBarGroup.Enable = false
+		
+		self.TopBar.UITrialSetTopBar:Refresh(self.nowTrialId)
+		
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		local targetStat = trialData.TargetStat
+		self:SetSortCriteria(targetStat, 1)
+		
+		_UIEntityService:PlayUIOpenAnim(self.BG, self.BG.UITransformComponent.anchoredPosition, Vector2(0, 1), nil, nil, nil, nil, nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 직원 선택 UI를 닫고 매니저 상태를 리셋하는 클라이언트 전용 함수
+		self.Entity.Enable = false
+		_UIGroupManager.MoneyBarGroup.Enable = true
+		
+		self.nowTrialId = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshList()
+		-- 직원 목록을 정렬 기준에 따라 업데이트하고 스크롤 뷰에 표시하는 함수
+		local player = _UserService.LocalPlayer
+		local employeeDetails = self:ReturnSortedEmployeeDetailTable()
+		local firstEmpIndex = 0
+		
+		table.clear(self.DrawEmployeeList)
+		for i, employee in pairs(employeeDetails) do
+			local employeeId = employee.Id
+			local empData = _EmployeeService:GetData(employeeId)
+			if empData.Type ~= _TrialDataSetLogic:GetTrialData(self.nowTrialId).TargetStat then
+				continue
+			end
+			
+			if firstEmpIndex == 0 then
+				firstEmpIndex = i
+			end
+			
+			table.insert(self.DrawEmployeeList, employeeId)
+		end
+		
+		self:OnListEmpty(firstEmpIndex == 0)
+		if firstEmpIndex ~= 0 then
+			local firstEmployee = employeeDetails[firstEmpIndex].Id
+			self:RefreshDetail(firstEmployee)
+		end
+		
+		self.EmployeeScroll:SetTotalCount(#self.DrawEmployeeList)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshDetail(string employeeId)
+		-- 선택된 직원의 상세 정보를 업데이트하고 선택 상태를 반영하는 함수
+		self.EmployeeDetail.UITrialEmployeeDetail:Refresh(employeeId, self.nowTrialId)
+		
+		local trialData = _TrialDataSetLogic:GetTrialData(self.nowTrialId)
+		
+		self.SelectedEmployeeId = employeeId
+		self.SelectBtnDim.Enable = (self.SelectedEmployeeId == _TrialLogic:GetExEmployeeIdOfType(_UserService.LocalPlayer, trialData.TargetStat) and _TrialUILogic.UITrialSelect.UITrialSelect.SelectTab == _TrialOfficialTypeEnum.Official)
+		
+		for i, child in pairs(self.EmployeeScroll.Entity.Children) do
+			local uiSlot = child.UITrialEmployeeSlot
+			uiSlot.Select.Enable = uiSlot.EmployeeId == self.SelectedEmployeeId
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickSelectButton()
+		-- 직원 선택 버튼 클릭 시 선택된 직원으로 Trial을 시작하는 함수
+		if _UtilLogic:IsNilorEmptyString(self.SelectedEmployeeId) == false then
+			if self.SelectedEmployeeId == _TrialLogic:GetExEmployeeIdOfType(_UserService.LocalPlayer, _TrialDataSetLogic:GetTrialData(self.nowTrialId).TargetStat) and _TrialUILogic.UITrialSelect.UITrialSelect.SelectTab == _TrialOfficialTypeEnum.Official then
+				_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("TrialSetEmployeeInfoText"))
+				_UserService.LocalPlayer.PlayerTrial:ChangeConnectingStatus(false)
+				return
+			end
+				
+			_UserService.LocalPlayer.PlayerTrial:RequestSetSelectedEmployee(self.SelectedEmployeeId)
+			self:Close()
+			_TrialUILogic.UITrialSelect.Enable = false
+			
+		else
+			_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("TrialErrorMessage2"))
+			_UserService.LocalPlayer.PlayerTrial:ChangeConnectingStatus(false)
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickGrowthButton()
+		-- 직원 성장 버튼 클릭 시 선택된 직원의 업그레이드 UI를 여는 함수
+		if _UtilLogic:IsNilorEmptyString(self.SelectedEmployeeId) == false then
+		
+			local trialData = _TrialDataSetLogic:GetTrialData(self.nowTrialId)
+			local targetStat = trialData.TargetStat
+		
+			_EmployeeUpgradeUIServcie:UIOpen(self.SelectedEmployeeId)
+			
+		else
+			_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("TrialErrorMessage2"))
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSortCriteria(string key, integer sortType)
+		-- 직원 목록의 정렬 기준을 설정하고 목록을 새로고침하는 함수
+		
+		table.clear(self.SortCriteria)
+		self.SortCriteria = {key, sortType}
+		
+		self:RefreshList()
+	end
+
+	@ExecSpace("ClientOnly")
+	method table ReturnSortedEmployeeDetailTable()
+		-- 직원 상세 정보 테이블을 정렬 기준에 따라 정렬하여 반환하는 함수
+		local player = _UserService.LocalPlayer
+		local detailTable = {}
+		for i, employeeDetail in pairs(player.EmployeeManager.EmployeeDetailTable) do
+			detailTable[i] = employeeDetail
+		end
+		
+		local sortKey = self.SortCriteria[1]
+		local sortValue = self.SortCriteria[2]
+		if sortKey == _EmployeeTypeEnum.Cook then
+			if sortValue == 1 then
+				table.sort(detailTable, function(a, b)
+					local aValue = a.CookLevel
+					local bValue = b.CookLevel
+					
+					return aValue > bValue
+				end)
+			elseif sortValue == 2 then
+				table.sort(detailTable, function(a, b)
+					local aValue = a.CookLevel
+					local bValue = b.CookLevel
+					
+					return aValue < bValue
+				end)
+			end
+			
+		elseif sortKey == _EmployeeTypeEnum.Serving then
+			if sortValue == 1 then
+				table.sort(detailTable, function(a, b)
+					local aValue = a.ServingLevel
+					local bValue = b.ServingLevel
+					
+					return aValue > bValue
+				end)
+			elseif sortValue == 2 then
+				table.sort(detailTable, function(a, b)
+					local aValue = a.ServingLevel
+					local bValue = b.ServingLevel
+					
+					return aValue < bValue
+				end)
+			end
+			
+		end
+		
+		return detailTable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 스크롤 뷰의 셀 업데이트 콜백을 설정하는 클라이언트 전용 함수
+		if self.Entity.Enable then
+			self.Entity.Enable = false
+		end
+		
+		self.EmployeeScroll.onUpdateCell = function(i, e)
+			e.UITrialEmployeeSlot:Refresh(self.DrawEmployeeList[i])
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnListEmpty(boolean isListEmpty)
+		-- 직원 목록이 비어있을 때 UI 요소들의 표시 상태를 설정하는 함수
+		self.NoEmployeeText.Enable = isListEmpty
+		self.EmployeeDetail.Enable = not isListEmpty
+		self.ResultGuess.Enable = not isListEmpty
+	end
+
+	@EventSender("Entity", "1b6acf7a-47c8-4bc6-b407-a9de1bcd7807")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 시 직원 선택 UI를 닫는 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+		_TrialUILogic.UITrialSelect.Enable = true
+	end
+
+	@EventSender("Entity", "7e3f507c-c768-4e66-9b01-6f0e84342a27")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 직원 선택 버튼 클릭 시 선택 로직을 실행하는 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickSelectButton()
+	end
+
+	@EventSender("Entity", "71480d08-3338-49e9-b29f-58fba8714581")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 직원 성장 버튼 클릭 시 업그레이드 UI를 여는 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickGrowthButton()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleEmployeeDetailChangeEvent(EmployeeDetailChangeEvent event)
+		-- 직원 상세 정보 변경 시 선택된 직원의 정보를 업데이트하는 이벤트 핸들러
+		if self.Entity.Enable == true then
+			if _UtilLogic:IsNilorEmptyString(self.SelectedEmployeeId) then
+				return
+			end
+			self:RefreshDetail(self.SelectedEmployeeId)
+		end
+	end
+
+end

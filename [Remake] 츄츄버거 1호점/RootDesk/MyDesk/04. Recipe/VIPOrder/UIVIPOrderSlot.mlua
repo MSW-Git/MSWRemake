@@ -1,0 +1,581 @@
+@Component
+script UIVIPOrderSlot extends Component
+
+	property integer SlotIndex = 0
+
+	property Entity Progress = nil
+
+	property Entity OrderType = nil
+
+	property Entity Ingre = nil
+
+	property SpriteGUIRendererComponent IngreSlot = nil
+
+	property SpriteGUIRendererComponent IngreIcon = nil
+
+	property TextComponent IngreCountText = nil
+
+	property Entity Recipe = nil
+
+	property Entity RewardList = nil
+
+	property Entity SubmitBtn = nil
+
+	property Entity RerollBtn = nil
+
+	property Entity RerollCostInfo = nil
+
+	property TextComponent RerollCostText = nil
+
+	property Entity RerollCostIcon = nil
+
+	property Entity RerollLocked = nil
+
+	property Entity Complete = nil
+
+	property Entity ResetOrderBtn = nil
+
+	property Entity ResetOrderCostText = nil
+
+	property Entity LeftDayText = nil
+
+	property Entity SubmitBtnDim = nil
+
+	property Entity BG = nil
+
+	property Entity Pin = nil
+
+	property table SavedSlotData = {}
+
+	property boolean IsWaiting = false
+
+	property boolean IsInteractable = true
+
+	property table Timers = {}
+
+	property table Tweeners = {}
+
+	property Entity IngreTooltip = nil
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- VIP 주문 슬롯의 모든 UI 컴포넌트를 초기화하고 이벤트 연결
+		self.BG = self.Entity:GetChildByName("BG")
+		self.Pin = self.Entity:GetChildByName("Pin")
+		
+		self:ClearEntities()
+		
+		self._T.pinOriginSize = self.Pin.UITransformComponent.RectSize.x
+		self._T.pinOriginPos = self.Pin.UITransformComponent.anchoredPosition
+		
+		self.IsInteractable = true
+		self._T.tempScore = 0
+		self._T.movePhase = 0
+		self.SavedSlotData = {}
+		
+		self.Progress = self.BG:GetChildByName("Progress")
+		
+		self.OrderType = self.Progress:GetChildByName("OrderType")
+		self.Ingre = self.Progress:GetChildByName("Ingre")
+		self.IngreSlot = self.Ingre:GetChildByName("IngreSlot").SpriteGUIRendererComponent
+		self.IngreIcon = self.IngreSlot.Entity:GetChildByName("IngreIcon").SpriteGUIRendererComponent
+		self.IngreCountText = self.IngreSlot.Entity:GetChildByName("CountText").TextComponent
+		self.IngreTooltip = self.IngreSlot.Entity:GetChildByName("Tooltip")
+		
+		self.Recipe = self.Progress:GetChildByName("Recipe")
+		self.RewardList = self.Progress:GetChildByName("Reward"):GetChildByName("RewardList")
+		
+		local buttonBar = self.Progress:GetChildByName("ButtonBar")
+		self.SubmitBtn = buttonBar:GetChildByName("SubmitBtn")
+		self.SubmitBtnDim = self.SubmitBtn:GetChildByName("Dim")
+		self.RerollBtn = buttonBar:GetChildByName("RerollBtn")
+		self.RerollCostInfo = self.RerollBtn:GetChildByName("CostInfo")
+		self.RerollCostText = self.RerollCostInfo:GetChildByName("CostText").TextComponent
+		self.RerollCostIcon = self.RerollCostInfo:GetChildByName("Icon")
+		self.RerollCostIcon.SpriteGUIRendererComponent.ImageRUID = _ItemDataSetLogic:GetItemData("G0001").IconRUID
+		
+		self.RerollLocked = self.RerollBtn:GetChildByName("Locked")
+		
+		
+		self.Complete = self.BG:GetChildByName("Complete")
+		self.ResetOrderBtn = self.Complete:GetChildByName("GetNewOrderBtn")
+		self.ResetOrderCostText = self.ResetOrderBtn:GetChildByName("CostText")
+		self.ResetOrderBtn:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = _ItemDataSetLogic:GetItemData("G0004").IconRUID
+		
+		self.LeftDayText = self.Complete:GetChildByName("LeftDayText")
+		
+		
+		self.RerollBtn:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			if self.IsInteractable == false then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Btn_Reroll"], 1)
+			
+			local player = _UserService.LocalPlayer
+			
+			player.PlayerVIPOrder:RequestRerollOrderSlot(self.SlotIndex)
+		end)
+		
+		self.ResetOrderBtn:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			if self.IsInteractable == false then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Btn_Reroll"], 1)
+			
+			local player = _UserService.LocalPlayer
+			local leftDay = self.SavedSlotData["LeftDay"]
+			local cost = _VIPOrderDataSetLogic:ReturnResetOrderCost(leftDay)
+				
+			player.PlayerVIPOrder:RequestResetVIPOrderSlot(self.SlotIndex)	
+		end)
+		
+		self.SubmitBtn:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			if self.IsInteractable == false then
+				return
+			end
+				
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			
+			local player = _UserService.LocalPlayer
+			local orderType = self.SavedSlotData["OrderType"]
+			
+			if orderType == _VIPOrderTypeEnum.Recipe then
+				_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:Open(nil, "VIPOrder", {self.SlotIndex})
+				
+			elseif orderType == _VIPOrderTypeEnum.Ingre then
+				player.PlayerVIPOrder:RequestSubmitVIPOrder(self.SlotIndex, nil)		
+				
+			end	
+		end)
+		
+		self.IngreSlot.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			if self.IsInteractable == false then
+				return
+			end
+				
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			_TooltipService:OpenTooltip(self.IngreTooltip, nil)	
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh(table slotData)
+		-- 슬롯 데이터에 따라 주문 타입별로 UI를 새로고침
+		local player = _UserService.LocalPlayer
+		
+		if #table.keys(slotData) == 0 then
+			self.Complete.Enable = false
+			self.Ingre.Enable = false
+			self.Recipe.Enable = false
+			return
+		end
+		
+		self.IngreTooltip.Enable = false
+		
+		local orderType = slotData["OrderType"]
+		self.Complete.Enable = orderType == _VIPOrderTypeEnum.Complete or orderType == _VIPOrderTypeEnum.Waiting
+		self.Progress.Enable = not self.Complete.Enable
+		self.Ingre.Enable = orderType == _VIPOrderTypeEnum.Ingre
+		self.Recipe.Enable = orderType == _VIPOrderTypeEnum.Recipe
+		
+		if orderType == _VIPOrderTypeEnum.Complete then
+			self:RefreshComplete(slotData)
+			
+		elseif orderType == _VIPOrderTypeEnum.Waiting then
+			self:RefreshWaiting()
+			
+		elseif orderType == _VIPOrderTypeEnum.Recipe then
+			self:RefreshRecipe(slotData)
+			self:RefreshReward(slotData)
+			
+		elseif orderType == _VIPOrderTypeEnum.Ingre then
+			self:RefreshIngre(slotData)
+			self:RefreshReward(slotData)
+		end
+		
+		self:RefreshRerollBtn()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshComplete(table slotData)
+		-- 완료된 주문 상태의 UI를 설정
+		self.ResetOrderBtn.Enable = false
+		self.LeftDayText.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRecipe(table slotData)
+		-- 레시피 주문의 요구사항들을 UI에 표시
+		self.SubmitBtnDim.Enable = false
+		
+		local RECIPE_REQUIREMENTS_COUNT = 4
+		
+		local requirements = _VIPOrderDataSetLogic:ReturnRequirementDatasTableForUI(slotData)
+		
+		self.OrderType.TextComponent.Text = _GetLocalizationTextLogic:GetText("Recipe")
+		
+		for i = 1, RECIPE_REQUIREMENTS_COUNT do
+			local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_RecipeRequirement", i, self.Recipe)
+			local requirement = requirements[i]
+			slot.UIVIPOrderRecipeRequirement:Refresh(requirement[1], requirement[2])
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshIngre(table slotData)
+		-- 재료 주문의 정보와 보유 수량을 표시하고 충족 여부 확인
+		self.OrderType.TextComponent.Text = _GetLocalizationTextLogic:GetText("Ingredient")
+		
+		local ingreId = slotData["IngreId"]
+		local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+		
+		local ingreCount = slotData["Count"]
+		local userCount = _UserService.LocalPlayer.PlayerIngredient.IngredientCards[ingreId]
+		if userCount == nil then
+			userCount = 0
+		end
+		
+		self.IngreSlot.ImageRUID = _IngredientDataSetLogic:ReturnDishRUIDByGrade(ingreData.Grade)
+		self.IngreIcon.ImageRUID = ingreData.IconRUID
+		self.IngreTooltip.TextComponent.Text = _GetLocalizationTextLogic:GetText(ingreData.NameKey)
+		self.IngreCountText.Text = string.format("%d/%d", userCount, ingreCount)
+		
+		if userCount < ingreCount then
+			self.IngreCountText.FontColor = _ColorCodeEnum:GetColor("#FC5757")
+			self.IngreCountText.OutlineColor = _ColorCodeEnum:GetColor("#FFFFFF")
+			self.SubmitBtnDim.Enable = true
+			
+		else
+			self.IngreCountText.FontColor = _ColorCodeEnum:GetColor("#635743")
+			self.IngreCountText.OutlineColor = _ColorCodeEnum:GetColor("#FFFFFF")
+			self.SubmitBtnDim.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRerollBtn()
+		-- 리롤 버튼의 비용과 활성화 상태를 업데이트
+		if self.RerollCostInfo == nil then
+			self:Init()
+		end
+		
+		local player = _UserService.LocalPlayer
+		
+		local rerollCost = _VIPOrderDataSetLogic:ReturnVIPOrderRerollCost(player)
+		
+		if rerollCost == 0 then
+			self.RerollCostText.Text = _GetLocalizationTextLogic:GetText("Free")
+			self.RerollCostIcon.Enable = false
+		else
+			self.RerollCostIcon.Enable = true
+			self.RerollCostText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(rerollCost)
+			if player.PlayerInventory.Money < rerollCost then
+				self.RerollCostText.FontColor = _ColorCodeEnum:GetColor("#FC5757")
+				self.RerollCostText.OutlineColor = _ColorCodeEnum:GetColor("#FFFFFF")
+			else
+				self.RerollCostText.FontColor = _ColorCodeEnum:GetColor("#635743")
+				self.RerollCostText.OutlineColor = _ColorCodeEnum:GetColor("#FFFFFF")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshWaiting()
+		-- 대기 상태 주문의 리셋 비용과 남은 날짜를 표시
+		local player = _UserService.LocalPlayer
+		
+		if #table.keys(self.SavedSlotData) == 0 then
+			return
+		end
+		
+		local orderType = self.SavedSlotData["OrderType"]
+		if orderType ~= _VIPOrderTypeEnum.Waiting then
+			return
+		end
+		
+		self.ResetOrderBtn.Enable = true
+		self.LeftDayText.Enable = true
+		
+		
+		local leftDay = self.SavedSlotData["LeftDay"]
+		self.LeftDayText.TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("LeftDay_Format", leftDay)
+		
+		local cost = _VIPOrderDataSetLogic:ReturnResetOrderCost(leftDay)
+		
+		self.ResetOrderCostText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(cost)
+		
+		
+		local userAmount = player.PlayerInventory.ArcaneSymbol
+		if userAmount < cost then
+			self.ResetOrderCostText.TextComponent.FontColor = _ColorCodeEnum:GetColor("#FC5757")
+			self.ResetOrderCostText.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#FFFFFF")
+		else
+			self.ResetOrderCostText.TextComponent.FontColor = _ColorCodeEnum:GetColor("#635743")
+			self.ResetOrderCostText.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#FFFFFF")
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshReward(table orderData)
+		-- 주문 완료 시 받을 보상 아이템들을 UI에 표시
+		local rewardTable = _VIPOrderDataSetLogic:ReturnVIPOrderReward(orderData, _UserService.LocalPlayer)
+		
+		
+		local rewardKeys = table.keys(rewardTable)
+		rewardKeys = {"G0005", "G0007", "G0006"}
+		
+		for i = 1, #rewardKeys do
+			local itemId = rewardKeys[i]
+			local itemCount = rewardTable[itemId]
+			
+			local itemSlot = _UIEntityService:GetOrCreateEntityOfModel("Model_UIItemRewardSlot", i, self.RewardList)
+			
+			if itemId == "G0006" then 
+				itemCount = 0
+			end
+			
+			itemSlot.UIItemRewardSlot:SetItem(itemId, itemCount)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveOut()
+		-- 슬롯이 사라지는 애니메이션을 실행하고 새 데이터로 교체 준비
+		local phase = 0
+		self.IsInteractable = false
+		self._T.movePhase = 1
+		
+		local pinMoveTime = 0.3
+		self.Pin.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.ChuChuMovementMaterial)
+		
+		local fadeTime = 0.4
+		local fadeDelay = 0.2
+		local t1 = _TimerService:SetTimerOnce(function()
+			self.Pin.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+			
+			local tw1 = _TweenLogic:PlayTween(1, 0, fadeTime, EaseType.CubicEaseOut, function(t)
+				self.Pin.SpriteGUIRendererComponent.Color.a = t	
+			end)
+			table.insert(self.Tweeners, tw1)
+			
+			local t2 = _TimerService:SetTimerOnce(function()
+				local bgHeight = self.BG.UITransformComponent.RectSize.y
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["ShowFlower_2"], 1)
+		
+				local tw2 = _TweenLogic:PlayTween(1, 0, fadeTime, EaseType.CubicEaseOut, function(t)
+					self.BG.CanvasGroupComponent.GroupAlpha = t
+				end)
+				table.insert(self.Tweeners, tw2)
+		
+				
+				local t3 = _TimerService:SetTimerOnce(function()
+					self:MoveIn()
+				end, fadeTime)
+				table.insert(self.Timers, t3)
+			end, fadeDelay)
+			table.insert(self.Timers, t2)
+		end, pinMoveTime)
+		table.insert(self.Timers, t1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveIn()
+		-- 새로운 주문 데이터로 슬롯이 나타나는 애니메이션을 실행
+		self.IsInteractable = false
+		self._T.movePhase = 2
+		
+		
+		self:Refresh(self.SavedSlotData)
+		
+		local moveTime = 0.4
+		local bgHeight = self.BG.UITransformComponent.RectSize.y
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Eff_VipOrderSlot"], 1)
+		local tw1 = _TweenLogic:PlayTween(0, 1, moveTime, EaseType.CubicEaseOut, function(t)
+			self.BG.CanvasGroupComponent.GroupAlpha = t
+		end)
+		table.insert(self.Tweeners, tw1)
+		
+		local pinDelay = 0.3
+		local pinTime = 0.2
+		local t1 = _TimerService:SetTimerOnce(function()
+			local tw2 = _TweenLogic:PlayTween(0, 1, moveTime, EaseType.CubicEaseOut, function(t)
+				self.Pin.SpriteGUIRendererComponent.Color.a = t	
+			end)
+			table.insert(self.Tweeners, tw2)
+			
+			local t2 = _TimerService:SetTimerOnce(function()
+				self.IsInteractable = true
+				self._T.movePhase = 0
+				self:Refresh(self.SavedSlotData)
+				
+			end, pinTime)
+			table.insert(self.Timers, t2)
+		end, pinDelay)	
+		table.insert(self.Timers, t1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSlotData(table slotData)
+		-- 슬롯 데이터를 설정하고 대기 상태에 따라 적절한 처리 수행
+		if self.Progress == nil then
+			self:Init()
+		end
+		
+		local isWaiting = _VIPOrderDataSetLogic.UIVIPOrderPanel.IsWaiting 
+		local isOpen = #table.keys(self.SavedSlotData) == 0 
+		local isSame = self:IsSameData(slotData, self.SavedSlotData) 
+		
+		if slotData == nil then 
+			return
+		end
+		
+		table.initialize(self.SavedSlotData, slotData) 
+		
+		if isWaiting == true then
+			self._T.tempIsOpen = isOpen
+			self._T.tempIsSame = isSame
+			return
+		end
+		
+		if self.IsInteractable == false and isSame == false then 
+			self:ClearSlotMovement()
+			self:RequestRefresh(isOpen, isSame, slotData)
+			return
+		end
+		
+		self:RequestRefresh(isOpen, isSame, slotData)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearEntities()
+		-- 슬롯 엔티티들의 시각적 상태를 초기화
+		self.BG.CanvasGroupComponent.GroupAlpha = 0
+		self.Pin.SpriteGUIRendererComponent.Color.a = 0
+	end
+
+	method boolean IsSameData(table slotData, table exSlotData)
+		-- 두 슬롯 데이터가 같은 주문인지 UniqueId로 비교
+		local isSame = false
+		
+		if not (#table.keys(exSlotData) == 0) then
+		    local exOrderUniqueId = exSlotData["UniqueId"]
+		    local slotUniqueId = slotData["UniqueId"]
+		    
+		    if exOrderUniqueId == slotUniqueId then
+		        isSame = true
+		    end
+		end
+		
+		return isSame
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnChangedIsWaiting(boolean isWaiting)
+		-- 대기 상태 변경 시 임시 저장된 데이터로 슬롯을 새로고침
+		if isWaiting == false then
+			if self.IsInteractable == false then
+				self:ClearSlotMovement()
+			end
+			
+			if self._T.tempIsOpen == nil then
+				self._T.tempIsOpen = false
+			end
+			
+			if self._T.tempIsSame == nil then
+				self._T.tempIsSame = true
+			end
+			
+			self:RequestRefresh(self._T.tempIsOpen, self._T.tempIsSame, self.SavedSlotData)
+			
+			if self._T.tempScore > 0 then
+				_VIPOrderResultRenderLogic:DropSeasonScores(self.Entity, self._T.tempScore)
+			end
+			
+			self._T.tempIsOpen = nil
+			self._T.tempIsSame = nil
+			self._T.tempScore = 0
+		end
+	end
+
+	method void RequestRefresh(boolean isOpen, boolean isSame, table slotData)
+		-- 슬롯 상태에 따라 적절한 새로고침 방식을 선택
+		
+		if isOpen then
+			self:MoveIn() 
+		else
+				
+			if isSame then
+				if self._T.movePhase ~= 1 then 
+					self:Refresh(slotData) 
+				end		
+			else
+				self:MoveOut() 
+			end	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PopAfterWait(integer score)
+		-- 대기 후 점수 팝업을 위해 임시 점수를 저장
+		self._T.tempScore = score
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearSlotMovement()
+		-- 진행 중인 모든 애니메이션과 타이머를 정리하고 상태 초기화
+		
+		for _, timer in pairs(self.Timers) do
+			if isvalid(timer) then
+				_TimerService:ClearTimer(timer)
+			end
+		end
+		
+		for _, tweener in pairs(self.Tweeners) do
+			if isvalid(tweener) then
+				tweener:Destroy()
+			end
+		end
+		
+		table.clear(self.Timers)
+		table.clear(self.Tweeners)
+		
+		self.IsInteractable = true
+		self.Pin.SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.EmptyMaterial)
+		
+		self._T.movePhase = 0
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerArcaneSymbolChangedEvent(PlayerArcaneSymbolChangedEvent event)
+		-- 플레이어의 아케인 심볼 변경 시 슬롯 데이터를 새로고침
+		local player = _UserService.LocalPlayer
+		if _VIPOrderDataSetLogic.UIVIPOrderPanel.Entity.Enable == false then
+		    return
+		end
+		
+		local slotData = player.PlayerVIPOrder.VIPOrderSlotData[self.SlotIndex]
+		self:SetSlotData(slotData)
+	end
+
+end

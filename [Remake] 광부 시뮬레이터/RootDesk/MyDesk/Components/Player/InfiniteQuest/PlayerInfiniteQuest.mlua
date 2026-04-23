@@ -1,0 +1,300 @@
+@Component
+script PlayerInfiniteQuest extends Component
+
+	@Sync
+	property number currentScore = 0
+
+	@Sync
+	property number goalScore = 1
+
+	@Sync
+	property number rewardAmount = 0
+
+	@Sync
+	property string rewardType = ""
+
+	@Sync
+	property boolean isRewarded = false
+
+	@ExecSpace("Server")
+	method void GetNewQuest()
+		-- 플레이어 레벨에 맞는 새로운 무한 퀘스트를 생성하고 설정
+		-- 현재 정보를 초기화합니다.
+		self.currentScore = 0
+		self.goalScore = 1
+		self.rewardAmount = 0
+		self.rewardType = ""
+		self.isRewarded = false
+		
+		-- 현재 플레이어 수준에 맞추어 랜덤한 퀘스트를 획득합니다.
+		local miningPower = self.Entity.PlayerIngameData.MiningPower
+		--log("miningPower = ", miningPower)
+		
+		
+		local randomValue = _UtilLogic:RandomIntegerRange(2000, 2999)/100
+		self.goalScore = math.floor(miningPower * randomValue)
+		
+		self.rewardType = "gold"
+		self.rewardAmount = miningPower * randomValue * _UtilLogic:RandomIntegerRange(900, 1100) / 100
+		
+		--[[
+		if miningPower < 27000000 then
+			self.rewardType = "gold"
+			self.rewardAmount = miningPower * randomValue * 2.1
+		else
+			self.rewardType = "relicBox" 
+			if miningPower < 100000000 then
+				self.rewardAmount = 1
+			elseif miningPower < 200000000 then
+				self.rewardAmount = 2
+			else
+				self.rewardAmount = 3
+			end
+		end
+		]]--
+	end
+
+	@ExecSpace("Server")
+	method void GetReward()
+		-- 퀘스트 완료 시 보상을 지급하고 새 퀘스트를 시작
+		if self.isRewarded == true then
+			return
+		end
+		
+		--log("get Reward")
+		
+		-- 조건 검증
+		if self.currentScore < self.goalScore then
+			return
+		end
+		-----------------------------------------------------------------
+		-----------------------------------------------------------------
+		-- 보너스 계산
+		-----------------------------------------------------------------
+		-- 기본값
+		local rewardRate = 1
+		
+		-- 소모품 (계약서)
+		if self.Entity.PlayerStorage.consumableItemAvailable[4] == true then
+			rewardRate = rewardRate + 1
+		end
+		
+		-- 공허 아이템 18 : 반복 퀘스트 보상 증가
+		local applyVoidItem18 = function()
+			local voidItemLv = self.Entity.PlayerVoidItem.haveItems[18]
+			local voidItemTable = _DataService:GetTable("VoidItems")
+			if voidItemLv > 0 then
+				local initAbility = voidItemTable:GetCell(18, "InitAbility")
+				local levelAbility = voidItemTable:GetCell(18, "AbilityPerLevel")
+				local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+				
+				rewardRate = rewardRate + currentAbility/100
+				
+				_UIGetLog:PrintVoidItemLog(18, self.Entity.OwnerId)
+			end
+		end
+		applyVoidItem18()
+		
+		-- 공허 아이템 19 : 반복 퀘스트 보상 획득 시 젬 획득
+		local applyVoidItem19 = function()
+			local voidItemLv = self.Entity.PlayerVoidItem.haveItems[19]
+			local voidItemTable = _DataService:GetTable("VoidItems")
+			if voidItemLv > 0 then
+				local initAbility = voidItemTable:GetCell(19, "InitAbility")
+				local levelAbility = voidItemTable:GetCell(19, "AbilityPerLevel")
+				local currentAbility = tonumber(initAbility) + tonumber(levelAbility) * voidItemLv
+				
+				self.Entity.PlayerStorage:AddCurrencyItems(2, currentAbility, true)
+				
+				_UIGetLog:PrintVoidItemLog(19, self.Entity.OwnerId)
+			end
+		end
+		applyVoidItem19()
+		-----------------------------------------------------------------
+		-----------------------------------------------------------------
+		-- 보상 획득
+		-----------------------------------------------------------------
+		-- 보상 : 골드
+		if self.rewardType == "gold" then
+			self.Entity.PlayerData:GetMoney(self.rewardAmount * rewardRate)
+			
+			self:PlayRewardDirection(self.rewardAmount * rewardRate, "gold", self.Entity.OwnerId)
+		-----------------------------------------------------------------	
+		elseif self.rewardType == "relicBox" then
+			if self.Entity.PlayerStorage.consumableItemAvailable[4] == true then
+				self.rewardAmount = self.rewardAmount * 2
+			end
+			
+			for i=1, self.rewardAmount do
+				self.Entity.PlayerRelic:GetRelicBox(1)
+			end
+			self:PlayRewardDirection(self.rewardAmount, "relicBox", self.Entity.OwnerId)
+		end
+		
+		self.isRewarded = true
+		-----------------------------------------------------------------
+		-----------------------------------------------------------------
+		-- 새로운 퀘스트 획득
+		self:GetNewQuest()
+	end
+
+	@ExecSpace("Server")
+	method void GetScore(number score)
+		-- 퀘스트 진행도 점수를 추가
+		self.currentScore = self.currentScore + score
+	end
+
+	@ExecSpace("Client")
+	method void UpdateQuestUI()
+		-- 퀘스트 진행 상황에 따라 UI를 업데이트
+		if self.goalScore == 0 then
+			return 
+		end
+		
+		-- 목표 달성 수준
+		local achieveRate = self.currentScore / self.goalScore
+		if achieveRate > 1 then
+			achieveRate = 1
+		end
+		
+		
+		-- 메인 : 퀘스트 성취 정도를 표시합니다.
+		local fillAmountTxt = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/QuestGauge/Percent")
+		local fillAmountSlider = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/QuestGauge/Bg_QuestGauge/Fill")
+		local rewardAmountTxt = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/QuestGauge/ClearButton/txt_pc")
+		local questIcon = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/QuestGauge/Icon_quest")
+		
+		fillAmountTxt.TextComponent.Text = string.format("%.2f%%", achieveRate*100)
+		fillAmountSlider.SpriteGUIRendererComponent.FillAmount = achieveRate
+		
+		if achieveRate >= 1 then
+			fillAmountTxt.Enable = false
+			rewardAmountTxt.Enable = true
+			questIcon.Enable = false
+		else 
+			fillAmountTxt.Enable = true
+			rewardAmountTxt.Enable = false
+			questIcon.Enable = true
+		end
+		
+		
+		-- 페이퍼 내용을 갱신합니다.
+		local scoreText = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/Paper/Score")
+		local rewardAIcon = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/Paper/Reward/Icon")
+		local rewardAmountText = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/Paper/Reward/Amount")
+		local clearButton = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/QuestGauge/ClearButton")
+		
+		if achieveRate >= 1 then
+			scoreText.TextComponent.Text = _LocalizationService:GetText("QuestFinished")
+		else 
+			scoreText.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(self.currentScore, nil).." / ".._ThousandsSeparator:ConvertToMetricPrefixString(self.goalScore, nil)
+		end
+		
+		if self.rewardType == "gold" then
+			rewardAIcon.SpriteGUIRendererComponent.ImageRUID = "8db88ae11537475c95f94d1d27c7913b"
+		elseif self.rewardType == "relicBox" then
+			rewardAIcon.SpriteGUIRendererComponent.ImageRUID = "0381a6f33326484abe239a557fe204b2"
+		end
+		rewardAmountText.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(self.rewardAmount, nil)
+		rewardAmountTxt.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(self.rewardAmount, nil)
+		
+		
+		-- 성취했다면 클리어 버튼을 활성화합니다.
+		if achieveRate >= 1 and self.isRewarded == false then
+			clearButton.Enable = true
+		elseif self.isRewarded == true and achieveRate >= 1 then
+			clearButton.Enable = false
+		else
+			clearButton.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void NewQuestAlert()
+		-- 새 퀘스트 시작 시 알림 연출 재생
+		local alertPaper = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/AlertPaper")
+		
+		-- UIDisable
+		alertPaper.Enable = true
+		
+		-- Sound
+		_SoundService:PlaySound("69c0757fb8dc42fd85a9a44895fa5a9e", 1)
+		
+		-- Effect
+		local alertEffect = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/AlertEffect")
+		local clonedEffect = alertEffect:Clone()
+		clonedEffect:Destroy(1)
+		
+		local UIEnable = function()
+			alertPaper.Enable = false
+		end
+		_TimerService:SetTimerOnce(UIEnable, 0.8)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 퀘스트 관련 속성 동기화 시 UI 업데이트 처리
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if name == "currentScore" or name == "goalScore" or name == "rewardAmount" or name == "isRewarded" then
+			self:UpdateQuestUI()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayRewardDirection(number rewardAmount, string rewardType)
+		-- 퀘스트 보상 획득 시 연출 재생
+		local rewardSprite = _EntityService:GetEntityByPath("/ui/IngameGroup/direction_gold_icon")
+		local targetVector2 = Vector2(-478, 428)
+		
+		if rewardType == "gold" then
+			rewardSprite = _EntityService:GetEntityByPath("/ui/IngameGroup/direction_gold_icon")
+			targetVector2 = Vector2(23, 490)
+			rewardAmount = string.len(tostring(math.floor(rewardAmount)))
+		
+		--[[elseif rewardType == "relicBox" then
+			rewardSprite = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/RelicBoxSprite")
+			targetVector2 = Vector2(-478, 428)]]--
+		end
+		
+		
+		local cloneRewardSprite = function()
+			local clonedEntity = rewardSprite:Clone("clonedRewardSprite")
+			local originPos = clonedEntity.UITransformComponent.anchoredPosition:Clone()
+			clonedEntity.UITransformComponent.anchoredPosition = originPos + Vector2(_UtilLogic:RandomIntegerRange(-200,200), _UtilLogic:RandomIntegerRange(-200, 200))
+			
+			clonedEntity.UISeekerComponent.Velocity = Vector2(math.cos(math.rad(math.random(1,360))),math.sin(math.rad(math.random(1,360))))
+			clonedEntity.UISeekerComponent.target = targetVector2
+			clonedEntity.UISeekerComponent.effectEntity = rewardSprite.UISeekerComponent.effectEntity
+		end
+		
+		for i=1, rewardAmount do
+			_TimerService:SetTimerOnce(cloneRewardSprite, 0.05*(i-1))
+		end
+		
+		local clearEffect = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest/ClearEffect")
+		local clonedEntity = clearEffect:Clone("clonedEffect")
+		clonedEntity:Destroy(1)
+		_SoundService:PlaySound("0296f22067814bba8e4de425beed23e7", 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMapEnter(any enteredMap)
+		-- 맵 진입 시 퀘스트 UI 위치 조정
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		local infQuestUI = _EntityService:GetEntityByPath("/ui/IngameGroup/InfiniteQuest")
+		
+		local currentMapType = string.sub(enteredMap.Name, 1, 4) 
+		if currentMapType == "Mine" or currentMapType == "Temp" then
+			infQuestUI.UITransformComponent.anchoredPosition.x = -300
+		else 
+			infQuestUI.UITransformComponent.anchoredPosition.x = -25
+		end
+	end
+
+end

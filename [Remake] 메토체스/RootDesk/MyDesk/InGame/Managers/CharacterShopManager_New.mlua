@@ -1,0 +1,1336 @@
+@Component
+script CharacterShopManager_New extends Component
+
+	@TargetUserSync
+	property SyncTable<string, number> LeftUnitCount
+
+	@TargetUserSync
+	property SyncTable<string> CurrentDisplayedUnits
+
+	@TargetUserSync
+	property SyncTable<number> CurrentDisplayedUnitsCost
+
+	property any ShopProbTable = nil
+
+	property any CharacterInfoTable = nil
+
+	property any CharacterSynergyTable = nil
+
+	property any SynergyTable = nil
+
+	property SyncTable<Color> GradeColorTable
+
+	property SyncTable<Color> GradeDarkerColorTable
+
+	property SyncTable<boolean> SellUI_ButtonOriginState
+
+	@TargetUserSync
+	property boolean IsLocked = false
+
+	property boolean IsShowingSellUI = false
+
+	property boolean ThreeLevelCheck = true
+
+	@ExecSpace("ServerOnly")
+	method void Initiate()
+		
+		-- 기물 수 리셋 / 초기 목록 갱신 / 프로퍼티 초기화
+		----------------------------------------------------------------------------
+		local user = self.Entity
+		local gameManager = user.GameManager
+		local listBySeasonTable = _DataService:GetTable("CharacterListBySeason")
+		----------------------------------------------------------------------------
+		-- 상점의 기물 수를 리셋합니다.
+		table.clear(self.LeftUnitCount)
+		
+		
+		-- 등급별 기물 수량
+		if self.ShopProbTable == nil then
+			self.ShopProbTable = _DataService:GetTable("ShopProbability")
+		end
+		---@type MODUserDataSet
+		local shopProbTable = self.ShopProbTable
+		
+		local charCounts = {}
+		for i=1, 5 do
+			local cardAmount = shopProbTable:GetCell(i, "CardAmount")
+			charCounts[i] = tonumber(cardAmount)
+		end
+		
+		-- (Key = CharacterID), (Value = 등급별 기물 수량)
+		local charInfoTable = _DataService:GetTable("CharacterInfo")
+		for i=1, charInfoTable:GetRowCount() do
+			local row = charInfoTable:GetRow(i)
+			
+			local isBattleOnly = row:GetItem("BattleOnly")
+			
+			if isBattleOnly ~= "TRUE" then
+				local charID = row:GetItem("CharID")
+				local cost = tonumber(row:GetItem("Cost"))
+				local checkBool = listBySeasonTable:FindRow("CharID", charID):GetItem(tostring(gameManager.ModeSetVersion))
+				
+				if checkBool == "TRUE" then
+					self.LeftUnitCount[charID] = charCounts[cost]
+				end
+			end
+		end
+		
+		----------------------------------------------------------------------------
+		-- 현재 상점에 진열된 목록을 리셋합니다. (3레벨 기준)
+		table.clear(self.CurrentDisplayedUnits)
+		
+		local level = 3
+		
+		self:Reroll(0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ChooseRandomCharacterFromSameCost(number targetCost, string type)
+		-- 구매비용이 targetCost인 캐릭터 중 무작위 하나를 선택합니다.
+		-- charID 범위가 있다면, idTable 내 캐릭터 중 랜덤하게 선택합니다.
+		-- 선택될 확률은 상점에 남은 각 캐릭터 카드 수에 비례합니다.
+		------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		------------------------------------------------
+		-- 해당 코스트의 기물 전체 카드 중 1장을 선택합니다.
+		local leftUnitCountTable = self.LeftUnitCount
+		
+		-- idTable이 있는 경우, idTable 처리
+		--if isvalid(idTable) then
+		--    table.clear(leftUnitCountTable)
+		--    
+		--    for _, charID in pairs(idTable) do
+		--        if isvalid(self.LeftUnitCount[charID]) then
+		--            leftUnitCountTable[charID] = self.LeftUnitCount[charID]
+		--        end
+		--    end
+		--end
+		
+		local targetList = {}
+		for charID, leftCount in pairs(leftUnitCountTable) do
+			-- 튜토리얼일 경우, 아케인 리버 시너지 캐릭터들을 상점에서 제외합니다.
+			if self.Entity.GameManager.ModeType == "Tutorial" then
+				if charID == "C10004" or charID == "C20012" or charID == "C20013" or charID == "C50005" then
+					continue
+				end
+			end
+			if leftCount >= 0 then
+				-- 해당 캐릭터의 3성 유닛을 보유 중인 경우 포함 X
+				local ownCountBySetID = teamManager.OwnUnitsBySetID[charID.."3"]
+				if isvalid(ownCountBySetID) == true and ownCountBySetID > 0 and type ~= "Add3Level" then
+				-- 3성 유닛 보유 중이 아닌 경우에만 타겟에 포함
+				-- type 중 "Add3Level"인 경우 포함
+				else
+					local charCost = tonumber(string.sub(charID, 2, 2))
+					if charCost == targetCost then
+						for j = #targetList+1, #targetList+leftCount do
+							targetList[j] = charID
+						end
+					end
+				end
+			end 
+		end
+		
+		local randomValue2 = _UtilLogic:RandomIntegerRange(1, #targetList)
+		local selectedCharID = targetList[randomValue2]
+		
+		return selectedCharID 
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ChooseRandomCharacterFromSameCostNSynergy(number targetCost, Entity targetUnit)
+		-- 구매비용이 targetCost인 캐릭터 중, 타겟 캐릭터와 시너지를 공유하는 캐릭터를 선택합니다. 
+		-- 선택될 확률은 상점에 남은 각 캐릭터 카드 수에 비례합니다.
+		------------------------------------------------
+		-- 해당 코스트의 기물 전체 카드 중 1장을 선택합니다.
+		local targetList = {}
+		
+		
+		-- 고유 시너지 (예티와 페페, 발록, 여제 같은 것들) 제외하기.
+		local exceptedSynergyList = {"S10026","S10027","S10012","S10014","S10029","S10013","S10030","S10028"}
+		local targetCharSynergy = targetUnit.UnitInfo.synergyList
+		
+		if #targetCharSynergy >= 3 then
+			for i=1, #exceptedSynergyList do
+				if targetCharSynergy[3] == exceptedSynergyList[i] then 
+					table.remove(targetCharSynergy,3)
+				end
+			end
+		end
+		
+		for charID, leftCount in pairs(self.LeftUnitCount) do
+			if leftCount >= 0 then
+				local charSynergyDBRow = _DataService:GetTable("CharacterSynergy"):FindRow("CharID", charID)
+				local charSynergy = {}
+				if isvalid(charSynergyDBRow) == false then
+					
+				else
+					table.insert(charSynergy,charSynergyDBRow:GetItem("Synergy_1"))
+					table.insert(charSynergy,charSynergyDBRow:GetItem("Synergy_2"))
+					table.insert(charSynergy,charSynergyDBRow:GetItem("Synergy_3"))
+				end
+				
+				
+				local synergyMatched = false
+				for tempIdx=1,#charSynergy do
+					for i=1, #targetCharSynergy do
+						if charSynergy[tempIdx] == targetCharSynergy[i] then
+							synergyMatched = true
+							break
+						end
+					end
+					if synergyMatched ==  true then
+						break
+					end
+				end
+				
+				-- 해당 캐릭터의 3성 유닛을 보유 중인 경우 포함 X
+				-- 선택된 시너지를 갖고 있지 않은 경우 포함 X
+				local ownCountBySetID = self.Entity.TeamManager.OwnUnitsBySetID[charID.."3"]
+				if isvalid(ownCountBySetID) == true and ownCountBySetID > 0 then
+					-- 3성 유닛 보유 중이 아닌 경우에만 타겟에 포함
+				elseif synergyMatched == false then
+					-- 선택된 시너지인 경우에만 타겟에 포함
+				else
+					local charCost = tonumber(string.sub(charID, 2, 2))
+					if charCost == targetCost then
+						for j = #targetList+1, #targetList+leftCount do
+							targetList[j] = charID
+						end
+					end
+				end
+			end
+		end
+		
+		local randomValue2 = _UtilLogic:RandomIntegerRange(1, #targetList)
+		local selectedCharID = targetList[randomValue2]
+		
+		return selectedCharID 
+	end
+
+	@ExecSpace("ServerOnly")
+	method table CreateCharacterPoolFromSameSynergy(Entity targetUnit)
+		-- 타겟 캐릭터와 시너지를 공유하는 캐릭터 풀을 만듭니다.
+		-- 선택될 확률은 상점에 남은 각 캐릭터 카드 수에 비례합니다.
+		------------------------------------------------
+		-- 해당 코스트의 기물 전체 카드 중 1장을 선택합니다.
+		local targetList = {}
+		
+		
+		-- 고유 시너지 (예티와 페페, 발록, 여제 같은 것들) 제외하기.
+		local exceptedSynergyList = {"S10026","S10027","S10012","S10014","S10029","S10013","S10030","S10028"}
+		local targetCharSynergy = targetUnit.UnitInfo.synergyList
+		
+		if #targetCharSynergy >= 3 then
+			for i=1, #exceptedSynergyList do
+				if targetCharSynergy[3] == exceptedSynergyList[i] then 
+					table.remove(targetCharSynergy,3)
+				end
+			end
+		end
+		-- 고유 시너지 삭제 완료
+		
+		for charID, leftCount in pairs(self.LeftUnitCount) do
+			if leftCount >= 0 then
+				local charSynergyDBRow = _DataService:GetTable("CharacterSynergy"):FindRow("CharID", charID)
+				local charSynergy = {}
+				if isvalid(charSynergyDBRow) == false then
+					
+				else
+					table.insert(charSynergy,charSynergyDBRow:GetItem("Synergy_1"))
+					table.insert(charSynergy,charSynergyDBRow:GetItem("Synergy_2"))
+					table.insert(charSynergy,charSynergyDBRow:GetItem("Synergy_3"))
+				end
+				
+				-- 대상 유닛의 시너지 받아오기
+				local synergyMatched = false
+				for tempIdx=1,#charSynergy do
+					for i=1, #targetCharSynergy do
+						if charSynergy[tempIdx] == targetCharSynergy[i] then
+							synergyMatched = true
+							break
+						end
+					end
+					if synergyMatched ==  true then
+						break
+					end
+				end
+				
+				-- 해당 캐릭터의 3성 유닛을 보유 중인 경우 포함 X
+				-- 선택된 시너지를 갖고 있지 않은 경우 포함 X
+				local ownCountBySetID = self.Entity.TeamManager.OwnUnitsBySetID[charID.."3"]
+				if isvalid(ownCountBySetID) == true and ownCountBySetID > 0 then
+					-- 3성 유닛 보유 중이 아닌 경우에만 타겟에 포함
+				elseif synergyMatched == false then
+					-- 선택된 시너지인 경우에만 타겟에 포함
+				else
+					for j = #targetList+1, #targetList+leftCount do
+						targetList[j] = charID
+					end
+				end
+			end
+		end
+		
+		return targetList
+	end
+
+	@ExecSpace("ServerOnly")
+	method string ChooseRandomCharacterFromTable(number targetCost, table UnitPool)
+		-- 구매비용이 targetCost인 캐릭터 중 무작위 하나를 캐릭터 풀에서 선택합니다.
+		-- 선택될 확률은 캐릭터 풀에 등록된 캐릭터 수에 비례합니다.
+		------------------------------------------------
+		local targetList = {}
+		local tempIdx = 1
+		for i=1,#UnitPool do
+			local charID = UnitPool[i]
+			if isvalid(self.LeftUnitCount[charID]) then
+				local charCost = tonumber(string.sub(charID, 2, 2))
+				if charCost == targetCost or targetCost == 0 then
+					targetList[tempIdx] = charID
+					tempIdx = tempIdx + 1
+				end
+			end
+		end
+		
+		local randomValue = _UtilLogic:RandomIntegerRange(1, #targetList)
+		local selectedCharID = targetList[randomValue]
+		
+		return selectedCharID 
+	end
+
+	@ExecSpace("Server")
+	method void Reroll_Check()
+		--[[
+		상점을 리롤할 때, 재화 소모를 검증하는 함수입니다. 
+		검증에 성공하면 리롤 함수를 호출합니다.
+		]]
+		------------------------------------------
+		local teamManager = self.Entity.TeamManager
+		local tmProperties = self.Entity.TM_PropertyControl
+		------------------------------------------
+		-- 함수 호출자 검증
+		if senderUserId ~= nil and senderUserId ~= self.Entity.OwnerId then
+			return
+		end
+		
+		-- 잠금 검증
+		if self.IsLocked == true then
+			return
+		end
+		
+		-- 페이즈 검증
+		if self.Entity.GameManager.PhaseType ~= "Ready" then
+			return
+		end
+		
+		-- 캐릭터 리롤이 가능한가
+		if not tmProperties.Shop_CanRerollCharacter then
+			return
+		end
+		
+		------------------------------------------
+		-- 재화 소모 : 일시 새로고침 > 영구 새로고침 > 골드 순으로 소모, 셋 다 없으면 예외처리
+		local rerollCost = 0
+		
+		if tmProperties.Reroll_FreeCounts_Temporary > 0 then
+			tmProperties.Reroll_FreeCounts_Temporary -= 1
+		elseif tmProperties.Reroll_FreeCounts_Permanents > 0 then
+			tmProperties.Reroll_FreeCounts_Permanents -= 1
+		elseif teamManager.Golds >= math.max(1, tmProperties.Reroll_Cost) then
+			rerollCost = math.max(1, tmProperties.Reroll_Cost)
+			teamManager.Golds -= rerollCost
+		else
+			return
+		end
+		------------------------------------------
+		local gameManager = self.Entity.GameManager
+		---------------------------------------------------------
+		if gameManager.ModeType == "Tutorial" then
+			if gameManager.Stage == 1 and gameManager.Round == 3 and self.Entity.TutorialManager_New.RerolledBefore == false then
+				self.Entity.TutorialManager_New.RerolledBefore = true
+				self.Entity.TutorialManager_New:ReRollTest("C10003","C10011","C10002","C10002","C10010")
+				self.Entity.TutorialManager_New:CallAdviceMessage("AD115_1",self.Entity.OwnerId)
+				self.Entity.TutorialManager_New:SetAllowFeature("Char1",false,self.Entity.OwnerId)
+				self.Entity.TutorialManager_New:SetAllowFeature("Char2",false,self.Entity.OwnerId)
+				self.Entity.TutorialManager_New:SetAllowFeature("Char3",true,self.Entity.OwnerId)
+				self.Entity.TutorialManager_New:SetAllowFeature("Char4",true,self.Entity.OwnerId)
+				self.Entity.TutorialManager_New:SetAllowFeature("Char5",true,self.Entity.OwnerId)
+				return
+			else
+				self:Reroll(rerollCost)
+			end
+		else
+			self:Reroll(rerollCost)
+		end
+		------------------------------------------
+		-- 업적: 캐릭터 상점 새로고침 횟수 체크
+		--_AchievementService:UpdateAchievement("AC007002",1,self.Entity)
+		
+		-- 일일 미션 : 캐릭터 상점 새로고침
+		if string.sub(self.Entity.GameManager.ModeType, 1, 6) == "Single" then
+			self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10010", self.Entity.GameManager.ModeLevel, 1)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Reroll(number rerollCost)
+		-- 상점을 새로고침하는 함수입니다.
+		-- 재화를 소모하는 새로고침인 경우, 이 함수 대신 Reroll_Check()를 호출해주세요.
+		--------------------------------------------------------------------------------
+		-- 잠금 검증
+		if self.IsLocked == true then
+			log_warning("Shop is locked.")
+			return
+		end
+		--------------------------------------------------------------------------------
+		-- 재화 소모 리롤 이벤트 보내기
+		self.Entity:SendEvent(RerollCharacterShop(rerollCost))	-- 에러 아님
+		--------------------------------------------------------------------------------
+		-- 새로고침 사운드
+		_PlaySoundLogic:PlaySound("M0004",self.Entity.OwnerId)
+		--------------------------------------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		--------------------------------------------------------------------------------
+		-- 캐릭터 새로고침 업적 추가
+		user.AchievementManager.PlayerAchievementData["AC007002"]['count'] += 1
+		--------------------------------------------------------------------------------
+		-- 진열 리스트가 있다면 반납합니다.
+		for i=1, 5 do
+			if self.CurrentDisplayedUnits[i] ~= nil and self.CurrentDisplayedUnits[i] ~= "" then
+				self.LeftUnitCount[self.CurrentDisplayedUnits[i]] += 1
+				-- log(string.format("%s's Left Count is %d", self.CurrentDisplayedUnits[i], self.LeftUnitCount[self.CurrentDisplayedUnits[i]]))
+				self.CurrentDisplayedUnits[i] = nil
+			end
+		end
+		--------------------------------------------------------------------------------
+		-- 현재 레벨에 따라 등급 별 등장 확률을 계산합니다.
+		if self.ShopProbTable == nil then
+			self.ShopProbTable = _DataService:GetTable("ShopProbability")
+		end
+		---@type MODUserDataSet
+		local shopProbTable = self.ShopProbTable
+		local level = math.min(12, teamManager.Level + userPControl.Level_ShopAddLevel + userPControl.Level_CharShopAddLevel)
+		level = math.max(1, level)
+		local costProb = {}
+		for i=1, 5 do
+			costProb[i] = tonumber(shopProbTable:GetCell(i, string.format("%d", level))) * 100
+		end
+		
+		-- 5장을 순차적으로 결정합니다.
+		for i=1, userPControl.Shop_UseCharSlotCount do
+			-- (1) 코스트를 먼저 결정합니다.
+			local randonValue1 = _UtilLogic:RandomIntegerRange(1, 1000) / 10
+			local targetCost = 1
+			if randonValue1 <= costProb[1] then
+				targetCost = 1
+			elseif randonValue1 <= (costProb[1] + costProb[2]) then
+				targetCost = 2
+			elseif randonValue1 <= (costProb[1] + costProb[2]+ costProb[3]) then
+				targetCost = 3
+			elseif randonValue1 <= (costProb[1] + costProb[2]+ costProb[3]+ costProb[4]) then
+				targetCost = 4
+			elseif randonValue1 <= (costProb[1] + costProb[2]+ costProb[3]+ costProb[4]+ costProb[5]) then
+				targetCost = 5
+			else
+				log_error("random값이 이상해요!")
+			end
+			
+			
+			-- (2) 해당 코스트의 기물 전체 카드 중 1장을 선택합니다.
+			local selectedCharID = self:ChooseRandomCharacterFromSameCost(targetCost, "reroll")
+			
+			-- (3) ID가 있는지 확인하고,보관함에서 1장을 제거하고 진열 목록에 넣습니다.
+			if isvalid(selectedCharID) then
+				self.LeftUnitCount[selectedCharID] -= 1
+				-- log(string.format("%s's Left Count is %d", selectedCharID, self.LeftUnitCount[selectedCharID]))
+				self.CurrentDisplayedUnits[i] = selectedCharID
+				
+				-- RC10018 활성화 시
+				local ownCountBySetID = teamManager.OwnUnitsBySetID[selectedCharID.."3"]
+				if isvalid(ownCountBySetID) == true and ownCountBySetID > 0 then
+					targetCost = 0
+				end
+				
+				
+				self.CurrentDisplayedUnitsCost[i] = targetCost
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Reroll_Setting(table charIDSet, table charCostSet)
+		-- 정해진 캐릭터와 비용을 상점에 세팅하는 함수입니다.
+		--------------------------------------------------------------------------------
+		-- 잠금 검증
+		if self.IsLocked == true then
+			log_warning("Shop is locked.")
+			return
+		end
+		--------------------------------------------------------------------------------
+		-- 새로고침 사운드
+		_PlaySoundLogic:PlaySound("M0004",self.Entity.OwnerId)
+		--------------------------------------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		--------------------------------------------------------------------------------
+		-- 진열 리스트가 있다면 반납합니다.
+		for i=1, 5 do
+			if self.CurrentDisplayedUnits[i] ~= nil and self.CurrentDisplayedUnits[i] ~= "" then
+				self.LeftUnitCount[self.CurrentDisplayedUnits[i]] += 1
+				--log(string.format("%s's Left Count is %d", self.CurrentDisplayedUnits[i], self.LeftUnitCount[self.CurrentDisplayedUnits[i]]))
+				self.CurrentDisplayedUnits[i] = nil
+			end
+		end
+		--------------------------------------------------------------------------------
+		-- 5장을 순차적으로 넣습니다.
+		for i=1, userPControl.Shop_UseCharSlotCount do
+			-- (1) 캐릭터ID, 비용을 불러옵니다.
+			local selectedCharID = charIDSet[i]
+			local selectedCost = charCostSet[i]
+			
+			-- (3) ID가 있는지 확인하고,보관함에서 1장을 제거하고 진열 목록에 넣습니다.
+			if isvalid(selectedCharID) and selectedCharID ~= "NIL" then
+				self.CurrentDisplayedUnits[i] = selectedCharID
+				self.CurrentDisplayedUnitsCost[i] = selectedCost
+			else
+				self.CurrentDisplayedUnits[i] = nil
+				self.CurrentDisplayedUnitsCost[i] = 0
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Reroll_Special(Entity targetUnit)
+		-- 초대장(사기 주사위)의 효과로 같은 시너지만 나오도록 상점을 새로고침하는 함수입니다.
+		--------------------------------------------------------------------------------
+		-- 잠금을 풉니다
+		if self.IsLocked == true then
+			self.IsLocked = false
+			log("초대장으로 인해 잠금이 풀렸습니다.")
+		end
+		--------------------------------------------------------------------------------
+		-- 새로고침 사운드
+		_PlaySoundLogic:PlaySound("M0004",self.Entity.OwnerId)
+		--------------------------------------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		
+		local userPControl = user.TM_PropertyControl
+		
+		--------------------------------------------------------------------------------
+		-- 리롤 이벤트 보내기, 재화를 소모하지 않으니 0으로 보냄
+		self.Entity:SendEvent(RerollCharacterShop(0))	-- 에러 아님
+		--------------------------------------------------------------------------------
+		-- 진열 리스트가 있다면 반납합니다.
+		for i=1, 5 do
+			if self.CurrentDisplayedUnits[i] ~= nil and self.CurrentDisplayedUnits[i] ~= "" then
+				self.LeftUnitCount[self.CurrentDisplayedUnits[i]] += 1
+				-- log(string.format("%s's Left Count is %d", self.CurrentDisplayedUnits[i], self.LeftUnitCount[self.CurrentDisplayedUnits[i]]))
+				self.CurrentDisplayedUnits[i] = nil
+			end
+		end
+		--------------------------------------------------------------------------------
+		-- 현재 레벨에 따라 등급 별 등장 확률을 계산합니다.
+		if self.ShopProbTable == nil then
+			self.ShopProbTable = _DataService:GetTable("ShopProbability")
+		end
+		---@type MODUserDataSet
+		local shopProbTable = self.ShopProbTable
+		local level = math.min(12, teamManager.Level + userPControl.Level_ShopAddLevel + userPControl.Level_CharShopAddLevel )
+		level = math.max(1, level)
+		local costProb = {}
+		for i=1, 5 do
+			costProb[i] = tonumber(shopProbTable:GetCell(i, string.format("%d", level))) * 100
+		end
+		
+		--------------------------------------------------------------------------------
+		-- (1) 타겟 캐릭터의 시너지를 가진 캐릭터 풀을 만듭니다.
+		local synergyPool = self:CreateCharacterPoolFromSameSynergy(targetUnit)
+		
+		-- (1.1) 캐릭터 풀에 1/2/3/4/5 코스트가 없으면 해당 코스트를 확률표에서 제거합니다.
+		for i=1, 5 do
+			if costProb[i] == 0 then
+				for j=#synergyPool,1,-1 do
+					local charID = synergyPool[j]
+					local charCost = tonumber(string.sub(charID, 2, 2))
+					if charCost == i then
+						table.remove(synergyPool,j)
+					end
+				end
+			end
+		end
+		
+		--------------------------------------------------------------------------------
+		-- 5장을 순차적으로 결정합니다.
+		for i=1, 5 do
+			-- (2) 코스트를 결정합니다.
+			local randomValue1 = _UtilLogic:RandomIntegerRange(1, 1000) / 10
+			local targetCost = 1
+			if randomValue1 <= costProb[1] then
+				targetCost = 1
+			elseif randomValue1 <= (costProb[1] + costProb[2]) then
+				targetCost = 2
+			elseif randomValue1 <= (costProb[1] + costProb[2]+ costProb[3]) then
+				targetCost = 3
+			elseif randomValue1 <= (costProb[1] + costProb[2]+ costProb[3]+ costProb[4]) then
+				targetCost = 4
+			elseif randomValue1 <= (costProb[1] + costProb[2]+ costProb[3]+ costProb[4]+ costProb[5]) then
+				targetCost = 5
+			else
+				log_error("random값이 이상해요!")
+			end
+			
+			-- (3)  캐릭터 풀에서 해당 코스트에 해당하는 1장을 선택합니다.
+			local selectedCharID
+			selectedCharID = self:ChooseRandomCharacterFromTable(targetCost,synergyPool)
+			if isvalid(selectedCharID) == true then
+				-- (3.1) 시너지가 맞는 캐릭터 발견 시, 그 캐릭터와 코스트 선정
+			elseif isvalid(selectedCharID) == false then
+				-- (3.2) 시너지가 맞는 캐릭터 미발견 시, 코스트를 1부터 5까지 순차적으로 돌려봄
+				for i =1,5 do
+					selectedCharID = self:ChooseRandomCharacterFromTable(i,synergyPool)
+					if isvalid(selectedCharID) == true then
+						targetCost = i
+						break
+					end
+					if i == 5 and isvalid(selectedCharID) == false then
+						-- (3.3) 5코스트까지 올라갔는데 해당되는 캐릭터 미발견 시, 전체 캐릭터 풀에서 초기 코스트에 해당되는 랜덤 캐릭터를 진열
+						selectedCharID = self:ChooseRandomCharacterFromSameCost(targetCost, "reroll")
+					end
+				end
+			end
+			
+		
+			-- (4) 보관함에서 1장을 제거하고 진열 목록에 넣습니다.
+			self.LeftUnitCount[selectedCharID] -= 1
+			-- log(string.format("%s's Left Count is %d", selectedCharID, self.LeftUnitCount[selectedCharID]))
+			self.CurrentDisplayedUnits[i] = selectedCharID
+			
+			-- RC10018 "어린 륀느" 활성화 시
+			local ownCountBySetID = teamManager.OwnUnitsBySetID[selectedCharID.."3"]
+			if isvalid(ownCountBySetID) == true and ownCountBySetID > 0 then
+				targetCost = 0
+			end
+			
+			self.CurrentDisplayedUnitsCost[i] = targetCost 
+		end
+	end
+
+	@ExecSpace("Server")
+	method void BuyEXP_Check()
+		--[[
+		경험치 구매 시, 재화 소모를 검증하는 함수입니다. 
+		검증에 성공하면 경험치 획득 함수를 호출합니다.
+		]]
+		------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local tmProperties = user.TM_PropertyControl
+		------------------------------------------
+		-- 함수 호출자 검증
+		if senderUserId ~= nil and senderUserId ~= user.OwnerId then
+			return
+		end
+		------------------------------------------
+		-- 최대 레벨 체크 : 현재 최대 레벨이면 실행하지 않습니다.
+		if teamManager.Level == tmProperties.Level_MaxLevel then
+			return
+		end
+		------------------------------------------
+		-- 준비 단계인지
+		if gameManager.PhaseType ~= "Ready" then
+			return
+		end
+		------------------------------------------
+		-- 경험치 구매가 가능한지
+		if not tmProperties.Exp_CanBuyExp then
+			return
+		end
+		------------------------------------------
+		-- 레벨업 타이밍이라면, 경험치 구매가 가능한지
+		if not tmProperties.Exp_CanLevelUpThroughBuyExp then
+			if teamManager.EXP + tmProperties.Exp_BuyExpReward >= _ExpTableLogic.ExpTable[teamManager.Level] + tmProperties.Level_ExpAdjustment then
+				return
+			end
+		end
+		------------------------------------------
+		-- 코치 효과 : 1 스테이지동안 골드로 레벨업을 할 수 없습니다.
+		if gameManager.Stage < 2 and tmProperties.Coach_SetCheck["COM20009"] >= 1 then
+			return
+		end
+		------------------------------------------
+		-- 재화 없으면 예외처리
+		if teamManager.Golds >= math.max(3, tmProperties.Exp_Cost) then
+			teamManager.Golds -= math.max(3, tmProperties.Exp_Cost)
+		else
+			return
+		end
+		------------------------------------------
+		teamManager:AddEXP( tmProperties.Exp_BuyExpReward )
+	end
+
+	@ExecSpace("Server")
+	method void BuyCharacter_Check(number slotIdx)
+		--[[
+		 상점의 slotIdx번째에 진열된 캐릭터를 구매할 때, 재화 소모를 검증하는 함수입니다.
+		 검증에 성공하면 캐릭터 구매 함수를 호출합니다.
+		]]
+		------------------------------------------
+		local teamManager = self.Entity.TeamManager
+		local tmProperties = self.Entity.TM_PropertyControl
+		------------------------------------------
+		-- 함수 호출자 검증
+		if senderUserId ~= nil and senderUserId ~= self.Entity.OwnerId then
+			return
+		end
+		
+		-- 페이즈 검증
+		if self.Entity.GameManager.PhaseType ~= "Ready" then
+			return
+		end
+		------------------------------------------
+		-- 해당 상점 슬롯이 살아있는지 검증
+		local charID = self.CurrentDisplayedUnits[slotIdx]
+		if charID == nil or charID == "" then
+			return
+		end
+		------------------------------------------
+		-- 재화 보유량 검사
+		if teamManager.Golds < self.CurrentDisplayedUnitsCost[slotIdx] then
+			return
+		end
+		------------------------------------------
+		-- 캐릭터 구매가 가능한 상태인지 검증
+		if not tmProperties.Shop_CanPurchaseCharacter then
+			return
+		end
+		------------------------------------------
+		self:BuyCharacter(slotIdx)
+		------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuyCharacter(number slotIdx)
+		-- 구매 처리 시도 (대기석 등 조건에 따라 구매 가능 여부를 체크합니다.)
+		local unitID = self.CurrentDisplayedUnits[slotIdx]
+		local spawnUnit = _UnitSetLogic_New:SpawnUnit(self.Entity.OwnerId, unitID, 1, string.format("Shop_%d", slotIdx))
+		
+		-- 구매 처리에 실패한 경우 함수를 종료합니다.
+		if isvalid(spawnUnit) == false then
+			return
+		end
+		
+		self.LeftUnitCount[unitID] += 1 -- 상점에 리롤될 때 -1 했고, 스폰할 때 다시 -1 하므로, 중복된 감소값만큼 다시 반납합니다.
+		-- log(string.format("%s's Left Count is %d", unitID, self.LeftUnitCount[unitID]))
+		
+		-- 상점 내 해당 슬롯을 빈 칸으로 만듭니다.
+		self.CurrentDisplayedUnits[slotIdx] = ""
+		
+		
+		-- 재화 소모 처리
+		self.Entity.TeamManager.Golds -= self.CurrentDisplayedUnitsCost[slotIdx]
+		-------------------------------------
+		-- 기물 구매 사운드
+		_PlaySoundLogic:PlaySound("M0005", self.Entity.OwnerId)
+		
+		-- 일일 미션 : 캐릭터 구매
+		if string.sub(self.Entity.GameManager.ModeType, 1, 6) == "Single" then
+			self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10007", self.Entity.GameManager.ModeLevel, 1)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BuyCharacter_Forced(number slotIdx1)
+		--[[
+		 상점에서 캐릭터를 구매할 때,
+			(1) 대기석에 해당 캐릭터 1마리 보유 + 대기석 꽉참
+			(2) 상점에 해당 캐릭터가 2마리 존재 및 둘 다 구매 가능한 금액 보유
+		위 두 조건을 모두 만족하는 경우, 대기석 소모 없이 소환합니다.
+		]]
+		--------------------------------------------------------
+		local unitID = self.CurrentDisplayedUnits[slotIdx1]
+		
+		-- 구매 처리
+		self.CurrentDisplayedUnits[slotIdx1] = ""
+		
+		-- 상점에 리롤될 때 -1 했고, 스폰할 때 다시 -1 하므로, 중복된 감소값만큼 다시 반납합니다.
+		self.LeftUnitCount[unitID] += 1
+		-- log(string.format("%s's Left Count is %d", unitID, self.LeftUnitCount[unitID])) 
+		
+		-- 재화 소모 처리
+		self.Entity.TeamManager.Golds -= self.CurrentDisplayedUnitsCost[slotIdx1]
+	end
+
+	@ExecSpace("Client")
+	method void Lock_OnClient()
+		local ui_lockBtn = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/Button_Lock")
+		
+		if ui_lockBtn.ButtonComponent.Enable == false then
+			return
+		end
+		
+		self:Lock()
+		self.Entity:SendEvent(LockShop())
+		
+		-- 잠금 버튼을 잠시 비활성화합니다. (과패킷 방지)
+		ui_lockBtn.ButtonComponent.Enable = false
+		_TimerService:SetTimerOnce(function()
+			ui_lockBtn.ButtonComponent.Enable = true
+		end, 1.5)
+	end
+
+	@ExecSpace("Server")
+	method void Lock()
+		-- 함수 호출자 검증
+		if senderUserId ~= nil and senderUserId ~= self.Entity.OwnerId then
+			return
+		end
+		------------------------------------------------------
+		self.IsLocked = not self.IsLocked
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		local gradeColorTable = _DataService:GetTable("GradeColor")
+		for i=1, 5 do
+			local row = gradeColorTable:FindRow("Key", string.format("Cost%d", i))
+			
+			local colorText = row:GetItem("Default")
+			self.GradeColorTable[i] = Color.FromHexCode(colorText)
+			self.GradeDarkerColorTable[i] = Color.FromHexCode(row:GetItem("Darker"))
+		end	
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		if name == "CurrentDisplayedUnits" then
+			self:UI_RefreshShopList()
+		elseif name == "CurrentDisplayedUnitsCost" then
+			self:UI_RefreshUIByOwnGoldsCondition()
+			self:UI_RefreshShopList()
+			_RuneCardDirector:ChangeShopCharacterValues()
+		elseif name == "IsLocked" then
+			self:UI_RefreshLockButtonUI()
+		elseif name == "LeftUnitCount" then
+			if isvalid(_CheatManager) then
+				_CheatManager:RefreshCharShopBoard(self.LeftUnitCount)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UI_RefreshShopList()
+		-- 상점UI 내 상품 목록을 새로고침합니다.
+		------------------------------------------------------------------------------------
+		-- 캐릭터 및 시너지 정보 테이블을 가져옵니다.
+		if self.CharacterInfoTable == nil then
+			self.CharacterInfoTable = _DataService:GetTable("CharacterInfo")
+		end
+		
+		if self.CharacterSynergyTable == nil then
+			self.CharacterSynergyTable = _DataService:GetTable("CharacterSynergy")
+		end
+		
+		if self.SynergyTable == nil then
+			self.SynergyTable = _DataService:GetTable("SynergyInfo")
+		end
+		
+		---@type MODUserDataSet
+		
+		local charInfoTable = self.CharacterInfoTable
+		---@type MODUserDataSet
+		local charSynergyTable = self.CharacterSynergyTable
+		---@type MODUserDataSet
+		local synergyTable = self.SynergyTable
+		------------------------------------------------------------------------------------
+		-- 이미 보유 중인 캐릭터 정보에 따라 UI 연출(이미 보유 중 or 합성 가능 표시)하기 위한 프로퍼티를 가져옴 
+		local ownUnitsBySetID = self.Entity.TeamManager.OwnUnitsBySetID
+		------------------------------------------------------------------------------------
+		-- 각 슬롯을 갱신합니다.
+		local productsList = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/List_Products")
+		for i=1, 5 do
+			local productUI = productsList:GetChildByName(string.format("Product_%d", i))
+			-----------------------------------------------------
+			-- 데이터를 먼저 가져옵니다.
+			local charID = self.CurrentDisplayedUnits[i]
+		
+			-- 데이터가 없다면(=이미 구매한 상태거나, 슬롯 비활성화 상태) 예외처리합니다.
+			if charID == nil or charID == "" then
+				productUI.Visible = false
+				productUI.ButtonComponent.Enable = false
+				
+				--스크루지(RC20034)로 슬롯 비활성화 상태라면 자물쇠를 답니다.
+				for k,v in pairs(_RuneCardDirector.RuneCardManagingValue["RC20034"])  do
+					if v then
+						_GeneralDirectorLogic:LockCharacterShopSlot(2,true)
+					else
+						_GeneralDirectorLogic:LockCharacterShopSlot(2,false)
+					end
+				end
+				goto skipRefresh
+			else
+				productUI.Visible = true
+				productUI.ButtonComponent.Enable = true
+			end
+			
+			-- 있다면 UI 갱신을 위한 데이터를 가져옵니다.
+			local charInfoRow = charInfoTable:FindRow("CharID", charID)
+			local charSynergyRow = charSynergyTable:FindRow("CharID", charID)
+			
+			local spriteRUID = charInfoRow:GetItem("IdleRUID")
+			local name = _LocalizationService:GetText(charID.."_Name")
+			local cost = tonumber(charInfoRow:GetItem("Cost"))
+			local realCost = self.CurrentDisplayedUnitsCost[i]
+			
+			if not isvalid(realCost) then
+				realCost = cost
+			end
+			
+			local synergies_Icon = {}
+			local synergies_Name = {}
+			for j=1, 3 do
+				local synergyID = charSynergyRow:GetItem(string.format("Synergy_%d", j))
+				
+				if synergyID == nil or synergyID == "" then
+					break
+				else
+					synergies_Icon[j] = synergyTable:FindRow("SynergyID", synergyID):GetItem("IconRUID")
+					synergies_Name[j] = _LocalizationService:GetText(synergyID.."_Name")
+				end
+			end
+			-----------------------------------------------------
+			-- UI에 반영합니다.
+			local productCompo = productUI.UI_CharShopProduct
+			if productCompo.IsInitiatedProperty == false then
+				productCompo:InitProperty()
+			end
+			
+			productUI.SpriteGUIRendererComponent.Color = self.GradeColorTable[cost]
+			productCompo.UI_CostText:GetChildByName("Text").TextComponent.Text = string.format("%d", realCost)
+			productCompo.cost = realCost
+		
+			productCompo.UI_Name.TextComponent.Text = name
+			
+			productCompo.UI_Sprite.Parent.SpriteGUIRendererComponent.Color = self.GradeDarkerColorTable[cost]
+			productCompo.UI_Sprite.SpriteGUIRendererComponent.ImageRUID = spriteRUID
+			local resourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(spriteRUID)
+			productCompo.UI_Sprite.SpriteGUIRendererComponent.LocalScale = resourceInfo["scale"]
+			productCompo.UI_Sprite.SpriteGUIRendererComponent.LocalPosition = resourceInfo["pos"]
+			
+			
+			if #synergies_Icon == 2 then
+				productCompo.UI_SynergyList_2type.Enable = true
+				productCompo.UI_SynergyList_3type.Enable = false
+				
+				productCompo.UI_Synergy2type_Slot1_Icon.SpriteGUIRendererComponent.ImageRUID = synergies_Icon[1]
+				productCompo.UI_Synergy2type_Slot2_Icon.SpriteGUIRendererComponent.ImageRUID = synergies_Icon[2]
+				productCompo.UI_Synergy2type_Slot1_Name.TextComponent.Text = synergies_Name[1]
+				productCompo.UI_Synergy2type_Slot2_Name.TextComponent.Text = synergies_Name[2]
+			elseif #synergies_Icon == 3 then
+				productCompo.UI_SynergyList_2type.Enable = false
+				productCompo.UI_SynergyList_3type.Enable = true
+				
+				productCompo.UI_Synergy3type_Slot1_Icon.SpriteGUIRendererComponent.ImageRUID = synergies_Icon[1]
+				productCompo.UI_Synergy3type_Slot2_Icon.SpriteGUIRendererComponent.ImageRUID = synergies_Icon[2]
+				productCompo.UI_Synergy3type_Slot3_Icon.SpriteGUIRendererComponent.ImageRUID = synergies_Icon[3]
+				productCompo.UI_Synergy3type_Slot1_Name.TextComponent.Text = synergies_Name[1]
+				productCompo.UI_Synergy3type_Slot2_Name.TextComponent.Text = synergies_Name[2]
+				productCompo.UI_Synergy3type_Slot3_Name.TextComponent.Text = synergies_Name[3]
+			else
+				log_warning("#synergies_icon 값이 기대(2 or 3)와 다릅니다 : ", #synergies_Icon)
+			end	
+			-----------------------------------------------------
+			-- 이미 보유 중인 캐릭터 정보에 따라 UI 연출
+			local checkOwnCharactersAndSetUIEffect = function()
+				local setIDs = {charID.."1", charID.."2", charID.."3"}
+				local ownCount = { ownUnitsBySetID[setIDs[1]], ownUnitsBySetID[setIDs[2]], ownUnitsBySetID[setIDs[3]] }
+				-----------------------------------------------------
+				if isvalid(ownCount[1]) == false then
+					ownCount[1] = 0
+				end
+				if isvalid(ownCount[2]) == false then
+					ownCount[2] = 0
+				end
+				if isvalid(ownCount[3]) == false then
+					ownCount[3] = 0
+				end
+				-----------------------------------------------------
+				if (ownCount[1] + ownCount[2] + ownCount[3]) > 0 then
+					productCompo.UI_Stars.Enable = true
+					productCompo.UI_Effect.Enable = true
+					productCompo.UI_ParticleEffect.Enable = true
+					
+					-- 3성 제작이 가능한 경우
+					if ownCount[1] == 2 and ownCount[2] == 2 then
+						for i=1, 3 do 
+							productCompo.UI_Effect_Stars[i].Enable = true 
+							productCompo.UI_Effect_Stars[i].SpriteGUIRendererComponent.ImageRUID = "bb0c4ee34cc94d2386f9eed87fc53499"
+						end
+						
+					-- 2성 제작이 가능한 경우
+					elseif ownCount[1] == 2 then
+						for i=1, 2 do 
+							productCompo.UI_Effect_Stars[i].Enable = true 
+							productCompo.UI_Effect_Stars[i].SpriteGUIRendererComponent.ImageRUID = "0b9e84f759864f548f216d6382f201fd"
+						end
+						
+						productCompo.UI_Effect_Stars[3].Enable = false
+						
+					-- 보유 중이지만 합성은 불가능한 경우
+					else
+						for i=1, 3 do 
+							productCompo.UI_Effect_Stars[i].Enable = false 
+						end
+					end
+				-- 보유 중이지 않은 경우
+				else
+					productCompo.UI_Stars.Enable = false 
+					productCompo.UI_Effect.Enable = false
+					productCompo.UI_ParticleEffect.Enable = false
+				end
+					
+			end
+			checkOwnCharactersAndSetUIEffect()
+		
+			-- 상점에 즐겨찾기 마크를 추가합니다
+			if _DictionaryFavoriteListManager:IsSettedFave_Char(charID) then
+				productCompo.UI_FavoriteMark.Enable = true
+			else
+				productCompo.UI_FavoriteMark.Enable = false
+			end
+			
+			productCompo.CharID = charID
+			-------------------------
+			
+			
+			--공짜라면 코인 아이콘 UI 강조
+			if realCost==0 then
+				local ownrune=_UserService.LocalPlayer.TeamManager.OwnRunes
+				for rune=1,#ownrune do
+					if isvalid(ownrune[rune]) then
+						local runeIDInfo = _UtilLogic:Split(ownrune[rune], "_")
+						if runeIDInfo[1] == "RC10018" then --륀느 카드 찾기
+							_RuneCardDirector:ShakingCard_Ready(rune)
+						end
+					end
+				end
+				--_GeneralDirectorLogic:ShowFreeCost(productCompo.UI_CostText, true)
+					--productCompo.UI_CostIcon,true)
+			else
+				--_GeneralDirectorLogic:ShowFreeCost(productCompo.UI_CostText, true)
+			end
+			
+			::skipRefresh::
+		end
+		------------------------------------------------------------------------------------
+	end
+
+	@ExecSpace("Client")
+	method void UI_RefreshChanceList()
+		-- 상점 내 '코스트 별 등장 확률 표기'를 변경합니다.
+		------------------------------------------------------------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		------------------------------------------------------------------------------------------------------
+		-- 코스트 별 등장 확률 테이블을 가져옵니다.
+		
+		if self.ShopProbTable == nil then
+			self.ShopProbTable = _DataService:GetTable("ShopProbability")
+		end
+		---@type MODUserDataSet
+		local shopProbTable = self.ShopProbTable
+		local level = math.min(12, teamManager.Level + userPControl.Level_ShopAddLevel + userPControl.Level_CharShopAddLevel )
+		level = math.max(1, level)
+		local costProb = {}
+		for i=1, 5 do
+			costProb[i] = tonumber(shopProbTable:GetCell(i, string.format("%d", level))) * 100
+		end
+		---------------------------------------------------
+		-- UI에 반영합니다.
+		local chanceListUI = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/List_ChanceTable")
+		
+		for i=1, 5 do
+			local slot = chanceListUI:GetChildByName(string.format("Chance_%d", i))
+			
+			slot:GetChildByName("Text").TextComponent.Text = string.format("%d%%", costProb[i])
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UI_RefreshUIByOwnGoldsCondition()
+		-- 골드 보유 조건에 따라 새로고침 및 경험치 구매 버튼을 흑백으로 만듭니다.
+		-----------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local userPControl = user.TM_PropertyControl
+		local golds = teamManager.Golds
+		-----------------------------------------------------
+		-- 새로고침 버튼 관련 조건 체크
+		local reroll_enable = false --grayScale mateiral
+		if userPControl.Reroll_FreeCounts_Temporary > 0 
+			or userPControl.Reroll_FreeCounts_Permanents > 0 
+			or golds >= math.max(1, userPControl.Reroll_Cost) then
+			reroll_enable = true
+		end
+		
+		local rerollButton = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/Button_Reroll")
+		rerollButton.ButtonComponent.Enable = reroll_enable
+		-----------------------------------------------------
+		-- 경험치 구매 버튼 관련 조건 체크
+		local buyingExp_enable = true --grayScale mateiral
+		
+		-- 돈이 충분한지
+		if golds < math.max(3, userPControl.Exp_Cost) then
+			buyingExp_enable = false
+		end
+		
+		-- 경험치 구매가 가능한 타이밍인지
+		if not userPControl.Exp_CanLevelUpThroughBuyExp then
+			if teamManager.EXP + userPControl.Exp_BuyExpReward >= _ExpTableLogic.ExpTable[teamManager.Level] + userPControl.Level_ExpAdjustment then
+				buyingExp_enable = false
+			end
+		end
+		
+		if not userPControl.Exp_CanBuyExp then
+			buyingExp_enable = false
+		end
+		
+		
+		-- 코치 효과 : 1스테이지동안 골드로 레벨업을 할 수 없습니다.
+		if gameManager.Stage < 2 and isvalid(userPControl.Coach_SetCheck["COM20009"]) and userPControl.Coach_SetCheck["COM20009"] >= 1 then
+			buyingExp_enable = false
+		end
+		
+		
+		local buyingEXPButton = _EntityService:GetEntityByPath("/ui/Arena_Default/InfoPanel/Button_Exp")
+		buyingEXPButton.ButtonComponent.Enable = buyingExp_enable
+		-----------------------------------------------------
+		-- 상점 내 각 슬롯 관련 조건 체크
+		local grayScaleMaterial = "material://bfc15809-bc1f-4929-8575-0553f1f0dc4c" 
+		local productsList = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/List_Products")
+		for i=1, userPControl.Shop_UseCharSlotCount do
+			local slot = productsList:GetChildByName(string.format("Product_%d", i))
+			local productCompo = slot.UI_CharShopProduct
+		
+			if productCompo.IsInitiatedProperty == false then
+				productCompo:InitProperty()
+			end
+			if #self.CurrentDisplayedUnitsCost < 1 then
+				return
+			end
+			if golds < self.CurrentDisplayedUnitsCost[i] or (not userPControl.Shop_CanPurchaseCharacter) then
+				productCompo.UI_BackgroundPanel.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMaterial)
+				productCompo.UI_Sprite.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMaterial)
+				--productCompo.UI_CostIcon.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMaterial)
+				productCompo.UI_Synergy2type_Slot1_Icon.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMaterial)
+				productCompo.UI_Synergy2type_Slot2_Icon.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMaterial)
+				productCompo.UI_Synergy3type_Slot1_Icon.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMaterial)
+				productCompo.UI_Synergy3type_Slot2_Icon.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMaterial)
+				productCompo.UI_Synergy3type_Slot3_Icon.SpriteGUIRendererComponent:ChangeMaterial(grayScaleMaterial)
+			else
+				productCompo.UI_BackgroundPanel.SpriteGUIRendererComponent:ChangeMaterial("")
+				productCompo.UI_Sprite.SpriteGUIRendererComponent:ChangeMaterial("")
+				--productCompo.UI_CostIcon.SpriteGUIRendererComponent:ChangeMaterial("")
+				productCompo.UI_Synergy2type_Slot1_Icon.SpriteGUIRendererComponent:ChangeMaterial("")
+				productCompo.UI_Synergy2type_Slot2_Icon.SpriteGUIRendererComponent:ChangeMaterial("")
+				productCompo.UI_Synergy3type_Slot1_Icon.SpriteGUIRendererComponent:ChangeMaterial("")
+				productCompo.UI_Synergy3type_Slot2_Icon.SpriteGUIRendererComponent:ChangeMaterial("")
+				productCompo.UI_Synergy3type_Slot3_Icon.SpriteGUIRendererComponent:ChangeMaterial("")
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UI_ShowSellUI(boolean enable, number sellPrice)
+		if enable == true then
+			if self.IsShowingSellUI == true then
+				return
+			else
+				self.IsShowingSellUI = true
+			end
+		else 
+			self.IsShowingSellUI = false
+		end
+		
+		
+		local sellUI = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/Panel_SellCharacter")
+		sellUI.Enable = enable
+		
+		local shopUI = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel")
+		shopUI.Enable = not enable
+		
+		if enable == true then
+			sellUI:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = "1250db83763d8af4ca2432d65e7744bf"
+			sellUI:GetChildByName("Title").TextComponent.Text = _LocalizationService:GetText("SellCharacter")
+			sellUI:GetChildByName("Price").TextComponent.Text = _LocalizationService:GetTextFormat("AddCoin", sellPrice) -- 코인 ?개
+		end
+		
+		local buttons = {
+			_EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/DefaultPanel/Button_StartBattle"),
+			_EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/Button_Lock"),
+			_EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/Button_Reroll"),
+		}
+		
+		
+		if enable == true then
+			for i=1, #buttons do
+				self.SellUI_ButtonOriginState[i] = buttons[i].Enable
+				buttons[i].Enable = false
+			end
+		else
+			for i=1, #buttons do
+				buttons[i].Enable = self.SellUI_ButtonOriginState[i]
+			end
+		
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UI_RefreshLockButtonUI()
+		-- 잠금 상태에 따라 버튼, 툴팁을 수정합니다.
+		------------------------------------------------------------
+		local ui_lockBtn = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/Button_Lock")
+		local lockBtnText = ui_lockBtn:GetChildByName("Text_Title")
+		local lockBtnSprite = ui_lockBtn:GetChildByName("Icon_Title")
+		
+		local ui_lockTooltip = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/Tooltip_Lock")
+		
+		if self.IsLocked == true then
+			lockBtnText.TextComponent.Text = _LocalizationService:GetText("UserAct_Unlock")
+			lockBtnSprite.SpriteGUIRendererComponent.ImageRUID = "80a10b65ebde4aafae259e7570de2479"
+			ui_lockTooltip:GetChildByName("Text_Name").TextComponent.Text = _LocalizationService:GetTextFormat("LockInfo_Title_Locked", _ShortCutKeyService.ShortCutKey["LockCharShop"])
+			ui_lockTooltip:GetChildByName("Text_Desc").TextComponent.Text = _LocalizationService:GetText("LockInfo_Desc_Locked")
+		else 
+			lockBtnText.TextComponent.Text = _LocalizationService:GetText("Lock")
+			lockBtnSprite.SpriteGUIRendererComponent.ImageRUID = "596a2c1a4574470d9098fc400b062e74"
+			ui_lockTooltip:GetChildByName("Text_Name").TextComponent.Text = _LocalizationService:GetTextFormat("LockInfo_Title_Unlocked", _ShortCutKeyService.ShortCutKey["LockCharShop"])
+			ui_lockTooltip:GetChildByName("Text_Desc").TextComponent.Text = _LocalizationService:GetText("LockInfo_Desc_Unlocked")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Reroll_Select(number rerollCost, string charID1, string charID2, string charID3, string charID4, string charID5)
+		-- 캐릭터ID를 직접 지정하여 상점에 나타나게 하는 함수입니다.
+		--------------------------------------------------------------------------------
+		-- 지정한 캐릭터의 리스트를 만듭니다.
+		local charList = {charID1,charID2,charID3,charID4,charID5}
+		--------------------------------------------------------------------------------
+		
+		if self.CharacterInfoTable == nil then
+			self.CharacterInfoTable = _DataService:GetTable("CharacterInfo")
+		end
+		
+		
+		-- 잠금 검증
+		if self.IsLocked == true then
+			log_warning("Shop is locked.")
+			return
+		end
+		--------------------------------------------------------------------------------
+		-- 재화 소모 리롤 이벤트 보내기
+		self.Entity:SendEvent(RerollCharacterShop(rerollCost)) 	-- 에러 아님
+		--------------------------------------------------------------------------------
+		-- 새로고침 사운드
+		
+		_PlaySoundLogic:PlaySound("M0004",self.Entity.OwnerId)
+		--------------------------------------------------------------------------------
+		local user = self.Entity
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		--------------------------------------------------------------------------------
+		-- 진열 리스트가 있다면 반납합니다.
+		for i=1, 5 do
+			if self.CurrentDisplayedUnits[i] ~= nil and self.CurrentDisplayedUnits[i] ~= "" then
+				self.LeftUnitCount[self.CurrentDisplayedUnits[i]] += 1
+				-- log(string.format("%s's Left Count is %d", self.CurrentDisplayedUnits[i], self.LeftUnitCount[self.CurrentDisplayedUnits[i]]))
+				self.CurrentDisplayedUnits[i] = nil
+			end
+		end
+		--------------------------------------------------------------------------------
+		local targetCost = 1
+		
+		-- 5장을 순차적으로 결정합니다.
+		for i=1, userPControl.Shop_UseCharSlotCount do
+			
+			-- (1) 지정한 캐릭터 중 1장을 선택합니다.
+			local selectedCharID = charList[i]
+			targetCost = self.CharacterInfoTable:FindRow("CharID",selectedCharID):GetItem("Cost")
+			-- (2) ID가 있는지 확인하고,보관함에서 1장을 제거하고 진열 목록에 넣습니다.
+			if isvalid(selectedCharID) then
+				self.LeftUnitCount[selectedCharID] -= 1
+				-- log(string.format("%s's Left Count is %d", selectedCharID, self.LeftUnitCount[selectedCharID]))
+				self.CurrentDisplayedUnits[i] = selectedCharID
+				
+				-- RC10018 활성화 시
+				local ownCountBySetID = teamManager.OwnUnitsBySetID[selectedCharID.."3"]
+				if isvalid(ownCountBySetID) == true and ownCountBySetID > 0 then
+					targetCost = 0
+				end
+				
+				
+				self.CurrentDisplayedUnitsCost[i] = targetCost
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "DictionaryManager")
+	handler HandleDictionaryFavoriteEvent(DictionaryFavoriteEvent event)
+		-- Parameters
+		local settedFaveChar = event.settedFaveChar
+		local settedFaveItem = event.settedFaveItem
+		---------------------------------------------------------
+		-- 240610 추가 :: 상점에 즐겨찾기 마크를 추가합니다
+		
+		if settedFaveChar == nil then return end
+		
+		local productsList = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/ShopPanel/CharacterShop/List_Products")
+		for i=1, 5 do
+		
+			-- 데이터를 먼저 가져옵니다.
+			local charID = self.CurrentDisplayedUnits[i]
+			
+			local productUI = productsList:GetChildByName(string.format("Product_%d", i))
+			local productCompo = productUI.UI_CharShopProduct
+			
+			if productCompo.UI_FavoriteMark == nil then
+				productCompo.UI_FavoriteMark = productCompo.Entity:GetChildByName("Sprite_FavoriteMark")
+			end
+		
+			if _DictionaryFavoriteListManager:IsSettedFave_Char(charID) then
+				productCompo.UI_FavoriteMark.Enable = true
+			else
+				productCompo.UI_FavoriteMark.Enable = false
+			end
+		
+		end
+	end
+
+	@EventSender("Entity", "b4b19217-ab8f-47ff-92b3-5c8cbb9906a7")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		--캐릭터 상점을 잠그는 기능입니다.
+		
+		if _UI_LobbyLevelSelect.CurrentShowingMode == "Tutorial" then
+			if self.Entity.TutorialManager_New.AllowCharLock == true then
+				
+			else
+				_UIToast:ShowMessageByLocalizingKey("Toast_TutoTargetButtonError")
+			end
+			return
+		end
+		
+		self:Lock_OnClient()
+	end
+
+end

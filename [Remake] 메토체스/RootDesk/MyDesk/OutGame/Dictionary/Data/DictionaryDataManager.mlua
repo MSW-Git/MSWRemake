@@ -1,0 +1,576 @@
+@Logic
+script DictionaryDataManager extends Logic
+
+	property boolean IsDataLoadComplete = false
+
+	property table CharDataList = {}
+
+	property table SynergyDataList = {}
+
+	property table ItemDataList = {}
+
+	property table RuneDataList = {}
+
+	property table statusEffectData = {}
+
+	property table LeagueRulesDataList = {}
+
+	property table LobbyRulesDataList = {}
+
+	@ExecSpace("ClientOnly")
+	method void DataSetInitialize()
+		-- 모든 딕셔너리 데이터를 초기화하고 로드 완료 상태로 설정
+		self:SetCharacterData()
+		self:SetSynergyData()
+		self:SetItemData()
+		self:SetStatusEffectData()
+		self:SetRuneCardData()
+		self:SetAllGameRulesData()
+		
+		self.IsDataLoadComplete = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCharacterData()
+		-- 캐릭터 데이터를 세팅하는 함수
+		-------------------------------------------------------------------------------------------------------
+		---@type MODUserDataSet
+		local data_CharInfo = _DataService:GetTable("CharacterInfo")
+		---@type MODUserDataSet
+		local data_CharSynergy = _DataService:GetTable("CharacterSynergy")
+		---@type MODUserDataSet
+		local data_CharStat = _DataService:GetTable("CharacterStatus")
+		---@type MODUserDataSet
+		
+		local data_CharInfoBySeason = _DataService:GetTable("CharacterListBySeason")
+		local seasonInfo = _DataService:GetTable("SeasonInfo")
+		------------------------------------------------------------------------
+		-- 1. 각 캐릭터별 정보를 가져옵니다.
+		------------------------------------------------------------------------
+		for i=1, data_CharInfo:GetRowCount() do
+			local row_charInfo = data_CharInfo:GetRow(i)
+			
+			local character = CharDictionaryData()
+			
+			-- DictionaryEnable 컬럼이 false면 다음으로.
+			if row_charInfo:GetItem("DictionaryEnable") == "FALSE" then
+				character.DictionaryEnable = false
+			else
+				character.DictionaryEnable = true
+				--		continue
+			end
+			
+			if row_charInfo:GetItem("CollectionEnable") == "TRUE" then
+				character.CollectionEnable = true
+			else
+				character.CollectionEnable = false
+			end
+			
+			-- 캐릭터 인포 (코스트가 -1이면 목록에 안 나오도록 처리)
+			if tonumber(row_charInfo:GetItem("Cost")) < 0 then continue end
+			
+			character.CharID = row_charInfo:GetItem("CharID")
+			character.Cost = tonumber(row_charInfo:GetItem("Cost"))
+			character.Scale = tonumber(row_charInfo:GetItem("Scale"))
+			character.Role = row_charInfo:GetItem("Role")
+			character.MainStats = row_charInfo:GetItem("MainStats")
+			character.IdleRUID = row_charInfo:GetItem("IdleRUID")
+			
+			-- 각 시즌 포함 여부
+			---@type table<string, boolean>
+			local containedSeason = {}
+			local charRow_inCharListBySeason = data_CharInfoBySeason:FindRow("CharID", character.CharID)
+			if isvalid(charRow_inCharListBySeason) == true then
+				for j=1, seasonInfo:GetRowCount() do
+					local row = seasonInfo:GetRow(j)
+					local season = row:GetItem("Season")
+					
+					local isContained_text = charRow_inCharListBySeason:GetItem(season)
+					if isContained_text == "TRUE" then
+						character.ContainedSeason[season] = true
+					else
+						character.ContainedSeason[season] = false
+					end
+				end
+			else
+				continue
+			end
+			
+				-- 데이터 입력
+			self.CharDataList[character.CharID] = character
+		end
+		------------------------------------------------------------------------
+		-- 1-2. 각 캐릭터 별 시너지 정보를 정리합니다.
+		for i=1, data_CharSynergy:GetRowCount() do
+			local row_charSyn = data_CharSynergy:GetRow(i)
+			
+			-- 아이디
+			local id = row_charSyn:GetItem("CharID")
+			if self.CharDataList[id] == {} or self.CharDataList[id] == nil then continue end
+			
+			-- 캐릭터시너지
+		--[[	if row_charSyn:GetItem("BattleOnly") == "TRUE" then
+				self.charData[id].BattleOnly = true
+			else
+				self.charData[id].BattleOnly = false
+			end]]
+			self.CharDataList[id].SynergyCount = tonumber(row_charSyn:GetItem("SynergyCount"))
+			
+			for s = 1, self.CharDataList[id].SynergyCount do
+				self.CharDataList[id].Synergies[s] = row_charSyn:GetItem("Synergy_"..s)
+			end
+			
+		end
+		------------------------------------------------------------------------
+		-- 1-3. 각 캐릭터 별 스탯 정보를 정리합니다.
+		for i=1, data_CharStat:GetRowCount() do
+			
+			local row = data_CharStat:GetRow(i)
+			
+				-- 아이디
+			local id = row:GetItem("CharID")
+			if self.CharDataList[id] == {} or self.CharDataList[id] == nil then continue end
+			if tonumber(data_CharStat:GetCell(i, "Level")) > 1 then continue end
+			
+			for k=1, 3 do -- 레벨 for
+				self.CharDataList[id].Status_MaxHP[k] = data_CharStat:GetCell(i + k - 1, "MaxHP")
+				self.CharDataList[id].Status_PhysicalAttack[k] = data_CharStat:GetCell(i + k - 1, "PhysicalAttack")	
+				self.CharDataList[id].Status_MagicalAttack[k] = data_CharStat:GetCell(i + k - 1, "MagicalAttack")
+			end
+		
+			self.CharDataList[id].Status_MaxMP = row:GetItem("MaxMP")
+			self.CharDataList[id].Status_MP = row:GetItem("MP")
+			self.CharDataList[id].Status_Defence = row:GetItem("Defence")
+			self.CharDataList[id].Status_MagicalResistance = row:GetItem("MagicalResistance")
+			self.CharDataList[id].Status_AttackSpeed = row:GetItem("AttackSpeed")
+			self.CharDataList[id].Status_AttackRange = row:GetItem("AttackRange")
+			self.CharDataList[id].Status_SkillRange = row:GetItem("SkillRange")
+			self.CharDataList[id].Status_CriticalPercent = row:GetItem("CriticalPercent")
+			self.CharDataList[id].Status_CriticalDamagePercent = row:GetItem("CriticalDamagePercent")
+			self.CharDataList[id].Status_BloodAbsorptionPercent = row:GetItem("BloodAbsorptionPercent")
+			self.CharDataList[id].Status_MoveSpeed = row:GetItem("MoveSpeed")
+		end
+		------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ClientOnly")
+	method table SortCharacterKeyIDs()
+		-- 캐릭터 ID를 코스트 기준으로 정렬하여 반환
+		if self.CharDataList == {} then return end
+		
+		-- 키만 빼오기
+		local firstKey = table.keys(self.CharDataList)
+		
+		-- 코스트 0만 따로 뺌
+		local zeroData = {}
+		
+		-- 나머지 코스트
+		local otherData = {}
+		
+		for i=1, #firstKey do
+			if self.CharDataList[firstKey[i]].Cost <= 0 then
+				table.insert(zeroData, firstKey[i])
+			else
+				table.insert(otherData, firstKey[i])
+			end
+			
+		end
+		
+		table.sort(otherData)
+		table.sort(zeroData)
+		
+		local sortData = {}
+		
+		table.initialize(sortData, otherData)
+		
+		for i=1, #zeroData do
+			table.insert(sortData, zeroData[i])
+		end
+		
+		return sortData
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSynergyData()
+		-- 시너지 데이터를 세팅합니다.
+		------------------------------------------------------------------
+		local data_SynergyInfo = _DataService:GetTable("SynergyInfo")
+		local data_CharListBySynergy = _DataService:GetTable("CharacterListbySynergy")
+		local data_LinkedSynergy = _DataService:GetTable("LinkedSynergy")
+		local data_synListBySeason = _DataService:GetTable("SynergyListBySeason")
+		local seasonInfo = _DataService:GetTable("SeasonInfo")
+		
+		for i=1, data_SynergyInfo:GetRowCount() do
+			local row_info = data_SynergyInfo:GetRow(i)
+			local row_charlist = data_CharListBySynergy:GetRow(i)
+			local row_linked = data_LinkedSynergy:GetRow(i)
+			
+			local synergy = SynergyDictionaryData()
+			
+			synergy.SynergyID = row_info:GetItem("SynergyID")
+			synergy.IconRUID = row_info:GetItem("IconRUID")
+			synergy.Desc = row_info:GetItem("Desc")
+			for j=1, 5 do
+				synergy.NeedCount_step[j] = row_info:GetItem("NeedCount_step"..j)
+			end
+			
+			for j=1, 4 do
+				synergy.Detail_step[j] = row_info:GetItem("Detail_step"..j)
+			end
+			
+			synergy.CharacterCount = tonumber(row_charlist:GetItem("CharacterCount"))
+			for j=1, synergy.CharacterCount do
+				synergy.CharIDs[j] = row_charlist:GetItem("Char_"..j)
+			end
+			
+			-- 연결된 시너지 목록
+			synergy.LinkedCount = tonumber(row_linked:GetItem("LinkedCount"))
+			for j=1, synergy.LinkedCount do
+				synergy.linkedSynergyIDs[j] = row_linked:GetItem("Linked"..j)
+			end
+			------------------------------------------------
+			-- 각 시즌 포함 여부
+			---@type table<string, boolean>
+			local containedSeason = {}
+			local row_inSynListBySeason = data_synListBySeason:FindRow("SynergyID", synergy.SynergyID)
+			for j=1, seasonInfo:GetRowCount() do
+				local row = seasonInfo:GetRow(j)
+				local season = row:GetItem("Season")
+				
+				local isContained_text = row_inSynListBySeason:GetItem(season)
+				if isContained_text == "TRUE" then
+					synergy.ContainedSeason[season] = true
+				else
+					synergy.ContainedSeason[season] = false
+				end
+			end
+			------------------------------------------------
+			-- 반영 완료
+			self.SynergyDataList[synergy.SynergyID] = synergy
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetItemData()
+		-- 아이템 상태, 효과, 시즌별 정보를 로드하여 아이템 딕셔너리 구성
+		local data_itemStatus = _DataService:GetTable("ItemStatus")
+		local data_StatusEffect = _DataService:GetTable("StatusEffect")
+		local data_seasonInfo = _DataService:GetTable("SeasonInfo")
+		local data_itemListBySeason = _DataService:GetTable("ItemListBySeason")
+		local data_itemBackgroundIconInfo = _DataService:GetTable("ItemUI_Background")
+		
+		local bgRUID = {}
+		for i=1, data_itemBackgroundIconInfo:GetRowCount() do
+			local row = data_itemBackgroundIconInfo:GetRow(i) 
+			bgRUID[row:GetItem("Type")] = row:GetItem("RUID")
+		end
+		
+		for i = 1, data_itemStatus:GetRowCount() do
+			local row = data_itemStatus:GetRow(i)
+			
+			local item = ItemStatusDictionaryData()
+			
+			item.ItemID = row:GetItem("ItemID")
+			item.Type = row:GetItem("Type")
+			item.Tags = row:GetItem("Tags")
+			item.RUID = row:GetItem("RUID")
+			
+			local resourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(item.RUID)
+			item.RUID_LocalPos = resourceInfo["pos"]
+			item.RUID_LocalScale = resourceInfo["scale"]
+			
+		
+			item.Guide = _LocalizationService:GetText(row:GetItem("Guide")) -- 로컬라이제이션 나오면 수정
+			
+			if item.Type == "MaterialItem" then
+				item.SpecialAbility = _LocalizationService:GetText("Item_Material_SpecialAbility") 
+			else
+				if _UtilLogic:IsNilorEmptyString(row:GetItem("SpecialAbility")) == true then
+					item.SpecialAbility = ""
+				else
+					item.SpecialAbility =  _LocalizationService:GetText("Item_"..item.ItemID.."_SpecialAbility")
+				end
+			end
+			
+			
+			item.BackgroundRUID = bgRUID[item.Type] -- 타입에 따라 BG Icon 변경
+			
+			
+			-- 상태이상 포함 여부
+			for j = 1, 2 do
+				if row:GetItem("StatusEffect_"..j) ~= "" then
+					item.StatusEffect[j] = row:GetItem("StatusEffect_"..j)
+				end
+			end
+			
+			---@type table<string>
+			local statusType = {"PhysicalAttack", "MagicalAttack", "MaxHP", "MaxMP", "MP",
+			"Defence", "MagicalResistance", "AttackSpeed", "AttackRange",
+			"CriticalPercent", "CriticalDamagePercent", "BloodAbsorptionPercent", "MoveSpeed"
+			}
+			
+			-- 스테이터스
+			for j=1, #statusType do
+				item.Status[statusType[j]] = tonumber(row:GetItem(statusType[j])) 
+			end
+			
+			-- 시즌 포함 여부
+			for j=1, data_seasonInfo:GetRowCount() do
+				local season = data_seasonInfo:GetRow(j):GetItem("Season")
+				local row_inItemLisyBySeason = data_itemListBySeason:FindRow("ItemID", item.ItemID)
+				local isContained = row_inItemLisyBySeason:GetItem(season)
+				
+				if isContained == "TRUE" then
+					item.ContainedSeason[season] = true
+				else
+					item.ContainedSeason[season] = false
+				end
+			end
+		
+			-- 데이터 반영 완료
+			self.ItemDataList[item.ItemID] = item
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetStatusEffectData()
+		-- 상태 효과 데이터를 로드하여 상태 효과 딕셔너리 구성
+		---@type MODUserDataSet
+		local data_StatusEffect = _DataService:GetTable("StatusEffect")
+		
+		for i=1, data_StatusEffect:GetRowCount() do
+			local row = data_StatusEffect:GetRow(i)
+			
+			local status = StatusEffectDictionaryData()
+			
+			status.ID = row:GetItem("ID")
+			status.Type = row:GetItem("Type")
+			status.Name_Key = row:GetItem("Name_Key")
+			status.Desc_Key = row:GetItem("Desc_Key")
+			
+			self.statusEffectData[status.ID] = status
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetRuneCardData()
+		-- 룬 카드 정보와 시즌별 데이터를 로드하여 룬 카드 딕셔너리 구성
+		local data_Runecard = _DataService:GetTable("RuneInfo")
+		local data_runeListBySeason = _DataService:GetTable("RuneCardListBySeason")
+		local data_seasonInfo = _DataService:GetTable("SeasonInfo")
+		
+		for i=1, data_Runecard:GetRowCount() do
+			local row = data_Runecard:GetRow(i)
+			local runeCard = RuneCardDictionaryData()
+			
+			-- 기본 정보
+			runeCard.RuneID = row:GetItem("RuneID")
+			runeCard.IconRUID = row:GetItem("IconRUID")
+			runeCard.Grade = row:GetItem("Grade")
+			
+			local resourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(runeCard.IconRUID)
+			runeCard.Icon_LocalPos = resourceInfo["pos"]
+			runeCard.Icon_LocalScale = resourceInfo["scale"]
+			
+			local useStack = row:GetItem("Desc_UseStack")
+			if useStack == "FALSE" then
+				runeCard.Desc_UseStack = false
+			else
+				runeCard.Desc_UseStack = true
+			end
+			
+			local useString = row:GetItem("Desc_UseString")
+			if useString == "FALSE" then
+				runeCard.Desc_UseString = false
+			else
+				runeCard.Desc_UseString = true
+			end
+		
+			-- 시즌 포함 정보
+			for j=1, data_seasonInfo:GetRowCount() do
+				local season = data_seasonInfo:GetRow(j):GetItem("Season")
+				local row_inRuneListBySeason = data_runeListBySeason:FindRow("RuneID", runeCard.RuneID)
+				local isContained = row_inRuneListBySeason:GetItem(season)
+				
+				if isContained == "TRUE" then
+					runeCard.ContainedSeason[season] = true
+				else
+					runeCard.ContainedSeason[season] = false
+				end
+			end
+			
+			-- 효과 관련
+			runeCard.UseType = row:GetItem("EnemyUseType")
+			
+			-- 반영 완료
+			self.RuneDataList[runeCard.RuneID] = runeCard
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method SyncTable<string> GetSortedCharacterIDList(string season, string synergyID)
+		-- 시즌과 시너지 아이디를 입력하면, 해당하는 캐릭터 아이디 목록을 정렬된 상태로 반환합니다.
+		-- 정렬은 ID 순서대로입니다.
+		----------------------------------------------------------------------------
+		local charInfo = _DataService:GetTable("CharacterInfo")
+		local sortedCharIDList = {}
+		----------------------------------------------------------------------------
+		local idx = 0
+		for i=1, charInfo:GetRowCount() do
+			local charRow = charInfo:GetRow(i)
+			local isContaindedDictionary = charRow:GetItem("DictionaryEnable")
+			
+			if isContaindedDictionary == "FALSE" then
+				continue
+			end
+			--------------------------------------------
+			local charID = charRow:GetItem("CharID")
+			local charData = self.CharDataList[charID]
+			
+			-- (1) 현재 시즌에 포함된 캐릭터인지 여부
+			local isContainedSeason = false
+			if charData.ContainedSeason[season] == true then
+				isContainedSeason = true
+			end		
+			--------------------------------------------
+			-- (2) 타겟 시너지에 포함된 캐릭터인지 여부
+			local hasTargetSynergy = false
+			if synergyID == "ALL" then
+				hasTargetSynergy = true
+			else
+				local synergyCount = charData.SynergyCount
+				for i=1, synergyCount do
+					if charData.Synergies[i] == synergyID then
+						hasTargetSynergy = true
+					end	
+				end
+			end
+			
+			--------------------------------------------
+			-- (1)과 (2) 두 조건을 모두 충족하면 목록에 넣는다
+			if isContainedSeason == true and hasTargetSynergy == true then
+				table.insert(sortedCharIDList, charID)
+			end
+		end
+		----------------------------------------------------------------------------
+		return sortedCharIDList
+	end
+
+	@ExecSpace("ClientOnly")
+	method SyncTable<string> GetItemIDList(string season, string type)
+		-- 시즌과 시너지 아이디를 입력하면, 해당하는 아이템 아이디 목록을 정렬된 상태로 반환합니다.
+		-- 정렬은 ID 순서대로입니다.
+		----------------------------------------------------------------------------
+		local itemInfo = _DataService:GetTable("ItemStatus")
+		local itemIDList = {}
+		----------------------------------------------------------------------------
+		for i=1, itemInfo:GetRowCount() do
+			local itemRow = itemInfo:GetRow(i)
+			--------------------------------------------
+			local itemID = itemRow:GetItem("ItemID")
+			
+			---@type ItemStatusDictionaryData
+			local itemData = self.ItemDataList[itemID]
+			
+			-- (1) 현재 시즌에 포함된 캐릭터인지 여부
+			local isContainedSeason = false
+			if itemData.ContainedSeason[season] == true then
+				isContainedSeason = true
+			end		
+			--------------------------------------------
+			-- (2) 타겟 타입인지 여부
+			local isTargetType = false
+			if itemData.Type == type then
+				isTargetType = true
+			end
+			--------------------------------------------
+			-- (1)과 (2) 두 조건을 모두 충족하면 목록에 넣는다
+			if isContainedSeason == true and isTargetType == true then
+				table.insert(itemIDList, itemID)
+			end
+		end
+		----------------------------------------------------------------------------
+		return itemIDList
+	end
+
+	@ExecSpace("ClientOnly")
+	method SyncTable<string> GetRuneIDList(string season, string grade)
+		-- 시즌과 시너지 아이디를 입력하면, 해당하는 룬 카드 아이디 목록을 정렬된 상태로 반환합니다.
+		-- 정렬은 ID 순서대로입니다.
+		----------------------------------------------------------------------------
+		local runeList = _DataService:GetTable("RuneInfo")
+		local runeIDList = {}
+		----------------------------------------------------------------------------
+		for i=1, runeList:GetRowCount() do
+			local row = runeList:GetRow(i)
+			--------------------------------------------
+			local runeID = row:GetItem("RuneID")
+			
+			---@type RuneCardDictionaryData
+			local runeData = self.RuneDataList[runeID]
+			
+			-- (1) 현재 시즌에 포함된 캐릭터인지 여부
+			local isContainedSeason = false
+			if runeData.ContainedSeason[season] == true then
+				isContainedSeason = true
+			end		
+			--------------------------------------------
+			-- (2) 타겟 타입인지 여부
+			local isTargetType = false
+			if runeData.Grade == grade then
+				isTargetType = true
+			end
+			--------------------------------------------
+			-- (1)과 (2) 두 조건을 모두 충족하면 목록에 넣는다
+			if isContainedSeason == true and isTargetType == true then
+				table.insert(runeIDList, runeID)
+			end
+		end
+		----------------------------------------------------------------------------
+		return runeIDList
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetAllGameRulesData()
+		-- 게임 규칙 텍스트 데이터를 불러오는 함수입니다.
+		---@type MODUserDataSet
+		local ingameRulesDataset = _DataService:GetTable("InGameRulesData")
+		---@type MODUserDataSet
+		local outgameRulesDataset = _DataService:GetTable("OutGameRulesData")
+		
+		--리그 규칙의 모든 데이터를 가져옵니다.
+		for i=1,ingameRulesDataset:GetRowCount() do
+			local row_rulesDataInfo = ingameRulesDataset:GetRow(i)
+			local ingameRuleRow = GameRulesData()
+			
+			ingameRuleRow.Style = row_rulesDataInfo:GetItem("Style")
+			ingameRuleRow.RuleDesc = row_rulesDataInfo:GetItem("RuleDesc")
+			ingameRuleRow.CategoryLocalKey = row_rulesDataInfo:GetItem("CategoryLocalKey")
+			
+			if isvalid(self.LeagueRulesDataList[ingameRuleRow.CategoryLocalKey]) == false then
+				--사전에 카테고리 리스트가 없다면 리스트를 새로 만들어줌
+				table.insert(self.LeagueRulesDataList,ingameRuleRow.CategoryLocalKey)
+				self.LeagueRulesDataList[ingameRuleRow.CategoryLocalKey] = {}
+			end
+			table.insert(self.LeagueRulesDataList[ingameRuleRow.CategoryLocalKey],ingameRuleRow)
+		end
+		
+		--로비 규칙의 모든 데이터를 가져옵니다.
+		for i=1,outgameRulesDataset:GetRowCount() do
+			local row_rulesDataInfo = outgameRulesDataset:GetRow(i)
+			local outgameRuleRow = GameRulesData()
+			
+			outgameRuleRow.Style = row_rulesDataInfo:GetItem("Style")
+			outgameRuleRow.RuleDesc = row_rulesDataInfo:GetItem("RuleDesc")
+			outgameRuleRow.CategoryLocalKey = row_rulesDataInfo:GetItem("CategoryLocalKey")
+			
+			if isvalid(self.LobbyRulesDataList[outgameRuleRow.CategoryLocalKey]) == false then
+				--사전에 카테고리 리스트가 없다면 리스트를 새로 만들어줌
+				table.insert(self.LobbyRulesDataList,outgameRuleRow.CategoryLocalKey)
+				self.LobbyRulesDataList[outgameRuleRow.CategoryLocalKey] = {}
+			end
+			table.insert(self.LobbyRulesDataList[outgameRuleRow.CategoryLocalKey],outgameRuleRow)
+		end
+	end
+
+end

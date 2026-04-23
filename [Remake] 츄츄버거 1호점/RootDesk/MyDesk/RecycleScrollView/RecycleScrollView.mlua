@@ -1,0 +1,797 @@
+@Component
+script RecycleScrollView extends Component
+
+	property Vector4 Padding = Vector4(0,0,0,0)
+
+	property Entity Item = nil
+
+	property integer TotalCount = 0
+
+	property Vector2 Spacing = Vector2(0,0)
+
+	property integer ScrollingType = 0
+
+	property integer ItemsPerLine = 1
+
+	property Entity Content = nil
+
+	property Vector2 PrevTouchPoint = Vector2(0,0)
+
+	property boolean IsTouched = false
+
+	property Vector2 BoundingMin = Vector2(0,0)
+
+	property Vector2 BoundingMax = Vector2(0,0)
+
+	property table CalcCells = {}
+
+	property Vector2 ContentBoundsMin = Vector2(0,0)
+
+	property Vector2 ContentBoundsMax = Vector2(0,0)
+
+	property boolean IsScroll = false
+
+	property any onUpdateCell = nil
+
+	property integer MaxContentSize = 0
+
+	property ScrollBar HorizontalBar = nil
+
+	property ScrollBar VerticalBar = nil
+
+	property integer ChildAlignmentType = 0
+
+	property boolean IsEnter = false
+
+	property number ScrollSensitivity = 1
+
+	property Vector2 MaxSize = Vector2(0,0)
+
+	property integer MaxColumnCount = 0
+
+	property any onDragEndCallback = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 스크롤뷰 초기화: 마스크와 터치 컴포넌트 추가, 아이템 설정
+		self.Entity:AddComponent(MaskComponent)
+		self.Entity:AddComponent(UITouchReceiveComponent)
+		self:Clear()
+		
+		self.Content = self.Entity
+		
+		self:SetItem(self.Item)
+		
+		self:Initialize()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Initialize()
+		-- 스크롤뷰 초기 설정: 뷰 바운드 설정 및 리프레시
+		self:SetViewBounds()
+		self:Refresh(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity GetOrCreateItem(integer index, Vector3 pos)
+		-- 지정된 인덱스의 아이템을 가져오거나 새로 생성
+		local result = self.Content:GetChildByName("Item"..index)
+		
+		if result == nil then
+			result = _SpawnService:SpawnByEntity(self.Item, "Item"..index, pos, self.Content)
+		end
+		
+		return result	
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTotalCount(integer count)
+		-- 전체 아이템 개수를 설정하고 리프레시
+		self.TotalCount = count
+		self:Refresh(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnScroll(Vector2 dir)
+		-- 스크롤 방향에 따라 수직 또는 수평 이동 처리
+		if self.IsScroll == false then
+			return
+		end
+		
+		if self.TotalCount == 0 then
+			return
+		end
+		
+		if self.ItemsPerLine <= 0 then
+			return
+		end
+		
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			dir.y = 0
+			self:MoveHorizontal(dir)	
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			dir.x = 0
+			self:MoveVertical(dir)
+		end
+		
+		self.ContentBoundsMin += dir
+		self.ContentBoundsMax += dir
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveVertical(Vector2 dir)
+		-- 수직 스크롤 이동: 셀들의 위치를 업데이트하고 재사용 처리
+		dir.y += self:CalculateOffset(dir)
+		
+		if dir.y == 0 then
+			return
+		end
+		
+		local tempCells = {}
+		if dir.y < 0 then
+			for i = #self.CalcCells, 1, -1 do
+				---@type ScrollItem
+				local originCell = self.CalcCells[i]
+				table.insert(tempCells, self.CalcCells[i])
+			end
+		elseif dir.y > 0 then
+			for i = 1, #self.CalcCells, 1 do
+				
+				---@type ScrollItem
+				local originCell = self.CalcCells[i]
+				table.insert(tempCells, self.CalcCells[i])
+			end	
+		end
+		
+		local totalRow = math.tointeger((self.TotalCount - 1) / self.ItemsPerLine)
+		local itemMaxRowCount = math.tointeger((#self.CalcCells) / self.ItemsPerLine)
+		for i = 1, #tempCells, self.ItemsPerLine do
+			
+			---@type ScrollItem
+			local originCell = tempCells[i]
+			
+			---@type Entity
+			local item = originCell.Entity
+			
+			---@type ScrollItem
+			local first = self.CalcCells[1]
+			local firstRowIndex = math.tointeger((first.CurrentIndex - 1) / self.ItemsPerLine)
+			
+			---@type ScrollItem
+			local last = self.CalcCells[#self.CalcCells]
+			local lastRowIndex = math.tointeger((last.CurrentIndex - 1) / self.ItemsPerLine)
+			
+			for	j = 1, self.ItemsPerLine, 1 do
+				local cellIndex = (i - 1) + j
+				
+				---@type ScrollItem
+				local cell = tempCells[cellIndex]
+				
+				---@type Entity
+				local cellItem = cell.Entity
+				
+				local nextPosition = Vector2(cellItem.UITransformComponent.anchoredPosition.x, cellItem.UITransformComponent.anchoredPosition.y + dir.y)
+				
+				if dir.y < 0 and self.BoundingMax.y > nextPosition.y + ((1 - cellItem.UITransformComponent.Pivot.y) * cellItem.UITransformComponent.RectSize.y) then
+					local nextIndex = cell.CurrentIndex
+					local nextRow = math.tointeger((nextIndex - 1) / self.ItemsPerLine)
+					while (nextRow - itemMaxRowCount >= 0) and self.BoundingMax.y > nextPosition.y + ((1 - cellItem.UITransformComponent.Pivot.y) * cellItem.UITransformComponent.RectSize.y) do
+						nextIndex -= #self.CalcCells
+						nextRow = math.tointeger((nextIndex - 1) / self.ItemsPerLine)
+						nextPosition.y += self.MaxContentSize
+					end
+					
+					if nextRow >= 0 and nextIndex ~= cell.CurrentIndex then
+						nextPosition = Vector2(cellItem.UITransformComponent.anchoredPosition.x, nextPosition.y)
+						self:UpdateCell(cell, nextPosition, nextIndex)
+					end
+				elseif dir.y > 0 and self.BoundingMin.y < nextPosition.y - (cellItem.UITransformComponent.Pivot.y * cellItem.UITransformComponent.RectSize.y) then
+					local nextIndex = cell.CurrentIndex			
+					local nextRow = math.tointeger((nextIndex - 1) / self.ItemsPerLine)
+					while (nextRow + itemMaxRowCount <= totalRow) and (self.BoundingMin.y < nextPosition.y - (cellItem.UITransformComponent.Pivot.y * cellItem.UITransformComponent.RectSize.y)) do
+						nextIndex += #self.CalcCells
+						nextRow = math.tointeger((nextIndex - 1) / self.ItemsPerLine)
+						nextPosition.y -= self.MaxContentSize
+					end
+					
+					if nextRow <= totalRow and nextIndex ~= cell.CurrentIndex then
+						nextPosition = Vector2(cellItem.UITransformComponent.anchoredPosition.x, nextPosition.y)
+						self:UpdateCell(cell, nextPosition, nextIndex)
+					end
+		
+				end
+				
+				cellItem.UITransformComponent.anchoredPosition = nextPosition
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveHorizontal(Vector2 dir)
+		-- 수평 스크롤 이동: 셀들의 위치를 업데이트하고 재사용 처리
+		dir.x += self:CalculateOffset(dir)
+		
+		if dir.x == 0 then
+			return
+		end
+		
+		local tempCells = {}
+		if dir.x > 0 then
+			for i = #self.CalcCells, 1, -1 do
+			
+				---@type ScrollItem
+				local originCell = self.CalcCells[i]
+				table.insert(tempCells, self.CalcCells[i])
+			end
+		elseif dir.x < 0 then
+			for i = 1, #self.CalcCells, 1 do
+				
+				---@type ScrollItem
+				local originCell = self.CalcCells[i]
+				table.insert(tempCells, self.CalcCells[i])
+			end	
+		end
+		
+		local totalRow = math.tointeger((self.TotalCount - 1) / self.ItemsPerLine)
+		local itemMaxRowCount = math.tointeger((#self.CalcCells) / self.ItemsPerLine)
+		for i = 1, #tempCells, self.ItemsPerLine do
+			
+			---@type ScrollItem
+			local originCell = tempCells[i]
+			
+			---@type Entity
+			local item = originCell.Entity
+			
+			---@type ScrollItem
+			local first = self.CalcCells[1]
+			
+			local firstRowIndex = math.tointeger((first.CurrentIndex - 1) / self.ItemsPerLine)
+			
+			---@type ScrollItem
+			local last = self.CalcCells[#self.CalcCells]
+			local lastRowIndex = math.tointeger((last.CurrentIndex - 1) / self.ItemsPerLine)
+			
+			for	j = 1, self.ItemsPerLine, 1 do
+				local cellIndex = (i - 1) + j
+				
+				---@type ScrollItem
+				local cell = tempCells[cellIndex]
+				
+				---@type Entity
+				local cellItem = cell.Entity
+				
+				local nextPosition = Vector2(cellItem.UITransformComponent.anchoredPosition.x + dir.x, cellItem.UITransformComponent.anchoredPosition.y)
+				
+				if dir.x > 0 and self.BoundingMax.x < nextPosition.x - (cellItem.UITransformComponent.Pivot.x * cellItem.UITransformComponent.RectSize.x) then
+					local nextIndex = cell.CurrentIndex
+					local nextRow = math.tointeger((nextIndex - 1) / self.ItemsPerLine)
+					while (nextRow - itemMaxRowCount >= 0) and self.BoundingMax.x < nextPosition.x - (cellItem.UITransformComponent.Pivot.x * cellItem.UITransformComponent.RectSize.x) do
+						nextIndex -= #self.CalcCells
+						nextRow = math.tointeger((nextIndex - 1) / self.ItemsPerLine)
+						nextPosition.x -= self.MaxContentSize
+					end
+					
+					if nextRow >= 0 and nextIndex ~= cell.CurrentIndex then
+						nextPosition = Vector2(nextPosition.x, cellItem.UITransformComponent.anchoredPosition.y)
+						self:UpdateCell(cell, nextPosition, nextIndex)
+					end
+				elseif dir.x < 0 and self.BoundingMin.x > nextPosition.x + ((1 - cellItem.UITransformComponent.Pivot.x) * cellItem.UITransformComponent.RectSize.x) then
+					local nextIndex = cell.CurrentIndex
+					local nextRow = math.tointeger((nextIndex - 1) / self.ItemsPerLine)
+					while (nextRow + itemMaxRowCount <= totalRow) and self.BoundingMin.x > nextPosition.x + ((1 -cellItem.UITransformComponent.Pivot.x) * cellItem.UITransformComponent.RectSize.x) do
+						nextIndex += #self.CalcCells
+						nextRow = math.tointeger((nextIndex - 1) / self.ItemsPerLine)
+						nextPosition.x += self.MaxContentSize
+					end
+					
+					if nextRow <= totalRow and nextIndex ~= cell.CurrentIndex then
+						nextPosition = Vector2(nextPosition.x, cellItem.UITransformComponent.anchoredPosition.y)
+						self:UpdateCell(cell, nextPosition, nextIndex)
+					end
+				end
+				
+				cellItem.UITransformComponent.anchoredPosition = nextPosition
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh(boolean isResetPos)
+		-- 스크롤뷰 전체를 리프레시: 아이템 위치 재계산 및 화면에 표시
+		if self.ItemsPerLine <= 0 then
+			return
+		end
+		
+		if self.Content == nil then
+			return
+		end
+		
+		if self.Item == nil then
+			return
+		end 
+		
+		local size = self.Content.UITransformComponent.RectSize
+		local itemSize = self.Item.UITransformComponent.RectSize
+		
+		for i, c in pairs(self.CalcCells) do
+			---@type ScrollItem
+			local cell = c
+			cell.Entity:SetEnable(false)
+		end
+		
+		table.clear(self.CalcCells)
+		
+		local calcRow = 0
+		local maxRow = 0
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			calcRow = math.tointeger(size.x / (itemSize.x + self.Spacing.x))	
+			local remain = (size.x % (itemSize.x + self.Spacing.x))
+			
+			if remain == 0 then
+				maxRow = calcRow + 1
+			else
+				maxRow = calcRow + 2
+			end
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			calcRow = math.tointeger(size.y / (itemSize.y + self.Spacing.y))
+			local remain = (size.y % (itemSize.y + self.Spacing.y))
+			
+			if remain == 0 then
+				maxRow = calcRow + 1
+			else
+				maxRow = calcRow + 2		
+			end
+		end
+		
+		local maxRealRow = math.tointeger((self.TotalCount - 1) / self.ItemsPerLine)
+		
+		local maxColumnCount =0
+		local maxRowCount =0
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			maxColumnCount = math.min(calcRow, maxRealRow + 1)
+			maxRowCount = math.min(self.TotalCount, self.ItemsPerLine)
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			maxColumnCount = math.min(self.TotalCount, self.ItemsPerLine)
+			maxRowCount = math.min(calcRow, maxRealRow + 1)
+		end
+		
+		self.MaxColumnCount = maxColumnCount
+		
+		local startOffsetX = self:GetStartOffset((maxColumnCount) * self.Item.UITransformComponent.RectSize.x + self.Spacing.x * (maxColumnCount - 1), 0)
+		local startOffsetY = self:GetStartOffset((maxRowCount)* self.Item.UITransformComponent.RectSize.y + self.Spacing.y * (maxRowCount - 1), 1)
+		
+		local totalsize = self.MaxSize - self.BoundingMax
+		local prevNormalize = (-self.ContentBoundsMin) / totalsize
+		
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			self.ContentBoundsMin = Vector2(0, self.Padding.y)
+			self.ContentBoundsMax = Vector2((maxRealRow + 1) * (self.Item.UITransformComponent.RectSize.x + self.Spacing.x) + self.Padding.z + startOffsetX, -startOffsetY - self.Padding.w)
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			self.ContentBoundsMin = Vector2(-self.Padding.x, 0)
+		
+			self.ContentBoundsMax = Vector2(self.Padding.z + startOffsetX, -startOffsetY -(maxRealRow + 1) * (self.Item.UITransformComponent.RectSize.y + self.Spacing.y) - self.Padding.w)
+		end
+		
+		self.MaxSize = self.ContentBoundsMax
+		
+		
+		local nextpos = Vector2.zero
+		if isResetPos == false then
+			local newTotalsize = self.MaxSize - self.BoundingMax
+			nextpos = prevNormalize * newTotalsize
+		end
+		
+		for i = 1, math.min(maxRow, maxRealRow + 1) * self.ItemsPerLine, 1 do	
+			local pos = Vector3.zero
+			local item = self:GetOrCreateItem(i, pos)
+			
+			item.UITransformComponent.AnchorsMin = Vector2(0, 1)
+			item.UITransformComponent.AnchorsMax = Vector2(0, 1)
+			
+			local xIndex = math.tointeger((i - 1) % self.ItemsPerLine)
+			local yIndex = math.tointeger((i - 1) / self.ItemsPerLine)
+			
+			if self.ScrollingType == _ScrollingType.Horizontal then
+				pos.x = startOffsetX + (item.UITransformComponent.RectSize.x * yIndex) + (item.UITransformComponent.Pivot.x * item.UITransformComponent.RectSize.x) + (self.Spacing.x * yIndex)
+				pos.y = -startOffsetY -(item.UITransformComponent.RectSize.y * xIndex) - ((1- item.UITransformComponent.Pivot.y) * item.UITransformComponent.RectSize.y) - (self.Spacing.y * xIndex)
+			elseif self.ScrollingType == _ScrollingType.Vertical then
+				pos.x = startOffsetX + (item.UITransformComponent.RectSize.x * xIndex) + (item.UITransformComponent.Pivot.x * item.UITransformComponent.RectSize.x) + (self.Spacing.x * xIndex)
+				pos.y = -startOffsetY -(item.UITransformComponent.RectSize.y * yIndex) - ((1 - item.UITransformComponent.Pivot.y) * item.UITransformComponent.RectSize.y) - (self.Spacing.y * yIndex)
+			end
+				
+			item.UITransformComponent.anchoredPosition = pos:ToVector2()
+			
+			local currentRow = math.tointeger((i - 1) / self.ItemsPerLine)
+			if maxRealRow >= currentRow then
+				local sc = ScrollItem()
+				sc:Init(i -1, i, item)
+				self.CalcCells[i] = sc
+				
+				local isUpdate = true
+				if isResetPos == false then
+					local curPos = pos:ToVector2()
+					if self.ScrollingType == _ScrollingType.Horizontal then
+						isUpdate = nextpos.x - (self.Item.UITransformComponent.Pivot.x * self.Item.UITransformComponent.RectSize.x) <= curPos.x
+					elseif self.ScrollingType == _ScrollingType.Vertical then
+						isUpdate = nextpos.y + (self.Item.UITransformComponent.Pivot.y * self.Item.UITransformComponent.RectSize.y) >= curPos.y
+					end
+				end
+				
+				if isUpdate then
+					self:UpdateCell(self.CalcCells[i], pos:ToVector2(), i)			
+				end
+			else
+				item:SetEnable(false)
+			end
+		end
+		
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			self.MaxContentSize = math.tointeger((#self.CalcCells)/self.ItemsPerLine)* (self.Item.UITransformComponent.RectSize.x + self.Spacing.x)
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			self.MaxContentSize = math.tointeger((#self.CalcCells)/self.ItemsPerLine)* (self.Item.UITransformComponent.RectSize.y + self.Spacing.y)
+		end
+		
+		self:ChangedScroll()
+		
+		if isResetPos == false then
+			self:OnDrag(-nextpos)	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method number CalculateOffset(Vector2 dir)
+		-- 스크롤 이동 시 경계를 벗어나지 않도록 오프셋 계산
+		local offset = 0
+		
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			local offsetMin = self.BoundingMin.x - (self.ContentBoundsMin.x + dir.x)
+			if offsetMin < -0.001 then
+				offset = offsetMin
+			end
+			local offsetMax = self.BoundingMax.x - (self.ContentBoundsMax.x + dir.x)
+			if offsetMax > 0.001 then
+				offset = offsetMax
+			end
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			local offsetMin = self.BoundingMin.y - (self.ContentBoundsMin.y + dir.y)
+			if offsetMin > 0.001 then
+				offset = offsetMin
+			end
+			local offsetMax = self.BoundingMax.y - (self.ContentBoundsMax.y + dir.y)
+			if offsetMax < -0.001 then
+				offset = offsetMax
+			end
+		end
+		
+		return offset
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CanScroll()
+		-- 컨텐츠 크기에 따라 스크롤 가능 여부 판단
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			if self.ContentBoundsMax.x < self.BoundingMax.x then
+				return false
+			else
+				return true
+			end
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			if self.ContentBoundsMax.y > self.BoundingMax.y then
+				return false
+			else
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetItem(Entity item)
+		-- 스크롤뷰에서 사용할 아이템 프리팩을 설정
+		if item == nil then
+			return
+		end
+		
+		self.Item = item
+		self.Item:SetEnable(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetViewBounds()
+		-- 스크롤뷰의 보이는 영역 바운드 설정
+		local minX = 0
+		local minY = 0
+		
+		local maxX = self.Content.UITransformComponent.RectSize.x
+		local maxY = -self.Content.UITransformComponent.RectSize.y
+		
+		self.BoundingMin = Vector2(minX, minY)
+		self.BoundingMax = Vector2(maxX, maxY)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateCell(ScrollItem cell, Vector2 position, integer index)
+		-- 스크롤 셀의 데이터를 업데이트하고 콜백 함수 호출
+		cell.CurrentIndex = index
+		
+		if self.TotalCount < index then
+			cell.Entity:SetEnable(false)
+		else
+			cell.Entity:SetEnable(true)
+			
+			if self.onUpdateCell ~= nil then
+				self.onUpdateCell(cell.CurrentIndex, cell.Entity)
+			end
+		end
+		
+		cell.Entity.UITransformComponent.anchoredPosition = position
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMapLeave(Entity leftMap)
+		-- 맵을 떠날 때 스크롤뷰 상태 정리
+		self:Clear()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Clear()
+		-- 스크롤뷰의 모든 상태 변수들을 초기화
+		self.IsTouched = false
+		self.PrevTouchPoint = Vector2.zero
+		self.MaxContentSize = 0
+		self.IsScroll = false
+		self.IsEnter = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetContentRectSize(Vector2 rectSize)
+		-- 컨텐츠 영역의 크기를 설정하고 스크롤 상태 업데이트
+		self.Content.UITransformComponent.RectSize = rectSize
+		self:SetViewBounds()
+		self:ChangedScroll()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDrag(Vector2 dir)
+		-- 드래그 입력에 따라 스크롤 이동 처리 및 스크롤바 업데이트
+		if self.IsScroll == false then
+			return
+		end
+		
+		if self.TotalCount == 0 then
+			return
+		end
+		
+		if self.ItemsPerLine <= 0 then
+			return
+		end
+		
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			dir.y = 0
+			self:MoveHorizontal(dir)
+			
+			if self.HorizontalBar ~= nil then
+				self.HorizontalBar:SetScrollPosition(dir.x)
+			end	
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			dir.x = 0
+			self:MoveVertical(dir)
+				
+			if self.VerticalBar ~= nil then
+				self.VerticalBar:SetScrollPosition(dir.y)
+			end	
+		end
+		
+		self.ContentBoundsMin += dir
+		self.ContentBoundsMax += dir
+		
+		if self.ContentBoundsMax.x < self.BoundingMax.x + 10 and self.onDragEndCallback then
+			self.onDragEndCallback()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangedScroll()
+		-- 스크롤 상태 변경 시 스크롤바들을 업데이트
+		self.IsScroll = self:CanScroll()
+		
+		if self.VerticalBar ~= nil then
+			self.VerticalBar:SetScrollBar(self.Entity)
+		end
+		
+		if self.HorizontalBar ~= nil then
+			self.HorizontalBar:SetScrollBar(self.Entity)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method number GetStartOffset(number requiredSpaceWithoutPadding, integer axis)
+		-- 정렬 타입에 따른 시작 오프셋 계산
+		local paddingOffset = 0
+		if axis == _ScrollingType.Horizontal then
+			paddingOffset = self.Padding.z + self.Padding.x
+		elseif axis == _ScrollingType.Vertical then
+			paddingOffset = self.Padding.w + self.Padding.y
+		end
+		
+		local requiredSpace = requiredSpaceWithoutPadding + paddingOffset
+		local availableSpace = 0
+		
+		if axis == _ScrollingType.Horizontal then
+			availableSpace = self.Content.UITransformComponent.RectSize.x
+		elseif axis == _ScrollingType.Vertical then
+			availableSpace = self.Content.UITransformComponent.RectSize.y
+		end
+		
+		local surplusSpace = availableSpace - requiredSpace;
+		
+		local alignmentOnAxis = 0
+		if axis == _ScrollingType.Horizontal then
+			alignmentOnAxis = math.tointeger(self.ChildAlignmentType % 3) * 0.5;
+			return self.Padding.x + surplusSpace * alignmentOnAxis
+		elseif axis == _ScrollingType.Vertical then
+			alignmentOnAxis = math.tointeger(self.ChildAlignmentType / 3) * 0.5;
+			return self.Padding.y + surplusSpace * alignmentOnAxis
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ScrollToIndex_Horizontal(integer index)
+		-- 수평 스크롤에서 지정된 인덱스로 스크롤 이동
+		self:Refresh(true)
+		
+		if index <= 1 then
+			return
+		elseif index >= self.TotalCount - self.MaxColumnCount + 1 then
+			self:OnDrag(-self.ContentBoundsMax)
+			return
+		end
+		
+		local prevNormalize = index / self.TotalCount
+		local nextPos = prevNormalize * self.ContentBoundsMax
+		self:OnDrag(-nextPos)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleUITouchBeginDragEvent(UITouchBeginDragEvent event)
+		-- 터치 드래그 시작 이벤트 처리
+		
+		local Entity = event.Entity
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		
+		if self.IsTouched == true then
+			return
+		end
+		
+		if Environment:IsMobilePlatform() == false then
+			if TouchId ~= -1 then
+		
+				return
+			end
+		end
+		
+		TouchPoint = _ScrollMathLogic:GetTouchPoint(TouchPoint)
+		self.IsTouched = true
+		self.PrevTouchPoint = TouchPoint
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleUITouchEndDragEvent(UITouchEndDragEvent event)
+		-- 터치 드래그 종료 이벤트 처리
+		
+		local Entity = event.Entity
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		
+		if self.IsTouched == false then
+			return
+		end
+		
+		if Environment:IsMobilePlatform() == false then
+			if TouchId ~= -1 then
+				return
+			end
+		end
+		
+		self.IsTouched = false
+		self.PrevTouchPoint = Vector2.zero
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleUITouchDragEvent(UITouchDragEvent event)
+		-- 터치 드래그 중 이벤트 처리
+		
+		local Entity = event.Entity
+		local TouchDelta = event.TouchDelta
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		
+		if self.IsTouched == false then
+			return
+		end
+		
+		if Environment:IsMobilePlatform() == false then
+			if TouchId ~= -1 then
+				return
+			end
+		end
+		
+		TouchPoint = _ScrollMathLogic:GetTouchPoint(TouchPoint)
+		local deltaPoint = TouchPoint - self.PrevTouchPoint
+		self.PrevTouchPoint = TouchPoint
+		self:OnDrag(deltaPoint)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleUITouchEnterEvent(UITouchEnterEvent event)
+		-- 터치 영역 진입 이벤트 처리
+		
+		local Entity = event.Entity
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		if self.IsEnter then
+			return
+		end
+		
+		if Environment:IsMobilePlatform() == false then
+			if TouchId ~= -1 then
+				return
+			end
+		end
+		
+		self.IsEnter = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleUITouchExitEvent(UITouchExitEvent event)
+		-- 터치 영역 이탈 이벤트 처리
+		
+		local Entity = event.Entity
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		
+		if self.IsEnter == false then
+			return
+		end
+		
+		if Environment:IsMobilePlatform() == false then
+			if TouchId ~= -1 then
+				return
+			end
+		end
+		
+		self.IsEnter = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleMouseScrollEvent(MouseScrollEvent event)
+		-- 마우스 스크롤 이벤트 처리
+		
+		local ScrollDelta = event.ScrollDelta
+		if self.IsEnter == false then
+			return
+		end
+		
+		if self.IsTouched then
+			return
+		end
+		
+		local dir = Vector2.zero
+		if self.ScrollingType == _ScrollingType.Horizontal then
+			dir.x = ScrollDelta * self.ScrollSensitivity
+		elseif self.ScrollingType == _ScrollingType.Vertical then
+			dir.y = -ScrollDelta * self.ScrollSensitivity
+		end
+		
+		self:OnDrag(dir)
+	end
+
+end

@@ -1,0 +1,170 @@
+@Logic
+script MenuService extends Logic
+
+	property integer BurgerOrderLayer = 100
+
+	property integer MaxBurgerEntityNum = 1000
+
+	@ExecSpace("ClientOnly")
+	method void BurgerInit(string tag, integer orderLayer, Entity burgerEntity)
+		-- 버거 엔티티의 스프라이트와 렌더링 순서를 초기화하는 함수
+		
+		local ruid = ""
+		if not _UtilLogic:IsNilorEmptyString(tag) then 
+			ruid = _DataService:GetTable("RecipeTagData"):FindRow("Type",tag):GetItem("SmallPackRUID")
+		else
+		end
+		
+		burgerEntity.SpriteRendererComponent.SpriteRUID = ruid 
+		
+		
+		burgerEntity.SpriteRendererComponent.OrderInLayer = self.BurgerOrderLayer + orderLayer
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity CreateBurgerEntity(Vector3 spawnPos, Entity parent, Entity player)
+		-- 버거 엔티티를 생성하거나 풀에서 재사용하여 반환하는 함수
+		local menuManager = player.MenuManager
+		local burgerEntityPool = player.MenuManager.BurgerEntityPool
+		---@type Entity
+		local burger 
+		
+		local spanwType = ""
+		if #burgerEntityPool > 0 then 
+			burger = burgerEntityPool[1]
+			burger:AttachTo(parent)
+			table.remove(burgerEntityPool,1)	
+			spanwType = "already have"
+		elseif menuManager.CurBurgerEntityNum  < self.MaxBurgerEntityNum then 
+			menuManager.BurgerIdx += 1
+			local id = _EntryService:GetModelIdByName("Model_SpawnBurger")
+			burger = _SpawnService:SpawnByModelId(id, "burger"..menuManager.BurgerIdx, Vector3(0,0,0), parent)
+			table.insert(burgerEntityPool, burger)
+			menuManager.CurBurgerEntityNum +=1
+			spanwType = "new spawn"
+		else 
+			local id = _EntryService:GetModelIdByName("Model_SpawnBurger")
+			burger = _SpawnService:SpawnByModelId(id, "burger_OverPool", Vector3(0,0,0), parent)
+			spanwType = "overpool"	
+		end
+		
+		burger.TransformComponent.WorldPosition.x = spawnPos.x
+		burger.TransformComponent.WorldPosition.y = spawnPos.y
+		burger.TransformComponent.Scale = Vector3(1,1,1)
+		burger.Enable = true
+		
+		return burger
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetBurgerEntity(Entity burger, Entity player)
+		-- 버거 엔티티를 초기화하고 풀로 반환하는 함수
+		
+		local parent = _LobbyEntityLogic.BurgerGroup
+		local burgerEntityPool = player.MenuManager.BurgerEntityPool
+		
+		
+		if string.find(burger.Name,"OverPool") then 
+			burger:Destroy()
+			return 
+		end
+		
+		burger:AttachTo(parent)
+		burger.Enable = false
+		burger.TransformComponent.WorldPosition = Vector3(0,0,0)
+		table.insert(burgerEntityPool,burger)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method number ResetChildBurgerEntities(Entity parent)
+		-- 부모 엔티티의 모든 자식 버거 엔티티를 초기화하는 함수
+		local resetCount = 0
+		
+		local childs = parent.Children
+		if isvalid(childs) == false then
+			return 0
+		end
+		
+		local count = #childs
+		for i= count ,1,-1 do 
+			local child = childs[i]
+			local tagComponent = child.TagComponent
+			if tagComponent == nil then
+				continue
+			end
+			if child.TagComponent.Tags[1] == "burger" then 
+				self:ResetBurgerEntity(child, _UserService.LocalPlayer)
+				resetCount += 1
+			end	
+		end
+		
+		
+		
+		return resetCount
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateBurgerStackPos(Entity employee)
+		-- 직원이 들고 있는 버거들의 스택 위치를 업데이트하는 함수
+		local count = 0 
+		local employeePos = employee.TransformComponent.WorldPosition
+		for _,burger in pairs (employee.Children) do 
+			if not isvalid(burger.TagComponent) then 
+				continue
+			end
+			
+			if burger.TagComponent.Tags[1] ~= "burger" then 
+				continue
+			end
+			count += 1
+			burger.TransformComponent.WorldPosition = employeePos + Vector3(0,count*0.1+0.35,0)
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeMenuRecipe(Entity player)
+		-- 메뉴 레시피 변경 시 고객과 직원 상태를 처리하는 함수
+		player.CustomerManager:ExitWaitCustomer() 
+		
+		wait(1)
+		
+		player.CustomerManager:MoveAllCustomerForward() 
+			
+		player.EmployeeManager:EmployeeStateStop() 
+			
+			
+		player.EmployeeManager:EmployeeStateStart() 
+			
+		for k,v in pairs(player.PlayerRecipe.SetRecipes) do 
+			player.MenuManager:ClearSaleBurgerByRecipeID(v) 
+		end
+		
+		_KitchenAppService:UpdateAllKitchenAppSprite(player) 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeMenuSlot(Entity player)
+		-- 메뉴 슬롯 변경 시 표시 버거와 UI를 업데이트하는 함수
+		player.MenuManager:RefreshDisplayBurger() 
+		
+		local expansionLv =_UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.ExpansionStep) 
+		local themeLv =_UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.InteriorLevel) 
+		_InteractionUIService:RefreshDisplayTextAll(nil,expansionLv,player) 
+		_KitchenAppService:UpdateAllDisplaySprite(player,expansionLv,themeLv,_KitchenAppService:ReturnDisplayNum(player)) 
+	end
+
+	method string GetBurgerRUID(string tag)
+		-- 버거 태그로 스프라이트 RUID를 조회하여 반환하는 함수
+		
+		local ruid = ""
+		if not _UtilLogic:IsNilorEmptyString(tag) then 
+			ruid = _DataService:GetTable("RecipeTagData"):FindRow("Type",tag):GetItem("SmallPackRUID")
+		else
+		end
+		
+		return ruid
+	end
+
+end

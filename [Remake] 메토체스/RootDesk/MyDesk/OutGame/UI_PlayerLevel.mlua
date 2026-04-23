@@ -1,0 +1,202 @@
+@Logic
+script UI_PlayerLevel extends Logic
+
+	property TextComponent t_level_Lobby = "be044f3c-ab27-4bb5-b85a-0dff97c9c02c"
+
+	property TextComponent t_exp_Lobby = "68b5b2e8-4413-4fea-839a-9836b492e50e"
+
+	property SpriteGUIRendererComponent sp_expGauge = "a32dc612-2c4a-4965-8c26-8cb71588a06e"
+
+	property Entity sp_nextLevelReward = "0fbbcd1d-7f2f-4b3c-be85-c6dc6a8be0ec"
+
+	property Entity popup_LevelRewardList = "9d368e13-1e82-48cd-bbe3-749c0957be50"
+
+	property integer nowPage = 1
+
+	property Entity tooltip_RewardInfo = "5a941ad7-fffc-4805-9028-727c5076ad04"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlayCustomButtonFunc_toDotIndicator()
+		-- 닷 인디케이터 버튼들에 이벤트를 연결
+		self._T.dotIndicator = self.popup_LevelRewardList:GetChildByName("DotIndicator")
+		
+		local function GotoPageRewardList(num)
+			if self.nowPage ~= num then
+				self:CreatePopup_LevelRewardList(num)
+			end
+		end
+		
+		for i=1, self._T.dotIndicator.Children.Count do
+			self._T.dotIndicator.Children[i]:ConnectEvent(ButtonClickEvent, function() GotoPageRewardList(i) end)
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CreatePopup_LevelRewardList(integer pagenum)
+		-- 레벨 보상 리스트 팝업을 생성하고 페이지를 설정
+		--if self.nowPage == pagenum then return end
+		
+		log("페이지 변경/오픈 : ", pagenum)
+		
+		self.nowPage = pagenum
+		-- 팝업의 목록을 만들어주는 함수
+		-- 페이지 넘버에 따라서...내용 조정
+		local data = _PlayerLevelLogic.LevelUpRewardList
+		
+		
+		-- 데이터 개수 확인
+		local rewardAmount = #data
+		
+		local prevBT = self.popup_LevelRewardList:GetChildByName("bt_Prev").ButtonComponent
+		local nextBT = self.popup_LevelRewardList:GetChildByName("bt_Next").ButtonComponent
+		
+		prevBT.Enable = not (pagenum == 1)
+		nextBT.Enable = not (pagenum == 5)
+		
+		-- 팝업 보상들 받아오기
+		local pageArea = self.popup_LevelRewardList:GetChildByName("PageArea")
+		
+		-- 10개 data 넣어주기
+		for i=1, pageArea.Children.Count do
+			local row = data[i + (10 * (pagenum - 1))]
+			local rawData = _UtilLogic:Split(row, "/")
+			local _level = rawData[1]
+			local _id = rawData[3]
+			local _amount = tonumber(rawData[4])
+			
+			---@type boolean
+			local _complete = (tonumber(_level) <= tonumber(_UserService.LocalPlayer.PlayerDataComponent.Level))
+			
+			pageArea.Children[i].UI_LevelReward:Update_RewardEntity(tonumber(_level), _complete, _id, _amount)
+		end
+		
+		-- 아래 닷 버튼 이미지
+		local dotIndicator = self.popup_LevelRewardList:GetChildByName("DotIndicator")
+		for i=1, dotIndicator.Children.Count do
+			-- 버튼 누르면 그 페이지로 이동 ▼
+			if i == self.nowPage then
+				dotIndicator.Children[i].SpriteGUIRendererComponent.Color = Color.FromHexCode("#00a8ff")
+			else
+				dotIndicator.Children[i].SpriteGUIRendererComponent.Color = Color.FromHexCode("#606060")
+			end
+			--버튼 안 눌리게 그냥 이미지만 처리하는거 ▼
+			--self._T.dotIndicator.Children[i].ButtonComponent.Enable = (i == self.nowPage)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshLobbyProfile(integer level, number exp)
+		-- 로비에서 플레이어 레벨과 경험치 정보를 업데이트
+		self.t_level_Lobby.Text = "Lv. "..level
+		self.t_exp_Lobby.Text = tostring(math.tointeger(exp)).." / ".._PlayerLevelLogic:GetRequiredEXP(level+1)
+		self.sp_expGauge.FillAmount = math.tointeger(exp) / _PlayerLevelLogic:GetRequiredEXP(level+1)
+		
+		-- 다음 보상
+		if level % 10 == 9 then
+			local rewardData = _PlayerLevelLogic.LevelUpRewardList[math.floor((level+1)/10)]
+			local rewardID = _UtilLogic:Split(rewardData, "/")[3]
+			
+			local resourceInfo = self:GetRewardIconInfo(rewardID)
+			
+			self.sp_nextLevelReward.SpriteGUIRendererComponent.ImageRUID = resourceInfo["RUID"]
+			self.sp_nextLevelReward.SpriteGUIRendererComponent.LocalPosition = resourceInfo["LocalPosition"]
+			self.sp_nextLevelReward.SpriteGUIRendererComponent.LocalScale = resourceInfo["LocalScale"]
+			
+		else
+			self.sp_nextLevelReward.SpriteGUIRendererComponent.ImageRUID = "8b5c6b67662b449e9a28a830a228ec69"
+			
+			local resourceInfo = _LoadResourcesInfo:GetUILocalPositionScale("8b5c6b67662b449e9a28a830a228ec69")
+			self.sp_nextLevelReward.SpriteGUIRendererComponent.LocalScale = resourceInfo["scale"]
+			self.sp_nextLevelReward.SpriteGUIRendererComponent.LocalPosition = resourceInfo["pos"]
+		end
+	end
+
+	@ExecSpace("Client")
+	method void InitializeLobbyProfile()
+		-- 로비 프로필을 초기값으로 설정
+		self:RefreshLobbyProfile(1, 0)
+	end
+
+	@ExecSpace("Client")
+	method table GetRewardIconInfo(string rewardID)
+		-- 보상 ID에 따른 아이콘 정보를 반환
+		local rewardInfo = {
+			["BackgroundRUID"] = "",
+			["RUID"] = "",
+			["LocalScale"] = Vector2.one,
+			["LocalPosition"] = Vector2.zero
+		}
+		
+			-- 랭크모드 아이콘 넣어주기
+		if rewardID == "RankMode" then
+			rewardInfo["BackgroundRUID"] = "775b9cb3b4f6419c823bd4d17e5625b2" -- 임시로 넣은 배경이며 itemUI에 있는 BG 임
+			rewardInfo["RUID"] = "ea216e4763e14908aa4f115fdf356a43" -- 아이언 티어
+			
+		else
+			-- 챌린지모드
+			if _UtilLogic:Contains(rewardID, "Challenge") then
+				-- 아이콘
+				rewardInfo["RUID"] = "1aaf0690cd2f46c0a04cc0bdacb0faa0"	-- 임시
+				rewardInfo["BackgroundRUID"] = "775b9cb3b4f6419c823bd4d17e5625b2" -- 임시로 넣은 배경이며 itemUI에 있는 BG 임
+				
+			-- 마이너스 코치
+			elseif _UtilLogic:Contains(rewardID, "COM") then
+				local coachdata = _CoachService:GetCoachInfo(rewardID)
+				
+				rewardInfo["BackgroundRUID"] = "07d90a3597561504f90752a4137b57f2"
+				rewardInfo["RUID"] = coachdata.ProfileRUID
+				
+				local iconResourceInfo = _LoadResourcesInfo:GetUILocalPositionScale(coachdata.ProfileRUID)
+				rewardInfo["LocalScale"] = iconResourceInfo["scale"]
+				rewardInfo["LocalPosition"] = iconResourceInfo["pos"]
+				
+				
+			-- 패자 부활권
+			else
+				rewardInfo["BackgroundRUID"] = "07d90a3597561504f90752a4137b57f2"
+				rewardInfo["RUID"] = "97829a9ba8a2434bb76e5cba56bd5913"
+				
+				local iconResourceInfo = _LoadResourcesInfo:GetUILocalPositionScale("97829a9ba8a2434bb76e5cba56bd5913")
+				rewardInfo["LocalScale"] = iconResourceInfo["scale"]
+				rewardInfo["LocalPosition"] = iconResourceInfo["pos"]
+			end
+		end
+		
+		return rewardInfo
+	end
+
+	@EventSender("Entity", "1ba4352e-69f4-4618-839f-712171fc6250")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 레벨 보상 리스트 팝업 열기 버튼 클릭 이벤트
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		self.nowPage = 1
+		self:CreatePopup_LevelRewardList(self.nowPage)
+		self.popup_LevelRewardList.Enable = true
+		
+	end
+
+	@EventSender("Entity", "275e3731-ba58-4523-bf1a-f55dc4a08607")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 이전 페이지 버튼 클릭 이벤트
+		if self.nowPage > 1 then
+			self:CreatePopup_LevelRewardList(self.nowPage - 1)
+		end
+	end
+
+	@EventSender("Entity", "2e335ab2-6e59-4347-b334-d178b48cd789")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 다음 페이지 버튼 클릭 이벤트
+		if self.nowPage < 5 then
+			self:CreatePopup_LevelRewardList(self.nowPage + 1)
+		end
+	end
+
+end

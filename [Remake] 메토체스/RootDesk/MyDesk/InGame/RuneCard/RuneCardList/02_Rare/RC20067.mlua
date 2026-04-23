@@ -1,0 +1,155 @@
+@Component
+script RC20067 extends RuneCardComponent
+
+	@ExecSpace("Server")
+	method void BuyThisRuneCard(string runeID)
+		__base:BuyThisRuneCard(runeID)
+		
+		-- 아랫마을 시너지 효과
+		--------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local synergyManager = user.SynergyManager_New
+		--------------------------------------------------
+		if self.SetTeamType == "User" then
+			synergyManager.SynergyRuneOn["S10031"] += 1
+		else
+			synergyManager.Enemy_SynergyRuneOn["S10031"] += 1
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SellThisRuneCard(string runeID)
+		-- 아랫마을 시너지 효과
+		--------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local synergyManager = user.SynergyManager_New
+		--------------------------------------------------
+		if self.SetTeamType == "User" then
+			synergyManager.SynergyRuneOn["S10031"] -= 1
+		else
+			synergyManager.Enemy_SynergyRuneOn["S10031"] -= 1
+		end
+		
+		__base:SellThisRuneCard(runeID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetActiveHandler(any event)
+		-------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local synergyManager = user.SynergyManager_New
+		local synergyID = "S10031"
+		local active = event.active
+		-------------------------------------------------------------
+		if active ~= self.OnActive then
+			if active then
+				-- 활성화 시
+				synergyManager.SynergyRuneOn[synergyID] += 1
+			else
+				-- 비활성화 시
+				synergyManager.SynergyRuneOn[synergyID] -= 1
+			end
+		end
+		
+		
+		__base:SetActiveHandler(event)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartBattleHandler(any event)
+		__base:StartBattleHandler(event)
+		
+		-- 아랫마을 시너지가 활성화 된 수를 더해 10스택마다 추가로 보유한 아랫마을 유닛들 중 하나를 랜덤으로 얻습니다.
+		--------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		--------------------------------------------------------------
+		if self.SetTeamType == "User" then
+			local activatedCount = teamManager.OnFieldSynergy["S10031"]
+			
+			-- 아랫마을 시너지 활성화 체크
+			if isvalid(activatedCount) == false or activatedCount < 3 then
+				return
+			end
+			
+			self:SetRuneStackInfo(self.RuneStack + activatedCount)
+			self:PlayEffect(self.RuneStack, user.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartRoundHandler(any event)
+		__base:StartRoundHandler(event)
+		
+		-- 아랫마을 시너지가 활성화 된 수를 더해 10스택마다 추가로 보유한 아랫마을 유닛들 중 하나를 랜덤으로 얻습니다.
+		--------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local synergyManager = user.SynergyManager_New
+		--------------------------------------------------------------
+		if self.SetTeamType == "User" then
+			local activatedCount = teamManager.OnFieldSynergy["S10031"]
+			
+			-- 아랫마을 시너지 활성화 체크
+			if isvalid(activatedCount) == false or activatedCount < 3 then
+				return
+			end
+			
+			while self.RuneStack >= 10 do
+				-- 아랫마을 유닛 획득
+				-- 보유한 아랫마을 유닛 아이디 가져오기
+				local setIDKey = {}
+				for _, unit in pairs(teamManager.OwnUnits) do
+					if unit.UnitInfo:DoesHaveSynergy("S10031") then
+						setIDKey[unit.UnitInfo.charID] = true
+					end
+				end
+				
+				local idList = {}
+				for charID, _ in pairs(setIDKey) do
+					table.insert(idList, charID)
+				end
+				
+				local charID = idList[_UtilLogic:RandomIntegerRange(1, #idList)]
+				
+				_UnitSetLogic_New:SpawnUnit(user.OwnerId, charID, 1, "Force")
+				self:SetRuneStackInfo(self.RuneStack - 10)
+				self:PlayEffect(self.RuneStack, user.PlayerComponent.UserId)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(number stack)
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		------------------------------------------------------------
+		if stack < 0 then stack = 0 end
+		
+		local index = _RuneCardDirector:GetRuneCardIndex(self.Entity,false)
+		
+		--룬 카드 발동 연출
+		_RuneCardDirector.RuneCardManagingValue["RC20067"][self.Entity.Id] = stack  / _RuneCardDirector.RuneCardMaxStack["RC20067"]
+		_RuneCardDirector:CheckRuneCardManagingValue("RC20067", index)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InGameDataLoadHandler(any event)
+		__base:InGameDataLoadHandler(event)
+		----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		----------------------------------------------------------
+		self:SetDirectorValue(self.RuneStack,user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetDirectorValue(number stack)
+		-- DB에서 값을 불러왔을 떄 연출용 값들을 세팅하는 함수입니다.
+		local runeindex = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+		_RuneCardDirector.RuneCardManagingValue["RC20067"][self.Entity.Id] = stack / _RuneCardDirector.RuneCardMaxStack["RC20067"]
+		_RuneCardDirector:CheckRuneCardManagingValue("RC20067", runeindex)
+	end
+
+end

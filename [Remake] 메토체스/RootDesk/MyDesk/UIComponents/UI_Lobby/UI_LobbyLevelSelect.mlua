@@ -1,0 +1,1513 @@
+@Logic
+script UI_LobbyLevelSelect extends Logic
+
+	property string CurrentShowingMode = "Single"
+
+	property number SelectedSingleSeason = 1.0
+
+	property number SelectedSingleTabIdx = 1
+
+	property integer SelectedSingleLevel = 1
+
+	property number SelectedChallengeSeason = 1.0
+
+	property number SelectedChallengeTabIdx = 1
+
+	property integer SelectedChallengeLevel = 1
+
+	property integer ShowingCoachCost = -3
+
+	property table CurrentShowingCoachIDList = {}
+
+	property table SelectedCoaches = {}
+
+	property boolean IsEnteranceMode = false
+
+	property integer EnteranceTimerID = 0
+
+	property boolean IsCoachChangeMode = false
+
+	property number SelectedPresetNum = 1
+
+	property number LevelSelectMode_Season = 0
+
+	property number LevelSelectMode_TabIdx = 0
+
+	property integer TimerID_ModeSelectDescResizingFunction = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 레벨 선택 UI 초기화 및 이벤트 연결
+		-- "현재 선택된 코치 리스트" 내 "선택 해제" 버튼들에 "선택 해제" 이벤트를 연결합니다~
+		local ui_currentSelectedCoachList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/List_CurrentSelectedCoach")
+		for i=1, 4 do
+			local ui_slot = ui_currentSelectedCoachList:GetChildByName(string.format("Slot_%d", i))
+			
+			ui_slot:GetChildByName("Button_Remove"):ConnectEvent(ButtonClickEvent, function(event)
+				local entityName = event.Entity.Parent.Name
+				local buttonIdx = tonumber(string.sub(entityName, 6, -1))
+				
+				self:UnselectCoach(buttonIdx)
+			end)
+		end
+		------------------------------------------------------------------------
+		-- 코치 선택 팝업 > 코치 목록 > 각 코치 버튼에 "선택했음" 이벤트를 연결합니다.
+		local ui_coachList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/List_Coach")
+		for i=1, 10 do
+			local ui_slot = ui_coachList:GetChildByName(string.format("Slot_%d", i))
+			
+			ui_slot:ConnectEvent(ButtonClickEvent, function(event)
+				local entityName = event.Entity.Name
+				local buttonIdx = tonumber(string.sub(entityName, 6, -1))
+				local targetIdx = ui_coachList.CustomScrollLayoutComponent.CurrentScroll + buttonIdx - 1
+				local coachID = self.CurrentShowingCoachIDList[targetIdx]
+				
+				-- 이미 선택된 경우, 선택 해제
+				for i=1, #self.SelectedCoaches do
+					if self.SelectedCoaches[i] == coachID then
+						self:UnselectCoach(i)
+						return
+					end
+				end
+				
+				
+				self:SelectCoach(coachID)
+			end)
+		end
+		------------------------------------------------------------------------
+		self:RefreshCoachList(1, 10)
+		------------------------------------------------------------------------
+		-- 게임에 최초 접속할 때 확인할 시즌/레벨을 갱신
+		_TimerService:SetTimerOnce(function()
+		
+			-- 현재 시즌을 가져옵니다
+			local currentSeason = _ModeDataLogic.Season
+			
+			-- 현재 시즌을 기반으로 클리어한 라운드 수 가져옵니다.
+			local seasonInfo = _DataService:GetTable("SeasonInfo")
+			local clearedLevel = 0
+			while true do 
+				local seasonRow = seasonInfo:FindRow("Season", string.format("Single_%.1f", currentSeason))
+				if isvalid(seasonRow) == true then
+					clearedLevel = _UserService.LocalPlayer.PlayerDataComponent.ClearLevelByMode[string.format("Single_%.1f", currentSeason)]
+					if isvalid(clearedLevel) == false then
+						clearedLevel = 0
+						break
+					else
+						if clearedLevel == 8 then
+							currentSeason += 0.1
+						end
+					end
+				else
+					break
+				end
+			end
+			
+			self.CurrentShowingMode = "Single"
+			self.SelectedSingleSeason = currentSeason
+			
+			if clearedLevel == 8 then
+				self.SelectedSingleLevel = 8
+			else
+				self.SelectedSingleLevel = clearedLevel + 1
+			end
+			
+			self:RefreshUI_SeasonLevelInfo()
+			
+		end, 3)
+		------------------------------------------------------------------------
+		-- 랭크 모드, 챌린지 모드 레벨 제한 안내
+		local ui_rankModeLockedPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode/Button_RankMode/Panel_Locked")
+		local ui_challengeModeLockedPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode/Button_ChallengeMode/Panel_Locked")
+		ui_rankModeLockedPanel.TextComponent.Text = _LocalizationService:GetTextFormat("ModeLockedDesc", 10)
+		ui_challengeModeLockedPanel.TextComponent.Text = _LocalizationService:GetTextFormat("ModeLockedDesc", 50)
+		
+		-- 최초 클리어 보상
+		local ui_firsttimeClearRewardTooltipDesc = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Tooltip_FirstReward/Text_Desc")
+		ui_firsttimeClearRewardTooltipDesc.TextComponent.Text = _LocalizationService:GetTextFormat("FirstTimeClearReward_Desc", 3000)
+		
+		-- 모드 선택 화면 > 각 모드의 설명 영역의 사이즈 조절
+		local setModeDescUI = function()
+			---@type table<Entity>
+			local ui_modeDescAreaList = {
+				_EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode/Button_SingleMode/Text_Desc"),
+				_EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode/Button_RankMode/Text_Desc"),
+				_EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode/Button_ChallengeMode/Text_Desc"),
+				_EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode/Button_Tutorial/Text_Desc"),
+			}
+			if ui_modeDescAreaList[3]:GetChildByName("UIText").UITransformComponent.RectSize.y < 40 then
+				return
+			else
+				_TimerService:ClearTimer(self.TimerID_ModeSelectDescResizingFunction)
+				self.TimerID_ModeSelectDescResizingFunction = 0
+			end 
+			
+			for i=1, #ui_modeDescAreaList do
+				local targetUI = ui_modeDescAreaList[i]
+				targetUI.UITransformComponent.RectSize.y = targetUI:GetChildByName("UIText").UITransformComponent.RectSize.y
+				targetUI.UITransformComponent.anchoredPosition.y = -targetUI.UITransformComponent.RectSize.y
+			end
+		end 
+		self.TimerID_ModeSelectDescResizingFunction = _TimerService:SetTimerRepeat(setModeDescUI, 0.5)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_SeasonLevelInfo()
+		-- 시즌 및 난이도 관련 정보 UI를 갱신합니다.
+		------------------------------------------------------------------------------------
+		local user = _UserService.LocalPlayer
+		local pDataCompo = user.PlayerDataComponent
+		------------------------------------------------------------------------------------
+		local ui_mainPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main")
+		local ui_titlePanel = ui_mainPanel:GetChildByName("Panel_Title")
+		
+		-- 레벨 선택 버튼
+		local ui_button_levelSelect = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/SubTitle_Level/Button_ChangeLevel")
+		
+		-- 시즌 관련
+		local ui_seasonIllust = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Panel_SeasonInfo/Sprite_Illust")
+		local ui_seasonTitle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Panel_SeasonInfo/Text_Season")
+		local ui_seasonDesc = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Panel_SeasonInfo/Text_SeasonRule")
+		
+		-- 난이도 관련
+		local ui_levelIcon = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Panel_LevelInfo/Flag")
+		local ui_levelTitle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Panel_LevelInfo/Text")
+		local ui_levelDesc = ui_mainPanel:GetChildByName("Text_LevelDesc") 
+		local ui_penaltyDesc = ui_mainPanel:GetChildByName("Text_Penalty")
+		
+		-- Point Color 관련 (모드마다 포인트 컬러 적용?)
+		local uiPointColor = Color.white
+		local ui_enteranceButton = ui_mainPanel:GetChildByName("Button_Enterance")
+		local ui_coachChangeButton = ui_mainPanel:GetChildByName("Button_ChangeCoach")
+		local ui_particle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Particle_EnteranceButtonClicked")
+		local ui_directionParticle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Particle_EnteranceMode")
+		------------------------------------------------------------------------------------
+		-- 랭크 모드인 경우
+		if self.CurrentShowingMode == "Rank" then
+			-- 레벨 선택 버튼을 비활성화합니다.
+			ui_button_levelSelect.Enable = false
+			
+			-- 타이틀 및 버튼 색상을 변경합니다.
+			ui_titlePanel:GetChildByName("Text_Title").TextComponent.Text = _LocalizationService:GetTextFormat("EnteranceGameMode", _LocalizationService:GetText("GameMode_Rank"))
+			uiPointColor = Color.FromHexCode("#890fe2")
+			
+			--------------------------------------------
+			local rankModeInfo = _DataService:GetTable("RankModeInfo")
+			
+			-- 1) 시즌 관련 UI 갱신
+			local currSeason = _ModeDataLogic.Season
+			local currSeason_Text = string.format("%.1f", currSeason)
+			local seasonInfo = _DataService:GetTable("SeasonInfo")
+			local seasonRow = seasonInfo:FindRow("Season", currSeason_Text)
+			
+			ui_seasonIllust.SpriteGUIRendererComponent.ImageRUID = seasonRow:GetItem("TitleImageRUID")
+			ui_seasonTitle.TextComponent.Text = _LocalizationService:GetTextFormat("SeasonTitle", currSeason_Text)
+			ui_seasonDesc.TextComponent.Text = _LocalizationService:GetText(string.format("SeasonDesc_%.1f", currSeason_Text))
+			--------------------------------------------
+			-- 2) 레벨 관련 UI 갱신
+			local clearedLevel = 
+				pDataCompo.ClearLevelByMode[string.format("Rank_%d_%d", _ModeDataLogic.Season, _ModeDataLogic.OrdinalNumber)]
+			if isvalid(clearedLevel) == false then
+				clearedLevel = 0
+			end
+			
+			local showLevel = clearedLevel +1
+			if showLevel > 20 then
+				showLevel = 20
+			end
+			local rankRow = rankModeInfo:FindRow("Level", string.format("%d", showLevel))
+			local tierGrade = rankRow:GetItem("Tier_Grade") 
+			if tierGrade == "-" then
+				ui_levelTitle.TextComponent.Text = _LocalizationService:GetText("RankMode_"..rankRow:GetItem("Tier"))
+			else
+				ui_levelTitle.TextComponent.Text = _LocalizationService:GetText("RankMode_"..rankRow:GetItem("Tier")).." "..tierGrade
+			end
+			
+			ui_levelIcon.SpriteGUIRendererComponent.ImageRUID = rankRow:GetItem("BigIconRUID") 
+			--------------------------------------------
+			-- 3) 레벨에 따라 난이도 및 패널티 설명을 변경합니다.
+			local enemyLevel = tonumber(rankRow:GetItem("EnemyLevel"))
+			ui_levelDesc.TextComponent.Text = _LocalizationService:GetText(string.format("Enemy_LevelDesc%d", enemyLevel))	
+			
+			local penalties = {}
+			
+			for i = showLevel, 1, -1 do
+				local penaltyInfo = _ModeDataLogic.SetRankPenalties[i]
+				
+				if penaltyInfo == "-" then
+					break
+				else
+					local pValue = _UtilLogic:Split(penaltyInfo, ",")
+					for _, penaltyID in pairs(pValue) do
+						table.insert(penalties, 1, penaltyID)
+					end
+				end
+			end
+				
+			local penaltyDescText = ""
+			for i=1, #penalties do
+				if i ~= 1 then
+					penaltyDescText = penaltyDescText.."\n"
+				end
+				
+				penaltyDescText = penaltyDescText.." • ".._LocalizationService:GetText(penalties[i])
+			end
+			ui_penaltyDesc.TextComponent.Text = penaltyDescText
+		
+			-- 입장하기 버튼 및 안내 메세지
+			ui_enteranceButton.ButtonComponent.Enable = true
+		------------------------------------------------------------------------------------
+		-- 싱글 모드인 경우
+		elseif self.CurrentShowingMode == "Single" then
+			-- 레벨 선택 버튼을 활성화합니다.
+			ui_button_levelSelect.Enable = true
+			--------------------------------------------
+			-- 타이틀 및 버튼 색상을 변경합니다.
+			ui_titlePanel:GetChildByName("Text_Title").TextComponent.Text = _LocalizationService:GetTextFormat("EnteranceGameMode", _LocalizationService:GetText("GameMode_Single"))
+			uiPointColor = Color.FromHexCode("#15af90")
+			--------------------------------------------
+			local seasonInfo = _DataService:GetTable("SeasonInfo")
+			if self.SelectedSingleLevel == 0 then
+				self.SelectedSingleSeason = 1
+				
+				while true do
+					local checkSeasonClearLevel = pDataCompo.ClearLevelByMode[string.format("Single_%.1f", self.SelectedSingleSeason)]
+					if isvalid(checkSeasonClearLevel) then
+						if checkSeasonClearLevel == 8 then
+							self.SelectedSingleSeason += 0.1
+						else
+							self.SelectedSingleLevel = checkSeasonClearLevel + 1
+							break
+						end
+					else
+						-- 해당 시즌이 있는지 확인
+						local seasonRow = seasonInfo:FindRow("Season", string.format("%.1f", self.SelectedSingleSeason))
+						if isvalid(seasonRow) then
+							self.SelectedSingleLevel = 1
+						else
+							self.SelectedSingleSeason -= 0.1
+							self.SelectedSingleLevel = 8
+						end
+						break
+					end
+				end
+			end
+			
+			-- 1) 시즌 관련 UI 갱신
+			local currSeason = self.SelectedSingleSeason
+			local currSeason_Text = string.format("%.1f", currSeason)
+			local seasonRow = seasonInfo:FindRow("Season", currSeason_Text)
+		
+			
+			ui_seasonIllust.SpriteGUIRendererComponent.ImageRUID = seasonRow:GetItem("TitleImageRUID")
+			ui_seasonTitle.TextComponent.Text = _LocalizationService:GetTextFormat("SeasonTitle", currSeason_Text)
+			ui_seasonDesc.TextComponent.Text = _LocalizationService:GetText(string.format("SeasonDesc_%.1f", currSeason_Text))
+			--------------------------------------------
+			-- 2) 난이도 관련 UI 갱신
+			local singleModeInfoDataSet = _DataService:GetTable("SingleModeInfo")
+			local currLevel = self.SelectedSingleLevel
+			local singleRow = singleModeInfoDataSet:FindRow("Level", string.format("%d", currLevel))
+			local presetLevel = singleRow:GetItem("PresetLevel")
+			
+			ui_levelIcon.SpriteGUIRendererComponent.ImageRUID = singleRow:GetItem("BigIconRUID")
+			ui_levelTitle.TextComponent.Text = _LocalizationService:GetTextFormat("SingleMode_LevelText", currLevel)
+			ui_levelDesc.TextComponent.Text = _LocalizationService:GetText(string.format("Enemy_LevelDesc%d", currLevel))
+			
+			-- 레벨에 따라 난이도 및 페널티 설명 수정
+			local penaltyList = {}
+			for i=1, currLevel do
+				local row = singleModeInfoDataSet:GetRow(i)
+				local addedPenalty = row:GetItem("AddPenaltyID")
+				if addedPenalty ~= "-" then
+					table.insert(penaltyList, addedPenalty)
+				end
+			end
+			
+			local penaltyDescText = ""
+			for i=1, #penaltyList do
+				if i ~= 1 then
+					penaltyDescText = penaltyDescText.."\n"
+				end
+				
+				penaltyDescText = penaltyDescText.." • ".._LocalizationService:GetText(penaltyList[i])
+			end
+			
+			ui_penaltyDesc.TextComponent.Text = penaltyDescText
+			
+			
+		------------------------------------------------------------------------------------
+		elseif self.CurrentShowingMode == "Challenge" then
+			-- 레벨 선택 버튼을 활성화합니다.
+			ui_button_levelSelect.Enable = true
+			--------------------------------------------
+			-- 타이틀 및 버튼 색상을 변경합니다.
+			ui_titlePanel:GetChildByName("Text_Title").TextComponent.Text = _LocalizationService:GetTextFormat("EnteranceGameMode", _LocalizationService:GetText("GameMode_Challenge"))
+			uiPointColor = Color.FromHexCode("#e29c0f")
+			--------------------------------------------
+			-- 1) 시즌 관련 UI 갱신
+			local challengeInfo = _DataService:GetTable("ChallengeModeInfo")
+			local challengeRow = challengeInfo:GetRow(self.SelectedChallengeTabIdx)
+			local challengeID = challengeRow:GetItem("ChallengeID")
+			
+			ui_seasonIllust.SpriteGUIRendererComponent.ImageRUID = challengeRow:GetItem("TitleImageRUID")
+			ui_seasonTitle.TextComponent.Text = _LocalizationService:GetText(string.format("ChallengeTitle_%s", challengeID))
+			ui_seasonDesc.TextComponent.Text = _LocalizationService:GetText(string.format("ChallengeDesc_%s", challengeID))
+			--------------------------------------------
+			-- 2) 난이도 관련 UI 갱신
+			local singleModeInfoDataSet = _DataService:GetTable("SingleModeInfo")	-- 싱글 모드와 동일한 난이도 체계 사용
+			local currLevel = self.SelectedChallengeLevel
+			local modeRow = singleModeInfoDataSet:FindRow("Level", string.format("%d", currLevel))
+			local presetLevel = modeRow:GetItem("PresetLevel")
+			
+			
+			ui_levelIcon.SpriteGUIRendererComponent.ImageRUID = modeRow:GetItem("BigIconRUID")
+			ui_levelTitle.TextComponent.Text = _LocalizationService:GetTextFormat("SingleMode_LevelText", currLevel)
+			ui_levelDesc.TextComponent.Text = _LocalizationService:GetText(string.format("Enemy_LevelDesc%d", currLevel))
+			
+			-- 레벨에 따라 난이도 및 페널티 설명 수정
+			local penaltyList = {}
+			for i=1, currLevel do
+				local row = singleModeInfoDataSet:GetRow(i)
+				local addedPenalty = row:GetItem("AddPenaltyID")
+				if addedPenalty ~= "-" then
+					table.insert(penaltyList, addedPenalty)
+				end
+			end
+			
+			local penaltyDescText = ""
+			for i=1, #penaltyList do
+				if i ~= 1 then
+					penaltyDescText = penaltyDescText.."\n"
+				end
+				
+				penaltyDescText = penaltyDescText.." • ".._LocalizationService:GetText(penaltyList[i])
+			end
+			
+			ui_penaltyDesc.TextComponent.Text = penaltyDescText
+			
+		end
+		------------------------------------------------------
+		local ui_selectCoachPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach")
+		
+		-- 공통 : 선택한 모드에 따라 ui에 포인트 컬러를 적용합니다.
+		ui_button_levelSelect.SpriteGUIRendererComponent.Color = uiPointColor
+		ui_titlePanel.SpriteGUIRendererComponent.Color = uiPointColor
+		ui_enteranceButton.SpriteGUIRendererComponent.Color = uiPointColor
+		ui_coachChangeButton.SpriteGUIRendererComponent.Color = uiPointColor
+		ui_selectCoachPanel:GetChildByName("Panel_Title").SpriteGUIRendererComponent.Color = uiPointColor
+		ui_selectCoachPanel:GetChildByName("Button_Finish").SpriteGUIRendererComponent.Color = uiPointColor
+		ui_particle.UIBasicParticleComponent.Color = uiPointColor
+		ui_directionParticle.UIBasicParticleComponent.Color = uiPointColor
+	end
+
+	@ExecSpace("Client")
+	method void SetCoachChangeMode(boolean enable)
+		-- 코치 변경 모드를 활성화/비활성화합니다.
+		self.IsCoachChangeMode = enable
+		------------------------------------------------------------------------------------------------
+		-- 메인 패널의 '현재 장착한 코치 목록'에서, 각 슬롯을 제거하는 버튼을 (비)활성화합니다.
+		local ui_currentSelectedCoaches = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/List_CurrentSelectedCoach")
+		
+		for i=1, 4 do
+			local slot = ui_currentSelectedCoaches:GetChildByName(string.format("Slot_%d", i))
+			
+			local removeButton = slot:GetChildByName("Button_Remove")
+			
+			if enable and isvalid(self.SelectedCoaches[i]) == true then
+				removeButton.Enable = true
+			else
+				removeButton.Enable = false
+			end
+		end
+		------------------------------------------------------------------------------------------------
+		-- 코치 변경 모드가 활성화되면 시즌 변경 버튼 / 게임 입장 버튼을 끕(켭)니다.
+		local btn_enterance = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Button_Enterance")
+		btn_enterance.Enable = not enable
+		------------------------------------------------------------------------------------------------
+		-- 코치 프리셋 버튼을 비활성화합니다.
+		local buttonList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/List_CoachPresetButton")
+		for i=1, 5 do
+			local button = buttonList:GetChildByName(string.format("PresetButton_%d", i))
+			button.ButtonComponent.Enable = not enable
+		end
+		------------------------------------------------------------------------------------------------
+		-- 코치 선택 창의 목록을 새로고침합니다.
+		if enable then
+			local ui_coachCostFilter = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/Tab_Cost")
+			ui_coachCostFilter.TabComponent:ChangeTab(4)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshCurrentSelectedCoaches()
+		-- 현재 선택된 코치 목록 UI를 새로고침합니다.
+		local colorTable = _DataService:GetTable("GradeColor")
+		------------------------------------------------------------------
+		-- 각 슬롯을 갱신합니다.
+		local ui_currentSelectedCoaches = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/List_CurrentSelectedCoach")
+		for i=1, 4 do
+			local ui_slot = ui_currentSelectedCoaches:GetChildByName(string.format("Slot_%d", i))
+			
+			local ui_iconBg = ui_slot:GetChildByName("IconBackground")
+			local ui_icon = ui_slot:GetChildByName("Icon")
+			local ui_cost = ui_slot:GetChildByName("Cost")
+			local ui_name = ui_slot:GetChildByName("Name")
+			local ui_ability = ui_slot:GetChildByName("Ability")
+			local ui_removeButton = ui_slot:GetChildByName("Button_Remove")
+			
+			
+			-- 슬롯에 값이 있다면(=선택된 코치 있음)
+			if _UtilLogic:IsNilorEmptyString(self.SelectedCoaches[i]) == false then
+				local coachData = _CoachService:GetCoachInfo(self.SelectedCoaches[i])
+				
+				local profileRUID = coachData.ProfileRUID
+		
+				ui_icon.SpriteGUIRendererComponent.ImageRUID = profileRUID
+				ui_icon.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(profileRUID)["pos"]
+				ui_icon.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(profileRUID)["scale"]
+				ui_icon.SpriteGUIRendererComponent.Color.a = 1
+				ui_iconBg.SpriteGUIRendererComponent.Color = 
+					Color.FromHexCode(colorTable:FindRow("Key", string.format("Coach_%s", coachData.Cost)):GetItem("Default"))
+				
+				ui_cost.TextComponent.Text = tostring(coachData.Cost)
+				ui_name.TextComponent.Text = coachData.Name
+				ui_ability.TextComponent.Text = coachData.Desc
+				
+				if self.IsCoachChangeMode == true then
+					ui_removeButton.Enable = true
+				else
+					ui_removeButton.Enable = false
+				end
+				
+				
+			-- 슬롯이 비어있는 경우
+			else
+				ui_icon.SpriteGUIRendererComponent.Color.a = 0
+				ui_iconBg.SpriteGUIRendererComponent.Color = Color.FromHexCode("#bcc9da")
+				ui_cost.TextComponent.Text = "-"
+				ui_name.TextComponent.Text = "-"
+				ui_ability.TextComponent.Text = "-"
+				ui_removeButton.Enable = false
+				
+			end
+		end
+		------------------------------------------------------------------
+		-- 등급 합을 계산합니다.
+		local sum = 0
+		for i=1, #self.SelectedCoaches do
+			local coachID = self.SelectedCoaches[i]
+			local coachData = _CoachService:GetCoachInfo(coachID)
+			
+			local cost = coachData.Cost
+			sum += cost
+		end
+		
+		local ui_sumCost = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Text_SumCoachCost")
+		local ui_enteranceBtn = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Button_Enterance")
+		local ui_enteranceMsg = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Text_EnteranceMessage")
+		local ui_coachChangeBtn = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/Button_Finish")
+		local ui_coachChangeMsg = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/Text_Message")
+		if sum > 7 then
+			ui_sumCost.TextComponent.Text = _LocalizationService:GetText("TotalCost")..string.format(" <color=#FF5E68>%d</color> / 7", sum)
+			ui_coachChangeMsg.TextComponent.Text = _LocalizationService:GetText("FullCoachCost")
+			ui_coachChangeBtn.ButtonComponent.Enable = false
+		elseif sum == 7 then
+			ui_sumCost.TextComponent.Text = _LocalizationService:GetText("TotalCost")..string.format(" %d / 7", sum)
+			ui_coachChangeMsg.TextComponent.Text = _LocalizationService:GetText("")
+			ui_coachChangeBtn.ButtonComponent.Enable = true
+		else
+			ui_sumCost.TextComponent.Text = _LocalizationService:GetText("TotalCost")..string.format(" <color=#4BE192>%d</color> / 7", sum)
+			ui_coachChangeMsg.TextComponent.Text = _LocalizationService:GetText("")
+			ui_coachChangeBtn.ButtonComponent.Enable = true
+		
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshCoachList(number minIdx, number maxIdx)
+		-- '코치 선택 팝업' 내 코치 리스트를 갱신합니다.
+		---------------------------------------------------
+		local ui_coachList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/List_Coach")
+		
+		local isSelectedCoach = function(coachID)
+			for i=1, #self.SelectedCoaches do
+		
+				if self.SelectedCoaches[i] == coachID then
+					return true
+				end
+			end
+			
+			return false
+		end
+		
+		local colorTable = _DataService:GetTable("GradeColor")
+		local coachColor = Color.FromHexCode(colorTable:FindRow("Key", string.format("Coach_%d", self.ShowingCoachCost)):GetItem("Default"))
+				
+		
+		for i=1, 10 do
+			local ui_slot = ui_coachList:GetChildByName(string.format("Slot_%d", i))
+			
+			local targetIdx = minIdx + (i-1)
+			if isvalid(self.CurrentShowingCoachIDList[targetIdx]) == true then
+				local coachID = self.CurrentShowingCoachIDList[targetIdx] 
+				ui_slot.Enable = true
+				
+				local ui_iconBg = ui_slot:GetChildByName("IconBackground")
+				local ui_icon = ui_slot:GetChildByName("Icon")
+				local ui_cost = ui_slot:GetChildByName("Cost")
+				local ui_name = ui_slot:GetChildByName("Name")
+				local ui_ability = ui_slot:GetChildByName("Ability")
+				local ui_selectedBtn = ui_slot:GetChildByName("IsSelected")
+				
+				local coachData = _CoachService:GetCoachInfo(coachID)
+				local profileRUID = coachData.ProfileRUID
+				
+				ui_iconBg.SpriteGUIRendererComponent.Color = coachColor
+				ui_icon.SpriteGUIRendererComponent.ImageRUID = profileRUID
+				ui_icon.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(profileRUID)["pos"]
+				ui_icon.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(profileRUID)["scale"]
+				ui_cost.TextComponent.Text = string.format("%d", self.ShowingCoachCost)
+				ui_name.TextComponent.Text = coachData.Name
+				ui_ability.TextComponent.Text = coachData.Desc
+				ui_selectedBtn.Enable = isSelectedCoach(coachID)		
+			else
+				ui_slot.Enable = false
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SelectCoach(string coachID)
+		-- 코치 선택 팝업에서 특정 코치를 선택했을 때 실행
+		-------------------------------------------------
+		-- 예외처리1. 미보유
+		local coachManager = _UserService.LocalPlayer.CoachManager
+		if coachManager.PlayerOwnedCoachesID[coachID] == false then
+			_UIToast:ShowMessageByLocalizingKey("NotOwnedCoach")
+			return
+		end
+		
+		-- 예외처리2. 4개 모두 선택
+		if #self.SelectedCoaches >= 4 then
+			_UIToast:ShowMessageByLocalizingKey("FullCoachSlot")
+			return
+		end
+		
+		-- 예외처리3. 이미 선택한 코치를 다시 선택 (중복선택 불가)
+		for i=1, #self.SelectedCoaches do
+			if self.SelectedCoaches[i] == coachID then
+				_UIToast:ShowMessageByLocalizingKey("AlreadyChosenCoach")
+				return
+			end
+		end
+		-------------------------------------------------
+		table.insert(self.SelectedCoaches, coachID)
+		
+		-- UI 새로고침 요청
+		self:RefreshCurrentSelectedCoaches()
+		local currentScroll = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/List_Coach").CustomScrollLayoutComponent.CurrentScroll
+		self:RefreshCoachList(currentScroll, currentScroll+9)
+	end
+
+	@ExecSpace("Client")
+	method void UnselectCoach(integer idx)
+		-- 코치 선택 팝업이 떠 있는 상태에서 특정 코치를 선택 해제했을 때 실행
+		-------------------------------------------------
+		if isvalid(self.SelectedCoaches[idx]) == true then
+			table.remove(self.SelectedCoaches, idx)
+			
+			-- UI 새로고침 요청	
+			self:RefreshCurrentSelectedCoaches()
+			local currentScroll = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/List_Coach").CustomScrollLayoutComponent.CurrentScroll
+			self:RefreshCoachList(currentScroll, currentScroll+9)
+		else
+			_UIToast:ShowMessageByLocalizingKey("EmptyCoachSlot")
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangeCoachList_Check(string coachIDList_str, number presetNum)
+		-- 선택한 코치 리스트를 서버에서 검증하고 저장합니다.
+		
+		local coachIDList = _UtilLogic:StringToTable(coachIDList_str)
+		local targetUser = _UserService:GetUserEntityByUserId(senderUserId)
+		local coachManager = targetUser.CoachManager
+		-------------------------------------------------------------------
+		local isEnterConditions = true
+		local totalCost = 0
+		for i=1, 4 do
+			-- 선택한 코치 보유 여부 검증
+			if _UtilLogic:IsNilorEmptyString(coachIDList[i]) == false then
+				if coachManager.PlayerOwnedCoachesID[coachIDList[i]] == false then
+					isEnterConditions = false
+					break
+				end
+				
+				local coachData = _CoachService:GetCoachInfo(coachIDList[i])
+				local cost = coachData.Cost
+				
+				totalCost += cost
+			end
+		end
+		
+		-- 등급 합 검증
+		if totalCost > 7 then
+			isEnterConditions = false
+		end
+		-------------------------------------------------------------------
+		if isEnterConditions == false then
+			return
+		end
+		-------------------------------------------------------------------
+		table.initialize(coachManager.SetCoachesID, coachIDList)
+		coachManager:SetCoachPreset(presetNum, "save")
+		self:ChangeCoachList_OnClient(senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void ChangeCoachList_OnClient()
+		-- 코치 변경 완료 후 클라이언트 UI 처리
+		_UIToast:ShowMessageByLocalizingKey("CompleteChangeCoach")
+		self:SetCoachChangeMode(false)
+		
+		local ui_coachSelectPopup = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach")
+		ui_coachSelectPopup.Enable = false
+		
+		local ui_mainPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main")
+		ui_mainPanel.UITransformComponent.anchoredPosition = Vector2(0, 0)
+	end
+
+	@ExecSpace("Client")
+	method void SetEnteranceMode(boolean forced)
+		-- (기본 모드 <-> 입장 대기 모드) 전환합니다.
+		-------------------------------------------------------------------------------------------
+		local ui_enteranceBtn = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Button_Enterance")
+		-------------------------------------------------------------------------------------------
+		-- 변신 해제
+		_UserService.LocalPlayer.PlayerAvatarChangeCompoenent:False_change() 
+		-------------------------------------------------------------------------------------------
+		-- 입장 대기 상태로 전환합니다.
+		if forced == true or self.IsEnteranceMode == false then
+			self.IsEnteranceMode = true
+			
+			-- (싱글 모드) 시즌, 단계 선택 버튼들을 끕니다.
+			local ui_levelChangeButton = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/SubTitle_Level/Button_ChangeLevel")
+			ui_levelChangeButton.ButtonComponent.Enable = false
+			
+			-- UI 닫기 버튼을 비활성화합니다.
+			local ui_exitButton = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Panel_Title/Button_Exit")
+			ui_exitButton.ButtonComponent.Enable = false
+			
+			-- 코치 변경 버튼을 끕니다.
+			local ui_coachChangeButton = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Button_ChangeCoach")
+			ui_coachChangeButton.ButtonComponent.Enable = false
+			local ui_coachPresetButtonList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/List_CoachPresetButton")
+			for i=1, 5 do
+				ui_coachPresetButtonList:GetChildByName(string.format("PresetButton_%d", i)).ButtonComponent.Enable = false
+			end
+			
+			-- 파티클 이펙트를 재생합니다.
+			local ui_particle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Particle_EnteranceButtonClicked")
+			ui_particle.Enable = true
+			local ui_directionBG = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Sprite_EnteranceMode")
+			local ui_directionParticle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Particle_EnteranceMode")
+			ui_directionBG.SpriteGUIRendererComponent.Color.a = 0
+			ui_directionBG.Enable = true
+			ui_directionParticle.Enable = true
+		
+			--버튼 색상 rgb 따오기(연출 진행을 위한 변수)
+			local r=ui_enteranceBtn.SpriteGUIRendererComponent.Color.r*255
+			local g=ui_enteranceBtn.SpriteGUIRendererComponent.Color.g*255
+			local b=ui_enteranceBtn.SpriteGUIRendererComponent.Color.b*255
+			
+			
+			--입장버튼을 회색으로 변경
+			ui_enteranceBtn.SpriteGUIRendererComponent.Color=Color.FromHexCode("#c3c3c3")
+			
+			-- 4초의 카운트를 셉니다.
+			local leftEnterDelayTime = 4
+			local timerID = 0
+			local beginEnter = function()
+				leftEnterDelayTime -= 0.2
+				--leftEnterDelayTime -= 1
+		
+				-- 타이머 시간이 다되면 진짜 입장
+				if leftEnterDelayTime < 0 then
+					-- 사운드
+					_PlaySoundLogic:PlaySound("M0178")
+					_PlaySoundLogic:PlaySound("M0178")
+					_PlaySoundLogic:PlaySound("M0179")
+		
+					-- 로딩창을 먼저 활성화
+					_UserService.LocalPlayer.LoadingManager:SetEnableUI(true)
+					_UserService.LocalPlayer.LoadingManager.LoadingUI.UI_Loading.TipUpdate_IsGoingToLobby = false
+					
+					
+					--랭크
+					if self.CurrentShowingMode == "Rank" then
+						local move = function()
+							_UserService.LocalPlayer.GameManager:MoveToArena(
+								_UserService.LocalPlayer,
+								_ModeDataLogic.NowRankSeason,
+								self.CurrentShowingMode, 
+								0,
+								false
+							)
+						end
+						_TimerService:SetTimerOnce(move, 1)
+						
+					--싱글
+					elseif self.CurrentShowingMode == "Single" then
+						-- 맵 이동을 요청
+						local move = function()
+							_UserService.LocalPlayer.GameManager:MoveToArena(
+								_UserService.LocalPlayer,
+								self.SelectedSingleSeason,
+								self.CurrentShowingMode..string.format("_%.1f", self.SelectedSingleSeason), 
+								self.SelectedSingleLevel,
+								false
+							)
+						end
+						_TimerService:SetTimerOnce(move, 1)
+						
+						--챌린지
+					elseif self.CurrentShowingMode == "Challenge" then
+						-- 맵 이동을 요청
+						local move = function()
+							_UserService.LocalPlayer.GameManager:MoveToArena(
+								_UserService.LocalPlayer,
+								self.SelectedChallengeSeason,
+								self.CurrentShowingMode..string.format("_%d", self.SelectedChallengeTabIdx),
+								self.SelectedChallengeLevel,
+								false
+							)
+						end
+						_TimerService:SetTimerOnce(move, 1)
+						
+					--튜토리얼
+					elseif self.CurrentShowingMode == "Tutorial" then
+						-- 맵 이동을 요청
+						local move = function()
+							_UserService.LocalPlayer.GameManager:MoveToArena(
+								_UserService.LocalPlayer,
+								1,
+								self.CurrentShowingMode, 
+								1,
+								false
+							)
+						end
+						_TimerService:SetTimerOnce(move, 1)
+					end
+					
+					self:SetEnteranceMode(false)
+					_TimerService:ClearTimer(timerID)	-- 제 역할을 다했으니 타이머를 제거합니다.
+					
+					
+				-- 타이머 시간 감소 및 ui 갱신
+				else
+					ui_enteranceBtn.TextComponent.Text = _LocalizationService:GetTextFormat("EnteranceAfterSeconds", math.floor(leftEnterDelayTime+1)) -- 'n초 후 입장'
+					ui_enteranceBtn.SpriteGUIRendererComponent.Color=Color((195+((r-195)*(1-leftEnterDelayTime/4)))/255,(195+((g-195)*(1-leftEnterDelayTime/4)))/255,(195+((b-195)*(1-leftEnterDelayTime/4)))/255,(195+(60*(1-leftEnterDelayTime/4)))/255)
+					ui_directionBG.SpriteGUIRendererComponent.Color.a = -0.25*leftEnterDelayTime + 0.9
+					
+					--볼륨 좀 더 높이려고 중첩으로 재생
+					_SoundService:PlaySound("633403c6669d4e7488b501fa5166d0fd", (1-(0.25*leftEnterDelayTime))*_PlaySoundLogic.SFXVolume) -- 사운드 : 점점 볼륨높이는 사운드라 기존 API 사용(관리차 데이터셋에는 기록)
+					_SoundService:PlaySound("633403c6669d4e7488b501fa5166d0fd", (1-(0.45*leftEnterDelayTime))*_PlaySoundLogic.SFXVolume)
+					_SoundService:PlaySound("633403c6669d4e7488b501fa5166d0fd", (1-(0.55*leftEnterDelayTime))*_PlaySoundLogic.SFXVolume)
+				end
+			end
+			timerID = _TimerService:SetTimerRepeat(beginEnter, 0.2, 0)
+			self.EnteranceTimerID = timerID
+			
+			
+			
+		-- 기본 모드로 전환합니다.
+		elseif forced == false or self.IsEnteranceMode == true then
+			self.IsEnteranceMode = false
+			
+			-- 타이머를 제거합니다.
+			_TimerService:ClearTimer(self.EnteranceTimerID)
+			self.EnteranceTimerID = 0
+			
+			-- 입장 버튼을 원래대로 돌립니다.
+			ui_enteranceBtn.TextComponent.Text = _LocalizationService:GetText("Enterance")
+			
+			-- UI 닫기 버튼을 활성화합니다.
+			local ui_exitButton = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Panel_Title/Button_Exit")
+			ui_exitButton.ButtonComponent.Enable = true
+			
+			-- UI 파티클을 끕니다.
+			local ui_particle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Particle_EnteranceButtonClicked")
+			ui_particle.Enable = false
+			
+			local ui_directionBG = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Sprite_EnteranceMode")
+			local ui_directionParticle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Particle_EnteranceMode")
+			ui_directionBG.SpriteGUIRendererComponent.Color.a = 0
+			ui_directionBG.Enable = false
+			ui_directionParticle.Enable = false
+			
+			
+			-- (싱글 모드) 단계 변경 버튼을 켭니다.
+			local ui_levelChangeButton = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/SubTitle_Level/Button_ChangeLevel")
+			ui_levelChangeButton.ButtonComponent.Enable = true
+			
+			-- 코치 변경 버튼을 켭니다.
+			local ui_coachChangeButton = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/Button_ChangeCoach")
+			ui_coachChangeButton.ButtonComponent.Enable = true
+			local ui_coachPresetButtonList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/List_CoachPresetButton")
+			for i=1, 5 do
+				ui_coachPresetButtonList:GetChildByName(string.format("PresetButton_%d", i)).ButtonComponent.Enable = true
+			end
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Cancle_CoachSelectMode()
+		-- 코치 변경 팝업에서 '닫기'를 눌렀을 때 실행합니다.
+		self:SetCoachChangeMode(false)
+		
+		-- 현재 선택된 코치 목록을 초기화합니다.
+		table.initialize(self.SelectedCoaches, _UserService.LocalPlayer.CoachManager.SetCoachesID)
+		self:RefreshCurrentSelectedCoaches()
+		
+		-- 코치 선택 팝업을 닫음
+		local ui_coachSelectPopup = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach")
+		ui_coachSelectPopup.Enable = false
+		
+		-- 메인 패널의 위치를 중앙으로 이동
+		local ui_mainPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main")
+		ui_mainPanel.UITransformComponent.anchoredPosition = Vector2(0, 0)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI_LevelSelectPanel(integer tabIdx)
+		-- 레벨 선택 패널(레벨 목록)을 새로고침합니다.
+		-------------------------------------------------------------
+		local user = _UserService.LocalPlayer
+		local pDataCompo = user.PlayerDataComponent
+		-------------------------------------------------------------
+		-- tabIdx : 시즌 목록 중 선택한 탭 인덱스를 말합니다. 없거나 0으로 지정된 경우, 자동으로 첫번째 탭(1)으로 지정합니다.
+		if tabIdx == nil or tabIdx == 0 then
+			tabIdx = 1
+		end
+		-------------------------------------------------------------
+		local ui_seasonIllust = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_LevelSelect/Panel/Panel_SeasonPanel/SeasonIllust")
+		local ui_seasonTitle = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_LevelSelect/Panel/Panel_SeasonPanel/SeasonTitle")
+		local ui_seasonDesc = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_LevelSelect/Panel/Panel_SeasonPanel/SeasonDesc")
+		local ui_seasonList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_LevelSelect/Panel/List_Season")
+		local ui_seasonListSlot = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_LevelSelect/Panel/List_Season/Slot")
+		-------------------------------------------------------------
+		-- 싱글 모드인 경우
+		local clearedLevel = 0
+		if self.CurrentShowingMode == "Single" then
+			self.SelectedSingleTabIdx = tabIdx
+			
+			local seasonInfo = _DataService:GetTable("SeasonInfo")
+			-- 1. 좌측 리스트 UI
+			local checkNum = seasonInfo:GetRowCount()
+			for i = 1, checkNum do
+				-- 엔티티 생성
+				local slot = ui_seasonList:GetChildByName( string.format("Slot_%d", i) )
+				if not isvalid(slot) then
+					slot = ui_seasonListSlot:Clone(string.format("Slot_%d", i))
+				end
+				
+				local setSeasonText = seasonInfo:GetRow(i):GetItem("Season")
+				slot:SetEnable(true)
+				slot.TextComponent.Text = _LocalizationService:GetTextFormat("SeasonTitle", setSeasonText)
+			end
+			
+			-- 안쓰는 슬롯 숨기기
+			while true do
+				checkNum += 1
+				local slot = ui_seasonList:GetChildByName( string.format("Slot_%d", checkNum) )
+				if isvalid(slot) then
+					slot:SetEnable(false)
+				else
+					break
+				end
+			end
+			
+			ui_seasonList.TabComponent:SetChildren()
+			
+			-- 2. 상단 정보 입력 및 우측 난이도 선택 UI
+			local seasonRow = seasonInfo:GetRow(tabIdx)
+			local seasonText = seasonRow:GetItem("Season")
+			local seasonNum = tonumber(seasonText)
+			
+			self.LevelSelectMode_Season = seasonNum
+			self.LevelSelectMode_TabIdx = tabIdx
+			
+			ui_seasonIllust.SpriteGUIRendererComponent.ImageRUID = seasonRow:GetItem("TitleImageRUID")
+			ui_seasonTitle.TextComponent.Text = _LocalizationService:GetTextFormat("SeasonTitle", seasonText)
+			ui_seasonDesc.TextComponent.Text = _LocalizationService:GetText(string.format("SeasonDesc_%.1f", seasonText))
+			
+			
+			clearedLevel = pDataCompo.ClearLevelByMode[string.format("Single_%.1f", seasonNum)]
+			if isvalid(clearedLevel) == false then
+				if seasonNum == math.floor(seasonNum) then
+					clearedLevel = 0
+				else
+					local checkLevel = pDataCompo.ClearLevelByMode[string.format("Single_%.1f", seasonNum - 0.1)]
+					
+					if isvalid(checkLevel) and checkLevel == 8 then
+						clearedLevel = 0
+					else
+						clearedLevel = -1
+					end
+				end
+			end
+		-------------------------------------------------------------	
+		-- 챌린지 모드인 경우
+		elseif self.CurrentShowingMode == "Challenge" then
+			self.SelectedChallengeTabIdx = tabIdx
+			
+			local challengeInfo = _DataService:GetTable("ChallengeModeInfo")
+			-- 1. 좌측 리스트 UI
+			local checkNum = challengeInfo:GetRowCount()
+			checkNum = math.min(checkNum, math.floor(pDataCompo.Level/50) )
+			
+			for i = 1, checkNum do
+				-- 엔티티 생성
+				local slot = ui_seasonList:GetChildByName( string.format("Slot_%d", i) )
+				if not isvalid(slot) then
+					slot = ui_seasonListSlot:Clone(string.format("Slot_%d", i))
+				end
+				
+				local setSeasonText = _LocalizationService:GetText("GameMode_Challenge")..string.format(" %d", i)
+				slot:SetEnable(true)
+				slot.TextComponent.Text = setSeasonText
+				
+				if i ~= tabIdx then
+					
+				end
+			end
+			
+			-- 안쓰는 슬롯 숨기기
+			while true do
+				checkNum += 1
+				local slot = ui_seasonList:GetChildByName( string.format("Slot_%d", checkNum) )
+				if isvalid(slot) then
+					slot:SetEnable(false)
+				else
+					break
+				end
+			end
+			
+			ui_seasonList.TabComponent:SetChildren()
+			
+			-- 2. 상단 정보 입력 및 우측 난이도 선택 UI
+			local challengeRow = challengeInfo:GetRow(tabIdx)
+			local challengeID = challengeRow:GetItem("ChallengeID")
+			local chSeason = challengeRow:GetItem("SetSeason")
+			log("Tab = ", tabIdx, challengeID)
+			
+			self.LevelSelectMode_Season = tonumber(chSeason)
+			self.LevelSelectMode_TabIdx = tabIdx
+			
+			ui_seasonIllust.SpriteGUIRendererComponent.ImageRUID = challengeRow:GetItem("TitleImageRUID")
+			ui_seasonTitle.TextComponent.Text = _LocalizationService:GetText(string.format("ChallengeTitle_%s", challengeID))
+			ui_seasonDesc.TextComponent.Text = _LocalizationService:GetText(string.format("ChallengeDesc_%s", challengeID))
+			
+			clearedLevel = pDataCompo.ClearLevelByMode[string.format("Challenge_%d", tabIdx)]
+			log("clearedLevel =", clearedLevel)
+			if isvalid(clearedLevel) == false then
+				clearedLevel = 0
+			end
+		end
+		-------------------------------------------------------------
+		-- 2) 현재 보고 있는 시즌의 레벨 목록을 갱신합니다.
+		-------------------------------------------------------------
+		-- 클리어한 레벨 +1 까지 개방
+		local playableMaxLevel = clearedLevel + 1
+		if playableMaxLevel > 8 then
+			playableMaxLevel = 8
+		end
+		
+		local ui_levels = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_LevelSelect/Panel/List_Levels")
+		local initializeLevelListUI = function()
+			local singleModeInfo = _DataService:GetTable("SingleModeInfo")
+			for i=1, 8 do
+				local ui_level = ui_levels:GetChildByName(string.format("Level_%d", i))
+				ui_level:GetChildByName("Text_Level").TextComponent.Text = _LocalizationService:GetTextFormat("SingleMode_LevelText", i)
+				
+				local ui_desc = ui_level:GetChildByName("Text_Desc")
+				if isvalid(ui_desc) then
+					local levelDataRow = singleModeInfo:FindRow("Level", string.format("%d", i))
+					local powerLevel = levelDataRow:GetItem("Level")
+					local addedPenalty = levelDataRow:GetItem("AddPenaltyID")
+					if isvalid(addedPenalty) == true and addedPenalty ~= "-" then
+						ui_desc.TextComponent.Text = 
+							_LocalizationService:GetText("Enemy_LevelDesc"..powerLevel).."\n"
+							.._LocalizationService:GetText("AddPenalty").." ".._LocalizationService:GetText(addedPenalty)
+					else
+						ui_desc.TextComponent.Text = _LocalizationService:GetText("Enemy_LevelDesc"..powerLevel)
+					end
+					
+				end
+			end
+		end
+		
+		if self._T.isInitializedLevelList == nil or self._T.isInitializedLevelList == false then
+			initializeLevelListUI()
+			self._T.isInitializedLevelList = true
+		end
+		
+		for i=1, playableMaxLevel do
+			local ui_level = ui_levels:GetChildByName(string.format("Level_%d", i))
+		
+			
+			ui_level.ButtonComponent.Enable = true
+			ui_level:GetChildByName("Panel_Locked").Enable = false
+			
+			if i == playableMaxLevel then
+				if i == 8 and clearedLevel == 8 then
+					ui_level:GetChildByName("Sprite_FirstReward"):GetChildByName("Sprite_Got").Enable = true
+				else
+					ui_level:GetChildByName("Sprite_FirstReward"):GetChildByName("Sprite_Got").Enable = false
+				end
+			else 
+				ui_level:GetChildByName("Sprite_FirstReward"):GetChildByName("Sprite_Got").Enable = true
+			end
+			
+		end
+		-------------------------------------------------------------
+		-- 플레이 불가능한 레벨은 버튼 비활성화
+		local idx = playableMaxLevel + 1
+		while true do
+			if idx > 8 then
+				break
+			end
+			
+			local ui_level = ui_levels:GetChildByName(string.format("Level_%d", idx))
+			ui_level.ButtonComponent.Enable = false
+			ui_level:GetChildByName("Panel_Locked").Enable = true
+			ui_level:GetChildByName("Sprite_FirstReward"):GetChildByName("Sprite_Got").Enable = false
+			
+			idx +=1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshUI_ModeSelectPanel()
+		-- 모드 선택 패널의 입장 조건을 검사하고 UI를 갱신합니다.
+		local ui_modeSelectPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode")
+		------------------------------------------------------------------------------------------
+		local ui_loadingPanel = ui_modeSelectPanel:GetChildByName("Panel_Loading")
+		ui_loadingPanel.Enable = true
+		------------------------------------------------------------------------------------------
+		local playerLevel = _UserService.LocalPlayer.PlayerDataComponent.Level
+		------------------------------------------------------------------------------------------
+		-- 랭크 모드 입장 조건 체크
+		local ui_rank = ui_modeSelectPanel:GetChildByName("Button_RankMode")
+		local isPlayableRank = true
+		local ui_rank_locked = ui_rank:GetChildByName("Panel_Locked")
+		
+		-- 1. 레벨
+		if playerLevel < 10 then
+			ui_rank.ButtonComponent.Enable = false
+			isPlayableRank = false
+			ui_rank_locked.Enable = true
+			ui_rank_locked.TextComponent.Text = _LocalizationService:GetTextFormat("ModeLockedDesc", 10)
+		end
+		
+		-- 2. 점검 시간
+		local leftTimeToNextUpdate = _ModeDataLogic:GetLeftTimeToNextOrdinal()
+		if isPlayableRank == true and leftTimeToNextUpdate["days"] <= 0 and leftTimeToNextUpdate["hours"] <= 0 then
+			isPlayableRank = false
+			ui_rank.ButtonComponent.Enable = false
+			ui_rank_locked.Enable = true
+			ui_rank_locked.TextComponent.Text = _LocalizationService:GetText("Ranking_CoolTime")
+		end
+		
+		-- 플레이 가능한 경우 버튼 활성화 (+잠금 패널 비활성화)
+		if isPlayableRank == true then
+			ui_rank.ButtonComponent.Enable = true
+			ui_rank_locked.Enable = false
+		end
+		------------------------------------------------------------------------------------------
+		-- 챌린지 모드 입장 조건 체크
+		local ui_challenge = ui_modeSelectPanel:GetChildByName("Button_ChallengeMode")
+		local isPlayableChallenge = true
+		local ui_challenge_locked = ui_challenge:GetChildByName("Panel_Locked")
+		
+		local setButtonDisable = function()
+			ui_challenge.ButtonComponent.Enable = false
+			isPlayableChallenge = false
+			ui_challenge_locked.Enable = true
+		end
+		-- 1. 레벨
+		if playerLevel < 50 then
+			setButtonDisable()
+			ui_challenge_locked.TextComponent.Text = _LocalizationService:GetTextFormat("ModeLockedDesc", 50)
+		end
+		
+		-- 2. 일일 입장 횟수
+		local leftTryCount = _UserService.LocalPlayer.PlayerDataComponent.ChallengeMode_LeftTryCount
+		if isPlayableChallenge == true and leftTryCount <= 0 then
+			setButtonDisable()
+			ui_challenge_locked.TextComponent.Text = _LocalizationService:GetText("ExhaustAllTryChange")
+		end
+		
+		-- 플레이 가능한 경우 버튼 활성화 (+잠금 패널 비활성화)
+		if isPlayableChallenge == true then
+			ui_challenge.ButtonComponent.Enable = true
+			ui_challenge_locked.Enable = false
+		end
+		------------------------------------------------------------------------------------------
+		ui_loadingPanel.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnButtonClick_ModeSelect(string mode)
+		-- 모드 선택 화면에서 각 모드 버튼을 눌렀을 때 실행하는 함수입니다.
+		-- mode = "Single", "Rank", "Challenge", "Tutorial"
+		--------------------------------------------------------------------------
+		-- 예외 처리
+		if self.IsEnteranceMode then
+			return
+		end
+		_ESCMenuService.UI_QuickRestartButton.ButtonComponent.Enable = true
+		local playerLv = _UserService.LocalPlayer.PlayerDataComponent.Level
+		if mode == "Rank" then
+			-- 1. 플레이어 레벨
+			if playerLv < 10 then
+				return
+			end
+			-- 2. 남은 업데이트 시간이 1시간 미만
+			local leftTimeToNextUpdate = _ModeDataLogic:GetLeftTimeToNextOrdinal()
+			if leftTimeToNextUpdate["days"] <= 0 and leftTimeToNextUpdate["hours"] <= 0 then
+				return
+			end
+			
+		elseif mode == "Challenge" then
+		
+		    ---- 1. 플레이어 레벨
+		    --if playerLv < 50 then
+		    --    return
+		    --end
+		    --
+		    ---- 2. 일일 도전 횟수 초과
+		    --local dailyTryCount = _UserService.LocalPlayer.PlayerDataComponent.ChallengeMode_LeftTryCount
+		    --if dailyTryCount < 1 then
+		    --    return
+		    --end
+		elseif mode == "Tutorial" then
+			table.initialize(self.SelectedCoaches, _UserService.LocalPlayer.CoachManager.SetCoachesID)
+			_ESCMenuService.UI_QuickRestartButton.ButtonComponent.Enable = false
+			_UserService.LocalPlayer.TutorialManager_New:TutorialInitialize()
+			self:RefreshCurrentSelectedCoaches()
+			--로딩 화면 띄우기
+			self.LevelSelectMode_Season = 1.0
+			_UserService.LocalPlayer.LoadingManager:SetEnableUI(true)
+			_UserService.LocalPlayer.LoadingManager.LoadingUI.UI_Loading.TipUpdate_IsGoingToLobby = false
+			self.CurrentShowingMode = "Tutorial"
+			-- 맵 이동을 요청
+			local move = function()
+				_UserService.LocalPlayer.GameManager:MoveToArena(
+				_UserService.LocalPlayer,
+				1,
+				"Tutorial", 
+				1,
+				false)
+			end
+			_TimerService:SetTimerOnce(function() _UI_TutorialLogic.UI_TutorialSelect:SetEnable(false) end,1)
+			_TimerService:SetTimerOnce(move, 1)
+			return
+		end
+		--------------------------------------------------------------------------
+		local ui_selectMode = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode")
+		ui_selectMode.Enable = false
+		--------------------------------------------------------------------------
+		-- 플레이 가능한 가장 마지막 단계로 자동 세팅합니다.
+		self.CurrentShowingMode = mode
+		self.SelectedSingleLevel = 0
+		self:RefreshUI_SeasonLevelInfo()
+		--------------------------------------------------------------------------
+		-- 현재 선택된 코치 목록을 초기화합니다.
+		table.initialize(self.SelectedCoaches, _UserService.LocalPlayer.CoachManager.SetCoachesID)
+		self:RefreshCurrentSelectedCoaches()
+		-------------------------------------------------------------------------
+		local ui_allPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect")
+		local ui_mainPanel = ui_allPanel:GetChildByName("Panel_Main")
+		local ui_resumePanel = ui_allPanel:GetChildByName("Panel_Resume")
+		
+		ui_allPanel.Enable = true
+		ui_mainPanel.Enable = true
+		ui_resumePanel.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 스크립트 종료 시 타이머 정리
+		if self.TimerID_ModeSelectDescResizingFunction ~= 0 then
+			_TimerService:ClearTimer(self.TimerID_ModeSelectDescResizingFunction)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "95bd5ad5-4562-4ea2-b7c6-217b57ccb5c1")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- HUD에서 "이어하기"를 눌렀을 때
+		--------------------------------------------------------------------------
+		local ui_allPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect")
+		ui_allPanel.Enable = true
+		
+		local ui_selectMode = ui_allPanel:GetChildByName("Panel_SelectMode")
+		local ui_mainPanel = ui_allPanel:GetChildByName("Panel_Main")
+		local ui_resumePanel = ui_allPanel:GetChildByName("Panel_Resume")
+		
+		ui_selectMode.Enable = false
+		ui_mainPanel.Enable = false
+		ui_resumePanel.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "38b8b268-28c0-4ea6-a8d7-811192b2c2b4")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 메인 패널에서 "코치 바꾸기(팝업 열기)" 버튼을 눌렀을 때 실행
+		-- 메인 패널에서 "코치 바꾸기(팝업 열기)" 버튼을 눌렀을 때 실행 : 코치 변경 팝업을 엽니다.
+		--------------------------------------------------------------------------
+		if self.IsEnteranceMode then
+			return
+		end
+		--------------------------------------------------------------------------
+		local ui_coachChange = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach")
+		ui_coachChange.Enable = true
+		
+		local ui_coachList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/List_Coach")
+		ui_coachList.CustomScrollLayoutComponent:SetCurrentScroll(1)
+		
+		local ui_mainPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main")
+		ui_mainPanel.UITransformComponent.anchoredPosition = Vector2(-440, 0)
+		ui_coachChange.UITransformComponent.anchoredPosition = Vector2(510, 0)
+		
+		self:SetCoachChangeMode(true)
+		
+		local ui_coachEditPanel_Tab = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/Tab_Cost")
+		ui_coachEditPanel_Tab.TabComponent:ChangeTab(4)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "e4fccd18-35bf-463e-a978-867d9a485ced")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 코치 선택 팝업 닫기 버튼 처리
+		self:Cancle_CoachSelectMode()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "a57cf152-9ca2-4bdd-94b1-d75f6bd7432e")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 코치 변경 팝업에서 '교체 완료'를 눌렀을 때 실행합니다.
+		self:ChangeCoachList_Check(_UtilLogic:TableToString(self.SelectedCoaches), self.SelectedPresetNum)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "eefee85f-5cf6-457c-9cad-0df401cee87e")
+	handler HandleTabChangedEvent2(TabChangedEvent event)
+		-- 코치 선택 UI에서 등급 필터를 바꿨을 때 실행합니다.
+		--------------------------------------------------------------------
+		local cost = {
+			[1] = -3,
+			[2] = -2,
+			[3] = -1,
+			[4] = 1,
+			[5] = 2,
+			[6] = 3,
+			[7] = 4,
+			[8] = 5,
+			[9] = 7,
+		}
+		
+		local idx = event.ChangedIdx
+		
+		self.ShowingCoachCost = cost[idx]
+			
+		-- 보고 있는 스크롤 목록을 변경
+		local ui_coachList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach/List_Coach")
+		
+		local ownedCoachList = _UserService.LocalPlayer.CoachManager:GetOwnedCoachList(cost[idx])
+		table.initialize(self.CurrentShowingCoachIDList, ownedCoachList)
+		
+		local ownedCoachCount = #ownedCoachList
+		ui_coachList.CustomScrollLayoutComponent:SetChildrenCount(ownedCoachCount)
+		
+		-- 스크롤을 최상단으로 조절하고, 새로고침합니다.
+		ui_coachList.CustomScrollLayoutComponent:SetCurrentScroll(1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "7fc45968-878e-4416-8e13-7f3a42d1ac17")
+	handler HandleCustomScrollChangedEvent(CustomScrollChangedEvent event)
+		-- 코치 리스트 스크롤 변경 시 실행
+		-- Parameters
+		local MinIdx = event.MinIdx
+		local MaxIdx = event.MaxIdx
+		---------------------------------------------------------
+		self:RefreshCoachList(MinIdx, MaxIdx)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "7352a80b-c53d-4c57-9dc8-5a4c2d213266")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 게임 입장 버튼 클릭 시 입장 모드 전환
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		self:SetEnteranceMode(nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "5500603f-db2c-4214-9c38-65223d4dbf36")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 이전에 저장된 게임이 있을 때 등장하는 '이어하기' 팝업에서, 'yes' 버튼을 눌렀을 때 실행
+		---------------------------------------------------------
+		local user = _UserService.LocalPlayer
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		if gameManager.SetSavedData == true then
+			user.PlayerAvatarChangeCompoenent:False_change() 
+			_UserService.LocalPlayer.LoadingManager:SetEnableUI(true)
+			_UserService.LocalPlayer.LoadingManager.LoadingUI.UI_Loading.TipUpdate_IsGoingToLobby = false
+			
+			local usePortal = function()
+				gameManager:MoveToArena(
+							user,
+							gameManager.NeedDataLoadVersion,
+							gameManager.NeedDataLoadType,
+							gameManager.NeedDataLoadLevel,
+							true
+						)
+			end
+			_TimerService:SetTimerOnce(usePortal, 1)
+			--_PlaySoundLogic:FadeInFadeOut(false, 1, 0.5, 0)
+		else
+			log("저장된 게임이 없습니다.")
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "074fc9e2-d286-4061-9ad2-1cfa2240ad0c")
+	handler HandleButtonClickEvent9(ButtonClickEvent event)
+		-- 이어하기 팝업에서 새로운 게임 시작 버튼 처리
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		local ui_modeSelect = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectMode")
+		local ui_resume = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Resume")
+		local ui_resumeCheck = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Popup_CheckRemoveData")
+		
+		self:RefreshUI_ModeSelectPanel()
+		ui_modeSelect.Enable 	= true
+		ui_resume.Enable 		= false
+		ui_resumeCheck.Enable 	= false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "fb511564-05b9-4919-9d77-fa7911db98c9")
+	handler HandleButtonClickEvent10(ButtonClickEvent event)
+		-- 메인 패널에서 '닫기'를 눌렀을 때 실행합니다.
+		--------------------------------------------------------------
+		self:SetCoachChangeMode(false)
+		
+		-- 현재 선택된 코치 목록을 초기화합니다.
+		table.initialize(self.SelectedCoaches, _UserService.LocalPlayer.CoachManager.SetCoachesID)
+		self:RefreshCurrentSelectedCoaches()
+		
+		-- 코치 선택 팝업을 닫음
+		local ui_coachSelectPopup = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_SelectCoach")
+		ui_coachSelectPopup.Enable = false
+		
+		-- 메인 패널의 위치를 중앙으로 이동
+		local ui_mainPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main")
+		ui_mainPanel.UITransformComponent.anchoredPosition = Vector2(0, 0)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "096e0599-9ae6-4341-9cbd-f2c4936cc98a")
+	handler HandleTabChangedEvent3(TabChangedEvent event)
+		-- 코치 프리셋 버튼 변경 시 실행
+		-- Parameters
+		local ChangedIdx = event.ChangedIdx
+		local user = _UserService.LocalPlayer
+		---------------------------------------------------------
+		if self.SelectedPresetNum == ChangedIdx then
+			return
+		end
+		---------------------------------------------------------
+		if self.IsCoachChangeMode == false then
+			self.SelectedPresetNum = ChangedIdx
+			user.CoachManager:SetCoachPreset(ChangedIdx, "load")
+		end
+		
+		-- 버튼 목록 이미지 변경
+		local buttonList = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_Main/List_CoachPresetButton")
+		for i=1, 5 do
+			local button = buttonList:GetChildByName(string.format("PresetButton_%d", i))
+			if i == self.SelectedPresetNum then
+				button.SpriteGUIRendererComponent.Color = Color.FromHexCode("#354e88")
+				button.TextComponent.FontColor = Color.white
+			else
+				button.SpriteGUIRendererComponent.Color = Color.FromHexCode("#242f4d")
+				button.TextComponent.FontColor = Color.FromHexCode("#6078b7")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "1fb6d50d-95ca-4e76-b615-ebe99f9ee486")
+	handler HandleButtonClickEvent12(ButtonClickEvent event)
+		-- 레벨 선택 버튼 클릭 시 레벨 선택 패널 열기
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		if self.CurrentShowingMode == "Single" then
+			self:RefreshUI_LevelSelectPanel(self.SelectedSingleTabIdx)
+		elseif self.CurrentShowingMode == "Challenge" then
+			self:RefreshUI_LevelSelectPanel(self.SelectedChallengeTabIdx)
+		end
+		
+		local ui_levelSelectPanel = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect/Panel_LevelSelect")
+		ui_levelSelectPanel.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "51cfda0f-91a3-427c-a19b-dcfa1da74dd0")
+	handler HandleTabChangedEvent4(TabChangedEvent event)
+		-- 레벨 선택 패널에서 시즌 탭 변경 시 실행
+		-- Parameters
+		local ChangedIdx = event.ChangedIdx
+		---------------------------------------------------------
+		self:RefreshUI_LevelSelectPanel(ChangedIdx)
+	end
+
+	@EventSender("Entity", "3f7d3fac-4dcb-4bba-a59e-e92d1cf6471b")
+	handler HandleButtonClickEvent13(ButtonClickEvent event)
+		-- HUD에서 '게임 시작'버튼을 눌렀을 때 실행, 게임 모드 선택 화면을 엽니다.
+		-- HUD에서 '게임 시작'버튼을 눌렀을 때 실행,
+		-- 게임 모드 선택 화면을 엽니다.
+		-----------------------------------------------------------
+		local ui_levelSelectGroup = _EntityService:GetEntityByPath("/ui/Lobby_LevelSelect")
+		ui_levelSelectGroup.Enable = true
+		
+		self:RefreshUI_ModeSelectPanel()
+		
+		local ui_selectMode = ui_levelSelectGroup:GetChildByName("Panel_SelectMode")
+		local ui_selectCoach = ui_levelSelectGroup:GetChildByName("Panel_SelectCoach")
+		local ui_main = ui_levelSelectGroup:GetChildByName("Panel_Main")
+		local ui_selectLevel = ui_levelSelectGroup:GetChildByName("Panel_LevelSelect")
+		local ui_resume = ui_levelSelectGroup:GetChildByName("Panel_Resume")
+		local ui_noResumePopup = ui_levelSelectGroup:GetChildByName("Popup_CheckRemoveData")
+		
+		ui_selectMode.Enable 	= true
+		ui_selectCoach.Enable 	= false
+		ui_main.Enable 			= false
+		ui_selectLevel.Enable 	= false
+		ui_resume.Enable 		= false
+		ui_noResumePopup.Enable = false
+	end
+
+end

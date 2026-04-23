@@ -1,0 +1,363 @@
+@Logic
+script TimerLogic extends Logic
+
+	property boolean pause = false
+
+	property number ElapsedSeconds = 0
+
+	property number updateId = 0
+
+	property number timeScale = 1
+
+	method number SetTimerOnce(any callback, number delaySeconds, string identification)
+		-- 일회성 타이머 설정
+		local timer = self:RentStruct()
+		timer.callback = callback
+		timer.time = delaySeconds
+		timer.once = true
+		
+		if identification == nil then
+			identification = "undefined"
+		end
+		
+		timer.identification = identification
+		
+		local _T = self._T
+		local id = _T.id + 1
+		_T.id = id
+		_T.timer[id] = timer
+		
+		return id
+	end
+
+	method number SetTimerRepeat(any callback, number intervalSeconds, number delaySeconds, string identification)
+		-- 반복 타이머 설정
+		local timer = self:RentStruct()
+		timer.callback = callback
+		timer.time = delaySeconds
+		timer.interval = intervalSeconds
+		timer.once = false
+		
+		if identification == nil then
+			identification = "undefined"
+		end
+		
+		timer.identification = identification
+		
+		local _T = self._T
+		_T.id = _T.id + 1
+		_T.timer[_T.id] = timer
+		
+		return _T.id
+	end
+
+	method any SetUpdateMoveTimer(any callback, number intervalSeconds)
+		-- 이동 업데이트 타이머 설정
+		if not math.almostequal(intervalSeconds, 0.1) then
+			return self:SetTimerRepeat(callback, intervalSeconds, _UtilLogic:RandomDouble(), "TimerLogic.SetUpdateMoveTimer")
+		end
+		
+		local _T = self._T
+		local tableIndex = 1
+		local tables = _T.moveTables
+		local minCount = #tables[1]
+		
+		for i=2, 10 do
+			local count = #tables[i]
+			if count < minCount then
+				minCount = count
+				tableIndex = i
+			end
+		end
+		
+		_T.id = _T.id + 1
+		tables[tableIndex][_T.id] = callback
+		_T.moveClearMap[_T.id] = tableIndex
+		return _T.id
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 타이머 시스템 업데이트 처리
+		if self.pause then
+			return
+		end
+		local deltaTime = delta * self.timeScale
+		local _T = self._T
+		self.ElapsedSeconds = self.ElapsedSeconds + deltaTime
+		_G.ElapsedSeconds = self.ElapsedSeconds
+		_G.Tick += 1
+		
+		local removeTable = _T.removeTable
+		local timerLength = #_T.timer
+		if isvalid(_T.timer) and timerLength > 0 then
+			local callbackList = _T.callbackTable
+			local identificationList = _T.callbackIdentificationTable
+			for k,v in pairs(_T.timer) do
+			 	v.time = v.time - deltaTime
+				if v.time < 0 then
+					if v.once then
+						removeTable[#removeTable + 1] = k
+						if v.callbackInvoked then
+							continue
+						end
+						
+						v.callbackInvoked = true
+					else
+						local nextTime = v.time - v.interval
+						v.time = nextTime < 0 and v.interval or nextTime
+					end
+					local index = #callbackList + 1
+					callbackList[index] = v.callback
+					identificationList[index] = v.identification
+				end
+				
+			end
+			
+			profiler.beginscope("timerCallback Group")
+			if Environment:IsMobilePlatform() then
+				for i=1, #callbackList do
+					if callbackList[i] ~= nil then
+						local callback = callbackList[i]
+						local currentTime = _G.ElapsedSeconds
+						local identification = identificationList[i]
+						if callback ~= nil then
+							profiler.beginscope(identification)
+							callback()
+							profiler.endscope()
+						end
+						if currentTime ~= _G.ElapsedSeconds then
+						end
+					end
+				end
+			else
+				for i=1, #callbackList do
+					if callbackList[i] ~= nil then
+						local callback = callbackList[i]
+						local currentTime = _G.ElapsedSeconds
+						local identification = identificationList[i]
+						if callback ~= nil then
+							profiler.beginscope(identification)
+							
+							local status, err = pcall(callback)
+							if status == false then
+								_WorldLog:LogLogicError(err, identification, "TimerLogic callbackList")
+							end
+							
+							profiler.endscope()
+						end
+						if currentTime ~= _G.ElapsedSeconds then
+							_WorldLog:LogLogicError("TimerLogic wait detected", identification, "TimerLogic callbackList")
+						end
+					end
+				end
+			end
+			profiler.endscope()
+			
+			table.clear(callbackList)
+			table.clear(identificationList)
+		
+			for i=1, #removeTable do
+				self:ClearTimer(removeTable[i])
+			end
+			table.clear(removeTable)
+		end
+		
+		
+		if isvalid(_T.updateTimer) and #_T.updateTimer > 0 then
+			local updateCallback = nil
+			for k,v in pairs(_T.updateTimer) do	
+				updateCallback = v.callback
+				updateCallback(deltaTime)
+				v.duration = v.duration - deltaTime
+				if v.duration <= 0 then
+					self:ClearUpdateTimer(k)
+				end
+			end
+		end
+		
+		_T.moveDelta += deltaTime
+		local index = _T.moveTableIndex
+		for i=1, 10 do
+			if _T.moveDelta <= 0 then
+				_T.moveTableIndex = index
+				return
+			end
+			
+			local table = _T.moveTables[index]
+			
+			for id, updateMoveCallback in pairs(table) do
+				updateMoveCallback()
+			end
+			
+			_T.moveDelta -= 0.01
+			index += 1
+			if index > 10 then
+				index = 1
+			end
+		end
+		
+		_T.moveDelta = 0
+	end
+
+	method void ClearTimer(number eventId)
+		-- 타이머 제거
+		local _T = self._T
+		local value = _T.timer[eventId]
+		if value == nil then
+			return
+		end
+		_T.timer[eventId] = nil
+		self:ReturnStruct(value)
+	end
+
+	method void ClearMoveUpdateTimer(number eventId)
+		-- 이동 업데이트 타이머 제거
+		local _T = self._T
+		local tableIndex = _T.moveClearMap[eventId]
+		
+		if tableIndex == nil then
+			return
+		end
+		
+		_T.moveTables[tableIndex][eventId] = nil
+	end
+
+	method void Pause()
+		-- 타이머 시스템 일시정지
+		if _UserService.LocalPlayer.CurrentMap.MultiBattleMap ~= nil then
+			self:Resume()
+			return
+		end
+		self.pause = true
+		self:SendEvent(TimerChange(true))
+		collectgarbage("collect")
+	end
+
+	method void Resume()
+		-- 타이머 시스템 재개
+		self.pause = false
+		self:SendEvent(TimerChange(false))
+	end
+
+	method void ClearAll()
+		-- 모든 타이머 제거
+		table.clear(self._T.timer)
+		table.clear(self._T.updateTimer)
+		self._T.id = 0
+		self.updateId = 0
+		
+		self._T.moveDelta = 0
+		self._T.moveTableIndex = 1
+		table.clear(self._T.moveClearMap)
+		for i=1, 10 do
+			table.clear(self._T.moveTables[i])
+		end
+		
+	end
+
+	method number SetUpdateTimer(any callback, any onFinished, number duration)
+		-- 업데이트 타이머 설정
+		local timer = self:RentStruct()
+		timer.callback = callback
+		timer.duration = duration
+		timer.onFinished = onFinished
+		self.updateId = self.updateId + 1
+		self._T.updateTimer[self.updateId] = timer
+		return self.updateId
+	end
+
+	method void ClearUpdateTimer(number eventId)
+		-- 업데이트 타이머 제거
+		local value = self._T.updateTimer[eventId]
+		
+		if value == nil then
+			return
+		end
+		
+		self._T.updateTimer[eventId] = nil
+		value.onFinished()
+	end
+
+	method void OnBeginPlay()
+		-- 타이머 로직 초기화
+		self._T.timer = {}
+		self._T.updateTimer = {}
+		self._T.id = 0
+		self._T.identification = "NOT_INITIALIZED"
+		_MetatableUtil:SupportLenWithPairs(self._T.timer)
+		_MetatableUtil:SupportLenWithPairs(self._T.updateTimer)
+		
+		self._T.timerStructPool = _DataStructLogic:GetQueue()
+		self._T.removeTable = {}
+		self._T.callbackTable = {}
+		self._T.callbackIdentificationTable = {}
+		
+		self._T.moveDelta = 0
+		self._T.moveTableIndex = 1
+		self._T.moveClearMap = {}
+		self._T.moveTables = {1,1,1,1,1,1,1,1,1,1}
+		for i=1, 10 do
+			self._T.moveTables[i] = _MetatableUtil:SupportLenWithPairs({})
+		end
+		_G.ElapsedSeconds = 0.01666
+		_G.Tick = 0
+	end
+
+	method table RentStruct()
+		-- 타이머 구조체 대여
+		local _T = self._T
+		---@type LuaQueue
+		local queue = _T.timerStructPool
+		
+		if queue:IsEmpty() then
+			return {callback = false, time = 0, interval = 0, once = false, duration = 0, onFinished = false, callbackInvoked = false, identification = _T.identification}
+		end
+		
+		local rtn = queue:Dequeue()
+		return rtn
+	end
+
+	method void ReturnStruct(table timerStruct)
+		-- 타이머 구조체 반납
+		timerStruct.callback = false
+		timerStruct.once = false
+		timerStruct.time = 0
+		timerStruct.interval = 0
+		timerStruct.duration = 0
+		timerStruct.onFinished = false
+		timerStruct.callbackInvoked = false
+		
+		local _T = self._T
+		timerStruct.identification = _T.identification
+		
+		_T.timerStructPool:Enqueue(timerStruct)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetTimerTable()
+		-- 타이머 테이블 리셋
+		local _T = self._T
+		
+		for i = 0, _T.id do
+			self:ClearTimer(i)
+		end
+		
+		_T.id = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 맵 변경 이벤트 처리
+		
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		if not isvalid(Entity) then return end
+		
+		if NewMap.Name == "Town" then
+		end
+	end
+
+end

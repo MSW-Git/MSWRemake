@@ -1,0 +1,231 @@
+@Logic
+script WorldShopLogic extends Logic
+
+	property integer lastStorageCount = 0
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 월드샵 구매 처리 콜백을 설정
+		_WorldShopService:SetProcessPurchaseCallback(self.ProcessPurchase)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ProcessPurchase(any purchaseInfo)
+		-- 월드샵 구매 요청을 처리하고 결과를 반환
+		local userEntity = _UserService:GetUserEntityByUserId(purchaseInfo.UserId)
+		 
+		if not _EntityService:IsValid(userEntity) then
+		    return false
+		end
+		
+		
+		local failInfo = {}
+		
+		local success, result = pcall(function() return self:PaymentProduct(purchaseInfo.ProductId, purchaseInfo.UserId, purchaseInfo, failInfo) end)
+		
+		if success and result then
+			self:LogPurchaseSuccess(purchaseInfo, "Payment")
+		    return true
+		else
+			local paymentFailMessage = "Payment failed. Result: [" .. tostring(result) .. "]"
+			
+			if failInfo.message ~= nil then
+				paymentFailMessage = paymentFailMessage .. ", FailInfo: [" .. failInfo.message .. "]"
+			end
+			
+			self:LogPurchaseFail(purchaseInfo, paymentFailMessage)
+		    return false
+		
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean PaymentProduct(string productId, string userId, any purchaseInfo, any outFailInfo)
+		-- 상품 결제 처리 및 보상 지급
+		
+		local userEntity = _UserService:GetUserEntityByUserId(userId)
+		local playerInfo = userEntity.PlayerInfoComponent
+		local userEntityInitialized = self:WaitUserEntityInitialization(userEntity, 2, outFailInfo)
+		
+		if not userEntityInitialized then
+			return false
+		end
+		
+		local data = _CashShopLogic.cashItemData[productId]
+		
+		if data ~= nil then
+			if not _CashShopLogic:CheckCanPurchaseProductOnServer(data, userEntity) then
+				outFailInfo.message = string.format("Add to storage failed. PurchaseId : %s, UserId : %s, Product Id : %s, OrderNumber : %s, Error : %s", 
+					purchaseInfo.PurchaseId, userId, productId, tostring(purchaseInfo.OrderNumber), "Conditions Not Satisfied.")
+				
+				_WorldLog:LogPurchaseFlow(userId, productId, "WorldShop", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, false, "Can't Purchase Product.")
+				return false
+			end
+			
+			if not _CashShopLogic:CheckPlayerPurchaseLimit(data, userEntity, outFailInfo) then
+				outFailInfo.message = string.format("Add to storage failed. PurchaseId : %s, UserId : %s, Product Id : %s, OrderNumber : %s, Error : %s", 
+					purchaseInfo.PurchaseId, userId, productId, tostring(purchaseInfo.OrderNumber), "Limit Count.")
+				
+				_WorldLog:LogPurchaseFlow(userId, productId, "WorldShop", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, false, "Can't Purchase Product Cause Limit Count.")
+				return false
+			end
+			
+		     local giveSuccess = self:GiveProduct(purchaseInfo, outFailInfo)
+		     if giveSuccess then
+		     	playerInfo:AddPurchaseHistory(productId)
+		        return true
+		     else
+		       	return false
+		     end
+		else
+			local gatchaData = _GatchaLogic.gatchaData[productId]
+			data = gatchaData
+			
+			if gatchaData ~= nil then
+				_WorldLog:LogPurchaseFlow(userId, productId, "WorldShop", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, true, "WorldShopGatcha")
+				
+				return _GatchaLogic:DoGatcha(productId, userId, outFailInfo)
+			else
+				outFailInfo.message = string.format("Add to storage failed. PurchaseId : %s, UserId : %s, Product Id : %s, OrderNumber : %s, Error : %s", 
+					purchaseInfo.PurchaseId, userId, productId, tostring(purchaseInfo.OrderNumber), "Item Data Not Exist.")
+				
+				_WorldLog:LogPurchaseFlow(userId, productId, "WorldShop", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, false, "Gatcha Data Not Exist.")
+				return false
+			end
+		end
+		
+		if outFailInfo ~= nil then
+			outFailInfo.message = "PaymentProduct cannot handle productId"
+		end
+		
+		_WorldLog:LogPurchaseFlow(userId, productId, "WorldShop", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, false, "Invalid Product Id.")
+		return false
+	end
+
+	@ExecSpace("Server")
+	method boolean WaitUserEntityInitialization(Entity userEntity, number seconds, table outFailInfo)
+		-- 유저 엔티티 초기화 완료까지 대기
+		
+		local unitWaitSeconds = 1.0	
+		local remainSeconds = seconds
+		local isFirstTry = true
+		
+		repeat
+			if isFirstTry then
+				isFirstTry = false
+			else
+				local waitSeconds = math.min(remainSeconds, unitWaitSeconds)
+				remainSeconds = math.max(remainSeconds - waitSeconds, 0)
+						
+				wait(waitSeconds)
+			end
+			
+			if not _EntityService:IsValid(userEntity) then
+				if outFailInfo ~= nil then
+					outFailInfo.message = "Invalid user entity"
+				end
+						
+				return false
+			end
+			
+			if not userEntity.PlayerDBComponent.dbInited then
+				if remainSeconds == 0 then
+					if outFailInfo ~= nil then
+						outFailInfo.message = "DB is not initialized"
+					end
+								
+					return false
+				else
+					continue
+				end
+			end
+			
+			return true
+		until false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogPurchaseFail(any purchaseInfo, string message)
+		-- 구매 실패 로그를 기록
+		_LogStorageLogic:LogValue(purchaseInfo.UserId, "purchase.fail", message, {ProductId = purchaseInfo.ProductId, PurchaseId = purchaseInfo.PurchaseID})
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogPurchaseSuccess(any purchaseInfo, string reason)
+		-- 구매 성공 로그를 기록
+		-- _LogStorageLogic:LogPurchaseInfo(purchaseInfo, "Success,Reason:" .. reason)
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ParseCommandLine(string commandLine)
+		-- 명령어 문자열을 파싱하여 명령어와 인자로 분리
+		local name = nil
+		local args = nil
+		
+		for word in commandLine:gmatch("%S+") do
+			if name == nil then
+				name = word
+			else
+				if args == nil then
+					args = {}
+				end
+				
+				table.insert(args, word)	
+			end
+			
+			
+		end
+		
+		local result = {}
+		result.name = name
+		result.args = args
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean GiveProduct(any purchaseInfo, any outFailInfo)
+		-- 구매한 상품을 플레이어에게 지급
+		local userId = purchaseInfo.UserId
+		local productId = purchaseInfo.ProductId
+		
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local playerInfo = player.PlayerInfoComponent
+		local data = _CashShopLogic.cashItemData[productId]
+		
+		if not isvalid(data) then
+			_WorldLog:LogPurchaseFlow(userId, productId, "WorldShopStorage", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, false, "Item Data Not Exist.")
+			return false
+		end
+		
+		if data.rewardType == "bundle" then
+			if not _RewardLogic:CheckCanGetBundleReward(data.rewardId, userId, outFailInfo) then
+				_WorldLog:LogPurchaseFlow(userId, productId, "WorldShopStorage", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, false, "NotEnoughSlots")
+				return false
+			end
+		
+			_RewardLogic:RequestGetBundleReward(data.rewardId, userId, true)
+		elseif data.rewardType == "gatcha" then
+			local gatchaData = _GatchaLogic.gatchaData[data.rewardId]
+			data = gatchaData
+			if not _GatchaLogic:CheckCanRandomPickDecoration(userId, gatchaData.gatchaNum, outFailInfo) then
+				_WorldLog:LogPurchaseFlow(userId, productId, "WorldShopStorage", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, false, "NotEnoughSlots")
+				return false
+			end
+			
+			_GatchaLogic:DoGatcha(data.rewardId, userId, outFailInfo)
+		else
+			if not _RewardLogic:CheckCanGetReward(data.rewardType, data.rewardId, data.rewardNum, userId, outFailInfo) then
+				_WorldLog:LogPurchaseFlow(userId, productId, "WorldShopStorage", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, false, "NotEnoughSlots")
+				return false
+			end
+			
+			_RewardLogic:GetReward(data.rewardType, data.rewardId, data.rewardNum, userId, true, "WorldShopStorageReward")
+		end
+			
+		_WorldLog:LogPurchaseFlow(userId, productId, "WorldShopStorage", _GameConfig:GetConfig().WEALTHTYPE_WORLDCOIN, data.price, true, "")
+		
+		return true
+	end
+
+end

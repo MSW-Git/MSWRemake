@@ -1,0 +1,428 @@
+@Component
+script PlayerChair extends Component
+
+	@Sync
+	property number equipedIdx = 0
+
+	property SyncTable<boolean> haveItem
+
+	property number SitTime = 0
+
+	@Sync
+	property boolean IsSitting = false
+
+	method void OnBeginPlay()
+		-- 의자 컴포넌트 초기화 및 기본 의자 엔티티 생성
+		self._T.tableList = { haveItem = self.haveItem }
+		self._T.tableType = { haveItem = "boolean" }
+		
+		local chairNum = _DataService:GetTable("Chair"):GetRowCount()
+		for i=1, chairNum do
+			self.haveItem[i] = false
+		end
+		
+		if self:IsServer() then
+			local chair = _SpawnService:SpawnByModelId("model://7569ed4d-f1da-4bad-af0f-dd012551972e",
+				"Chair",
+				Vector3(0, 0, 0), self.Entity)
+			-------------------
+			
+			self.equipedIdx = 0
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 장착 의자 인덱스 변경 시 엔티티 및 UI 업데이트
+		if name == "equipedIdx" then
+			self:ApplyEquipedChairEntity()
+			_EntityService:GetEntityByPath("/ui/InventoryGroup/ChairStorage").ChairStorageUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetSitEnable(boolean enable)
+		-- 의자에 앉기 가능/불가 설정 - 중력 비활성화, 스프라이트 표시
+		local chairEntity = self.Entity:GetChildByName("Chair")
+		local chairTable = _DataService:GetTable("Chair")
+		
+		if enable and self.equipedIdx > 0 then
+			self.Entity.RigidbodyComponent.Gravity = 0
+			self.IsSitting = true
+		
+			self:SetSortingOrder()
+			
+			for i=1, #chairEntity.Children do
+				chairEntity.Children[i].SpriteRendererComponent.Color.a = 1
+		
+				local setPosX = tonumber(chairTable:GetCell(self.equipedIdx, 2*i+6))
+				if setPosX == nil then
+					goto cont
+				end
+				
+				if self.Entity.ExtendPlayerControllerComponent.LookDirectionX > 0 then
+					chairEntity.Children[i].TransformComponent.Position.x = -setPosX
+					chairEntity.Children[i].SpriteRendererComponent.FlipX = true
+				else 
+					chairEntity.Children[i].TransformComponent.Position.x = setPosX
+					chairEntity.Children[i].SpriteRendererComponent.FlipX = false
+				end
+				
+				::cont::
+			end
+		else 
+			self.Entity.RigidbodyComponent.Gravity = 1
+			for i=1, #chairEntity.Children do
+				chairEntity.Children[i].SpriteRendererComponent.Color.a = 0
+			end	
+			self.IsSitting = false
+		end
+	end
+
+	@ExecSpace("Server")
+	method void AddItem(number idx)
+		-- 의자 획득 - 중복 획득 시 젠 보상, 로그 출력, 능력치 적용
+		local chairTable = _DataService:GetTable("Chair")
+		local chairName = chairTable:GetCell(idx, 1)
+		local chairIconRUID = chairTable:GetCell(idx, 2)
+		
+		if self.haveItem[idx] == true then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_GetDuplicationChair", self.Entity.OwnerId)
+			self.Entity.PlayerStorage:AddCurrencyItems(2, 200, true) -- 중복 획득시 젬 보상
+			return
+		end
+		
+		_UIGetLog:AddLog(Color.FromHexCode("#8E24AA"), chairName, 1, false, "ItemType_Chair", chairIconRUID, self.Entity.OwnerId)
+		--_UIGetLog:AddLog("[의자]"..string.format("%s를(을) 획득했습니다.", chairName), Color.FromHexCode("#8E24AA"),self.Entity.OwnerId)
+		
+		-- 보유여부 변경
+		self.haveItem[idx] = true
+		_UIAlarmMarker:SetEnableMarker("chair", true, self.Entity.OwnerId)
+		
+		-- 클라이언트 동기화
+		self:SetTableElementClient("haveItem", idx, "true", self.Entity.OwnerId)
+		
+		-- 데이터 저장
+		self.Entity.PlayerData:SaveData(1)
+		
+		-- 능력치 적용
+		self.Entity.PlayerData:ApplyPlayerStatus()
+	end
+
+	@ExecSpace("Server")
+	method void ChangeEquipedItem(number idx)
+		-- 장착 의자 변경 - 보유 여부 확인 후 장착 인덱스 업데이트
+		if idx == 0 then
+			return
+		end
+		
+		-- 조건 체크
+		if self.haveItem[idx] ~= true then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_HaveNoTheItem", self.Entity.OwnerId)
+			return
+		end
+		
+		--change data
+		self.equipedIdx = idx
+		------------------------------------
+		--self:SetSortingOrder()
+	end
+
+	@ExecSpace("Server")
+	method void ApplyEquipedChairEntity()
+		-- 장착한 의자를 실제 엔티티에 적용 - 스프라이트와 위치 설정
+		if isvalid(self.equipedIdx) == false then
+			return
+		end
+		
+		local chairEntity = self.Entity:GetChildByName("Chair")
+		local chairChildren = {}
+		table.insert(chairChildren, chairEntity:GetChildByName("Front"))
+		table.insert(chairChildren, chairEntity:GetChildByName("Back_1"))
+		table.insert(chairChildren, chairEntity:GetChildByName("Back_2"))
+		
+		local chairTable = _DataService:GetTable("Chair")
+		
+		for i=1, 3 do
+			local ruid = ""
+			if self.equipedIdx == 0 then
+				ruid = ""
+			else 
+				ruid = 	chairTable:GetCell(self.equipedIdx, i+2)
+			end
+			
+			
+			if ruid ~= nil and ruid ~= "" then
+				chairChildren[i].SpriteRendererComponent.SpriteRUID = ruid
+				chairChildren[i].Visible = true
+			else 
+				chairChildren[i].Visible = false
+				goto cont
+			end
+			
+			local setPosX = tonumber(chairTable:GetCell(self.equipedIdx, 2*i+6))
+			local setPosY = tonumber(chairTable:GetCell(self.equipedIdx, 2*i+7))
+			
+			if self.Entity.ExtendPlayerControllerComponent.LookDirectionX > 0 then
+				if setPosX ~= nil then
+					chairChildren[i].TransformComponent.Position.x = -setPosX
+				else 
+					chairChildren[i].TransformComponent.Position.x = 0
+				end
+				
+				chairChildren[i].SpriteRendererComponent.FlipX = true
+			else 
+				if setPosX ~= nil then
+					chairChildren[i].TransformComponent.Position.x = setPosX
+				else
+					chairChildren[i].TransformComponent.Position.x = 0
+				end
+				
+				chairChildren[i].SpriteRendererComponent.FlipX = false
+			end
+			
+			if setPosY ~= nil then
+				chairChildren[i].TransformComponent.Position.y = setPosY
+			else 
+				chairChildren[i].TransformComponent.Position.y = 0
+			end
+			chairChildren[i].TransformComponent.Position.z = 0
+			::cont::
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void SetSortingOrder()
+		-- 의자 부분별 렌더링 순서 설정 - 전면, 후면 레이어 구분
+		local chair = self.Entity:GetChildByName("Chair")
+		
+		local sortingLayer = self.Entity.AvatarRendererComponent.SortingLayer
+		local sortingOrder = self.Entity.AvatarRendererComponent.OrderInLayer
+		
+		chair:GetChildByName("Front").SpriteRendererComponent.SortingLayer = sortingLayer 
+		chair:GetChildByName("Front").SpriteRendererComponent.OrderInLayer = sortingOrder + 2 
+		chair:GetChildByName("Back_1").SpriteRendererComponent.SortingLayer = sortingLayer 
+		chair:GetChildByName("Back_1").SpriteRendererComponent.OrderInLayer = sortingOrder - 1 
+		chair:GetChildByName("Back_2").SpriteRendererComponent.SortingLayer = sortingLayer 
+		chair:GetChildByName("Back_2").SpriteRendererComponent.OrderInLayer = sortingOrder - 2 
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 의자에 앉아있는 시간을 측정하여 30초마다 버프 발동
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		-----------------------------
+		if isvalid(self.equipedIdx) == false then
+			return 
+		end
+		
+		if self.equipedIdx > 0 and self.IsSitting then
+			self.SitTime = self.SitTime + delta
+			
+			if self.SitTime > 30 then
+				self:GenerateChairBuff()
+				self.SitTime = 0
+			end
+		else
+			self.SitTime = 0
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void GenerateChairBuff()
+		-- 의자 군중 버프 노바 생성 - 30초 앉은 후 버프 이팩트 및 노바 생성
+		_EffectService:PlayEffect("02ccb499bbe441ffbc40961905dc7f03",
+			self.Entity,
+			self.Entity.TransformComponent.WorldPosition,
+			0,
+			Vector3.one)
+		
+		local nova = _SpawnService:SpawnByModelId(
+			"model://45d15dfd-2909-4dde-8720-9d39481c611c",
+			"Nova",
+			self.Entity.TransformComponent.WorldPosition,
+			self.Entity.Parent)
+		
+		nova.ChairBuffNova.BuffIdx = self.equipedIdx
+		nova.ChairBuffNova.Owner = self.Entity
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 클라이언트로 테이블 데이터 전체 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 클라이언트로 테이블의 특정 인덱스 값 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트에서 테이블을 초기값으로 모두 리셋
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 테이블 변경 시 관련 UI 새로고침
+		if name == "haveItem" then
+			_EntityService:GetEntityByPath("/ui/GemShopGroup/GemShop").GemShopUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllProperty()
+		-- 모든 의자 데이터 입장/환생 시 초기화
+		self.equipedIdx = 0
+		
+		local chairNum = _DataService:GetTable("Chair"):GetRowCount()
+		for i=1, chairNum do
+			self.haveItem[i] = false
+		end
+		
+		self:ClearTableClient("haveItem", "false", chairNum, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadedUserData(string haveChairStr, string equipedChairStr)
+		-- 데이터베이스에서 의자 데이터 로드 후 클라이언트 동기화
+		local chairKindNum = _DataService:GetRowCount("Chair")
+		
+		-- 보유여부 갱신
+		if isvalid(haveChairStr) == false then
+			for i=1, chairKindNum do
+				self.haveItem[i] = false
+			end
+		else
+			local haveChair = _UtilLogic:StringToTable(haveChairStr)
+			for i=1, chairKindNum do
+				if haveChair[i] == nil or haveChair[i] == false then
+					self.haveItem[i] = false
+				elseif haveChair[i] == true then
+					self.haveItem[i] = true
+				end
+			end
+		end
+		
+		
+		-- 장착정보 갱신
+		if isvalid(tonumber(equipedChairStr)) == false then
+			self.equipedIdx = 0
+		else
+			self.equipedIdx = tonumber(equipedChairStr)
+		end
+		
+		
+		self:SetTableClient("haveItem", _UtilLogic:TableToString(self.haveItem), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleChangedLookAtEvent(ChangedLookAtEvent event)
+		-- 플레이어 바라보는 방향 변경 시 의자 위치와 방향 조정
+		-- Parameters
+		local LookAtX = event.LookAtX
+		--------------------------------------------------------
+		local chairEntity = self.Entity:GetChildByName("Chair")
+		
+		if chairEntity == nil then
+			log("chairEntity is nil")
+			return
+		end
+		
+		if LookAtX > 0 then
+			chairEntity.TransformComponent.Position.x = -math.abs(chairEntity.TransformComponent.Position.x)
+			chairEntity.SpriteRendererComponent.FlipX = true
+		else 
+			chairEntity.TransformComponent.Position.x = math.abs(chairEntity.TransformComponent.Position.x)
+			chairEntity.SpriteRendererComponent.FlipX = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleOrderInLayerChangedEvent(OrderInLayerChangedEvent event)
+		-- 렌더링 순서 변경 시 의자 렌더링 순서 업데이트 (현재 비활성화)
+		-- Parameters
+		local OrderInLayer = event.OrderInLayer
+		--------------------------------------------------------
+		--self:SetSortingOrder()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleSortingLayerChangedEvent(SortingLayerChangedEvent event)
+		-- 렌더링 레이어 변경 시 의자 렌더링 레이어 업데이트 (현재 비활성화)
+		-- Parameters
+		local SortingLayer = event.SortingLayer
+		--------------------------------------------------------
+		--self:SetSortingOrder()
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 음직임 키 누룬 때 의자에서 일어서기 및 중력 활성화
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		--------------------------------------------------------
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if (key == KeyboardKey.UpArrow or key==KeyboardKey.LeftArrow or key==KeyboardKey.RightArrow or key==KeyboardKey.DownArrow
+			or key == KeyboardKey.W or key==KeyboardKey.A or key==KeyboardKey.D or key==KeyboardKey.S
+			or key == KeyboardKey.LeftAlt or key == KeyboardKey.Space) then
+		
+			if _UserService.LocalPlayer.PlayerIngameData.CompulsiveRigidbodyOff or _UserService.LocalPlayer.PlayerIngameData.UsingElectricWarp then
+				return -- 점핑머신, UsingElectricWarp 이용할 경우엔 Reset (눈사람은 Movement만 꺼주는 중)
+			end
+			
+			_UserService.LocalPlayer.RigidbodyComponent.Enable = true
+			if not _UserService.LocalPlayer.PlayerStateAtStage.playerInWater then
+				self.Entity.RigidbodyComponent.Gravity = 1
+			end
+			self:SetSitEnable(false)
+			if self.Entity.StateComponent.CurrentStateName == "SIT" then
+				self.Entity.StateComponent:ChangeState("MOVE")
+			end
+		
+		end
+	end
+
+end

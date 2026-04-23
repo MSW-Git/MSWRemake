@@ -1,0 +1,175 @@
+@Component
+script UIRewardItem extends Component
+
+	property string Id = ""
+
+	property string GroupId = ""
+
+	property string PaidItemSlotRUID_Enable = "36014dce165544d099b7434d3cb9a284"
+
+	property string FreeItemSlotRUID_Enable = "148b12b5419248789530c5725012cb2a"
+
+	property string PaidItemSlotRUID_Disable = "dedf9be979e84c799fa812df4ea9c2f3"
+
+	property string FreeItemSlotRUID_Disable = "41833d99c7dc42ef96836e7b4a2fdfd7"
+
+	property Entity IconLock = nil
+
+	property Entity SlotDim = nil
+
+	property Entity RedDot = nil
+
+	property Entity ItemThumnail = nil
+
+	property Entity ItemCount = nil
+
+	property Entity Effect = nil
+
+	property Entity SlotEnable = nil
+
+	property UIStagePassLevel UIStagePassLevel = nil
+
+	property EntityRef ClearText = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 컴포넌트 초기화 및 자식 엔티티 참조 설정
+		self.IconLock = self.Entity:GetChildByName("IconLock")
+		self.SlotDim = self.Entity:GetChildByName("SlotDim")
+		self.RedDot = self.Entity:GetChildByName("RedDot")
+		self.ItemThumnail = self.Entity:GetChildByName("ItemThumnail")
+		self.ItemCount = self.Entity:GetChildByName("CountText")
+		self.Effect = self.Entity:GetChildByName("Effect")
+		self.SlotEnable = self.Entity:GetChildByName("SlotEnable")
+		self.ClearText = self.Entity:GetChildByName("Clear")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init(string groupId, integer index, string slotId, boolean isAchieve)
+		-- 스테이지 패스 보상 아이템 UI를 초기화
+		local productId = groupId..tostring(index)
+		
+		self.Id = productId..slotId
+		self.GroupId = groupId
+		
+		local player = _UserService.LocalPlayer
+		
+		---@type StagePassProductData
+		local productData = _StagePassDataLogic.StagePassProductData[productId]
+		
+		---@type StagePassRewardData
+		local rewardData = _StagePassDataLogic.StagePassRewardData[self.Id]
+		
+		local levelId = self.GroupId..slotId
+		---@type StagePassLevelData
+		local levelData = _StagePassDataLogic.StagePassLevelData[levelId]
+		
+		self.ItemThumnail.SpriteGUIRendererComponent.ImageRUID = _ItemDataSetLogic:GetItemData(rewardData.RewardItemId).IconRUID
+		
+		self.ItemCount.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(rewardData.RewardItemCount)
+		
+		self:SetUIByRewardStatus(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUIByRewardStatus(boolean changedRewardData)
+		-- 보상 상태에 따라 UI 모양을 업데이트
+		local player = _UserService.LocalPlayer
+		
+		local passLevelId = self.GroupId..string.sub(self.Id, 3, 4)
+		local productId = string.sub(self.Id, 1, 2)
+		local index = string.sub(productId, 2, 2)
+		
+		---@type StagePassLevelData
+		local levelData = _StagePassDataLogic.StagePassLevelData[passLevelId]
+		
+		local myProgress = player.PlayerStage.StageProgress[levelData.StageId]
+		local isAchieve = myProgress ~= nil and myProgress >= levelData.StageProgress
+		
+		local isPassRewardReceived = player.PlayerOutgameManager:GetStagePassRewardReceived(self.Id)
+		
+		---@type StagePassProductData
+		local isPassProductPurchased = _StagePassDataLogic:IsPassProductPurchased(productId, _UserService.LocalPlayer.PlayerComponent.UserId)
+		
+		self.IconLock.Enable = false
+		self.SlotDim.Enable = false
+		self.RedDot.Enable = false
+		
+		if self.ClearText ~= nil then
+			self.ClearText.Enable = true
+		end
+		
+		local canReward = false
+		
+		if isPassProductPurchased == false or (isAchieve == false and isPassRewardReceived == false) then
+			self.IconLock.Enable = true
+			if changedRewardData then
+				_StagePassDataLogic.UIStagePassEntity.UIStagePass:RemoveEnableReward(self.Id)
+			end
+		elseif isAchieve == true and isPassRewardReceived == false then
+			self.RedDot.Enable = true
+			_StagePassDataLogic.UIStagePassEntity.UIStagePass:AddEnableReward(self.Id)
+			canReward = true
+		else 
+			self.SlotDim.Enable = true
+			if changedRewardData then
+				_StagePassDataLogic.UIStagePassEntity.UIStagePass:RemoveEnableReward(self.Id)
+			end
+			if self.ClearText ~= nil then
+				self.ClearText.Enable = false
+			end
+		end
+		
+		if canReward then
+			if index == "0" then
+				self.Entity.SpriteGUIRendererComponent.ImageRUID = self.FreeItemSlotRUID_Enable
+			else
+				self.Entity.SpriteGUIRendererComponent.ImageRUID = self.PaidItemSlotRUID_Enable
+			end
+		else
+			if index == "0" then
+				self.Entity.SpriteGUIRendererComponent.ImageRUID = self.FreeItemSlotRUID_Disable
+			else
+				self.Entity.SpriteGUIRendererComponent.ImageRUID = self.PaidItemSlotRUID_Disable
+			end
+		end
+		
+	end
+
+	@EventSender("Self")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 보상 아이템 클릭 시 보상 수령 또는 툴팁 표시
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		local canReceive = _StagePassDataLogic:CanReceiveReward(self.Id, _UserService.LocalPlayer.PlayerComponent.UserId)
+		if canReceive then
+			_StagePassDataLogic.UIStagePassEntity.UIStagePass:OnClickPurchasePassProductButton({self.Id})
+		else
+			_SoundService:PlaySound(_ResourceManager.SFXTable["System_Trophy_Over_01"], 1)
+			---@type StagePassRewardData
+			local rewardData = _StagePassDataLogic.StagePassRewardData[self.Id]
+			---@type ItemData
+			local itemData = _ItemDataSetLogic:GetItemData(rewardData.RewardItemId)
+			
+			_TooltipService:OpenTooltipWithPadding(_StagePassDataLogic.UIStagePassEntity.UIStagePass.ItemDescTooltip, itemData.DescriptionKey, itemData.NameKey, self.Entity.UITransformComponent.WorldPosition)
+		end
+		
+		
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerStagePassRewardReceivedChangedEvent(PlayerStagePassRewardReceivedChangedEvent event)
+		-- 플레이어 스테이지 패스 보상 수령 상태 변경 시 UI 업데이트
+		local uiStagePass = _StagePassDataLogic.UIStagePassEntity
+		if uiStagePass == nil or uiStagePass.EnabledInHierarchy == false then
+			return
+		end
+		if self.Entity.EnabledInHierarchy == false then
+			return
+		end
+		self:SetUIByRewardStatus(true)
+	end
+
+end

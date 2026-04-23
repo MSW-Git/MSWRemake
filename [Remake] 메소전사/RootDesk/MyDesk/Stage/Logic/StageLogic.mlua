@@ -1,0 +1,166 @@
+@Logic
+script StageLogic extends Logic
+
+	property table stageData = {}
+
+	property boolean isInPlay = false
+
+	property table tempItemRewards = {}
+
+	property number startTime = 0
+
+	property integer killCount = 0
+
+	property table chapterData = {}
+
+	property table stageDropData = {}
+
+	property Vector2 leftBottom = Vector2(0,0)
+
+	property Vector2 rightTop = Vector2(0,0)
+
+	property string shadowRuid = "f2a50a3dc03242e5853c05aaaac3f761"
+
+	method void OnBeginPlay()
+		-- 스테이지 데이터 초기화 및 로드
+		local data = _DataService:GetTable("StageData")
+		
+		for i = 1, data:GetRowCount() do
+			local stage = {}
+			stage.id = data:GetCell(i,"id")
+			stage.ruid = data:GetCell(i, "ruid")
+			stage.tile = data:GetCell(i,"tile")	
+			stage.innerTile = data:GetCell(i,"innerTile")	
+			stage.name = data:GetCell(i,"name")
+			stage.stage = data:GetCell(i, "stage")
+			stage.chapter = data:GetCell(i, "chapter")
+			stage.description = data:GetCell(i, "description")
+			stage.step = tonumber(data:GetCell(i, "step"))
+			stage.goldReward = tonumber(data:GetCell(i, "goldReward"))
+			stage.essenceReward = tonumber(data:GetCell(i, "essenceReward"))
+			stage.scrollReward = tonumber(data:GetCell(i, "scrollReward"))
+			stage.theme = data:GetCell(i, "theme")
+			stage.recommendBattlePower = tonumber(data:GetCell(i, "recommendBattlePower"))
+			stage.width = tonumber(data:GetCell(i,"width")) 
+			stage.height = tonumber(data:GetCell(i,"height")) 
+			stage.lastWidth = tonumber(data:GetCell(i,"lastWidth")) 
+			stage.lastHeight = tonumber(data:GetCell(i,"lastHeight")) 
+			stage.accountExp = tonumber(data:GetCell(i, "accountExp"))
+			stage.bossBGM = data:GetCell(i, "bossBGM")
+			self.stageData[stage.id] = stage
+		end
+		
+		data = _DataService:GetTable("ChapterData")
+		
+		for i = 1, data:GetRowCount() do
+			
+			local chapter = {}
+			chapter.id = data:GetCell(i,"id")
+			chapter.ruid = data:GetCell(i, "ruid")
+			chapter.fence = data:GetCell(i, "fence")
+			chapter.chapterName = data:GetCell(i,"chapterName")
+			chapter.shadow = data:GetCell(i,"shadow")
+			self.chapterData[chapter.id] = chapter
+		end
+		
+		data = _DataService:GetTable("StageDropTable")
+		
+		for i = 1, data:GetRowCount() do
+			local stageDropData = {}
+			stageDropData.id = data:GetCell(i,"id")
+			stageDropData.monsterType = data:GetCell(i, "monsterType")
+			stageDropData.stageStep = tonumber(data:GetCell(i, "stageStep"))
+			stageDropData.reward = data:GetCell(i, "reward")
+			stageDropData.rewardCount = data:GetCell(i, "rewardCount")
+			stageDropData.rewardPercent = data:GetCell(i, "rewardPercent")
+			
+			self.stageDropData[stageDropData.id] = stageDropData
+		end
+		
+		self:SendEvent(StageDataLoadEvent())
+	end
+
+	@ExecSpace("Server")
+	method void Teleport(Entity playerEntity, integer mode, string stageId)
+		-- 플레이어를 지정된 스테이지로 텔레포트
+		local gameKey = playerEntity.MyPlayer:SetGameInfo(mode,stageId)
+		_TeleportService:TeleportToEntity(playerEntity,_GameUtil.battleMap)
+		playerEntity.PlayerDropsComponent:RequestSetCurrentStage(tonumber(stageId), playerEntity.PlayerComponent.UserId)
+		playerEntity.PlayerDropsComponent:RequestDropTable(playerEntity.PlayerComponent.UserId)
+		
+		_WorldLog:LogPlayFlow(playerEntity.PlayerComponent.UserId,_WorldLog.FlowType_PlayFlow_Enter, _HttpService:JSONEncode(playerEntity.PlayerDropsComponent.fixedDropTable))
+		_WorldLog:LogIngameFlowEnter(playerEntity, mode, stageId, playerEntity.MyPlayer.deviceType)
+	end
+
+	@ExecSpace("Server")
+	method void TeleportBenchmark(Entity playerEntity)
+		-- 플레이어를 벤치마크 맵으로 텔레포트
+		_TeleportService:TeleportToEntity(playerEntity,_GameUtil.benchmarkMap)
+	end
+
+	@ExecSpace("Server")
+	method void RequestStartStage(integer stageId)
+		-- 스테이지 시작 요청 처리
+		if not isvalid(_UserService:GetUserEntityByUserId(senderUserId)) then
+			
+			return
+		end
+		
+		if _CheckLogic:IsCanEnterStage(senderUserId, self.stageData[tostring(stageId)].step) then
+			_UserService:GetUserEntityByUserId(senderUserId).PlayerDailyMissionComponent:CheckEnteredDate()
+			self:StartStage(stageId, senderUserId)
+			_StageLogic:Teleport(_UserService:GetUserEntityByUserId(senderUserId),_GameConfig:GetConfig().GAMEMODE_BASIC, tostring(stageId))
+			_BuffLogic:CheckOutGameBuff(senderUserId)
+		else
+			_UIToast:ShowMessage("Invalid stage start request.", senderUserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void StartStage(integer stageId)
+		-- 클라이언트에서 스테이지 시작 처리
+		_GameSettingLogic:SetMode(_GameConfig:GetConfig().GAMEMODE_BASIC)
+		_BattleUIManager.loadingUI:Show()
+		_UIGroupManager.uiStageMovePopup:Hide()
+		_WaveLogic:SetChapter(stageId)
+		
+		
+		self.shadowRuid = self.chapterData[self.stageData[tostring(stageId)].chapter].shadow
+		
+		_StageLogic.isInPlay = true
+		_StageLogic:SendEvent(StageStartEvent())
+	end
+
+	method string GetShadowRUID()
+		-- 현재 스테이지의 그림자 RUID 반환
+		return self.shadowRuid
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleStageStartEvent(StageStartEvent event)
+		-- 스테이지 시작 이벤트 처리
+		_UserService.LocalPlayer.PlayerTempStorageComponent:ClearRewards()
+		self.startTime = _TimerLogic.ElapsedSeconds
+		self.killCount = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleKillMonsterEvent(KillMonsterEvent event)
+		-- 몬스터 처치 이벤트 처리
+		self.killCount = self.killCount + 1
+		_SuddenMissionLogic:SendEvent(KillMonsterEvent())
+	end
+
+	@EventSender("Self")
+	handler HandleMapSizeChange(MapSizeChange event)
+		-- 맵 크기 변경 이벤트 처리
+		local leftBottom = event.leftBottom
+		local rightTop = event.rightTop
+		
+		self.leftBottom = leftBottom
+		self.rightTop = rightTop
+	end
+
+end

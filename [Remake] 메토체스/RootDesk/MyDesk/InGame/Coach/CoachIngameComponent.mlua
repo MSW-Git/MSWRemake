@@ -1,0 +1,243 @@
+@Component
+script CoachIngameComponent extends Component
+
+	property string CoachID = ""
+
+	property number WaitingTimer = 0
+
+	property boolean CoolTime = false
+
+	@ExecSpace("Client")
+	method void CoachSleepTimer()
+		--100초동안 코치와 아무 상호작용이 없다면 SleepRUID를 보여줍니다. 단, 준비단계에서만 보이는 연출입니다.
+		if self.CoachID == "" then return end
+		if _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == false then return end
+		--if self.Entity.CurrentMap.Name ~= "Arena" then return end
+		if self.CoolTime then return end
+		
+		_TimerService:ClearTimer(self.WaitingTimer)
+		
+		local setsleep = function()
+			if _UserService.LocalPlayer.GameManager.PhaseType == "Ready" then
+				self:TalkAnim(false)
+				self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).SleepRUID
+			end
+		end
+		
+		self.WaitingTimer=_TimerService:SetTimerOnce(setsleep, 100)
+		
+	end
+
+	@ExecSpace("Client")
+	method void Interaction()
+		-- 코치와의 상호작용을 처리하여 랜덤 애니메이션을 재생
+		if self.CoachID == "" then return end
+		if self.CoolTime then return end
+		self.CoolTime = true
+		--코치 인터렉션
+		local ruid = ""
+		self:TalkAnim(false)
+		
+		while(_UtilLogic:IsNilorEmptyString(ruid)) do
+			local num = _UtilLogic:RandomIntegerRange(1, 5)
+			local coachinfo = _CoachService:GetCoachInfo(self.CoachID)
+			local table = {coachinfo.InteractionRUID_1, coachinfo.InteractionRUID_2, coachinfo.InteractionRUID_3, coachinfo.InteractionRUID_4, coachinfo.InteractionRUID_5}
+			ruid = table[num]
+			if num == 5 then
+				if _UtilLogic:IsNilorEmptyString(ruid) then
+					ruid=_CoachService:GetCoachInfo(self.CoachID).MoveRUID
+				end
+				
+				self:PlayRollAction(ruid)
+				return
+			end
+		end
+		
+		self.Entity.SpriteRendererComponent.SpriteRUID = ruid
+		
+		local init = function()
+			self.CoolTime = false
+			self:CoachSleepTimer()
+			self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).IdleRUID
+			
+			if _UserService.LocalPlayer.GameManager.PhaseType == "Battle" then
+				self:TalkAnim(true)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(init , 3)
+	end
+
+	@ExecSpace("Client")
+	method void CheckRUID(string RUID)
+		-- 현재 RUID와 비교하여 슬립 타이머를 재설정
+		if self.Entity.SpriteRendererComponent.SpriteRUID == RUID then
+			return
+		else
+			self:CoachSleepTimer()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayRollAction(string RUID)
+		-- 코치가 회전하며 점프하는 특별한 액션을 재생
+		--회전 애님틀 때
+		if _UtilLogic:IsNilorEmptyString(RUID) then -- 애님이 없으면 moveruid로
+			self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).MoveRUID
+		else
+			self.Entity.SpriteRendererComponent.SpriteRUID = RUID
+		end
+		
+		--살짝 점프시키기
+		local originpos = self.Entity.TransformComponent.WorldPosition:Clone()
+		_TweenLogic:MoveTo(self.Entity,Vector2(originpos.x, originpos.y+0.7), 0.5, EaseType.QuadEaseOut)
+		_TimerService:SetTimerOnce(function() _TweenLogic:MoveTo(self.Entity, Vector2(originpos.x, originpos.y), 0.5, EaseType.QuadEaseIn) end, 0.5)
+		
+		--self.Entity:GetChildByName("Shadow").Enable = false
+			
+		local index = _UtilLogic:SubString(self.Entity.Name, 7, 1)
+		local shadow = self.Entity.Parent:GetChildByName("CoachTile_"..index):GetChildByName("Shadow")
+		
+		--그림자도 변화주기
+		local originscale = self.Entity.Parent:GetChildByName("CoachTile_"..index):GetChildByName("Shadow").TransformComponent.Scale:Clone()
+		local scale1 = originscale
+		local setscale = function()
+			shadow.TransformComponent.Scale = scale1
+			scale1.x -= 1/30*scale1.x
+			scale1.y -= 1/30*scale1.y
+		end
+			
+		for i = 1, 30 do
+			_TimerService:SetTimerOnce(setscale, i/90)
+		end
+			
+		local shadowinit = function()
+			local scale2 = Vector3.one
+			local setscale2 = function()
+				shadow.TransformComponent.Scale = scale1
+				scale1.x += 1/30*scale1.x
+				scale1.y += 1/30*scale1.y
+			end
+				
+			for i = 1, 30 do
+				_TimerService:SetTimerOnce(setscale2, i/90)
+			end
+		end
+			
+		_TimerService:SetTimerOnce(shadowinit, 0.7)
+		
+			
+		--초기화
+		local init = function()
+			self:CoachSleepTimer()
+			self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).IdleRUID
+			shadow.Enable = true
+			_EffectService:PlayEffectAttached("a9587cf1082c4c0d8c9edeed656c750d", self.Entity, Vector3.zero, 0, Vector3.one*0.6)
+			self.CoolTime = false
+			
+			if _UserService.LocalPlayer.GameManager.PhaseType == "Battle" then
+				self:TalkAnim(true)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(init, 1.05)
+		
+	end
+
+	@ExecSpace("Client")
+	method void BattleResultCoachReaction(boolean win)
+		-- 전투 결과에 따라 코치의 반응을 설정
+		self:TalkAnim(false)
+		
+		if win then
+			--마이너스 코치면 sad, 플러스 코치면 love
+			if _CoachService:GetCoachInfo(self.CoachID).Cost < 0 then
+				self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).SadRUID
+			elseif  _CoachService:GetCoachInfo(self.CoachID).Cost > 0 then
+				self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).LoveRUID
+				self.Entity:GetChildByName("Win").SpriteRendererComponent.SpriteRUID = "aee5c89995b8458099007a13ea2ae127"
+				self.Entity:GetChildByName("Win").Enable = true
+			end
+		else
+			--마이너스 코치면 love, 플러스 코치면 sad
+			if _CoachService:GetCoachInfo(self.CoachID).Cost < 0 then
+				self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).LoveRUID
+				self.Entity:GetChildByName("Win").SpriteRendererComponent.SpriteRUID = "efcf045422bb4a448f862bef59995928"
+				self.Entity:GetChildByName("Win").Enable = true
+				
+			elseif _CoachService:GetCoachInfo(self.CoachID).Cost > 0 then
+				self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).SadRUID
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void TalkAnim(boolean OnOff)
+		-- 코치의 대화 애니메이션을 켜거나 끄는 함수
+		--하위에 있는 talk엔터티를 사용해야해서 변경될 때마다 계속 불러줘야함
+		if OnOff == false then
+			self.Entity:GetChildByName("Talk_1").Enable = false
+			self.Entity:GetChildByName("Talk_2").Enable = false
+			return
+		end
+		
+		--RUID, talk 아이콘 세팅
+		local overtimeUI = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/Panel_Overtime")
+		if overtimeUI.Enable then
+			self.Entity:GetChildByName("Talk_1").Enable = true
+			self.Entity:GetChildByName("Talk_2").Enable = true
+			self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).AngryRUID
+		else
+			self.Entity:GetChildByName("Talk_1").Enable = true
+			self.Entity:GetChildByName("Talk_2").Enable = false
+			self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).IdleRUID
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayCoachAbilityEffect(string CoachID)
+		-- 코치 능력 발동 시 이팩트와 애니메이션을 재생
+		--코치가 가진 효과가 발동될 때 부르는 함수
+		self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(CoachID).LoveRUID
+		_EffectService:PlayEffectAttached("e00dfc349c41413994c91534f1a7d7f2", self.Entity, Vector3.zero, 0, Vector3.one)
+		
+		
+		local init = function()
+			self:CoachSleepTimer()
+			
+			if _UserService.LocalPlayer.GameManager.PhaseType == "Battle" then
+				self:TalkAnim(true)
+			else
+				self.Entity.SpriteRendererComponent.SpriteRUID = _CoachService:GetCoachInfo(self.CoachID).IdleRUID
+			end
+		end
+		
+		_TimerService:SetTimerOnce(init, 2)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchEvent(TouchEvent event)
+		-- 코치 터치 이벤트를 처리하여 상호작용 실행
+		--------------- Native Event Sender Info ----------------
+		-- Sender: TouchReceiveComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters 
+		local TouchId = event.TouchId
+		log("touchID = ", TouchId)
+		-- local TouchPoint = event.TouchPoint
+		---------------------------------------------------------
+		self:CoachSleepTimer()
+		self:Interaction()
+		
+		--if TouchId == 2 then
+		--    local coachID = self.CoachID
+		--    if _UtilLogic:IsNilorEmptyString(coachID) == false then
+		--        _UI_UnitInfoPopup:UI_ShowCoachInfoTooltip(coachID)
+		--    end
+		--end
+	end
+
+end

@@ -1,0 +1,430 @@
+@Component
+script Unit extends Object
+
+	property UnitActor actor = nil
+
+	property UnitBody body = nil
+
+	property Entity signEntity = nil
+
+	property string signState = ""
+
+	property Entity touchAreaEntity = nil
+
+	property Entity hpEntity = nil
+
+	property Integer hpInteger = nil
+
+	property any tweener = nil
+
+	property any anchorTweener = nil
+
+	property any hpTweener = nil
+
+	property any atkTweener = nil
+
+	property Entity anchorEntity = nil
+
+	property boolean isDead = nil
+
+	property integer maxHp = nil
+
+	property integer hp = nil
+
+	method void SetVariables(table variableTable)
+		-- 유닛의 변수들을 설정 (생존 상태, 최대 체력, 현재 체력)
+		__base:SetVariables(variableTable)
+		
+		local isDead = variableTable.isDead
+		if isDead ~= nil then
+			self:SetDead(isDead)
+		end
+		
+		local maxHp = variableTable.maxHp
+		if maxHp then
+			self:SetMaxHp(maxHp)
+		end
+		
+		local hp = variableTable.hp
+		if hp then
+			self:SetHp(hp)
+		end
+	end
+
+	method table GetIndependentVariables()
+		-- 독립적인 변수들을 테이블로 반환 (죽음 상태, 현재 체력)
+		local independentVariableTable = {
+			isDead = self.isDead,
+			hp = self.hp,
+		}
+		
+		_Table:Assign(__base:GetIndependentVariables(), independentVariableTable)
+		
+		return independentVariableTable
+	end
+
+	method void ClearVariables()
+		-- 유닛의 모든 변수들을 초기화
+		__base:ClearVariables()
+		
+		self.isDead = nil
+		self.maxHp = nil
+		self.hp = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean IsTargetable(Player player)
+		-- 플레이어가 이 유닛을 타겟으로 지정할 수 있는지 확인
+		return __base:IsTargetable(player)
+	end
+
+	method void Initialize()
+		-- 유닛을 초기화하고 생존 상태로 설정, 체력을 최대치로 설정
+		__base:Initialize()
+		
+		self:SetDead(false)
+		self:SetHp(self.maxHp)
+	end
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 클라이언트에서 신호 가능한 배열에 자신을 추가
+		__base:OnBeginPlay()
+		
+		if self:IsClient() then
+			table.insert(self.commandManager.signableArray, self)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetActor(any actor)
+		-- 유닛의 액터를 설정하고 상호 참조 연결
+		self.actor = actor
+		actor.object = self
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearActor()
+		-- 액터 참조를 해제하고 바디도 함께 정리
+		if not isvalid(self.actor) then
+			return
+		end
+		
+		self.actor.object = nil
+		self.actor = nil
+		
+		self:ClearBody()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetBody(any body)
+		-- 유닛의 바디를 설정하고 UI 요소들을 연결
+		self.body = body
+		body.object = self
+		self.signEntity = body.signEntity
+		self.touchAreaEntity = body.touchAreaEntity
+		self.hpEntity = body.hpEntity
+		self.hpInteger = body.hpInteger
+		
+		self:SetSignState(self.signState)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearBody()
+		-- 바디 참조를 해제하고 관련 UI 요소들을 정리
+		if not isvalid(self.body) then
+			return
+		end
+		
+		self.body.object = nil
+		self.body = nil
+		
+		self.signEntity = nil
+		self.touchAreaEntity = nil
+		self.hpEntity = nil
+		self.hpInteger = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSignState(string signState)
+		-- 유닛의 신호 상태를 설정하고 색상으로 표시
+		self.signState = signState
+		
+		if not isvalid(self.signEntity) then
+			return
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(signState) then
+			self.signEntity.Enable = false
+		elseif signState == "Playable" then
+			self.signEntity.Enable = true
+			self.signEntity.SpriteRendererComponent.Color = Color.FromHexCode("#7dff10")
+		elseif signState == "Targetable" then
+			self.signEntity.Enable = true
+			self.signEntity.SpriteRendererComponent.Color = Color.FromHexCode("#ff4b00")
+		elseif signState == "Placing" then
+			self.signEntity.Enable = true
+			self.signEntity.SpriteRendererComponent.Color = Color.FromHexCode("#1ed8ff")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceFront()
+		-- 액터를 앞쪽 레이어로 배치
+		self.actor.Entity.TransformComponent.Position.z = -20
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceBack()
+		-- 액터를 뒤쪽 레이어로 배치
+		self.actor.Entity.TransformComponent.Position.z = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetActorPosition()
+		-- 액터의 월드 좌표를 2D 벡터로 반환
+		return self.actor.Entity.TransformComponent.WorldPosition:ToVector2()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyTweener()
+		-- 트위너를 파괴하여 애니메이션 정리
+		if self.tweener then
+			self.tweener:Destroy()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyAnchorTweener()
+		-- 앵커 트위너를 파괴하여 앵커 애니메이션 정리
+		if self.anchorTweener then
+			self.anchorTweener:Destroy()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetAnchorTransform(Vector2 position)
+		-- 앵커의 위치를 즉시 설정하고 액터의 월드 위치는 유지
+		self:DestroyAnchorTweener()
+		
+		local worldPosition = self.actor.Entity.TransformComponent.WorldPosition:Clone()
+		
+		local transform = self.anchorEntity.TransformComponent
+		transform.Position.x = position.x
+		transform.Position.y = position.y
+		
+		self.actor.Entity.TransformComponent.WorldPosition = worldPosition
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformAnchorTo(Vector2 position)
+		-- 앵커를 지정된 위치로 애니메이션 이동
+		if not isvalid(self.anchorEntity) then
+			return
+		end
+		
+		self:DestroyAnchorTweener()
+		self.anchorTweener = _Tween:MoveTo(self.anchorEntity, position, 0.5, EaseType.QuintEaseOut, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TransformToAnchor()
+		-- 액터를 앵커 위치로 애니메이션 이동
+		if not isvalid(self.anchorEntity) then
+			return
+		end
+		
+		self:DestroyTweener()
+		self.actor.Entity.TransformComponent.Position.z = 0
+		self.tweener = _Tween:TransformTo(self.actor.Entity, Vector2.zero, 0, Vector2.one, 1, 
+			EaseType.CubicEaseOut, EaseType.CubicEaseOut, EaseType.ExpoEaseOut, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AttachToAnchor()
+		-- 액터를 앵커에 부착
+		self.actor.Entity:AttachTo(self.anchorEntity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookAt(Unit unit)
+		-- 다른 유닛을 바라보도록 설정
+		self:LookAtPoint(unit.actor.Entity.TransformComponent.WorldPosition:ToVector2())
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookAtPoint(Vector2 point)
+		-- 특정 지점을 바라보도록 설정 (하위 클래스에서 구현)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookLeft()
+		-- 왼쪽을 바라보도록 설정 (하위 클래스에서 구현)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookRight()
+		-- 오른쪽을 바라보도록 설정 (하위 클래스에서 구현)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LookNothing()
+		-- 기본 방향으로 설정 (하위 클래스에서 구현)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method number GetLookAtDirection()
+		-- 바라보는 방향을 반환 (하위 클래스에서 구현)
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetLookAtPosition(Vector2 offset, boolean isWorldSpace)
+		-- 바라보는 방향 기준으로 오프셋 위치 계산 (하위 클래스에서 구현)
+		return nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetOffsettedPositionFromPoint(Vector2 point, Vector2 offset, boolean flipY)
+		-- 특정 지점을 기준으로 오프셋이 적용된 위치를 계산
+		local observer = self.actor.Entity.TransformComponent.WorldPosition
+		local x = offset.x
+		local y = offset.y
+		if point.x - observer.x > 0 then
+			x *= -1
+		end
+		if point.y - observer.y > 0 and flipY then
+			y *= -1
+		end
+		return Vector2(point.x + x, point.y + y)
+	end
+
+	@ExecSpace("ClientOnly")
+	method Vector2 GetOffsettedPosition(Unit unit, Vector2 offset, boolean flipY)
+		-- 다른 유닛을 기준으로 오프셋이 적용된 위치를 계산
+		return self:GetOffsettedPositionFromPoint(unit.actor.Entity.TransformComponent.WorldPosition:ToVector2(), offset, flipY)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsInTouchArea(Vector2 point)
+		-- 지정된 지점이 터치 영역 내에 있는지 확인
+		local transform = self.actor.Entity.TransformComponent
+		local position = transform.WorldPosition
+		local angle = math.rad(transform.ZRotation)
+		local x = position.x
+		local y = position.y
+		point.x = point.x - x
+		point.y = point.y - y
+		point.x = math.cos(angle) * point.x + math.sin(angle) * point.y
+		point.y = -math.sin(angle) * point.x + math.cos(angle) * point.y
+		
+		local touchAreaHalfX = 0.92 * 0.5
+		local touchAreaHalfY = 0.92 * 0.5
+		
+		return point.x > -touchAreaHalfX and point.x < touchAreaHalfX
+			and point.y > -touchAreaHalfY and point.y < touchAreaHalfY
+	end
+
+	method boolean IsDamaged()
+		-- 유닛이 데미지를 받은 상태인지 확인
+		return self.hp < self.maxHp
+	end
+
+	method void SetDead(boolean isDead)
+		-- 유닛의 생존 상태를 설정
+		if self.isDead == isDead then
+			return
+		end
+		
+		self.isDead = isDead
+	end
+
+	method void SetMaxHp(integer maxHp)
+		-- 최대 체력을 설정하고 현재 체력이 초과하면 조정
+		maxHp = math.max(0, maxHp)
+		if self.maxHp == maxHp then
+			return
+		end
+		
+		self.maxHp = maxHp
+		
+		if self.hp then
+			self:SetHp(math.min(self.hp, self.maxHp))
+		end
+	end
+
+	method void SetHp(integer hp)
+		-- 현재 체력을 설정하고 UI에 반영
+		hp = math.min(hp, self.maxHp)
+		if self.hp == hp then
+			return
+		end
+		
+		if self:IsClient() then
+			self.hpInteger:SetInteger(hp)
+			if hp < self.maxHp then
+				self.hpInteger:SetColor(Color.red)
+			elseif self.maxHp > self.entry.maxHp then
+				self.hpInteger:SetColor(Color.green)
+			else
+				self.hpInteger:SetColor(Color.white)
+			end
+			
+			if self.hpTweener then
+				self.hpTweener:Destroy()
+			end
+			if self.hp ~= nil then
+				self.hpTweener = _Tween:Damp(self.hpEntity, Vector2.one, 1, 0.5)
+			end
+		end
+		
+		self.hp = hp
+	end
+
+	method table Damage(any attacker, number damage)
+		-- 데미지를 받는 처리 (하위 클래스에서 구현)
+		return nil
+	end
+
+	method void Kill()
+		-- 유닛을 즉시 사망 처리
+		self:SetDead(true)
+	end
+
+	method void Dead()
+		-- 사망 시 처리 (하위 클래스에서 구현)
+		
+	end
+
+	method void Heal(integer delta)
+		-- 체력을 회복
+		self:SetHp(self.hp + math.max(0, delta))
+	end
+
+	method void AddMaxHpEnchantment(integer delta)
+		-- 최대 체력 증가 인챈트먼트 적용
+		local maxHp = self.dependentVariableTable.maxHp or self.entry.maxHp or 0
+		self.dependentVariableTable.maxHp = maxHp + delta
+	end
+
+	method void InsertAddMaxHpEnchantment(integer delta, table remover)
+		-- 최대 체력 증가 인챈트먼트를 삽입하고 현재 체력도 증가
+		self:InsertEnchantment({methodName = "AddMaxHpEnchantment", args = {delta}, remover = _Table:DeepCopy(remover)})
+		self:SetHp(self.hp + math.max(0, delta))
+	end
+
+	method void SetMaxHpEnchantment(integer maxHp)
+		-- 최대 체력 설정 인챈트먼트 적용
+		self.dependentVariableTable.maxHp = maxHp
+	end
+
+	method void InsertSetMaxHpEnchantment(integer maxHp, table remover)
+		-- 최대 체력 설정 인챈트먼트를 삽입하고 현재 체력을 해당 값으로 설정
+		self:InsertEnchantment({methodName = "SetMaxHpEnchantment", args = {maxHp}, remover = _Table:DeepCopy(remover)})
+		self:SetHp(maxHp)
+	end
+
+end

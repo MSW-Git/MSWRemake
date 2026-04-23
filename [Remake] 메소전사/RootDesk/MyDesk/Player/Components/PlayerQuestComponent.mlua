@@ -1,0 +1,601 @@
+@Component
+script PlayerQuestComponent extends Component
+
+	@HideFromInspector
+	property string userId = ""
+
+	@HideFromInspector
+	property PlayerDBComponent playerDB = nil
+
+	@HideFromInspector
+	property table questProgress = {}
+
+	@HideFromInspector
+	property string currentQuestId = "1"
+
+	property table questRewardInfo = {}
+
+	@HideFromInspector
+	property boolean allQuestCompleted = false
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID와 DB 컴포넌트 설정
+		self.userId = self.Entity.PlayerComponent.UserId
+		self.playerDB = self.Entity.PlayerDBComponent
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestAcceptQuest(string questId)
+		-- 퀘스트 수락 요청 처리 및 조건 검증
+		if isvalid(self.questProgress[questId]) and (self.questProgress[questId].questStatus == "COMPLETE" or _QuestLogic.questData[questId].requiredLevel > self.Entity.PlayerAccount.accountTable.level) then
+			_LocalizeLogic:ShowToast("toast254", self.userId)
+			
+			return
+		end
+		
+		
+		if not isvalid(_QuestLogic.questData[questId]) then
+		
+			_QuestUILogic:OffQuestHUD(self.userId)
+			return
+		end
+		
+		
+		self:AcceptQuest(questId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AcceptQuest(string questId)
+		-- 퀘스트를 수락하고 진행 상태로 설정
+		local questData = {}
+		
+		questData.id = questId
+		questData.questStatus = "INPROGRESS"
+		questData.questProgress = 0
+		questData.questObjective = ""
+		
+		if isvalid(_QuestLogic.questData[questId]) then
+			local objectiveIds = _UtilLogic:Split(_QuestLogic.questData[questId].objectiveId, "/")
+			
+			for i = 1, #objectiveIds do
+				if questData.questObjective == "" then
+					questData.questObjective = string.format("%s/0", objectiveIds[i])
+				else
+					questData.questObjective = questData.questObjective .. string.format("/%s/0", objectiveIds[i])
+				end
+				
+			end
+		end
+			
+		questData.completeDate = 0
+		
+		self.questProgress[questId] = questData
+		
+		if isvalid(_QuestLogic.questData[questId]) then
+			if _QuestLogic.questData[questId].category == "main" then
+				self.currentQuestId = questId
+				self:SyncCurrentQuestId(self.currentQuestId, self.userId)
+			end
+		else
+			self.currentQuestId = questId
+			self:SyncCurrentQuestId(self.currentQuestId, self.userId)
+		end
+		
+		self:SetPlayerQuestData(false)
+		self:SyncQuestInClient(questId, self.questProgress[questId], self.userId)
+		
+		if isvalid(_QuestLogic.questData[questId]) then
+			_WorldLog:LogQuestFlow(self.userId, questData, _WorldLog.FlowType_Quest_Start, "auto")
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestCancelQuest(string questId)
+		-- 퀘스트 취소 요청 처리
+		if not isvalid(self.questProgress[questId]) or self.questProgress[questId].questStatus ~= "INPROGRESS" then
+			_LocalizeLogic:ShowToast("toast253", self.userId)
+			
+			return
+		end
+		
+		self:CancelQuest(questId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CancelQuest(string questId)
+		-- 퀘스트를 취소하고 진행도 초기화
+		self.questProgress[questId].questStatus = "INCOMPLETE"
+		self.questProgress[questId].questProgress = 0
+		self.questProgress[questId].questObjective = ""
+		
+		self:SetPlayerQuestData(false)
+		self:SyncQuestInClient(questId, self.questProgress[questId], self.userId)
+		
+		_WorldLog:LogQuestFlow(self.userId, self.questProgress[questId], _WorldLog.FlowType_Quest_Cancel, "force")
+	end
+
+	@ExecSpace("Server")
+	method void RequestCompleteQuest(string questId)
+		-- 퀘스트 완료 요청 처리 및 인벤토리 공간 확인
+		if not isvalid(self.questProgress[questId]) or self.questProgress[questId].questStatus ~= "INPROGRESS" then
+			
+			return
+		
+		end
+		
+		if not self:IsEnoughInventory(questId) then
+			return
+		end
+		
+		local canComplete = self:IsCanComplete(questId)
+		
+		if canComplete then
+			self:CompleteQuest(questId)
+		else
+			_LocalizeLogic:ShowToast("toast251", self.userId)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CompleteQuest(string questId)
+		-- 퀘스트를 완료하고 보상 지급
+		self.questProgress[questId] = {}
+		self.questProgress[questId].id = questId
+		self.questProgress[questId].questStatus = "COMPLETE"
+		
+		local questData = _QuestLogic.questData[questId]
+		
+		if questData.questType == "objective" then
+			local objectiveType =  _UtilLogic:Split(questData.objectiveType, "/")
+			local objectiveIds = _UtilLogic:Split(questData.objectiveId, "/")
+			local objectiveNums = _UtilLogic:Split(questData.objectiveNum, "/")
+			
+			for i = 1, #objectiveIds do
+				if objectiveType[i] == "getItem" then
+					local id = objectiveIds[i]
+					local needNum = tonumber(objectiveNums[i])
+					
+					self.Entity.PlayerStorageComponent:RemoveItemById(id, needNum, "Quest")
+				end
+		
+			end
+		end
+		
+		if questData.category == "main" then 
+			local id = tonumber(questId)
+			local min = math.maxinteger
+			
+			for key, value in pairs(_QuestLogic.questData) do
+				if id < tonumber(value.id) and value.category == "main" then
+					if tonumber(value.id) < min and tonumber(value.id) ~= math.maxinteger then
+						min = tonumber(value.id)
+					end
+				end
+			end
+			
+			self:RequestAcceptQuest(tostring(min))
+		end
+		
+		_RewardLogic:GiveQuestReward(questId, self.userId)
+		
+		self:SetPlayerQuestData(false)
+		self:SyncQuestInClient(questId, self.questProgress[questId], self.userId)
+		
+		self.Entity:SendEvent(NewbieMissionUpdateEvent("clearQuest", questId, 1))
+		
+		
+		_WorldLog:LogQuestFlow(self.userId, questData, _WorldLog.FlowType_Quest_Complete, "playerRequest")
+	end
+
+	@ExecSpace("Client")
+	method void SyncQuestInClient(string questId, table questProgress)
+		-- 클라이언트에서 퀘스트 진행 상황 동기화
+		
+		
+		self.questProgress[questId] = questProgress
+		self:RefreshObjectiveCount(questId)
+		_QuestUILogic.questUI:Refresh()
+		_QuestUILogic.questHUD:Refresh()
+	end
+
+	@ExecSpace("Server")
+	method void SetPlayerQuestData(boolean isLeaveUser)
+		-- 퀘스트 데이터를 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		local questProgressData = {}
+		
+		for key, value in pairs(self.questProgress) do
+			table.insert(questProgressData, _HttpService:JSONEncode(value))
+		end
+		
+		questProgressData = _HttpService:JSONEncode(questProgressData)
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["questData"] = questProgressData
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckQuestTable()
+		-- 퀘스트 테이블을 확인하고 다음 퀘스트 수락 처리
+		if self.questProgress["1"] == nil or self.questProgress["1"] == "" then
+			self:RequestAcceptQuest("1")
+			
+			return
+		end
+		
+		if tonumber(self.currentQuestId) == math.maxinteger then
+			self:RequestAcceptQuest("78")
+			
+			return
+		end
+		
+		local nextQuestId = string.format("%d", tonumber(self.currentQuestId) + 1)
+		
+		if self.questProgress[self.currentQuestId].questStatus == "COMPLETE" and isvalid(_QuestLogic.questData[nextQuestId]) then
+			self:RequestAcceptQuest(nextQuestId)
+		end
+		
+		self:CheckNeedRestart()
+	end
+
+	@ExecSpace("Server")
+	method void AddObjectiveCount(string objectiveType, string objectiveId, integer objectiveNum, string questId, boolean willSync, string source)
+		-- 퀘스트 목표 진행도를 증가시키고 완료 여부 확인
+		local questData = _QuestLogic.questData[questId]
+		if isvalid(questData) == false then return end
+		local objectives = {}
+		local objectiveTypes = _UtilLogic:Split(questData.objectiveType, "/")
+		
+		for i = 1, #objectiveTypes do
+			objectives[objectiveTypes[i]] = "1"
+		end
+		
+		if not isvalid(objectives[objectiveType]) or objectives[objectiveType] == "" then
+			return
+		end
+		
+		local currentQuestObjective = _UtilLogic:Split(self.questProgress[questId].questObjective, "/")
+		local str = ""
+		
+		for i = 1, #currentQuestObjective do
+			if currentQuestObjective[i] == objectiveId then
+				if not isvalid(currentQuestObjective[i + 1]) then
+					currentQuestObjective[i + 1] = tostring(objectiveNum)
+				else
+					currentQuestObjective[i + 1] = tostring(tonumber(currentQuestObjective[i + 1]) + objectiveNum)
+				end
+			end
+			
+			if str == "" then
+				str = string.format("%s", currentQuestObjective[i])
+			else
+				str = string.format("%s/%s", str, currentQuestObjective[i])
+			end
+		end
+		
+		self.questProgress[questId].questObjective = str
+		
+		if willSync then
+			self:SyncQuestInClient(questId, self.questProgress[questId], self.userId)
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void SetObjectiveCount(string objectiveType, string objectiveId, integer objectiveNum, string questId, string source)
+		-- 퀘스트 목표 진행도를 직접 설정
+		local questData = _QuestLogic.questData[questId]
+		if isvalid(questData) then
+			
+			local objectives = {}
+			local objectiveTypes = _UtilLogic:Split(questData.objectiveType, "/")
+			
+			for i = 1, #objectiveTypes do
+				objectives[objectiveTypes[i]] = "1"
+			end
+			
+			if not isvalid(objectives[objectiveType]) or objectives[objectiveType] == "" then
+				return
+			end
+				
+			local currentQuestObjective = _UtilLogic:Split(self.questProgress[questId].questObjective, "/")
+			local str = ""
+			
+			for i = 1, #currentQuestObjective do
+				if currentQuestObjective[i] == objectiveId then
+					currentQuestObjective[i + 1] = tostring(objectiveNum)
+				end
+				
+				if str == "" then
+					str = string.format("%s", currentQuestObjective[i])
+				else
+					str = string.format("%s/%s", str, currentQuestObjective[i])
+				end
+			end
+			
+			self.questProgress[questId].questObjective = str
+			
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncCurrentQuestId(string currentQuestId)
+		-- 현재 퀘스트 ID를 클라이언트에 동기화
+		self.currentQuestId = currentQuestId
+		_QuestUILogic.questUI.selectedQuestId = currentQuestId
+		_UserService.LocalPlayer:SendEvent(QuestDataUpdated(currentQuestId))
+	end
+
+	method void RefreshObjectiveCount(string questId)
+		-- 퀘스트 목표 진행도를 갱신
+		if questId ~= self.currentQuestId then return end
+		if #table.keys(self.questProgress) < 1 then return end
+		if not isvalid(self.questProgress[questId]) or not isvalid(self.questProgress[questId].questObjective) then return end
+		
+		local questData = _QuestLogic.questData[questId]
+		if not isvalid(questData) then return end
+		
+		local objectiveTypes = _UtilLogic:Split(questData.objectiveType, "/")
+			
+		local currentQuestObjective = _UtilLogic:Split(self.questProgress[questId].questObjective, "/")
+		local str = ""
+		
+		for i = 1, #objectiveTypes do
+			local index = i * 2 - 1
+			
+			if objectiveTypes[i] == "getItem" then
+				local targetId = currentQuestObjective[index]
+				local playerStorage = self.Entity.PlayerStorageComponent
+				local count = 0
+				
+				for key, value in pairs(playerStorage.storage) do
+					if value.originalId == targetId then
+						count += value.count
+					end
+				end
+				
+				currentQuestObjective[index + 1] = tostring(count)
+			elseif objectiveTypes[i] == "reachBattlePower" then
+				currentQuestObjective[index + 1] = _BattlePowerLogic:CalcBattlePower(self.Entity)
+			elseif objectiveTypes[i] == "equipWeapon" then
+				local targetId = currentQuestObjective[index]
+				local playerStorage = self.Entity.PlayerStorageComponent
+				local weaponTable = playerStorage:GetAllEquippedWeapon()
+				local count = 0
+				for key, value in pairs(weaponTable) do
+					if _WeaponSpecLogic.weaponData[value.originalId].type == targetId then
+						count += 1
+					end
+				end
+				currentQuestObjective[index + 1] = tostring(count)
+			end
+		end
+		
+		for i = 1, #currentQuestObjective do
+			if str == "" then
+				str = string.format("%s", currentQuestObjective[i])
+			else
+				str = string.format("%s/%s", str, currentQuestObjective[i])
+			end
+		end
+		
+		self.questProgress[questId].questObjective = str
+	end
+
+	method boolean IsCanComplete(string questId)
+		-- 퀘스트 완료 가능 여부를 확인
+		local questData = _QuestLogic.questData[questId]
+		
+		if not isvalid(questData) or not isvalid(self.questProgress[questId]) or not isvalid(self.questProgress[questId].questObjective)
+			or self.questProgress[questId].questObjective == "" then
+			return false
+		else
+			if questData.questType == "objective" then
+				self.Entity.PlayerQuestComponent:RefreshObjectiveCount(questId)
+				
+				local objectiveType =  _UtilLogic:Split(questData.objectiveType, "/")
+				local objectiveIds = _UtilLogic:Split(questData.objectiveId, "/")
+				local objectiveNums = _UtilLogic:Split(questData.objectiveNum, "/")
+				
+			
+				local currentQuestObjective = _UtilLogic:Split(self.questProgress[questId].questObjective, "/")
+				local currentObjective= {}
+				
+				for i = 1, #currentQuestObjective do
+			
+					if i % 2 == 0 then
+						currentObjective[currentQuestObjective[i - 1]] = tonumber(currentQuestObjective[i])
+					else
+						currentObjective[currentQuestObjective[i]] = 0
+					end
+				end
+				
+				for i = 1, #objectiveIds do
+					local id = objectiveIds[i]
+					local needNum = tonumber(objectiveNums[i])
+					
+					if not isvalid(currentObjective[id]) then
+						
+						return false
+					end
+					
+					
+					if currentObjective[id] < needNum then
+						return false
+					end
+				end
+			elseif questData.questType == "guide" then
+				if self.questProgress[questId].questProgress == 999 then
+					return true
+				end
+			end
+		end
+		
+		
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void PlayTutorial(string dialogId, string questId)
+		-- 퀘스트 관련 튜토리얼 및 대화 실행
+		if _UtilLogic:IsNilorEmptyString(dialogId) then
+			if _QuestLogic.questData[questId].objectiveType == "openUI" then
+				_TutorialLogic:StartTutorial("to_".._QuestLogic.questData[questId].objectiveId, function() end)
+			end
+		else
+			_DialogDataLogic:StartScene(dialogId,"quest",function()
+				if _QuestLogic.questData[questId].objectiveType == "openUI" then
+					_TutorialLogic:StartTutorial("to_".._QuestLogic.questData[questId].objectiveId, function() end)
+				end
+			end)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckNeedForceComplete()
+		-- 강제 완료가 필요한 퀘스트 확인
+		local questData = _QuestLogic.questData[self.currentQuestId]
+		
+		if isvalid(questData) == false then return end
+		
+		if questData.objectiveType == "openUI" and self.questProgress[self.currentQuestId].questStatus == "INPROGRESS" then 
+			self:CompleteQuest(self.currentQuestId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckNeedRestart()
+		-- 재시작이 필요한 퀘스트 확인
+		local questId = self.currentQuestId
+		local questData = _QuestLogic.questData[questId]
+		
+		if isvalid(questData) == false then return end
+		
+		if questData.objectiveType == "openUI" and self.questProgress[questId].questStatus == "INPROGRESS" and not self:IsCanComplete(questId) then 
+			self:CancelQuest(questId)
+			self:AcceptQuest(questId)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowRewardPopUp()
+		-- 퀘스트 보상 팝업 표시
+		if isvalid(self.questRewardInfo) and #table.keys(self.questRewardInfo) > 0 then
+			_ItemListPopUp:Open(self.questRewardInfo, nil, "퀘스트 클리어 보상 획득")
+			self.questRewardInfo = nil
+		end
+	end
+
+	@ExecSpace("Server")
+	method boolean IsEnoughInventory(string questId)
+		-- 퀘스트 보상을 받을 인벤토리 공간이 충분한지 확인
+		
+		local questData = _QuestLogic.questData[questId]
+		
+		if not isvalid(questData) or not isvalid(self.questProgress[questId]) or not isvalid(self.questProgress[questId].questObjective)
+			or self.questProgress[questId].questObjective == "" then
+			return false
+		end
+		
+		local needSlotCounts = {}
+		local rewardTypes = _UtilLogic:Split(questData.rewardType, "/")
+		local rewardIds = _UtilLogic:Split(questData.rewardId, "/")
+		local rewardNums = _UtilLogic:Split(questData.rewardNum, "/")
+		
+		needSlotCounts[_GameConfig:GetConfig().ITEMTYPE_WEAPON] = 0
+		needSlotCounts[_GameConfig:GetConfig().ITEMTYPE_ARMOR] = 0
+		needSlotCounts["egg"] = 0
+		needSlotCounts["consume"] = 0
+		needSlotCounts["decoration"] = 0
+		needSlotCounts["etc"] = 0
+		
+		for i = 1, #rewardIds do
+			local rewardType = rewardTypes[i]
+			local rewardId = rewardIds[i]
+			local rewardNum = tonumber(rewardNums[i])
+			
+			if rewardType == "item" then
+				if isvalid(_ItemDataLogic.itemData[rewardId]) then
+					local category = _ItemDataLogic:GetItemCategory(rewardId)
+					
+					needSlotCounts[category] += rewardNum
+				elseif isvalid(_ItemDataLogic.equipmentData[rewardId]) then
+					local category = _ItemDataLogic.equipmentData[rewardId].category
+					
+					if category == "weapon" then
+						needSlotCounts[_GameConfig:GetConfig().ITEMTYPE_WEAPON] += rewardNum
+					elseif category == "armor" then
+						needSlotCounts[_GameConfig:GetConfig().ITEMTYPE_ARMOR] += rewardNum
+					end
+				else
+				end
+			end
+		end
+		
+		local needWeaponSlotCount = needSlotCounts[_GameConfig:GetConfig().ITEMTYPE_WEAPON] or 0
+		if needWeaponSlotCount > 0 and not _CheckLogic:IsEnoughWeaponSlot(self.userId, needWeaponSlotCount) then
+			_LocalizeLogic:ShowToast("toast248", self.userId)
+			
+			return false
+		end
+		
+		local needArmorSlotCount = needSlotCounts[_GameConfig:GetConfig().ITEMTYPE_ARMOR] or 0
+		if needArmorSlotCount > 0 and not _CheckLogic:IsEnoughArmorSlot(self.userId, needArmorSlotCount) then
+			_LocalizeLogic:ShowToast("toast24", self.userId)
+			
+			return false
+		end
+		
+		local needConsumeSlot = needSlotCounts["consume"] or 0
+		if needConsumeSlot > 0 and not _CheckLogic:IsEnoughConsumeSlot(self.userId, needConsumeSlot) then
+			_LocalizeLogic:ShowToast("toast118", self.userId)
+			
+			return false
+		end
+		
+		local needEtcSlotCount = needSlotCounts["etc"] or 0
+		if needEtcSlotCount > 0 and not _CheckLogic:IsEnoughETCSlot(self.userId, needEtcSlotCount) then
+			_LocalizeLogic:ShowToast("toast235", self.userId)
+			
+			return false
+		end
+		
+		local needDecorationSlot = needSlotCounts["decoration"] or 0
+		if needDecorationSlot > 0 and not _CheckLogic:IsEnoughETCSlot(self.userId, needDecorationSlot) then
+			_LocalizeLogic:ShowToast("toast233", self.userId)
+			
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 맵 변경 시 퀘스트 데이터 동기화
+		
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		if not self.Entity.PlayerDBComponent.dbInited then return end
+		
+		self:SyncQuestInClient(self.currentQuestId, self.questProgress[self.currentQuestId], self.userId)
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- F2 키 입력 시 퀘스트 목표 진행도 갱신
+		
+		local key = event.key
+		if key == KeyboardKey.F2 then
+			self:RefreshObjectiveCount(self.currentQuestId)
+		end
+	end
+
+end

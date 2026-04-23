@@ -1,0 +1,228 @@
+@Logic
+script TooltipLogic extends Logic
+
+	property string tooltipId = ""
+
+	property table tooltipData = {}
+
+	property Entity tooltipEntity = "7e8aa308-c06f-4e60-9578-f93dffbe0d64"
+
+	property Entity parent = "2be2cae5-e1f7-4fe0-b5ef-dc53b9e378fd"
+
+	@HideFromInspector
+	property Entity clonedEntity = nil
+
+	property any hideCallback = nil
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 툴팁 데이터 테이블을 로드하여 메모리에 저장
+		local data = _DataService:GetTable("TooltipData")
+		
+		for i = 1, data:GetRowCount() do
+			local tooltip = {}
+			
+			tooltip.id = data:GetCell(i,"id")
+			tooltip.tooltip = data:GetCell(i,"tooltip")
+			tooltip.etc = data:GetCell(i,"etc")
+			
+			self.tooltipData[tooltip.id] = tooltip
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowTooltip(string id, Entity entity, Vector2 offset)
+		-- 지정된 ID의 툴팁을 표시하고 화폐 정보가 있으면 함께 표시
+		local data = self.tooltipData[id]
+		local currency = _UserService.LocalPlayer.PlayerCurrencyData.currencyTable
+		local etc = _LocalizeLogic:GetTooltipEtc(id)
+		
+		if not isvalid(data) then
+			self:HideTooltip()
+			return
+		end
+		
+		self.tooltipEntity.TextComponent.Text = string.format("%s", _LocalizeLogic:GetTooltip(id))
+		if isvalid(data.etc) and not _UtilLogic:IsNilorEmptyString(data.etc) then
+			if id == "5" then 
+				self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.Text = _NumberSeparator:Separate(currency["Gold"].amount).." ".. etc
+			elseif id == "6" then
+				self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.Text = _NumberSeparator:Separate(currency["Essence"].amount).." ".. etc
+			elseif id == "8" then
+				self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.Text = _NumberSeparator:Separate(currency["WeaponScroll"].amount).." ".. etc
+			else
+				self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.Text = etc
+			end
+		else
+			self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.Text = ""
+		end
+		
+		self:Show(entity, offset)
+	end
+
+	@ExecSpace("Client")
+	method void HideTooltip()
+		-- 툴팁을 숨기고 콜백 함수가 있으면 실행
+		
+		self.tooltipEntity:AttachTo(self.parent)
+		self.tooltipEntity.Enable = false
+		
+		if self.hideCallback ~= nil then
+			self.hideCallback()
+			self.hideCallback = nil
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowTooltipByString(string str, Entity entity, Vector2 offset, string title)
+		-- 사용자 정의 문자열로 툴팁을 표시하고 제목 길이에 맞춰 내용 조정
+		self.tooltipEntity.TextComponent.Text = str
+		self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.Text = title
+		
+		local ratio = self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.FontSize / self.tooltipEntity.TextComponent.FontSize
+		
+		if string.len(title) > string.len(str) then
+			local count = math.ceil(string.len(title) * ratio - string.len(str))
+			local newStr = str
+			
+			for i = 1, count * 1.6 do
+				newStr= newStr .. " "
+			end
+			
+			self.tooltipEntity.TextComponent.Text = newStr
+		end
+		
+		self:Show(entity, offset)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Show(Entity entity, Vector2 offset)
+		-- 플랫폼에 따라 다른 방식으로 툴팁을 표시 (PC는 직접, 모바일은 UI 복제)
+		
+		if Environment:IsPCPlatform() then
+			self.tooltipEntity:AttachTo(self.parent)
+			self.tooltipEntity.TransformComponent.WorldPosition = entity.TransformComponent.WorldPosition
+			self.tooltipEntity.UITransformComponent.anchoredPosition += offset
+			
+			wait(0.02)
+			self.tooltipEntity.Enable = true
+			return
+		end
+		
+		
+		
+		
+		self.tooltipEntity:AttachTo(self.parent)
+		
+		
+		local parent = self:GetDuplicatedUI(entity)
+		local targetUI = entity.UITransformComponent
+		
+		_TutorialLogic:SetTargetPosition(self.tooltipEntity, parent)
+		self.tooltipEntity:AttachTo(parent)
+		self.tooltipEntity.UITransformComponent.anchoredPosition += offset
+		
+		wait(0.02)
+		self.tooltipEntity.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity GetDuplicatedUI(Entity target)
+		-- 대상 UI의 계층 구조를 복제하여 툴팁 표시용 부모 엔티티 생성
+		local parents = {}
+		
+		self._T.getParent = function(entity)
+			if entity.UIGroupComponent ~= nil then
+				return nil
+			end
+			table.insert(parents,entity)
+			self._T.getParent(entity.Parent)
+		end
+		
+		self._T.getParent(target)
+		
+		local result = self.parent
+		
+		local uiUpdate = {}
+		
+		for i = 1, #parents do
+			---@type Entity
+			local entity = parents[#parents - i + 1]
+			if isvalid(entity) then
+				local empty = _SpawnService:SpawnByModelId("model://uiempty",entity.Name,entity.TransformComponent.Position,result)
+				local emptyUI = empty.UITransformComponent
+				local entityUI = entity.UITransformComponent	
+				
+				local updateUI = function()
+					emptyUI.anchoredPosition = entityUI.anchoredPosition
+					emptyUI.RectSize = entityUI.RectSize
+					emptyUI.AlignmentOption = entityUI.AlignmentOption
+					emptyUI.OffsetMax = entityUI.OffsetMax
+					emptyUI.OffsetMin = entityUI.OffsetMin
+					emptyUI.Pivot = entityUI.Pivot
+					emptyUI.Scale = Vector3.one 
+					emptyUI.ZRotation = entityUI.ZRotation
+					emptyUI.AnchorsMin = entityUI.AnchorsMin		
+					emptyUI.AnchorsMax = entityUI.AnchorsMax
+				end
+				table.insert(uiUpdate,updateUI)
+				
+				result = empty
+			end
+		end
+		
+		self._T.uiUpdateEventId = _TimerService:SetTimerRepeat(function() 
+			for k,v in pairs(uiUpdate) do
+				v()
+			end
+		
+		end,1)
+		
+		
+		
+		return result
+	end
+
+	method void RefreshChangeText(string str)
+		-- 툴팁 텍스트를 새로고침하고 제목 길이에 맞춰 조정
+		self.tooltipEntity.TextComponent.Text = str
+		
+		local title = self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.Text
+		local ratio = self.tooltipEntity:GetChildByName("TooltipTitle").TextComponent.FontSize / self.tooltipEntity.TextComponent.FontSize
+		
+		if string.len(title) * ratio > string.len(str) then
+			local count = math.ceil(string.len(title) * ratio - string.len(str))
+			local newStr = str
+			
+			for i = 1, count * 1.6 do
+				newStr = newStr .. " "
+			end
+			
+			self.tooltipEntity.TextComponent.Text = newStr
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchEvent(ScreenTouchEvent event)
+		-- 화면 터치 시 툴팁이 표시되어 있으면 숨김
+		
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		if self.tooltipEntity.Enable then
+			self:HideTooltip()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- ESC 키 입력 시 툴팁이 표시되어 있으면 숨김
+		
+		local key = event.key
+		if self.tooltipEntity.Enable and key == KeyboardKey.Escape then
+			self:HideTooltip()
+		end
+		
+	end
+
+end

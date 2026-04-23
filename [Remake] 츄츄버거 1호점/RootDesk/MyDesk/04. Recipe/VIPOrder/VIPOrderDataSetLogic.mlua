@@ -1,0 +1,539 @@
+@Logic
+script VIPOrderDataSetLogic extends Logic
+
+	property table VIPOrderSeasonRewardData = {}
+
+	property UIVIPOrderPanel UIVIPOrderPanel = "20683c81-5896-4a45-b630-38a24e374e14"
+
+	property UIVIPOrderNewSeasonPopup UIVIPOrderNewSeasonPopup = "bdb2f44b-d602-4816-818d-ccb0ad50fd6f"
+
+	property integer ORDER_SLOT_COUNT = 3
+
+	property table SeasonStartMonths = {3, 9}
+
+	property integer UIVIPOrderPreviewNowSlot = 0
+
+	property UIVIPOrderScoreExtraReward UIVIPOrderScoreExtraReward = "060f40d8-083e-4abe-a92c-43d95fd53b0d"
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 VIP 주문 관련 데이터셋을 초기화
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- CSV 파일에서 시즌 보상 데이터를 읽어와 테이블에 저장
+		table.clear(self.VIPOrderSeasonRewardData)
+		local srDataSet = _DataService:GetTable("VIPOrderSeasonRewardData")
+		for i = 1, srDataSet:GetRowCount() do
+			local row = srDataSet:GetRow(i)
+			local score = tonumber(row:GetItem("Score"))
+			
+			local itemData = _UtilLogic:Split(row:GetItem("ItemData"), ",")
+			local reward = {}
+			for j = 1, #itemData, 2 do
+				local itemId = itemData[j]
+				local itemCount = tonumber(itemData[j+1])
+				reward[itemId] = itemCount
+			end
+			
+			self.VIPOrderSeasonRewardData[score] = reward
+		end
+	end
+
+	method string ReturnIngreType(string mainTag)
+		-- 시즌 메인 태그를 기준으로 가중치를 적용한 재료 타입을 반환
+		
+		local mainTagWeight = 1
+		local otherTagWeight = 0
+		
+		local tagPool = {_RecipeTagEnum.Meat, _RecipeTagEnum.Chicken, _RecipeTagEnum.Seafood, _RecipeTagEnum.Veggie, _RecipeTagEnum.Spicy}
+		local ingreTypePool = {}
+		
+		for _, tag in pairs(tagPool) do
+			if tag == mainTag then
+				for i = 1, mainTagWeight do
+					table.insert(ingreTypePool, tag)
+				end
+			else
+				for i = 1, otherTagWeight do
+					table.insert(ingreTypePool, tag)
+				end
+			end
+		end
+		
+		return ingreTypePool[_UtilLogic:RandomIntegerRange(1, #ingreTypePool)]
+	end
+
+	method table ReturnRecipeOrderData(Entity player, table exData)
+		-- 플레이어 상태에 맞는 레시피 주문 데이터를 생성하고 반환
+		local mainTag = player.PlayerVIPOrder.NowSeasonMainTag
+		local burgerStack = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.BurgerStack)
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local requirementData = stageData:GetVIPOrderRequirementData(player.PlayerManagement.ManagementLevel, burgerStack)
+		
+		
+		local getReqCount = function()
+			local weight_3 = 1
+			local weight_4 = 1
+					
+			local countTable = {}
+			for i = 1, weight_3 do
+				table.insert(countTable, 3)
+			end
+				
+			if burgerStack <= 4 then
+				weight_4 = 0
+			end
+			
+			for i = 1, weight_4 do
+				table.insert(countTable, 4)
+			end
+			
+			
+			
+			return countTable[_UtilLogic:RandomIntegerRange(1, #countTable)]
+			
+		end
+		
+		local reqCount = getReqCount()
+		
+		local ingreType = self:ReturnIngreType(mainTag)
+		
+		local tasteGrade = requirementData.RecipeTasteGrade[_UtilLogic:RandomIntegerRange(1, #requirementData.RecipeTasteGrade)]
+		
+		local diffTagIngreCount = 0
+		local diffTagIngreCountLimit = requirementData.DiffTagIngreCount
+		local getIsDiffTag = function(count, limit)
+		
+			if count >= limit then
+				return false
+			end
+			
+			local sameTagWeight = 1
+			local diffTagWeight = 1
+			local weightTable = {}
+			for i = 1, sameTagWeight do
+				table.insert(weightTable, false)
+			end
+			
+			for i = 1, diffTagWeight do
+				table.insert(weightTable, true)
+			end
+			
+			return weightTable[_UtilLogic:RandomIntegerRange(1, #weightTable)]
+		end
+		
+		local getRandomTagExclusive = function(exclusiveTag)
+			local tagPool = {_RecipeTagEnum.Meat, _RecipeTagEnum.Chicken, _RecipeTagEnum.Seafood, _RecipeTagEnum.Veggie, _RecipeTagEnum.Spicy}
+			local randomPool = {}
+			for _, tag in pairs(tagPool) do
+				if tag ~= exclusiveTag then
+					table.insert(randomPool, tag)
+				end
+			end
+			
+			return randomPool[_UtilLogic:RandomIntegerRange(1, #randomPool)]
+		end
+		
+		local requireIngres = {}
+		for i = 1, reqCount-2 do
+			local ingreGrade = 0
+			local requireTag = ingreType
+			
+			local isDiffTag = getIsDiffTag(diffTagIngreCount, diffTagIngreCountLimit)
+			if requireTag == _RecipeTagEnum.Veggie then
+				isDiffTag = false
+			end
+			
+			if isDiffTag then
+				diffTagIngreCount += 1
+				ingreGrade = requirementData.RecipeDiffTagIngreGrade[_UtilLogic:RandomIntegerRange(1, #requirementData.RecipeDiffTagIngreGrade)]
+				requireTag = getRandomTagExclusive(ingreType)
+				
+				local ingreId = _IngredientDataSetLogic:ReturnRandomIngredientOfGrade(ingreGrade, requireTag, requireIngres, false, false, player)	
+				table.insert(requireIngres, ingreId)
+			else
+				ingreGrade = requirementData.RecipeSameTagIngreGrade[_UtilLogic:RandomIntegerRange(1, #requirementData.RecipeSameTagIngreGrade)]
+				
+				local ingreId = _IngredientDataSetLogic:ReturnRandomIngredientOfGrade(ingreGrade, requireTag, requireIngres, true, false, player)	
+				table.insert(requireIngres, ingreId)
+			end	
+		end
+		
+		local orderData = {}
+		orderData["UniqueId"] = player.PlayerVIPOrder.VIPOrderUniqueId
+		orderData["OrderType"] = _VIPOrderTypeEnum.Recipe
+		orderData["RequirementsCount"] = reqCount
+		orderData["Tag"] = ingreType
+		orderData["TasteGrade"] = tasteGrade
+		orderData["Ingre1"] = isvalid(requireIngres[1]) and requireIngres[1] or 0
+		orderData["Ingre2"] = isvalid(requireIngres[2]) and requireIngres[2] or 0
+		orderData["ManagementLevel"] = player.PlayerManagement.ManagementLevel		
+		
+		if exData ~= nil and exData ~= {} then
+			local isSame = true
+			for k, v in pairs(orderData) do
+				if k == "OrderType" then
+					continue
+				end
+				
+				if exData[k] ~= v then
+					isSame = false
+					break
+				end
+			end
+			
+			if isSame then
+				return self:ReturnRecipeOrderData(player, exData)
+			end
+		end
+		
+		return orderData
+	end
+
+	method table ReturnIngreOrderData(Entity player, table exData)
+		-- 플레이어 상태에 맞는 재료 주문 데이터를 생성하고 반환
+		local mainTag = player.PlayerVIPOrder.NowSeasonMainTag
+		local managementLevel = player.PlayerManagement.ManagementLevel
+		local burgerStack = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.BurgerStack)
+		
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local requirementData = stageData:GetVIPOrderRequirementData(managementLevel, burgerStack)
+		
+		local ingreType = self:ReturnIngreType(mainTag)
+		
+		local randomGrade = requirementData:ReturnRandomIngreGrade()
+		
+		local ingreId = _IngredientDataSetLogic:ReturnRandomIngredientOfGrade(randomGrade, ingreType, nil, true, false, player)
+		
+		local ingreCountTable = requirementData["IngreGrade"..randomGrade.."Count"]
+		local ingreCount = ingreCountTable[_UtilLogic:RandomIntegerRange(1, #ingreCountTable)]
+		
+		local orderData = {}
+		orderData["UniqueId"] = player.PlayerVIPOrder.VIPOrderUniqueId
+		orderData["OrderType"] = _VIPOrderTypeEnum.Ingre
+		orderData["Grade"] = randomGrade
+		orderData["IngreId"] = ingreId
+		orderData["Count"] = ingreCount
+		orderData["ManagementLevel"] = player.PlayerManagement.ManagementLevel
+		
+		if exData ~= nil and exData ~= {} then
+			
+			local isSame = false
+			if exData["IngreId"] == orderData["IngreId"] then 
+				isSame = true
+			end
+			
+			if isSame then
+				return self:ReturnIngreOrderData(player, exData)
+			end
+		end
+		
+		return orderData
+	end
+
+	method boolean IsRecipeCorrectForOrder(Entity player, integer slotIndex, RecipeData recipeData)
+		-- 제출한 레시피가 VIP 주문의 모든 요구사항을 충족하는지 검증
+		if recipeData == nil then
+			return false
+		end
+		
+		local slotData = player.PlayerVIPOrder.VIPOrderSlotData[slotIndex]
+		local orderType = slotData["OrderType"]
+		if orderType ~= _VIPOrderTypeEnum.Recipe then
+			return false
+		end
+		
+		
+		local reqTag = slotData["Tag"]
+		local reqTasteGrade = slotData["TasteGrade"]
+		local reqIngre1 = slotData["Ingre1"]
+		local reqIngre2 = slotData["Ingre2"]
+		
+		if recipeData.Tag ~= reqTag then
+			return false
+		end
+		
+		if _TasteGradeDataSetLogic:ReturnGradeDataByScore(recipeData.TasteScore).Index < reqTasteGrade then
+			return false
+		end
+		
+		-- 실제 재료 요구사항이 있는 경우에만 체크 (0 값 제외)
+		if reqIngre1 ~= nil and reqIngre1 ~= 0 then
+			if _RecipeDataSetLogic:IsRecipeIncludeIngredient(recipeData.IngreList, reqIngre1) == false then
+				return false
+			end
+		end
+		
+		if reqIngre2 ~= nil and reqIngre2 ~= 0 then
+			if _RecipeDataSetLogic:IsRecipeIncludeIngredient(recipeData.IngreList, reqIngre2) == false then
+				return false
+			end
+		end		return true
+	end
+
+	method integer ReturnSeasonEndElapsedByStartElapsed(integer startElapsed)
+		-- 시즌 시작 시점을 기준으로 해당 시즌의 종료 시점을 계산
+		local dateTime = DateTime(startElapsed)
+		local startMonth = dateTime.Month
+		
+		local endMonth = 0
+		local foreMonth = self.SeasonStartMonths[1]
+		local lastMonth = self.SeasonStartMonths[2]
+		
+		if startMonth < foreMonth or startMonth >= lastMonth then
+			endMonth = foreMonth
+		else
+			endMonth = lastMonth
+		end
+		
+		local yearCorrect = 0
+		if endMonth < startMonth then
+			yearCorrect += 1
+		end
+		
+		local endDateTime = DateTime(dateTime.Year + yearCorrect, endMonth, 1)
+		return endDateTime.Elapsed
+	end
+
+	@ExecSpace("Client")
+	method void RefreshSeasonInfoLeftDayText(integer nowUtcElapsed)
+		-- 현재 시간을 기준으로 시즌 종료까지 남은 날짜를 계산하고 UI 업데이트
+		local player = _UserService.LocalPlayer
+		local userUtcElapsed = player.PlayerVIPOrder.NowSeasonStartUtcElapsed
+		local endUtcElapsed = self:ReturnSeasonEndElapsedByStartElapsed(userUtcElapsed)
+		
+		local duration = endUtcElapsed - nowUtcElapsed
+		
+		local leftDay = tostring(math.floor(TimeSpan(duration).TotalDays))
+		
+		self.UIVIPOrderPanel.SeasonInfo:RefreshLeftDayText(leftDay)
+	end
+
+	method integer ReturnResetOrderCost(integer leftDay)
+		-- 남은 날짜에 비례하여 주문 리셋에 필요한 아케인 심볼 비용을 계산
+		local cost = _GetConfigDataLogic:GetConfigNumDataByKey("CloverValuePerDay") * leftDay
+		return cost
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshRequirementSlotIcon(string reqKey, any reqValue, Entity slotEntity, Entity iconEntity, boolean isCheckEnable, integer gap)
+		-- 요구사항 타입에 따라 적절한 아이콘과 상태 표시를 설정
+		local defaultSlotRUID = "3b8e8d79a18a4b0e8a442f956380f799"
+		local emptySlotRUID = _StringUtilLogic.EmptyRUID
+		
+		local checkEntity = slotEntity:GetChildByName("Check")
+		if isvalid(checkEntity) then
+			if isCheckEnable == nil then
+				checkEntity.Enable = false
+			else
+				checkEntity.Enable = isCheckEnable
+			end
+		end
+		
+		local wrongEntity = slotEntity:GetChildByName("Wrong")
+		if isvalid(wrongEntity) then
+			if isCheckEnable == nil then
+				wrongEntity.Enable = false
+			else
+				wrongEntity.Enable = not isCheckEnable
+			end
+		end
+		
+		local bonusEntity = slotEntity:GetChildByName("Bonus")
+		if isvalid(bonusEntity) then
+			bonusEntity.Enable = gap ~= nil
+		end
+		
+		iconEntity.Enable = true
+		if reqKey == "TasteGrade" then
+			local gradeData = _TasteGradeDataSetLogic:GetTasteGradeData(reqValue)
+			
+			slotEntity.SpriteGUIRendererComponent.ImageRUID = defaultSlotRUID
+			iconEntity.SpriteGUIRendererComponent.ImageRUID = gradeData.RUID
+			
+		elseif reqKey == "Tag" then
+			local tagData = _RecipeTagDataSetLogic:GetRecipeTagData(reqValue)
+			slotEntity.SpriteGUIRendererComponent.ImageRUID = defaultSlotRUID
+			iconEntity.SpriteGUIRendererComponent.ImageRUID = tagData.IconRUID
+				
+		elseif reqKey == "Ingre1" or reqKey == "Ingre2" then
+			local ingreData = _IngredientDataSetLogic:GetIngredientData(reqValue)
+			if isvalid(ingreData) == false then
+				slotEntity.SpriteGUIRendererComponent.ImageRUID = emptySlotRUID
+				iconEntity.Enable = false
+				return
+			end	
+			slotEntity.SpriteGUIRendererComponent.ImageRUID = _IngredientDataSetLogic:ReturnDishRUIDByGrade(ingreData.Grade)
+			iconEntity.SpriteGUIRendererComponent.ImageRUID = ingreData.IconRUID
+		end
+	end
+
+	method table ReturnRequirementDatasTableForUI(table slotData)
+		-- 슬롯 데이터에서 UI 표시용 요구사항 목록을 추출하여 반환
+		local requirements = {}
+		table.insert(requirements, {"TasteGrade", slotData["TasteGrade"]})
+		table.insert(requirements, {"Tag", slotData["Tag"]})
+		table.insert(requirements, {"Ingre1", slotData["Ingre1"]})
+		table.insert(requirements, {"Ingre2", slotData["Ingre2"]})
+		
+		return requirements
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsIngreRelatedToOrder(integer ingreId, integer slotIndex, Entity player)
+		-- 특정 재료가 해당 슬롯의 레시피 주문 요구사항에 포함되는지 확인
+		local slotData = player.PlayerVIPOrder.VIPOrderSlotData[slotIndex]
+		
+		if slotData == nil or slotData == {} then
+			return false
+		end
+		
+		if slotData["OrderType"] ~= _VIPOrderTypeEnum.Recipe then
+			return
+		end
+		
+		local requirements = _VIPOrderDataSetLogic:ReturnRequirementDatasTableForUI(slotData)
+		for i, reqTable in pairs(requirements) do
+			local reqKey = reqTable[1]
+			local reqValue = reqTable[2]
+			
+			if reqKey == "Ingre1" or reqKey == "Ingre2" then
+				if reqValue == ingreId then
+					return true
+				end
+			end
+		end
+		
+		return false
+	end
+
+	method SyncTable<string, integer> ReturnVIPOrderReward(table orderData, Entity player)
+		-- 주문 데이터와 플레이어 상태를 기반으로 보상 아이템과 수량을 계산
+		local orderType = orderData["OrderType"]
+		if _UtilLogic:IsNilorEmptyString(orderType) then
+			return
+		end
+		
+		local rewardTable = {}
+		
+		local managementLevel = orderData["ManagementLevel"]
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local rmData = stageData:GetReputationManagementData(managementLevel)
+		
+		local reputationReward = rmData.VIPOrderReward
+		if isvalid(reputationReward) then
+			reputationReward = reputationReward * (1 + _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.ReputationRewardBonus, player.PlayerStage.NowStage))
+		end
+		
+		if orderType == _VIPOrderTypeEnum.Recipe then
+			
+			if isvalid(reputationReward) then
+				rewardTable["G0006"] = math.floor(reputationReward)
+			end
+			
+			rewardTable["G0007"] = math.floor(_GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderSeasonRewardScoreRecipe"))
+			
+			local rewardData = stageData:GetVIPOrderRecipeRewardData(managementLevel)
+			local tasteGrade = orderData["TasteGrade"]
+			local rewardGrade = rewardData:ReturnRewardGradeByTasteGrade(tasteGrade)
+			if rewardGrade == nil or rewardGrade == 0 then
+				return
+			end
+			
+			local standardReward = rewardData.StandardRewardHeart
+			
+			local gradeReward = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("VIPOrderRewardGrade%dPercent", rewardGrade))
+				
+			local tag = orderData["Tag"]
+			local recommendedGrade = rewardData.RecommendedIngreGrade
+			
+			local returnIngrePercent = function(ingreId)
+				if ingreId == nil or ingreId == 0 then
+					return 0
+				end
+				
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+				if isvalid(ingreData) == false then
+					return 0
+				end
+				
+				local percent = _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderIngreAdded")
+						
+				if _IngredientDataSetLogic:ReturnIsTagMatch(tag, ingreData, true, true, player) == false then 
+					percent += _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderDiffTagIngreAdded")
+				end
+				
+				if ingreData.Grade > recommendedGrade then
+					percent += _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderBetterGradeAdded")
+				end
+				
+				return percent
+			end
+			
+			local ingre1 = orderData["Ingre1"]
+			local ingre2 = orderData["Ingre2"]
+			
+			local percent = gradeReward + returnIngrePercent(ingre1) + returnIngrePercent(ingre2)
+			rewardTable["G0005"] = math.floor(standardReward * percent)
+			
+			
+			
+		elseif orderType == _VIPOrderTypeEnum.Ingre then
+			
+			if isvalid(reputationReward) then
+				rewardTable["G0006"] = math.floor(reputationReward * _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderIngreRewardReputationRate"))
+			end
+			
+			rewardTable["G0007"] = math.floor(_GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderSeasonRewardScoreIngre"))
+			
+			local ingreId = orderData["IngreId"]
+			local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+			if ingreData == nil then
+				return
+			end
+			local ingreCount = orderData["Count"]
+			
+			local ingreGrade = ingreData.Grade
+			local rewardPerIngre = _GetConfigDataLogic:GetConfigNumDataByKey(string.format("VIPOrderIngreGrade%dHeart", ingreGrade))
+			
+			rewardTable["G0005"] = math.floor(rewardPerIngre * ingreCount)
+		end
+		
+		
+		return rewardTable
+		
+	end
+
+	method integer ReturnVIPOrderRerollCost(Entity player)
+		-- 플레이어의 리롤 횟수에 따라 증가하는 리롤 비용을 계산
+		local rerollCount = player.PlayerVIPOrder.RerollCount
+		local baseCost = _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderRerollCostStartValue")
+		local increment = _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderRerollCostIncrement") 
+		local maxCost = _GetConfigDataLogic:GetConfigNumDataByKey("VIPOrderRerollCostMaxValue")
+		
+		local rerollCost = baseCost * (increment ^ rerollCount)
+		rerollCost = math.min(rerollCost, maxCost)
+		
+		return math.floor(rerollCost)
+		
+	end
+
+	method integer ReturnFixedStartMonthByStartElapsed(integer startElapsed)
+		-- 시작 시점을 기준으로 해당 시즌의 고정된 시작 월을 반환
+		local dateTime = DateTime(startElapsed)
+		local startMonth = dateTime.Month
+		
+		local fixedMonth = 0
+		local foreMonth = self.SeasonStartMonths[1]
+		local lastMonth = self.SeasonStartMonths[2]
+		
+		if startMonth >= foreMonth and startMonth < lastMonth then
+			fixedMonth = foreMonth
+		else
+			fixedMonth = lastMonth
+		end
+		return fixedMonth
+	end
+
+end

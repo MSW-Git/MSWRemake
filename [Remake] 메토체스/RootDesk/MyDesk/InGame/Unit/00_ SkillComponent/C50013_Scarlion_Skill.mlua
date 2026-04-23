@@ -1,0 +1,205 @@
+@Component
+script C50013_Scarlion_Skill extends Component
+
+	@Sync
+	property number skillAnimLength = 1.26
+
+	property string attackEffectRUID = "ff04bba5a1464b1bbec6ee3dcc4c72ee"
+
+	property string hitEffectRUID = "c5dc526e944b458db4f71cc9db734d6c"
+
+	property string hitEffect2RUID = ""
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		-- 1. 점프 데미지 및 기절
+		local function hitSkill()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				
+				local enemies = {}
+				if unitInfo.TeamType == "Enemy" then
+					enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+				elseif unitInfo.TeamType == "User" then
+					enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+				end
+				
+				local attackEnemies = _BTLogic_New:getTargets(unitInfo.setTile, enemies, "Around_1_1")
+					
+				if isvalid(attackEnemies) then
+					for _, enemy in pairs(attackEnemies) do
+						if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+							self:SetSkillDamage(enemy)
+						end
+					end
+				end
+			end
+		end
+		
+		local enemies = {}
+		if unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		elseif unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		end
+		
+		enemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+		enemies = _BTLogic_New:getTargets(unitInfo.setTile, enemies, "Random_2")
+		
+		-- 2. 랜덤한 적 2명에게 돌리온 소환
+		local function hitSkill2Effect()
+			for _, target in pairs(enemies) do
+				if _BTLogic_New:CheckAttackAble(myUnit, target, "Skill") then
+					local targetTile = target.UnitInfo.setTile
+					self:GetTreasure()
+					self:SetAttackEffect(targetTile, unitInfo.OwnerId)
+				end
+			end
+		end
+		
+		local function hitSkill2()
+			for _, target in pairs(enemies) do
+				if _BTLogic_New:CheckAttackAble(myUnit, target, "Skill") then
+					self:SetSkillDamage2(target)
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(hitSkill, 0.8 / self.skillAnimLength)
+		
+		_TimerService:SetTimerOnce(hitSkill2Effect, 0.8 / self.skillAnimLength)
+		_TimerService:SetTimerOnce(hitSkill2, 0.9 / self.skillAnimLength)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0051",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			-- 데미지
+			local skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C50013_Active_SDamage_Physic[unitInfo.level]
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Physical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+			
+			-- 기절
+			local debuffTime = tonumber(_S01_SkillDescLogic.C50013_Active_DebuffTime_Int[unitInfo.level])
+			_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0004", debuffTime)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage2(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			-- 데미지
+			local skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C50013_Active_SDamage2_Physic[unitInfo.level]
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Physical")
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect(Entity targetTile)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = self.skillAnimLength, ["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.attackEffectRUID, targetTile, Vector3(0, 0, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SetHitEffect(Entity targetTile)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Attack Effect
+		local options = {["FlipX"] = false, ["PlayRate"] = 1, ["Color"]=Color(1,1,1,(_ESCMenuService.skillEffectAlpha-10)/100)}
+		
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetTile, Vector3.zero, 0, Vector3.one, false, options)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0126")
+	end
+
+	@ExecSpace("Server")
+	method void GetTreasure()
+		-- 보물찾기 (고유)
+		-- 돌리온이 튀어나올 때 낮은 확률로 보상을 얻습니다.
+		-------------------------------------------------------------------
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		local userID = unitInfo.OwnerId
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local teamManager = user.TeamManager
+		
+		local setLinePer = unitStatus.MaxHP / 50000
+		local per = _UtilLogic:RandomDouble()
+		
+		
+		if per < setLinePer then
+			local per2 = _UtilLogic:RandomDouble()
+			
+			if per2 < 0.3 then
+				-- 1 경험치
+				teamManager:AddEXP(1)
+			elseif per2 < 0.6 then
+				-- 1 코인
+				teamManager:AddGolds(1, "char")
+			elseif per2 < 0.8 then
+				-- 3 코인
+				teamManager:AddGolds(3, "char")
+			elseif per2 < 0.9 then
+				-- 랜덤 조합 아이템 1개
+				_ItemSetLogic:GetMaterialItem(userID, 0)
+			elseif per2 < 1 then
+				-- 랜덤 소모품 1개
+				_ItemSetLogic:GetConsumableItem(userID, 0)
+			end
+		end
+	end
+
+end

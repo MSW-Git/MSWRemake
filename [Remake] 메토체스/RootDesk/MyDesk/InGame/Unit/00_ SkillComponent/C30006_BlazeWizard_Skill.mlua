@@ -1,0 +1,157 @@
+@Component
+script C30006_BlazeWizard_Skill extends Component
+
+	property number skillAnimLength = 0.8
+
+	@Sync
+	property Entity projectile = nil
+
+	property string attackProjectileRUID = "3a1cc4da914f4c699c666c6584c1809a"
+
+	property string hitEffectRUID = "4393b4ddfbc5411599d33669606a198f"
+
+	property number SkillCount = 1
+
+	property number SetStack = 0
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		self.SetStack += 1
+		
+		if self.SetStack >= 3 then
+			self.SkillCount += 1
+			self.SetStack -= 3
+		end
+		
+		-- projectile Spwan
+		local spawnCount = 0
+		local spawnTimer = 0
+		local function ProjectileSpawn()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self.projectile = _UnitSetLogic_New:GetProjectileEntity(unitInfo.OwnerId, "Skill")
+				self.projectile:AddComponent(C30006_BlazeWizard_SkillprojectileInfo)
+				
+				self.projectile.SpriteRendererComponent.SpriteRUID = self.attackProjectileRUID
+				self.projectile.TransformComponent.Scale = unitInfo.spriteRenderer.TransformComponent.Scale
+				self.projectile.SpriteRendererComponent.FlipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+				
+				self.projectile.C30006_BlazeWizard_SkillprojectileInfo:SetProjectile(self.Entity, targetUnit, 1.2, 2, 0.3, 0.3)
+				_GeneralDirectorLogic:SetEffectAlpha(self.projectile,unitInfo.OwnerId)
+				
+				spawnCount += 1
+				self.projectile.C30006_BlazeWizard_SkillprojectileInfo.AttackCount = spawnCount
+				
+				if spawnCount >= self.SkillCount then
+					_TimerService:ClearTimer(spawnTimer)
+				end
+			end
+		end
+		
+		spawnTimer = _TimerService:SetTimerRepeat(ProjectileSpawn, 0.1 / skillRate, 0.45 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0095",self.Entity.UnitInfo.OwnerId)
+		
+		--연출
+		self:SkillLineEffect(targetUnit,0.45 / skillRate)
+		
+		--업적
+		_AchievementService:UpdateProgress_Char(unitInfo,self.SkillCount,user)
+	end
+
+	method void SetSkillDamage(Entity targetUnit, number attackCount, boolean turned)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			local skillSetDamage = 0
+			
+			if not turned then
+				skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C30006_Active_SDamage_Magic[unitInfo.level]
+			else
+				skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C30006_Active_SDamage2_Magic[unitInfo.level]
+				attackCount += 1
+			end
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			
+			if attackCount <= 1 then
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+			else
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], string.format("skill_%d", attackCount))
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		self.SetStack = 0
+		self.SkillCount = 1
+	end
+
+	@ExecSpace("Client")
+	method void SkillLineEffect(Entity targetUnit, number time)
+		--자신과 적을 선으로 연결
+		local line1 = _SpawnService:SpawnByModelId("model://c37fb349-52e3-4fc5-bb13-848ca95d5b4a","Line1",Vector3(0,0,0),self.Entity.Parent)
+		line1.LineEffectCompo.type = "C30006"
+		line1.LineEffectCompo.StartEntity = self.Entity
+		line1.LineEffectCompo.TargetEntity_1 = targetUnit
+		
+		local destoryline = function()
+			line1:Destroy()
+		end
+		
+		_TimerService:SetTimerOnce(destoryline, time)
+	end
+
+end

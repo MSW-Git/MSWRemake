@@ -1,0 +1,984 @@
+@Logic
+script SuddenMissionLogic extends Logic
+
+	property boolean occurred = false
+
+	@HideFromInspector
+	property string currentMissionId = ""
+
+	@HideFromInspector
+	property table suddenMissionData = {}
+
+	@HideFromInspector
+	property string willStart = ""
+
+	property integer willStartWave = 0
+
+	@HideFromInspector
+	property number currentObjectiveNum = 0
+
+	@HideFromInspector
+	property number objectiveNum = 0
+
+	@HideFromInspector
+	property number startedTime = 0
+
+	@HideFromInspector
+	property integer limitTime = 0
+
+	property integer killCount = 0
+
+	@HideFromInspector
+	property integer timer = 0
+
+	@HideFromInspector
+	property table currentMission = {}
+
+	@HideFromInspector
+	property boolean isClear = false
+
+	property table suddenMissionRewardData = {}
+
+	property boolean killedBoss = false
+
+	@HideFromInspector
+	property integer hitCount = 0
+
+	@HideFromInspector
+	property integer levelUpCount = 0
+
+	@HideFromInspector
+	property integer destroyedBoxCount = 0
+
+	@HideFromInspector
+	property integer useChargingCount = 0
+
+	property boolean isSelectedExpertWeapon = false
+
+	property integer appearMissionTimer = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 돌발 미션 데이터 초기화 및 로드
+		local data = _DataService:GetTable("SuddenMissionData")
+		
+		for i = 1, data:GetRowCount() do
+			local mission = {}
+			
+			mission.id = data:GetCell(i,"id")
+			mission.name = data:GetCell(i,"name")
+			mission.description = data:GetCell(i, "description")
+			mission.missionType = data:GetCell(i, "missionType")
+			mission.objective = tonumber(data:GetCell(i, "objective"))
+			mission.objectiveCondition = data:GetCell(i, "objectiveCondition")
+			mission.limitTime = tonumber(data:GetCell(i, "limitTime"))
+			mission.occurCondition = data:GetCell(i, "occurCondition")
+			mission.successCondition = data:GetCell(i, "successCondition")
+			mission.rewardType = data:GetCell(i, "rewardType")
+			
+			self.suddenMissionData[mission.id] = mission
+		end
+		
+		data = _DataService:GetTable("SuddenMissionRewardData")
+		
+		for i = 1, data:GetRowCount() do
+			local reward = {}
+			
+			reward.id = data:GetCell(i,"id")
+			reward.name = data:GetCell(i,"name")
+			reward.description = data:GetCell(i, "description")
+			reward.rewardType = data:GetCell(i, "rewardType")
+			reward.reward = data:GetCell(i, "reward")
+			reward.amount = tonumber(data:GetCell(i, "amount"))
+			
+			self.suddenMissionRewardData[reward.id] = reward
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SelectMission()
+		-- 돌발 미션 선택 및 조건 확인
+		if self.occurred then return end
+		
+		local currentMap = _UserService.LocalPlayer.CurrentMap
+		
+		if not isvalid(currentMap.BattleMap) then return end
+		if isvalid(currentMap.RandomBossMapComponent) or isvalid(currentMap.LimitMapComponent) then return end
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, 10000)
+		
+		local battlePlayer = _UserService.LocalPlayer.BattlePlayer
+		if rand > 6000 then return end
+		
+		local data = _DataService:GetTable("SuddenMissionData")
+		rand = _UtilLogic:RandomIntegerRange(1, data:GetRowCount())
+		
+		self.currentMissionId = data:GetRow(rand):GetItem("id")
+		self.currentMission = self.suddenMissionData[self.currentMissionId]
+		
+		if self.currentMissionId == "3" and #battlePlayer.equipGun > 3 then 
+			
+			self.currentMissionId = ""
+			self.currentMission = {}
+			self.occurred = false
+			
+			return
+		end
+		
+		if self.currentMissionId == "16" or self.currentMissionId == "23" then 
+			if not _BuffLogic.appliedBuff.chargingSkill then
+				self.currentMissionId = ""
+				self.currentMission = {}
+				self.occurred = false
+				
+				return
+			end
+		end
+		
+		if self.currentMissionId == "10" and _UserService.LocalPlayer.CurrentMap.BattleMap.accumulatedSpawnedBox > _GameConfig:GetConfig().WAVE_PER_BOX * 4 then
+		
+			self.currentMissionId = ""
+			self.currentMission = {}
+			self.occurred = false
+			
+			return
+		end
+		
+		if Environment:IsMobilePlatform() and self.currentMissionId == "17" then
+			
+			self.currentMissionId = ""
+			self.currentMission = {}
+			self.occurred = false
+			
+			return
+		end
+		
+		if self.currentMissionId == "11" or self.currentMissionId == "13" then 
+			if not self.isSelectedExpertWeapon then
+				self:SelectMission()
+				
+				return
+			end
+			
+			local onlyPhysicalWeapon = true
+			local onlyMagicalWeapon = true
+			
+			for key, value in pairs(battlePlayer.equipGun) do
+				if value.isPhysicalWeapon then
+					onlyMagicalWeapon = false
+				else
+					onlyPhysicalWeapon = false
+				end
+			end
+			
+			if not onlyPhysicalWeapon and not onlyMagicalWeapon then
+				self:SelectMission()
+				
+				return
+			elseif onlyPhysicalWeapon then
+				self.currentMissionId = "11"
+				self.currentMission = self.suddenMissionData[self.currentMissionId]
+			elseif onlyMagicalWeapon then
+				self.currentMissionId = "13"
+				self.currentMission = self.suddenMissionData[self.currentMissionId]
+			end
+		end
+		
+		local occuredCondition = _UtilLogic:Split(self.currentMission.occurCondition, "/")
+		rand = _UtilLogic:RandomIntegerRange(1, #occuredCondition)
+		occuredCondition = occuredCondition[rand]
+		
+		self.willStart = occuredCondition
+		self.limitTime = self.currentMission.limitTime
+		
+		if self.currentMission.objective ~= "0" then
+			self.objectiveNum = tonumber(self.currentMission.objective)
+		end
+		
+		if occuredCondition == "SELECT BUFF" then
+		elseif occuredCondition == "START WAVE" then
+			if _UserService.LocalPlayer.CurrentMap.BattleMap.chapter > 10 then
+		
+				self.willStartWave = _UtilLogic:RandomIntegerRange(2, _WaveLogic:GetLastWave(_UserService.LocalPlayer.CurrentMap.BattleMap.chapter) - 1)
+			end
+		elseif occuredCondition == "APPLIED BUFF" then
+		elseif occuredCondition == "APPEAR BOSS" then
+			self.willStartWave = _WaveLogic:GetLastWave(_UserService.LocalPlayer.CurrentMap.BattleMap.chapter)
+		elseif occuredCondition == "START STAGE" then
+			self.willStartWave = 0
+		elseif occuredCondition == "SELECT FIRST WEAPON" then
+		end
+		
+		
+		if self.currentMission.occurCondition == "SELECT FIRST WEAPON" then
+			local selectAndAppearMission = function()
+				local onlyPhysicalWeapon = false
+				local onlyMagicalWeapon = false
+				
+				for key, value in pairs(battlePlayer.equipGun) do
+					if value.isPhysicalWeapon then
+						self.currentMissionId = "11"
+						self.currentMission = self.suddenMissionData[self.currentMissionId]
+						
+						onlyMagicalWeapon = false
+					else
+						self.currentMissionId = "13"
+						self.currentMission = self.suddenMissionData[self.currentMissionId]
+						
+						onlyPhysicalWeapon = false
+					end
+				end
+				
+				if not onlyPhysicalWeapon and not onlyMagicalWeapon then
+					if #table.keys(self.suddenMissionData) > 2 then
+						self:SelectMission()
+					end
+				else
+					self:AppearMission()
+				end
+				
+				return
+			end
+			
+			if battlePlayer.isHoldingProfessionalWeapon then
+				if #battlePlayer.equipGun <= 2 then
+					selectAndAppearMission()
+				end
+			else
+				if #battlePlayer.equipGun <= 1 then
+					selectAndAppearMission()
+				end
+			end
+		end
+		
+		
+		if self.willStartWave == 0 then
+			self:AppearMission()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AppearMission()
+		-- 돌발 미션 출현 및 UI 표시
+		local battlePlayer = _UserService.LocalPlayer.BattlePlayer
+		if _UserService.LocalPlayer.CurrentMap.BattleMap.isEnd then return end
+		if _BattleUIManager.levelUpPopup.isShow then
+			self.appearMissionTimer = _TimerLogic:SetTimerOnce(function () self:AppearMission() end, 1, "SuddenMissionLogic.AppearMission")
+			return 
+		end
+		
+		if self.currentMissionId == "9" then 
+			if battlePlayer:GetEquippedWeaponCount() <= #battlePlayer.equipGun then
+				
+				return
+			end
+		end
+		
+		if self.currentMissionId == "15" or self.currentMissionId == "7" then
+			self.willStartWave = _WaveLogic:GetLastWave(_UserService.LocalPlayer.CurrentMap.BattleMap.chapter)
+			if _UserService.LocalPlayer.CurrentMap.BattleMap.wave ~= self.willStartWave then
+				
+				return
+			end
+		end
+		
+		if self.currentMissionId == "2" then 
+			self.objectiveNum = _BuffLogic.appliedBuff["speed"] * 100 + self.objectiveNum
+			self.currentObjectiveNum = _BuffLogic.appliedBuff["speed"] * 100
+		elseif self.currentMissionId == "3" then 
+			self.currentObjectiveNum = #table.keys(battlePlayer.equipGun)
+		elseif self.currentMissionId == "18" then 
+			self.objectiveNum = _BuffLogic.appliedBuff["attackSpeed"] * 100 + self.objectiveNum
+			self.currentObjectiveNum = _BuffLogic.appliedBuff["attackSpeed"] * 100
+		elseif self.currentMissionId == "19" then 
+			self.objectiveNum = _BuffLogic.appliedBuff["criticalPercent"] + self.objectiveNum
+			self.currentObjectiveNum = _BuffLogic.appliedBuff["criticalPercent"]
+		elseif self.currentMissionId == "20" then 
+			self.objectiveNum = _BuffLogic.appliedBuff["totalDamage"] * 100 + self.objectiveNum
+			self.currentObjectiveNum = _BuffLogic.appliedBuff["totalDamage"] * 100
+		end
+		
+		self.occurred = true
+		self.startedTime = _TimerLogic.ElapsedSeconds
+		
+		if self.limitTime ~= 0 then
+			self:StartMissionTimer()
+			_BattleUIManager.suddenMissionUI:SetMissionUI(true)
+		else
+			_BattleUIManager.suddenMissionUI:SetMissionUI(false)
+		end
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearMission()
+		-- 돌발 미션 종료 및 데이터 초기화
+		_TimerLogic:ClearTimer(self.timer)
+		self.currentMissionId = ""
+		self.willStart = ""
+		self.willStartWave = 0
+		self.currentObjectiveNum = 0
+		self.objectiveNum = 0
+		self.startedTime = 0
+		self.limitTime = 0
+		self.killCount = 0
+		self.hitCount = 0
+		self.levelUpCount = 0
+		self.destroyedBoxCount = 0
+		self.useChargingCount = 0
+		self.isClear = false
+		self.occurred = false
+		self.killedBoss = false
+		_BattleUIManager.suddenMissionUI:SetEnable(false, false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartMissionTimer()
+		-- 돌발 미션 타이머 시작 및 반복 처리
+		local player = _UserService.LocalPlayer
+		
+		if self.currentMissionId == "17" then
+			player.CurrentMap.BattleInput.lastKeyPressedTime = _TimerLogic.ElapsedSeconds + 2
+		end
+		
+		self.timer = _TimerLogic:SetTimerRepeat(function()
+				if self.limitTime <= 0 or self.isClear then
+					_TimerLogic:ClearTimer(self.timer)
+					
+					return
+				end
+				
+				local currentTime = _TimerLogic.ElapsedSeconds - self.startedTime
+				_BattleUIManager.suddenMissionUI:RefreshTimer(currentTime, self.limitTime)
+				
+				if self.currentMissionId == "15" or self.currentMissionId == "17" then
+					self.currentObjectiveNum = currentTime
+					_BattleUIManager.suddenMissionUI:Refresh()
+				end
+				
+				if self.currentMissionId == "17" then
+					if player.KinematicbodyComponent.MoveVelocity == Vector2.zero and _TimerLogic.ElapsedSeconds - player.CurrentMap.BattleInput.lastKeyPressedTime > 0.3
+						and not _BattleUIManager.bossAlertUI.isPlaying then
+						_SuddenMissionLogic:Fail()
+					end
+				end
+				
+				if currentTime > self.limitTime then
+					_TimerLogic:ClearTimer(self.timer)
+					self:CheckMissionClear()
+					
+					if isvalid(self.currentMission) and self.currentMission.missionType == "timeLimit" and #table.keys(self.currentMission) > 0 then 
+						if self.currentMission.objectiveCondition == "success" then 
+							self:Fail()
+						else 
+							self:Clear()
+						end
+					end
+				end
+			end, 1, 1, "SuddenMissionLogic.StartMissionTimer")
+	end
+
+	@ExecSpace("Client")
+	method void CheckMissionClear()
+		-- 돌발 미션 클리어 조건 확인
+		if self.isClear then return end
+		if not self.occurred then return end
+		
+		if not isvalid(self.currentMission) then
+			self:Fail()
+			return
+		
+		end
+		
+		
+		local player = _UserService.LocalPlayer
+		local storage = player.PlayerStorageComponent
+		local battlePlayer = player.BattlePlayer
+		
+		if self.objectiveNum > 0 then
+			if self.currentMission.objectiveCondition == "success" then
+				if self.currentObjectiveNum >= self.objectiveNum or math.almostequal(self.currentObjectiveNum, self.objectiveNum) then
+					self.isClear = true
+				end
+			else
+				if self.currentObjectiveNum == self.objectiveNum or math.almostequal(self.currentObjectiveNum, self.objectiveNum)  then
+					if self.currentMissionId == "23" then
+						self:Fail()
+		
+						return
+					end
+				elseif self.currentObjectiveNum > self.objectiveNum then
+					self:Fail()
+					
+					return
+				end
+			end
+		end
+		
+		if self.currentMission.successCondition == "HIT" and self.killedBoss then
+			if self.currentMissionId == "12" then 
+				if self.currentObjectiveNum < self.objectiveNum then
+					self.isClear = true
+				end
+			end
+		end
+		
+		if self.currentMission.successCondition == "ETC" then
+			if self.killedBoss then
+				if self.currentMissionId == "3" and #battlePlayer.equipGun <= 3 then 
+					self.isClear = true
+				elseif self.currentMissionId == "11" then 
+					local allPhysicalWeapon = true
+					
+					for key, value in pairs(battlePlayer.equipGun) do
+						if not value.isPhysicalWeapon then
+							allPhysicalWeapon = false
+							
+							break
+						end
+					end
+					
+					if allPhysicalWeapon then
+						self.isClear = true
+					end
+				elseif self.currentMissionId == "13" then 
+					local allMagicalWeapon = true
+					
+					for key, value in pairs(battlePlayer.equipGun) do
+						if value.isPhysicalWeapon then
+							allMagicalWeapon = false
+							
+							break
+						end
+					end
+					
+					if allMagicalWeapon then
+						self.isClear = true
+					end
+				elseif self.currentMissionId == "14" then 
+					if _BuffLogic.appliedBuff.speed <= -0.2 then
+						self.isClear = true
+					end
+				elseif self.currentMissionId == "23" then
+					if self.currentObjectiveNum < 1 then
+						self.isClear = true
+					end
+				end
+			else
+				if self.currentMissionId == "9" then 
+					local equips = {}
+					
+					for key, value in pairs(storage.storage) do
+						if value.equippedSlotNum > 0 and value.equippedSlotNum < _GameConfig:GetConfig().MAX_EQUIPMENT_CNT then
+							table.insert(equips, value.originalId)
+						end
+					end
+					
+					for key, value in pairs(battlePlayer.equipGun) do
+						for i = 1, #equips do
+							if value.id == equips[i] then
+								table.remove(equips, i)
+								
+								break
+							end
+						end
+					end
+					
+					if #equips <= 0 then
+						self.isClear = true
+					end
+				end
+			end
+		end
+		
+		if self.isClear then
+			self:Clear()
+		else
+			if self.currentMission.objectiveCondition == "success" then
+				if self.currentMissionId == "15" then
+					self:Fail()
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequesetGetWealthReward(string rewardType, integer currentStageId, table suddenMissionRewardData)
+		-- 돌발 미션 화폐 보상 요청 처리
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(player) then
+			
+			return
+		end
+		
+		local rewardList = {}
+		
+		for key, value in pairs(suddenMissionRewardData) do
+			if value.rewardType == rewardType then
+				table.insert(rewardList, value.id)
+			end
+		end
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, #rewardList)
+		local selectedRewardId = rewardList[rand]
+		local selectedRewrad = suddenMissionRewardData[selectedRewardId]
+		local itemType = ""
+		local rewardId = ""
+		local amount = 0
+		
+		if selectedRewrad.reward == "EGG" then
+			itemType = _GameConfig:GetConfig().ITEMTYPE_EGG
+			rewardId = _RewardLogic:GetStageRewardEggId(currentStageId, senderUserId)
+			amount = 1
+			
+			self:NoticeRewardedMeso(itemId, senderUserId)
+		elseif selectedRewrad.reward == "CLEAR GOLD REWARD" then
+			itemType = _GameConfig:GetConfig().WEALTHTYPE_MESO
+			amount = _RewardLogic:GetStageRewardGold(currentStageId) * selectedRewrad.amount
+			
+			if amount < 10 then
+				amount = 10
+			end
+			
+			self:NoticeRewardedMeso(amount, senderUserId)
+		elseif selectedRewrad.reward == "CLEAR SCROLL REWARD" then
+			itemType = _GameConfig:GetConfig().WEALTHTYPE_SCROLL
+		
+			amount = _RewardLogic:GetStageRewardScroll(currentStageId) * selectedRewrad.amount
+			
+			if amount < 1 then
+				amount = 1
+			end
+			
+			self:NoticeRewardedScroll(amount, senderUserId)
+		end
+		
+		self:GetWealthReward(itemType, rewardId, amount, senderUserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetWealthReward(string rewardType, string rewardId, integer amount, string userId)
+		-- 화폐 보상 지급 처리
+		local player = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(player) then
+			
+			return
+		end
+		
+		if rewardType == _GameConfig:GetConfig().ITEMTYPE_EGG then
+			player.PlayerStorageComponent:RequestAddEgg(rewardId, amount, rewardId, 1, "", 0,"SuddenMission")
+		elseif rewardType == _GameConfig:GetConfig().WEALTHTYPE_MESO then
+			
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, amount, userId,"SuddenMission",rewardId)
+		elseif rewardType == _GameConfig:GetConfig().WEALTHTYPE_SCROLL then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, amount, userId,"SuddenMission",rewardId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RequestGetBuffReward(string rewardType)
+		-- 돌발 미션 버프 보상 요청
+		local buffList = {}
+		
+		if rewardType == "LOW BUFF" then
+			table.insert(buffList, "100021") 
+			table.insert(buffList, "100028") 
+			table.insert(buffList, "100087") 
+		elseif rewardType == "BUFF" then
+			table.insert(buffList, "100018") 
+			table.insert(buffList, "100033") 
+			table.insert(buffList, "100036") 
+			table.insert(buffList, "100087") 
+		end
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, #buffList)
+		_BuffLogic:ApplyBuff(buffList[rand])
+		
+		local str = string.format(_LocalizeLogic:GetText("toast336"), _LocalizeLogic:GetBuffName(buffList[rand]))
+		_UIToast:ShowMessage(str)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckChangedStatAndAppearMission()
+		-- 스탯 변경 확인 및 미션 출현 처리
+		if self.willStart == "SELECT_BUFF" and self.willStart == "APPLIED BUFF" then
+			if self.occurred then
+				self:CheckMissionClear()
+			else
+				local rand = _UtilLogic:RandomDouble()
+				
+				if rand <= _GameConfig:GetConfig().SUDDENMISSION_APPLIEDBUFF_CONDITION_PERCENT then
+					self:AppearMission()
+				end
+			end
+		end
+		
+		_BattleUIManager.suddenMissionUI:Refresh()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Fail()
+		-- 돌발 미션 실패 처리
+		if not isvalid(self.currentMission) then return end
+		if self.isClear then return end
+		if not self.occurred then return end
+		
+		_UIToast:ShowMessage(_LocalizeLogic:GetText("toast332"))
+		_BattleUIManager.suddenMissionUI:SetEnable(false, false)
+		self.isClear = true
+		
+		self.currentMission = nil
+	end
+
+	@ExecSpace("Client")
+	method void Clear()
+		-- 돌발 미션 성공 처리 및 보상 지급
+		local missionType = self.currentMission.missionType
+		local currentStageId = _UserService.LocalPlayer.CurrentMap.BattleMap.chapter
+		
+		if not isvalid(self.currentMission) then 
+			return
+		end
+			
+		if missionType == "bonus" or missionType == "objective" then
+			self:RequestGetBuffReward(self.currentMission.rewardType)
+		elseif missionType == "timeLimit" or missionType == "concept" then
+			self:RequesetGetWealthReward(self.currentMission.rewardType, currentStageId, self.suddenMissionRewardData)
+		end
+		
+		_BattleUIManager.suddenMissionUI:SetEnable(false, true)
+		
+		self.currentMission = nil
+		self.isSelectedExpertWeapon = false
+	end
+
+	@ExecSpace("Client")
+	method void NoticeRewardedMeso(string itemId)
+		-- 메소 보상 알림 표시
+		local str = string.format(_LocalizeLogic:GetText("toast333"), _LocalizeLogic:GetItemName(itemId))
+		_UIToast:ShowMessage(str)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeRewardedItem(integer amount)
+		-- 아이템 보상 알림 표시
+		local str = string.format(_LocalizeLogic:GetText("toast334"), amount)
+		_UIToast:ShowMessage(str)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeRewardedScroll(integer amount)
+		-- 스크롤 보상 알림 표시
+		local str = string.format(_LocalizeLogic:GetText("toast335"), amount)
+		_UIToast:ShowMessage(str)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "BuffLogic")
+	handler HandleSelectBuffCardEvent(SelectBuffCardEvent event)
+		-- 버프 카드 선택 이벤트 처리
+		if self.occurred then return end
+		if not isvalid(self.currentMission) then return end
+		
+		if self.willStart == "SELECT BUFF" or self.willStart == "APPLIED BUFF" then
+			local rand = _UtilLogic:RandomDouble()
+			
+			if rand <= _GameConfig:GetConfig().SUDDENMISSION_APPLIEDBUFF_CONDITION_PERCENT then
+				self:AppearMission()
+			end
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "WaveLogic")
+	handler HandleWaveStartEvent(WaveStartEvent event)
+		-- 웨이브 시작 이벤트 처리
+		local isBossWave = event.isBossWave
+		local waveNum = event.waveNum
+		if self.willStartWave == 0 then return end
+		if self.occurred then return end
+		if not isvalid(self.currentMission) then return end
+		
+		if self.willStartWave == waveNum then
+			if self.willStartWave == _WaveLogic:GetLastWave(_UserService.LocalPlayer.CurrentMap.BattleMap.chapter) then
+				_TimerLogic:SetTimerOnce(function()
+						self:AppearMission()
+					end, 10, "SuddenMissionLogic.WaveStartEvent")
+			elseif self.willStartWave > 1 then
+				self:AppearMission()
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleUseDashEvent(UseDashEvent event)
+		-- 대시 사용 이벤트 처리
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "DASH" and self.occurred then
+			self.currentObjectiveNum = self.currentObjectiveNum + 1
+			_BattleUIManager.suddenMissionUI:Refresh()
+		
+			self:CheckMissionClear()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleKillMonsterEvent(KillMonsterEvent event)
+		-- 몬스터 처치 이벤트 처리
+		if not self.occurred then return end
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "KILL" then
+			self.killCount = self.killCount + 1
+			self.currentObjectiveNum = self.killCount
+			_BattleUIManager.suddenMissionUI:Refresh()
+			
+			self:CheckMissionClear()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleChangeAttackSpeedEvent(ChangeAttackSpeedEvent event)
+		-- 공격 속도 변경 이벤트 처리
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "ATTACK SPEED" and self.occurred then
+			self.currentObjectiveNum = _BuffLogic.appliedBuff["attackSpeed"] * 100
+			self:CheckMissionClear()
+		end
+		self:CheckChangedStatAndAppearMission()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleChangeCriticalPercentEvent(ChangeCriticalPercentEvent event)
+		-- 크리티컬 확률 변경 이벤트 처리
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "CRITICAL PERCENT" and self.occurred then
+			self.currentObjectiveNum = _BuffLogic.appliedBuff["criticalPercent"]
+			self:CheckMissionClear()
+		end
+		self:CheckChangedStatAndAppearMission()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleChangeTotalDamageEvent(ChangeTotalDamageEvent event)
+		-- 총 데미지 변경 이벤트 처리
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "ATTACK RATIO" and self.occurred then
+			self.currentObjectiveNum = _BuffLogic.appliedBuff["totalDamage"] * 100
+			self:CheckMissionClear()
+		end
+		self:CheckChangedStatAndAppearMission()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 맵 변경 이벤트 처리
+		
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		if Entity == _UserService.LocalPlayer and NewMap.Name == "Town" then
+			self:ClearMission()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleChangeSpeedEvent(ChangeSpeedEvent event)
+		-- 이동 속도 변경 이벤트 처리
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "SPEED" and self.occurred then
+			self.currentObjectiveNum = _BuffLogic.appliedBuff["speed"] * 100
+			self:CheckMissionClear()
+		end
+		self:CheckChangedStatAndAppearMission()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "MonsterLogic")
+	handler HandleBossDead(BossDead event)
+		-- 보스 사망 이벤트 처리
+		if isvalid(_UserService.LocalPlayer.CurrentMap.RandomBossMapComponent) then return end
+		if not isvalid(self.currentMission) then return end
+		
+		if _WaveLogic:GetLastWave(_UserService.LocalPlayer.CurrentMap.BattleMap.chapter) == _UserService.LocalPlayer.CurrentMap.BattleMap.wave and self.occurred then
+			self.killedBoss = true
+			if self.currentMission.successCondition == "KILL BOSS" then
+				self.currentObjectiveNum = self.currentObjectiveNum + 1
+			else
+				self:CheckMissionClear()
+				self:Fail()
+			end
+			self:CheckMissionClear()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleBattlePlayerHitEvent(BattlePlayerHitEvent event)
+		-- 플레이어 피격 이벤트 처리
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "HIT" and self.occurred then
+			self.hitCount = self.hitCount + 1
+			self.currentObjectiveNum = self.currentObjectiveNum + 1
+			_BattleUIManager.suddenMissionUI:Refresh()
+			self:CheckMissionClear()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleLevelUpBuff(LevelUpBuff event)
+		-- 레벨업 버프 이벤트 처리
+		local itemName = event.itemName
+		local weaponId = event.weaponId
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "LEVEL UP" and self.occurred then
+			self.levelUpCount = self.levelUpCount + 1
+			self.currentObjectiveNum = self.currentObjectiveNum + 1
+			_BattleUIManager.suddenMissionUI:Refresh()
+			self:CheckMissionClear()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleDestroyBoxEvent(DestroyBoxEvent event)
+		-- 박스 파괴 이벤트 처리
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "DESTROY BOX" and self.occurred then
+			self.destroyedBoxCount = self.destroyedBoxCount + 1
+			self.currentObjectiveNum = self.currentObjectiveNum + 1
+			_BattleUIManager.suddenMissionUI:Refresh()
+			self:CheckMissionClear()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleUseChargingSkillEvent(UseChargingSkillEvent event)
+		-- 차징 스킬 사용 이벤트 처리
+		if self.occurred then
+			if not isvalid(self.currentMission) then return end
+			
+			if self.currentMission.successCondition == "USE CHARGING" or self.currentMissionId == "23" then
+				self.useChargingCount = self.useChargingCount + 1
+				self.currentObjectiveNum = self.currentObjectiveNum + 1
+				_BattleUIManager.suddenMissionUI:Refresh()
+				self:CheckMissionClear()
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEquipGunChange(EquipGunChange event)
+		-- 무기 장착 변경 이벤트 처리
+		local uniqueKey = event.uniqueKey
+		local player = _UserService.LocalPlayer
+		local battlePlayer = player.BattlePlayer
+		
+		if not self.isSelectedExpertWeapon then return end
+		if not isvalid(self.currentMission) or not isvalid(self.currentMission.occurCondition) then
+			self:SelectMission()
+			
+			return
+		end
+		
+		if self.currentMissionId == "3" then 
+			self.currentObjectiveNum = #table.keys(battlePlayer.equipGun)
+			_BattleUIManager.suddenMissionUI:Refresh()
+		elseif self.currentMissionId == "11" then 
+			local allPhysicalWeapon = true
+			
+			for key, value in pairs(battlePlayer.equipGun) do
+				if not value.isPhysicalWeapon then
+					allPhysicalWeapon = false
+					
+					break
+				end
+			end
+			
+			if not allPhysicalWeapon then
+				self:Fail()
+			end
+		elseif self.currentMissionId == "13" then 
+			local allMagicalWeapon = true
+			
+			for key, value in pairs(battlePlayer.equipGun) do
+				if value.isPhysicalWeapon then
+					allMagicalWeapon = false
+					
+					break
+				end
+			end
+			
+			if not allMagicalWeapon then
+				self:Fail()
+			end
+		end
+		
+		self:CheckMissionClear()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleAttackMonsterEvent(AttackMonsterEvent event)
+		-- 몬스터 공격 이벤트 처리
+		local currentMission = self.currentMission
+		if not isvalid(currentMission) then return end
+		
+		if currentMission.successCondition == "ATTACK COUNT" and self.occurred then
+			self.currentObjectiveNum = self.currentObjectiveNum + 1
+			_BattleUIManager.suddenMissionUI:Refresh()
+			self:CheckMissionClear()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleGetPotionEvent(GetPotionEvent event)
+		-- 포션 획득 이벤트 처리
+		if not isvalid(self.currentMission) then return end
+		
+		if self.currentMission.successCondition == "POTION" and self.occurred then
+			self.currentObjectiveNum = self.currentObjectiveNum + 1
+			_BattleUIManager.suddenMissionUI:Refresh()
+			self:CheckMissionClear()
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "BuffLogic")
+	handler HandleInittedBuffEvent(InittedBuffEvent event)
+		-- 버프 초기화 이벤트 처리
+		if self.willStartWave == 0 then return end
+		if self.occurred then return end
+		if not isvalid(self.currentMission) then return end
+		
+		if self.willStartWave == 1 then
+			self:AppearMission()
+		end
+		
+	end
+
+end

@@ -1,0 +1,446 @@
+@Logic
+script Ranking_UILogic extends Logic
+
+	property number UpdateTime = 0
+
+	property number RankingRefreshTime = 0
+
+	property string RanknigCriteriaID = ""
+
+	property table RankingData = {}
+
+	property integer RankingPageNum = 1
+
+	property integer LastPage = 1
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 시즌 시간 UI 설정 및 랭킹 데이터 초기화
+		self:SetUI_NextOrdinalTime()
+		self.RanknigCriteriaID = _ModeDataLogic.RankScoreCriteriaID
+		
+		self:GetLocalUserData(_UserService.LocalPlayer.OwnerId) -- 로컬 플레이어 전적 로드
+		
+		self:GetRankingData() -- 시즌 랭킹 로드
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임마다 시간을 업데이트하고 주기적으로 랭킹 데이터 갱신
+		self.UpdateTime += delta
+		self.RankingRefreshTime += delta
+		
+		if self.UpdateTime >= 1 then -- 시즌 잔여 시간 업데이트
+			self:SetUI_NextOrdinalTime()
+			self.UpdateTime = 0
+		end
+		
+		if self.RankingRefreshTime >= 180 then -- 랭킹 업데이트. 현재 3분마다
+			self:GetLocalUserData(_UserService.LocalPlayer.OwnerId) -- 로컬 플레이어 전적
+			self:GetRankingData() -- 시즌 랭킹
+			self.RankingRefreshTime = 0
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_NextOrdinalTime()
+		-- Lobby HUD의 '시즌 종료까지 남은 시간'을 갱신합니다.
+		--------------------------------------------------------------------
+		local timeToEnd = _ModeDataLogic:GetLeftTimeToNextOrdinal()
+		
+		local tteTimer = 0
+		local function tteFnc()
+			if timeToEnd["hours"] == 999 then
+				timeToEnd = _ModeDataLogic:GetLeftTimeToNextOrdinal()
+			else
+				_TimerService:ClearTimer(tteTimer)
+			end
+		end
+		tteTimer = _TimerService:SetTimerRepeat(tteFnc, 0.1, 0)
+		
+		local timeToEnd_text = string.format("%02d:%02d:%02d:%02d", timeToEnd["days"], timeToEnd["hours"], timeToEnd["minutes"], timeToEnd["seconds"])
+		local ui_timeToEnd = _EntityService:GetEntityByPath("/ui/Lobby_HUD/LeaderBoard/LeaderBoard_WeekSelectArea/LeaderBoard_TimeToEnd")
+		ui_timeToEnd.TextComponent.Text = _LocalizationService:GetTextFormat("LeaderBoard_NextRefreshTime", timeToEnd_text)
+		--"시즌 종료까지\n"..timeToEnd_text
+	end
+
+	@ExecSpace("Client")
+	method void SetRankingInfo()
+		-- 랭킹 정보를 설정하는 메서드 (현재 미구현)
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetMyRanking(number ratio, integer score, string criterialID)
+		------------------------------------------------------
+		-- 로컬 유저의 랭킹 정보를 표시
+		------------------------------------------------------
+		local myRankUI = _EntityService:GetEntity("da9159b4-bc41-4128-b839-35e07bf7dd34")
+		local noInfoUI = _EntityService:GetEntity("5d80cbe5-a286-4550-9bd5-b25cb4d0d3bf")
+		
+		if not isvalid(score) then -- 랭킹 정보 없을 경우 처리
+			myRankUI:SetEnable(false)
+			noInfoUI:SetEnable(true)
+		else
+			log("내 랭킹이 있어요!")
+			
+			if ratio >= 0 then
+				myRankUI.Children[1].TextComponent.Text = _LocalizationService:GetTextFormat("RankRate", string.format("%.1f", ratio)) -- 상위 x.x%
+			else
+				myRankUI.Children[1].TextComponent.Text = _LocalizationService:GetText("OutOfRank") -- 순위권 밖
+			end
+			
+			--string.format("상위 %.1f%%", ratio) -- 비율
+			myRankUI.Children[2].TextComponent.Text = _UserService.LocalPlayer.PlayerComponent.Nickname -- 닉네임
+		
+			local rankingInfo = self:ScoreDecoder(score, criterialID) -- 스코어를 정보로 분해
+			
+			local rankChallenged
+			
+			if rankingInfo["Stage"] == 0 then -- 클리어한 경우
+				rankChallenged = rankingInfo["RankLevel"]
+				myRankUI.Children[4].TextComponent.Text = _LocalizationService:GetText("Clear")
+			else
+				rankChallenged = rankingInfo["RankLevel"] + 1
+				myRankUI.Children[4].TextComponent.Text = string.format("%s - %s", tostring(rankingInfo["Stage"]), tostring(rankingInfo["Round"]))
+			end
+			
+			myRankUI.Children[3].SpriteGUIRendererComponent.ImageRUID = _GameModeDataManager.Rank_IconRUID[rankChallenged] -- 도전 랭크 아이콘
+		
+			
+			myRankUI.Children[5].TextComponent.Text = rankingInfo["Additional"]
+			
+			myRankUI:SetEnable(true)
+			noInfoUI:SetEnable(false)
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void GetLocalUserData(string userID)
+		--------------------------------------------------
+		-- 로컬 유저의 랭킹 정보를 가져온다
+		--------------------------------------------------
+		
+		-- 시즌 랭킹 기준
+		local RankCriterial = _ModeDataLogic.RankScoreCriteriaID
+		
+		
+		-- 상위 퍼센트
+		local userRankingRatio = _ModeDataLogic:GetRankModeUserClearPercent(_ModeDataLogic.Season, _ModeDataLogic.OrdinalNumber, userID)["Percent"] 
+		--
+		
+		-- 랭킹 스코어
+		local userDB = _DataStorageService:GetUserDataStorage(userID)
+		local setKey = string.format("RankScore_%d_%d", _ModeDataLogic.Season, _ModeDataLogic.OrdinalNumber)
+		
+		local highScore
+		---- 데이터 불러오기
+		local geterr, sc_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(setKey)
+		for i = 1, 10 do
+			if geterr == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				geterr, sc_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(setKey)
+			end
+		end
+		
+		if isvalid(sc_Value) then
+			highScore = tonumber(sc_Value)
+		end
+		----
+		
+		self:SetMyRanking(userRankingRatio, highScore, RankCriterial, userID)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method table ScoreDecoder(integer score, string criterialID)
+		----------------------------------------------------------------
+		-- 랭킹 점수를 기반으로 랭크, 도달 라운드, 시즌 기준 등을 획득
+		----------------------------------------------------------------
+		--log("localplayer best: "..score)
+		local rankingInfo = {}
+		
+		rankingInfo["RankLevel"] = score // 2500000 -- 랭크 레벨
+		
+		local remainder = score % 2500000
+		
+		local stageRound = remainder // 100000 - 1
+		
+		remainder = remainder % 100000
+		
+		if stageRound == 0 then
+			rankingInfo["Stage"] = 0 -- 클리어한 경우
+		else
+			rankingInfo["Stage"] = math.floor((stageRound // 3) + 1) -- 도달 스테이지
+			rankingInfo["Round"] = math.floor(stageRound % 3 + 1) -- 도달 라운드
+		end
+		
+		
+		-- 시즌 조건
+		if criterialID == "CT10001" then -- 짧은 플레이 타임
+			rankingInfo["Additional"] = math.floor(100000 - remainder)
+		elseif criterialID == "CT10002" then -- 단일 유닛 최대 가해량
+			rankingInfo["Additional"] = math.floor(remainder * 10)
+		elseif criterialID == "CT10003" then -- 단일 유닛 최대 피해량
+			rankingInfo["Additional"] = math.floor(remainder * 10)
+		elseif criterialID == "CT10004" then -- 전 라운드 누적 생존 수
+			rankingInfo["Additional"] = math.floor(remainder)
+		elseif criterialID == "CT10005" then -- 최종 팀 가치(전장)
+			rankingInfo["Additional"] = math.floor(remainder)
+		elseif criterialID == "CT10006" then -- 룬카드 총 가치
+			rankingInfo["Additional"] = math.floor(remainder / 500)
+		elseif criterialID == "CT10007" then -- 남은 하트 수량
+			rankingInfo["Additional"] = math.floor(remainder / 1000)
+		elseif criterialID == "CT10008" then -- 활성화된 시너지 수
+			rankingInfo["Additional"] = math.floor(remainder / 1000)
+		elseif criterialID == "CT10009" then -- 게임 후 남은 골드
+			rankingInfo["Additional"] = math.floor(remainder)
+		elseif criterialID == "CT10010" then -- 완성 아이템 개수
+			rankingInfo["Additional"] = math.floor(remainder)
+		elseif criterialID == "CT10011" then -- 단일 유닛 최대 회복량
+			rankingInfo["Additional"] = math.floor(remainder * 10)
+		elseif criterialID == "CT10012" then -- 배치된 유닛의 별(낮을 수록 고득점)
+			rankingInfo["Additional"] = math.floor(100000 - remainder)
+		elseif criterialID == "CT10013" then -- 아이템 구매 회수
+			rankingInfo["Additional"] = math.floor(remainder)
+		elseif criterialID == "CT10014" then -- 종료 시 사용 중인 레어 룬카드 개수
+			rankingInfo["Additional"] = math.floor(remainder / 500)
+		elseif criterialID == "CT10015" then -- 단일 유닛의 가장 높은 스킬 사용 수
+			rankingInfo["Additional"] = math.floor(remainder)
+		elseif criterialID == "CT10016" then -- 코치 비용(낮을 수록 고득점)
+			rankingInfo["Additional"] = math.floor(7 - (remainder / 1000))
+		end
+		
+		return rankingInfo
+	end
+
+	@ExecSpace("Server")
+	method void GetRankingData()
+		------------------------------------------------------------------------------
+		-- modeDataLogic:LoadRankingData의 테이블을 받아와 SetUpRanking 함수를 호출한다
+		------------------------------------------------------------------------------
+		local season = _ModeDataLogic.Season
+		local ordinalNumber = _ModeDataLogic.OrdinalNumber
+		
+		local rankingData = _ModeDataLogic:LoadRankingData(season, ordinalNumber)
+		
+		local rankingTable = {}
+		
+		for itemNum = 1, #rankingData do
+			local temp = {}
+			temp["NickName"] = rankingData[itemNum].KeyInfo.Tag
+			temp["Value"] = rankingData[itemNum].Value
+			table.insert(rankingTable, temp)
+		end
+		
+		local function setUI()
+			--log("_ModeDataLogic.RankScoreCriteriaID = ", _ModeDataLogic.RankScoreCriteriaID)
+			if _ModeDataLogic.RankScoreCriteriaID == "" then
+				log("rank score criterial ID가 없습니다.")
+				_TimerService:SetTimerOnce(setUI, 0.5)
+			else
+				self:SetUpRankingUI(rankingTable, _ModeDataLogic.RankScoreCriteriaID, season, ordinalNumber, senderUserId)
+			end
+		end
+		
+		_TimerService:SetTimerOnce(setUI, 0)
+	end
+
+	@ExecSpace("Client")
+	method void SetUpRankingUI(table rankingData, string criterialID, integer season, integer ordinalNumber)
+		--------------------------------------------------------------------------
+		-- GetRankingData에서 랭킹 테이블을 받아와 UI를 세팅
+		--------------------------------------------------------------------------
+		local ui_rankingCriteriaTooltip = _EntityService:GetEntity("7b080dc1-a073-465e-9671-3eaeef29c26f")	-- /ui/Lobby_HUD/SeasonInfo
+		local ui_leaderboardRPCriteria = _EntityService:GetEntity("80fa2f53-f552-47b8-8aaf-48781cd2a415")  -- /ui/Lobby_HUD/LeaderBoard/LeaderBoard_GuidePanel/Text_RPCriteria
+		
+		local criteriaDataset = _DataService:GetTable("RankScoreCriteriaInfo")
+		
+		self.RankingData = rankingData
+		self.LastPage = #rankingData / 10 + 1 -- 마지막 페이지 등록
+		
+		self.RanknigCriteriaID = criterialID
+		
+		log(criterialID)
+		-- 시즌 정보 입력
+		_EntityService:GetEntity("fd861472-2676-440e-8add-db53d088a6ed").TextComponent.Text = _LocalizationService:GetTextFormat("SeasonOrdinary", season, ordinalNumber)
+		
+		-- 시즌 점수 기준 등록
+		local seasonInfoRow = criteriaDataset:FindRow("ID", self.RanknigCriteriaID)
+		local name = seasonInfoRow:GetItem("RankUIColumn")
+		local desc = seasonInfoRow:GetItem("Explain") 
+		ui_leaderboardRPCriteria.TextComponent.Text = _LocalizationService:GetText(name)
+		ui_rankingCriteriaTooltip.TextComponent.Text = _LocalizationService:GetTextFormat("LeaderBoard_RankTooltip", "<color=#e9c828>".._LocalizationService:GetText(desc).."</color>")
+		
+		self:SetRankingPage(self.RankingPageNum)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetRankingPage(integer pageNum)
+		------------------------------------------------------------------
+		-- 랭킹 페이지 정보를 받아 UI에 표시되는 정보를 변경
+		------------------------------------------------------------------
+		
+		local pageBody = _EntityService:GetEntity("b052bf8e-2013-4299-b48a-f8588ca3a6c7")
+		
+		for slotNum = 1, 10 do
+			local slot = pageBody:GetChildByName(string.format("LeaderBoard_Slot_%d", slotNum))
+			local ranking = math.floor((pageNum-1) * 10 + slotNum) -- 해당 슬롯에 들어가야 하는 랭킹
+			if not isvalid(self.RankingData[ranking]) then 
+				slot:SetEnable(false)
+			else
+				slot.Children[1].TextComponent.Text = tostring(ranking) -- 랭킹
+				slot.Children[2].TextComponent.Text = self.RankingData[ranking]["NickName"] -- 닉네임
+				
+				-- 스코어 분해 및 적용
+				local decodedScore = self:ScoreDecoder(self.RankingData[ranking]["Value"], self.RanknigCriteriaID)
+				
+				local rankChallenged
+				
+				if decodedScore["Stage"] == 0 then -- 클리어한 경우
+					rankChallenged = decodedScore["RankLevel"]
+					slot.Children[4].TextComponent.Text = _LocalizationService:GetText("Clear")
+				else
+					rankChallenged = decodedScore["RankLevel"] + 1
+					slot.Children[4].TextComponent.Text = string.format("%s - %s", tostring(decodedScore["Stage"]), tostring(decodedScore["Round"]))
+				end
+				
+				slot.Children[3].SpriteGUIRendererComponent.ImageRUID = _GameModeDataManager.Rank_IconRUID[rankChallenged] -- 도전 랭크 아이콘
+				
+				slot.Children[5].TextComponent.Text = decodedScore["Additional"] -- 시즌 평가 조건 표시
+				
+				slot:SetEnable(true)
+			end
+		end
+			
+			
+		
+	end
+
+	@EventSender("Entity", "551ff78e-3b89-43fd-adf6-660793649673")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		
+	end
+
+	@EventSender("Entity", "48eacbc1-52dc-4d26-86ad-a05289fce923")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		-- 이전 페이지 버튼 작동
+		-- 현재 페이지가 1이면 작동하지 않음
+		---------------------------------------------------------
+		
+		if self.RankingPageNum <= 1 then
+			return
+		else
+			self.RankingPageNum -= 1
+			self:SetRankingPage(self.RankingPageNum)
+		end 
+		
+	end
+
+	@EventSender("Entity", "1ea479f3-bc3a-4f43-ac87-f4e41428b144")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		-- 다음 페이지 버튼 작동
+		-- 현재 페이지가 최후 페이지일 경우 작동하지 않음
+		---------------------------------------------------------
+		
+		if self.RankingPageNum == self.LastPage then
+			return
+		else
+			self.RankingPageNum += 1
+			self:SetRankingPage(self.RankingPageNum)
+		end
+		
+	end
+
+	@EventSender("Entity", "ce0a76da-c489-4989-b4d8-e015818b3311")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		-- 이전 10 페이지 버튼 작동
+		-- -10 값이 1보다 작을 경우에는 첫 페이지로 보냄
+		---------------------------------------------------------
+		
+		if self.RankingPageNum - 10 < 1 then
+			self.RankingPageNum = 1 
+		else
+			self.RankingPageNum -= 10
+		end
+		
+		self:SetRankingPage(self.RankingPageNum)
+		
+	end
+
+	@EventSender("Entity", "a0cfeb5a-7d2a-45ad-bef7-1f21415180ac")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		-- 다음 10 페이지 버튼 작동
+		-- +10이 마지막 페이지보다 클 경우에는 마지막 페이지로 보냄
+		----------------------------------------------------------
+		
+		if self.RankingPageNum + 10 > self.LastPage then
+			self.RankingPageNum = self.LastPage
+		else
+			self.RankingPageNum += 10
+		end 
+		
+		self:SetRankingPage(self.RankingPageNum)
+	end
+
+	@EventSender("Entity", "6bb6fa34-5580-45fe-acdc-219db18a881c")
+	handler HandleButtonStateChangeEvent(ButtonStateChangeEvent event)
+		-- 시즌 정보 툴팁 버튼 호버 상태 변경 시 툴팁 표시/숨김 처리
+		-- Parameters
+		local state = event.state
+		---------------------------------------------------------
+		local seasonInfoUI = _EntityService:GetEntity("7b080dc1-a073-465e-9671-3eaeef29c26f") -- /ui/Lobby_HUD/Tooltip_Ranking
+		
+		if state == ButtonState.Hover then
+			seasonInfoUI.Enable = true
+		else
+			seasonInfoUI.Enable = false
+		end
+	end
+
+end

@@ -1,0 +1,1240 @@
+@Component
+script EquipmentStorageUI extends Component
+
+	property number filterIdx = 1
+
+	property number secondFilterIdx = 1
+
+	property number showingIdx = 0
+
+	property SyncTable<number> materialIdx
+
+	property number currentSelectingMaterialSlotIdx = 0
+
+	property boolean IsPlayingDirection = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 장비 보관함 UI 초기화
+		
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI()
+		-- 장비 보관함 UI를 현재 상태에 맞게 새로고침
+		-- Slot List
+		if self.filterIdx == 1 then
+			self:Refresh_Normal()
+		elseif self.filterIdx == 2 then
+			self:Refresh_Mythic()
+		elseif self.filterIdx == 3 then
+			self:Refresh_Accessory()
+		end
+		----------------------------------------------------------------------------------------------------------------
+		----------------------------------------------------------------------------------------------------------------
+		-- 장착중인 아이템 패널을 갱신합니다.
+		----------------------------------------------------------------------------------------------------------------
+		-- 장비 
+		local avatarTable = _DataService:GetTable("EquipmentAvatar")
+		local equipedPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel")
+		for i=1, 4 do
+			local slot = equipedPanel:GetChildByName("Slot_"..tostring(i))
+			local equipedIdx = _UserService.LocalPlayer.PlayerData.equiped[i]
+			local ruid = ""
+			
+			-- 장착한 장비 여부에 따라 'NoUse' 활성화
+			if equipedIdx == nil or equipedIdx == 0 then
+				slot:GetChildByName("NoUse").Enable = true
+			else 
+				slot:GetChildByName("NoUse").Enable = false
+			end
+			
+			-- 장착한 장비 아이콘
+			if equipedIdx == 0 then
+				ruid = "3e9d52ed52d64794bbd6f72bab8ee3d9" -- 투명 아이콘
+			elseif i == 1 then
+				ruid = "thumbnail://"..avatarTable:GetCell(equipedIdx+1, 1)
+			elseif i  == 2 then
+				ruid = "thumbnail://"..avatarTable:GetCell(equipedIdx+1, 5)
+			elseif i == 3 then
+				ruid = avatarTable:GetCell(equipedIdx+1, 7)
+			elseif i == 4 then
+				ruid = "thumbnail://"..avatarTable:GetCell(equipedIdx+1, 6)
+			end	
+			
+			slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = ruid
+		end
+		----------------------------------------------------------------------------------------------------------------
+		-- 장신구
+		local accessoryIconTable = _DataService:GetTable("AccessoryIcon")
+		local gradeTable = _DataService:GetTable("GradeIconback")
+		local accessorySetTable = _DataService:GetTable("AccessorySet")
+		for i=1, 3 do
+			local slot = equipedPanel:GetChildByName("Slot_"..tostring(math.floor(i+4)))
+			
+			local equipedIdx = _UserService.LocalPlayer.PlayerAccessory.equipedItemIdx[i]
+			local icon = ""
+			local iconBack = ""
+			local type = ""
+			
+			if equipedIdx == nil or equipedIdx == 0 or equipedIdx > #_UserService.LocalPlayer.PlayerAccessory.haveItems then
+				icon = "3e9d52ed52d64794bbd6f72bab8ee3d9"
+			else 
+				local itemKey = _UserService.LocalPlayer.PlayerAccessory.haveItems[equipedIdx]
+				local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey)
+				
+				icon = accessoryIconTable:GetCell(itemData[1], string.format("RUID_%d", itemData[3]))
+				iconBack = gradeTable:GetCell( itemData[2], "iconback")
+				type = accessorySetTable:GetCell( itemData[3], "SetRUID")
+			end
+			
+			local iconUI = 	slot:GetChildByName("Grade")
+			iconUI.SpriteGUIRendererComponent.ImageRUID = iconBack
+			iconUI:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = icon
+			iconUI:GetChildByName("Type").SpriteGUIRendererComponent.ImageRUID = type
+			
+			-- 장착한게 없다면...
+			if equipedIdx == nil or equipedIdx == 0 then
+				slot:GetChildByName("NoUse").Enable = true
+				iconUI.Enable = false
+			else 
+				slot:GetChildByName("NoUse").Enable = false
+				iconUI.Enable = true
+			end
+		end
+		
+		
+		-- 아바타 정보를 갱신
+		self:ApplyAvatarInfo()
+		----------------------------------------------------------------------------------------------------------------
+		----------------------------------------------------------------------------------------------------------------
+		-- 각종 팝업을 닫습니다.
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/DetailInfoPopup").Enable = false
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/BeadsDetailInfo").Enable = false
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/AccessoryDetailInfoPopup").Enable = false
+		----------------------------------------------------------------------------------------------------------------
+		local popup = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/DetailInfoPopup")
+		popup.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void Refresh_Normal()
+		-- 일반 장비 탭의 UI를 새로고침
+		local equipmentTable = _DataService:GetTable("Equipment")
+		local avatarTable = _DataService:GetTable("EquipmentAvatar")
+		---------------------------------------------------------------------------
+		-- 리스트를 갱신합니다.
+		local listPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_NormalEquipment/ListPanel")
+		for i=1, 40 do
+			local slot = listPanel:GetChildByName("Slot_"..tostring(i))
+			if slot == nil then
+				slot = listPanel:GetChildByName("Slot"):Clone("Slot_"..tostring(i))
+				slot:GetChildByName("EquipedSlot").Enable = false
+			end
+			
+			slot:GetChildByName("selected_line").Enable = false
+			
+			-- 보유 여부에 따라 슬롯 표시 여부를 결정합니다.
+			local haveInfo = _UserService.LocalPlayer.PlayerData.haveEquipment[40*(self.secondFilterIdx-1)+i]
+			if haveInfo == true then
+				slot.Enable = true
+				
+				-- 아이콘 갱신
+				local ruid = ""
+				if self.secondFilterIdx == 1 then
+					ruid = "thumbnail://"..avatarTable:GetCell(i+1, 1)
+				elseif self.secondFilterIdx  == 2 then
+					ruid = "thumbnail://"..avatarTable:GetCell(i+1, 5)
+				elseif self.secondFilterIdx == 3 then
+					ruid = avatarTable:GetCell(i+1, 7)
+				elseif self.secondFilterIdx == 4 then
+					ruid = "thumbnail://"..avatarTable:GetCell(i+1, 6)
+				end
+				slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = ruid
+				
+				-- '장착중' 표시 여부 갱신
+				if i == _UserService.LocalPlayer.PlayerData.equiped[self.secondFilterIdx] then
+					slot:GetChildByName("EquipedSlot").Enable = true
+				else 
+					slot:GetChildByName("EquipedSlot").Enable = false
+				end
+				
+			else 
+				slot.Enable = false
+			end
+		end
+		
+		---------------------------------------------------------------------------
+		-- 보유한 장비 레벨 총합을 표시합니다.
+		local currentLevelSum = 0
+		for i=1, 160 do
+			if _UserService.LocalPlayer.PlayerData.haveEquipment[i] == true then
+				currentLevelSum = currentLevelSum + (i-1)%40 + 1
+			end
+		end
+		
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_NormalEquipment/TotalLevelPanel/SliderFill").UITransformComponent.RectSize.x = 430*(currentLevelSum/3280)
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_NormalEquipment/TotalLevelPanel/RatioNum").TextComponent.Text = string.format("%d / 3280", currentLevelSum)
+		---------------------------------------------------------------------------
+		-- 일반 스탯 정보를 표시합니다.
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/NormalEquipmentInfo").Enable = true
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/MythicEquipmentInfo").Enable = false
+		
+		local abilityList = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/NormalEquipmentInfo/AbilityNumList")
+		local ability = {0, 0, 0, 0, 0}
+		for i=1, 4 do
+			for j=1, 40 do
+				if _UserService.LocalPlayer.PlayerData.haveEquipment[40*(i-1)+j] == true then
+					ability[i] = ability[i] + tonumber(equipmentTable:GetCell(j, i*3))
+					if i == 4 then
+						ability[5] = ability[5] + tonumber(equipmentTable:GetCell(j, 14))
+					end
+				end
+			end
+		end
+		
+		for i=1, 5 do
+			if i == 4 then
+				abilityList:GetChildByName("Amount_"..tostring(i)).TextComponent.Text = "+"..tostring(ability[i]*100).."%"
+			else 
+				abilityList:GetChildByName("Amount_"..tostring(i)).TextComponent.Text = "+".._ThousandsSeparator:ConvertToMetricPrefixString(ability[i], nil)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Refresh_Mythic()
+		-- 신화 장비 탭의 UI를 새로고침
+		local equipmentListPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_NormalEquipment")
+		local mythicListPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_MythicEquipment")
+		--------------------------------------------------------------------------------
+		local abilityType = {"8001", "8002", "8003", "8005"}
+		local abilityAmountPerLevel = {30000000, 3000000, 3000000000, 100}
+		
+		-- 각 장비 정보를 표시합니다.
+		for i=1, 4 do
+			local slot = mythicListPanel:GetChildByName("Slot_"..tostring(i))
+			
+			slot:GetChildByName("Level").TextComponent.Text = string.format("Lv. %d", _UserService.LocalPlayer.PlayerMythicEquipment.EquipmentLevel[i])
+			
+			local abilityAmount =  _UserService.LocalPlayer.PlayerMythicEquipment.EquipmentLevel[i] * abilityAmountPerLevel[i]
+			slot:GetChildByName("Skill").TextComponent.Text = 
+				_LocalizationService:GetText(abilityType[i]).."<color=#b5e95b> +".._ThousandsSeparator:ConvertToMetricPrefixString(abilityAmount, nil).."</color>"
+			
+			local beadsInfo = slot:GetChildByName("BeadInfo")
+			for j=1, 8 do
+				local beadsSlot = beadsInfo:GetChildByName("Bead_"..tostring(j))
+				if i == 1 then
+					beadsSlot.TextComponent.Text = string.format("%d", _UserService.LocalPlayer.PlayerMythicEquipment.Equip1_Element[j])
+				elseif i == 2 then
+					beadsSlot.TextComponent.Text = string.format("%d", _UserService.LocalPlayer.PlayerMythicEquipment.Equip2_Element[j])
+				elseif i == 3 then
+					beadsSlot.TextComponent.Text = string.format("%d", _UserService.LocalPlayer.PlayerMythicEquipment.Equip3_Element[j])
+				elseif i == 4 then
+					beadsSlot.TextComponent.Text = string.format("%d", _UserService.LocalPlayer.PlayerMythicEquipment.Equip4_Element[j])
+				end
+				
+			end
+		end
+		--------------------------------------------------------------------------------
+		-- 신화 구슬 정보를 표시합니다.
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/NormalEquipmentInfo").Enable = false
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/MythicEquipmentInfo").Enable = true
+		
+		if _UserService.LocalPlayer.PlayerMythicEquipment.Equip4_Element == nil then
+			return
+		end
+		
+		local beadsInfoEntity = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/MythicEquipmentInfo/BeadsInfo")
+		local beadsStarEntity = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/MythicEquipmentInfo/BeadsAbilityList")
+		local totalBeadsAmount = {0, 0, 0, 0, 0, 0, 0, 0}
+		for i=1, 8 do
+			totalBeadsAmount[i] = totalBeadsAmount[i] 
+									+ _UserService.LocalPlayer.PlayerMythicEquipment.Equip1_Element[i] 
+									+ _UserService.LocalPlayer.PlayerMythicEquipment.Equip2_Element[i] 
+									+ _UserService.LocalPlayer.PlayerMythicEquipment.Equip3_Element[i] 
+									+ _UserService.LocalPlayer.PlayerMythicEquipment.Equip4_Element[i] 
+			beadsInfoEntity:GetChildByName("Bead_"..tostring(i)).TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(totalBeadsAmount[i], nil)
+			
+			local starSlot = beadsStarEntity:GetChildByName("Slot_"..tostring(i))
+			local starCount = 0
+			if totalBeadsAmount[i] >= 400 then 
+				starCount = 5
+			elseif totalBeadsAmount[i] >= 160 then
+				starCount = 4
+			elseif totalBeadsAmount[i] >= 80 then
+				starCount = 3
+			elseif totalBeadsAmount[i] >= 40 then
+				starCount = 2
+			elseif totalBeadsAmount[i] >= 10 then
+				starCount = 1
+			else 
+				starCount = 0		
+			end
+			
+			for i=1, 5 do
+				if i <= starCount then
+					starSlot.Children[i].SpriteGUIRendererComponent.ImageRUID = "244ae3c308cf4b9e9b9d142d846317c9"
+				else 
+					starSlot.Children[i].SpriteGUIRendererComponent.ImageRUID = "494439a33548448686d16ca07fe7d526"
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Refresh_Accessory()
+		-- 장신구 탭의 UI를 새로고침
+		local itemTable = _DataService:GetTable("AccessoryIcon")
+		local setTable = _DataService:GetTable("AccessorySet")
+		local gradeTable = _DataService:GetTable("GradeIconback")
+		local abilityIconTable = _DataService:GetTable("AbilityIcon")
+		---------------------------------------------------------------------------
+		-- 리스트를 갱신합니다.
+		local haveItems = _UserService.LocalPlayer.PlayerAccessory.haveItems
+		local listPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_Accessory/ListPanel")
+		local slotIdx = 1
+		
+		for i=1, #haveItems do
+			
+			local itemKey = haveItems[i]
+			local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey) -- 1=part, 2=grade, 3=set, 4=ability
+		
+			if itemData[1] == self.secondFilterIdx then
+				local slot = listPanel:GetChildByName("Slot_"..tostring(slotIdx))
+				if slot == nil then
+					slot = listPanel:GetChildByName("Slot"):Clone("Slot_"..tostring(slotIdx))
+					slot:GetChildByName("EquipedSlot").Enable = false
+				end
+				
+				if self.showingIdx == i then
+					slot:GetChildByName("selected_line").Enable = true
+				else 
+					slot:GetChildByName("selected_line").Enable = false
+				end
+				
+				slot.EquipmentStorageUI_AccessorySlotButton.showingIdx = i
+				
+				local iconBackUI = slot:GetChildByName("Grade")
+				local iconUI = iconBackUI:GetChildByName("Icon")
+				local setIconUI = iconBackUI:GetChildByName("Type")
+				local abilityIconUI = slot:GetChildByName("Icon_Ability")
+				local abilityTextUI = slot:GetChildByName("Text_Ability")
+				
+				local iconbackRUID = gradeTable:GetCell(itemData[2], "iconback")
+				local iconRUID = itemTable:GetCell(itemData[1], "RUID_"..tostring(math.floor(itemData[3])))
+				local setIcon = setTable:GetCell(itemData[3], "SetRUID")
+				local abilityIcon = abilityIconTable:GetCell(itemData[1], 2)
+				local ability = _ThousandsSeparator:ConvertToMetricPrefixString(itemData[4], nil)
+				
+				iconBackUI.SpriteGUIRendererComponent.ImageRUID = iconbackRUID
+				iconUI.SpriteGUIRendererComponent.ImageRUID = iconRUID
+				setIconUI.SpriteGUIRendererComponent.ImageRUID = setIcon
+				abilityIconUI.SpriteGUIRendererComponent.ImageRUID = abilityIcon
+				abilityTextUI.TextComponent.Text = "+"..ability
+				
+				-- 장착한 아이템이라면 "장착중" 표시를 추가
+				if _UserService.LocalPlayer.PlayerAccessory.equipedItemIdx[self.secondFilterIdx] == i then
+					slot:GetChildByName("EquipedSlot").Enable = true
+				else
+					slot:GetChildByName("EquipedSlot").Enable = false 
+				end
+				
+				slot.Enable = true
+				slotIdx = slotIdx + 1
+			end
+		end
+		
+		-- 나머지 슬롯은 비활성화
+		while true do
+			local slot = listPanel:GetChildByName("Slot_"..tostring(slotIdx))
+			if slot == nil then
+				break
+			else
+				slot.Enable = false
+				slot.EquipmentStorageUI_AccessorySlotButton.showingIdx = 0
+				slotIdx = slotIdx + 1
+			end
+		end
+		---------------------------------------------------------------------------
+		---------------------------------------------------------------------------
+		-- 장신구 숙련도 정보 갱신
+		local userProficiency = _UserService.LocalPlayer.PlayerAccessory.Proficiency
+		if userProficiency == nil then
+			userProficiency = 1
+		end
+		local proficiencyGrade = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/AccessoryInfo/proficiency/Level_amount")
+		local proficiencyAbility = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/AccessoryInfo/proficiency/AbilityRate_amount")
+		proficiencyGrade.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(userProficiency, nil)
+		proficiencyAbility.TextComponent.Text = "× ".._ThousandsSeparator:ConvertToMetricPrefixString(userProficiency, nil)
+		
+		
+		local equipedSetInfo = {0, 0, 0}
+		for i=1, 3 do
+			local equipedIdx = _UserService.LocalPlayer.PlayerAccessory.equipedItemIdx[i]
+			
+			if equipedIdx ~= nil and equipedIdx ~= 0 and equipedIdx <= #haveItems then
+				local itemKey = _UserService.LocalPlayer.PlayerAccessory.haveItems[equipedIdx]
+				local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey) -- 1=part, 2=grade, 3=set, 4=ability
+				local setIdx = itemData[3]
+				equipedSetInfo[i] = setIdx
+			end
+		end
+		
+		
+		-- 세트효과 정보 갱신
+		local setTitleEntity = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/AccessoryInfo/SetAbility/title")
+		local setAbilityEntity = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/AccessoryInfo/SetAbility/Ability")
+		local setIconEntity =  _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/AccessoryInfo/SetAbility/Type/Icon")
+		
+			-- 세트가 있으면!
+		if equipedSetInfo[1] ~= 0 and equipedSetInfo[1] == equipedSetInfo[2] and equipedSetInfo[1] == equipedSetInfo[3] then
+			setTitleEntity.TextComponent.Text = _LocalizationService:GetText("SetAbility")..": ".._LocalizationService:GetText(setTable:GetCell(equipedSetInfo[1], 1))
+			local abilityType = setTable:GetCell(equipedSetInfo[1], "SetStatusType")
+			local abilityAmount = setTable:GetCell(equipedSetInfo[1], "SetStatusAmount")
+			setAbilityEntity.TextComponent.Text = _LocalizationService:GetText(abilityType).." +"..abilityAmount.."%"
+			setIconEntity.SpriteGUIRendererComponent.ImageRUID = setTable:GetCell(equipedSetInfo[1], "SetRUID")
+		else -- 세트가 없으면
+			setTitleEntity.TextComponent.Text = _LocalizationService:GetText("SetAbility").." : None" 
+			setAbilityEntity.TextComponent.Text = "-"
+			setIconEntity.SpriteGUIRendererComponent.ImageRUID = "58452792c7654606b81eba36b228d657"
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowNormalEquipmentDetailInfo(number slotIdx)
+		-- 일반 장비의 상세 정보 팝업을 표시
+		self.showingIdx = slotIdx
+		
+		local popup = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/DetailInfoPopup")
+		local equipmentTable = _DataService:GetTable("Equipment")
+		local avatarTable = _DataService:GetTable("EquipmentAvatar")
+		----------------------------------------------------------------------------------------------------------------
+		----------------------------------------------------------------------------------------------------------------
+		-- Get UI Entities
+		local nameUI = popup:GetChildByName("Name")
+		local flavorTxtUI = popup:GetChildByName("FlavorText")
+		local iconUI = popup:GetChildByName("Icon")
+		local levenNTypeUI = popup:GetChildByName("Level&Type")
+		local statusUI = popup:GetChildByName("Ability_text")
+		----------------------------------------------------------------------------------------------------------------
+		-- Get Data
+		local name = _LocalizationService:GetText(equipmentTable:GetCell(slotIdx, 3*self.secondFilterIdx-1))
+		local flavorText =  _LocalizationService:GetText(equipmentTable:GetCell(slotIdx, 3*self.secondFilterIdx+1))
+		local icon = ""
+		local type =  _LocalizationService:GetText("EquipType_"..tostring(math.floor(self.secondFilterIdx))) 
+		local statusType = {}
+		local status = {}
+		
+		local statText = ""
+		
+		if self.secondFilterIdx == 1 then
+			icon = "thumbnail://"..avatarTable:GetCell(slotIdx+1, 1)
+			statusType = {"8001"}
+			status = {tonumber(equipmentTable:GetCell(slotIdx, 3))}
+		elseif self.secondFilterIdx  == 2 then
+			icon = "thumbnail://"..avatarTable:GetCell(slotIdx+1, 5)
+			statusType = {"8002"}
+			status = {tonumber(equipmentTable:GetCell(slotIdx, 6))}
+		elseif self.secondFilterIdx == 3 then
+			icon = avatarTable:GetCell(slotIdx+1, 7)
+			statusType = {"8003"}
+			status = {tonumber(equipmentTable:GetCell(slotIdx, 9))}
+		elseif self.secondFilterIdx == 4 then
+			icon = "thumbnail://"..avatarTable:GetCell(slotIdx+1, 6)
+			statusType = {"8004", "8005"}
+			status = {tonumber(equipmentTable:GetCell(slotIdx, 12))*100, tonumber(equipmentTable:GetCell(slotIdx, 14))}
+		end
+		
+		for i=1, #statusType do
+			if i > 1 then
+				statText = statText .. "\n"
+			end
+			
+			if statusType[i] == "8004" then
+				statText = statText.._LocalizationService:GetText(statusType[i])..string.format(" +%.2f%%", status[i])
+			elseif statusType[i] == "8005" then
+				statText = statText.._LocalizationService:GetText(statusType[i])..string.format(" +%.2f", status[i])
+			else 
+				statText = statText.._LocalizationService:GetText(statusType[i]).." +".._ThousandsSeparator:ConvertToMetricPrefixString(status[i], nil)
+			end
+		
+		end
+		----------------------------------------------------------------------------------------------------------------
+		-- Apply data to ui entities
+		nameUI.TextComponent.Text = name
+		flavorTxtUI.TextComponent.Text = flavorText 
+		iconUI.SpriteGUIRendererComponent.ImageRUID = icon
+		levenNTypeUI.TextComponent.Text = string.format("Lv. %d ", slotIdx)..type
+		statusUI.TextComponent.Text = statText
+		----------------------------------------------------------------------------------------------------------------
+		-- 장착 여부에 따라 장착하기 / 장착해제 버튼 변경
+		if _UserService.LocalPlayer.PlayerData.equiped[self.secondFilterIdx] == slotIdx then
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/DetailInfoPopup/Button_Equip_dismount").Enable = true
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/DetailInfoPopup/Button_Equip").Enable = false
+		else 
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/DetailInfoPopup/Button_Equip_dismount").Enable = false
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/DetailInfoPopup/Button_Equip").Enable = true
+		end
+		----------------------------------------------------------------------------------------------------------------
+		----------------------------------------------------------------------------------------------------------------
+		popup.Enable = true
+		
+		-- 선택됨 이미지 활성화
+		local slotListPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_NormalEquipment/ListPanel")
+		for i=1, 40 do
+			local slot = slotListPanel:GetChildByName("Slot_"..tostring(i))
+			if i == slotIdx then
+				slot:GetChildByName("selected_line").Enable = true
+			else 
+				slot:GetChildByName("selected_line").Enable = false
+				
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowBeadsDetailInfo()
+		-- 신화 장비의 구슬 상세 정보 팝업을 표시
+		local popup = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/BeadsDetailInfo")
+		popup.Enable = true
+		--------------------------------------------------------------
+		local tableEntity = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/BeadsDetailInfo/Panel/Table_Contents")
+		
+		-- 구슬 개수 갱신
+		local beadsInfoEntity = tableEntity:GetChildByName("BeadsInfo")
+		local totalBeadsInfo = {}
+		for i=1, 8 do
+			totalBeadsInfo[i] = 0
+			
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip1_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip2_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip3_Element[i]
+			totalBeadsInfo[i] = totalBeadsInfo[i] + _UserService.LocalPlayer.PlayerMythicEquipment.Equip4_Element[i]
+			
+			beadsInfoEntity:GetChildByName("Bead_"..tostring(i)).TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(totalBeadsInfo[i], nil)
+		end
+		
+		
+		-- 보유 개수에 따라 적용 개수 갱신
+		local sets = {}
+		local setsStandard = {10, 40, 80, 160, 400, math.maxinteger}
+		for i=1, 5 do
+			sets[i] = tableEntity:GetChildByName("Set_"..tostring(i))
+			
+			for j=1, 8 do
+				if totalBeadsInfo[j] >= setsStandard[i] and totalBeadsInfo[j] < setsStandard[i+1] then
+					sets[i]:GetChildByName("Bead_"..tostring(j)).TextComponent.FontColor = Color.FromHexCode("#B5E95B")
+				else 
+					sets[i]:GetChildByName("Bead_"..tostring(j)).TextComponent.FontColor = Color.FromHexCode("#423729")
+				end
+			end	
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ApplyAvatarInfo()
+		-- 현재 장착한 장비에 따라 아바타 외형을 적용
+		local avatarTable = _DataService:GetTable("EquipmentAvatar")
+		
+		local avatarEntity = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/Avatar")
+		avatarEntity.CostumeManagerComponent.DefaultEquipUserId = _UserService.LocalPlayer.OwnerId
+		
+		local costumeComp = avatarEntity.CostumeManagerComponent
+		local equiped = _UserService.LocalPlayer.PlayerData.equiped
+		
+		for i=1, 4 do
+			if isvalid(equiped[i]) == false then
+				equiped[i] = 0
+			end
+		end
+		
+		
+		local weapon = avatarTable:GetCell(equiped[1]+1, 1)
+		local hat = avatarTable:GetCell(equiped[2]+1, 2)
+		local coat = avatarTable:GetCell(equiped[2]+1, 3)
+		local pants = avatarTable:GetCell(equiped[2]+1, 4)
+		local longcoat = avatarTable:GetCell(equiped[2]+1, 5)
+		local shoes = avatarTable:GetCell(equiped[4]+1, 6)
+		
+		if longcoat ~= nil and longcoat ~= "" then
+			costumeComp.CustomLongcoatEquip = longcoat
+			costumeComp.CustomCoatEquip = ""
+			costumeComp.CustomPantsEquip = ""
+		else
+			costumeComp.CustomLongcoatEquip = ""
+			costumeComp.CustomCoatEquip = coat
+			costumeComp.CustomPantsEquip = pants
+		end
+		
+		--costumeComp.CustomCapeEquip = backpack
+		costumeComp.CustomCapEquip = hat
+		costumeComp.CustomTwoHandedWeaponEquip = weapon
+		costumeComp.CustomShoesEquip = shoes
+		--self:ChangeEquipmentAvatarOnClient()
+	end
+
+	@ExecSpace("Client")
+	method void SetFilterIdx(number idx)
+		-- 장비 보관함의 필터 인덱스를 설정하여 탭을 변경
+		self.filterIdx = idx
+		self:SetSecondFilterIdx(1) -- 1차 필터가 바뀔 때, 2차 필터는 무조건 1번으로 고정합니다.
+		
+		local listPanel_normal = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_NormalEquipment")
+		local listPanel_mythic = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_MythicEquipment")
+		local listPanel_mythic_locked = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_MythicEquipmen_Lock")
+		local listPanel_acce = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_Accessory")
+		
+		local equipedPanel_normal = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/NormalEquipmentInfo")
+		local equipedPanel_mythic = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/MythicEquipmentInfo")
+		local equipedPanel_mythicLock = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/MythicEquipmentInfo/Lock")
+		local equipedPanel_acce = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/EquipedPanel/AccessoryInfo")
+		
+		
+		if idx == 1 then
+			listPanel_normal.Enable = true
+			listPanel_mythic.Enable = false
+			listPanel_acce.Enable = false
+			listPanel_mythic_locked.Enable = false
+			equipedPanel_normal.Enable = true
+			equipedPanel_mythic.Enable = false
+			equipedPanel_acce.Enable = false
+			equipedPanel_mythicLock.Enable = false
+			
+		elseif idx == 2 then
+			listPanel_normal.Enable = false
+			listPanel_acce.Enable = false
+			equipedPanel_normal.Enable = false
+			equipedPanel_acce.Enable = false
+			
+			if _UserService.LocalPlayer.PlayerConstruction.haveItems[1] >= 1 then
+				listPanel_mythic.Enable = true
+				listPanel_mythic_locked.Enable = false
+				equipedPanel_mythic.Enable = true
+				equipedPanel_mythicLock.Enable = false
+			else 
+				listPanel_mythic.Enable = false
+				listPanel_mythic_locked.Enable = true
+				equipedPanel_mythic.Enable = false
+				equipedPanel_mythicLock.Enable = true
+			end
+			
+		elseif idx == 3 then
+			listPanel_normal.Enable = false
+			listPanel_mythic.Enable = false
+			listPanel_acce.Enable = true
+			listPanel_mythic_locked.Enable = false
+			equipedPanel_normal.Enable = false
+			equipedPanel_mythic.Enable = false
+			equipedPanel_acce.Enable = true
+			equipedPanel_mythicLock.Enable = false
+			
+		else 
+			log("wrong idx")
+		end
+		----------------------------------------------------------------------------------------------
+		-- Filter Button
+		local filterList = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/FilterList")
+		for i=1, 3 do
+			local filterBtn = filterList:GetChildByName("Filter_"..tostring(i))
+			if i == self.filterIdx then
+				filterBtn.ButtonComponent.Enable = false
+				filterBtn.TextComponent.FontColor = Color.FromHexCode("#653122")
+			else 
+				filterBtn.ButtonComponent.Enable = true
+				filterBtn.TextComponent.FontColor = Color.FromHexCode("#FFE398")
+			end
+		end
+		
+		self:RefreshUI()
+	end
+
+	@ExecSpace("Client")
+	method void SetSecondFilterIdx(number idx)
+		-- 장비 보관함의 2차 필터 인덱스를 설정하여 세부 카테고리를 변경
+		self.secondFilterIdx = idx
+		
+		-- 장비인 경우
+		if self.filterIdx == 1 then
+			local filterList = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_NormalEquipment/SecondFilterList")
+			for i=1, 4 do
+				local filterBtn = filterList:GetChildByName("Filter_"..tostring(i))
+				
+				if i == self.secondFilterIdx then
+					filterBtn.ButtonComponent.Enable = false
+					filterBtn.TextComponent.FontColor = Color.FromHexCode("#653122")
+					filterBtn:GetChildByName("Icon").SpriteGUIRendererComponent.Color = Color.white
+				else 
+					filterBtn.ButtonComponent.Enable = true
+					filterBtn.TextComponent.FontColor = Color.FromHexCode("#FFE398")
+					filterBtn:GetChildByName("Icon").SpriteGUIRendererComponent.Color = Color.FromHexCode("#342317")
+					filterBtn:GetChildByName("Icon").SpriteGUIRendererComponent.Color.a = 0.7
+				end
+			end
+			
+		-- 장신구인 경우 
+		elseif self.filterIdx == 3 then
+			local filterList = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Panel/Panel_Accessory/SecondFilterList")
+			for i=1, 3 do
+				local filterBtn = filterList:GetChildByName("Filter_"..tostring(i))
+				
+				if i == self.secondFilterIdx then
+					filterBtn.ButtonComponent.Enable = false
+					filterBtn.TextComponent.FontColor = Color.FromHexCode("#653122")
+					filterBtn:GetChildByName("Icon").SpriteGUIRendererComponent.Color = Color.white
+				else 
+					filterBtn.ButtonComponent.Enable = true
+					filterBtn.TextComponent.FontColor = Color.FromHexCode("#FFE398")
+					filterBtn:GetChildByName("Icon").SpriteGUIRendererComponent.Color = Color.FromHexCode("#342317")
+					filterBtn:GetChildByName("Icon").SpriteGUIRendererComponent.Color.a = 0.7
+				end
+			end
+		end
+		
+		self:RefreshUI()
+	end
+
+	@ExecSpace("Client")
+	method void ShowAccessoryDetailInfo(number idx)
+		-- 장신구의 상세 정보 팝업을 표시
+		self.showingIdx = idx
+		local accessoryIconTable = _DataService:GetTable("AccessoryIcon")
+		local accessoryInfoTable = _DataService:GetTable("AccessoryInfo")
+		local accessorySetTable = _DataService:GetTable("AccessorySet")
+		local gradeTable = _DataService:GetTable("GradeIconback")
+		--------------------------------------------------------------------------------
+		local detailInfoPopup = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/AccessoryDetailInfoPopup")
+		
+		local name = detailInfoPopup:GetChildByName("Name")
+		local iconBack = detailInfoPopup:GetChildByName("IconBack")
+		local icon = detailInfoPopup:GetChildByName("Icon")
+		local type = detailInfoPopup:GetChildByName("Type")
+		local flavorText = detailInfoPopup:GetChildByName("FlavorText")
+		local equipedAbility = detailInfoPopup:GetChildByName("Ability_text")
+		local setAbility = detailInfoPopup:GetChildByName("Set_info")
+		local equipButton = detailInfoPopup:GetChildByName("Button_Equip")
+		local unequipButton = detailInfoPopup:GetChildByName("Button_Equip_dismount")
+		--------------------------------------------------------------------------------
+		local itemKey = _UserService.LocalPlayer.PlayerAccessory.haveItems[idx]
+		local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey)  -- 1=part, 2=grade, 3=set, 4=ability
+		--------------------------------------------------------------------------------
+		local itemName = 
+			_LocalizationService:GetText(accessoryInfoTable:GetCell(itemData[2],"name_grade")).." "
+			.._LocalizationService:GetText(accessoryInfoTable:GetCell(itemData[3],"name_set")).." "
+			.._LocalizationService:GetText(accessoryInfoTable:GetCell(itemData[1],"name_part"))
+		name.TextComponent.Text = itemName
+		
+		-- 등급에 따라 슬롯 ruid 변경
+		iconBack.SpriteGUIRendererComponent.ImageRUID = gradeTable:GetCell(itemData[2], "iconback")
+		icon.SpriteGUIRendererComponent.ImageRUID = accessoryIconTable:GetCell(itemData[1], "RUID_"..tostring(math.floor(itemData[3])))
+		type.TextComponent.Text = _LocalizationService:GetText("Grade_"..tostring(math.floor(itemData[2]))).." ".._LocalizationService:GetText(accessoryInfoTable:GetCell(itemData[1], "name_part"))
+		type.TextComponent.FontColor = Color.FromHexCode(gradeTable:GetCell(itemData[2], "color"))
+		
+		local flavorTxtIdx = 15*(itemData[3]-1) + 3*(itemData[2]-1) + itemData[1]
+		flavorText.TextComponent.Text = _LocalizationService:GetText(accessoryInfoTable:GetCell(flavorTxtIdx,"flavorText"))
+		
+		equipedAbility.TextComponent.Text = _LocalizationService:GetText(string.format("%d", 8000+itemData[1])).." +".._ThousandsSeparator:ConvertToMetricPrefixString(itemData[4], nil)
+		
+		setAbility.TextComponent.Text = _LocalizationService:GetText(accessorySetTable:GetCell(itemData[3], "SetStatusType")).." +"..accessorySetTable:GetCell(itemData[3], "SetStatusAmount").."%"
+		--------------------------------------------------------------------------------
+		local isEquiped = false
+		for i=1, 3 do
+			if _UserService.LocalPlayer.PlayerAccessory.equipedItemIdx[i] == idx then
+				isEquiped = true
+				break
+			end
+		end
+		
+		if isEquiped then
+			equipButton.Enable = false
+			unequipButton.Enable = true
+		else 
+			equipButton.Enable = true
+			unequipButton.Enable = false
+		end
+		--------------------------------------------------------------------------------
+		self:RefreshUI()
+		detailInfoPopup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void RefreshAccessoryGradeupPanel()
+		-- 장신구 숙련도 업그레이드 패널을 새로고침
+		_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup").Enable = true
+		----------------------------------------------------------------------------------------------------------------
+		local accessoryIconTable = _DataService:GetTable("AccessoryIcon")
+		local accessoryInfoTable = _DataService:GetTable("AccessoryInfo")
+		local accessorySetTable = _DataService:GetTable("AccessorySet")
+		local gradeTable = _DataService:GetTable("GradeIconback")
+		local abilityIconTable = _DataService:GetTable("AbilityIcon")
+		
+		
+		
+		-- 등록 재료 리스트를 갱신합니다.
+		local mateirialListPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/BasePanel/MaterialList")
+		for i=1, 3 do
+			local slot = mateirialListPanel:GetChildByName("Slot_"..tostring(i))
+			local iconBackUI = slot:GetChildByName("Grade")
+			local iconUI = iconBackUI:GetChildByName("Icon")
+			local typeUI = iconBackUI:GetChildByName("Type")
+			
+			-- 등록하려고 선택한 경우
+			if i == self.currentSelectingMaterialSlotIdx then
+				slot:GetChildByName("selected").Enable = true
+			else 
+				slot:GetChildByName("selected").Enable = false
+			end
+			
+			-- 재료가 있다면
+			if self.materialIdx[i] ~= nil and self.materialIdx[i] ~= 0 then
+				slot:GetChildByName("NoUse").Enable = false
+								
+				local itemKey = _UserService.LocalPlayer.PlayerAccessory.haveItems[self.materialIdx[i]]
+				local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey) -- 1:part, 2:grade, 3:set, 4:ability
+				
+				local icon = accessoryIconTable:GetCell(itemData[1], string.format("RUID_%d", tonumber(itemData[3])))
+				local iconback = gradeTable:GetCell(itemData[2], "iconback")
+				local type = accessorySetTable:GetCell(itemData[3], "SetRUID")
+				
+				iconBackUI.SpriteGUIRendererComponent.ImageRUID = iconback
+				iconUI.SpriteGUIRendererComponent.ImageRUID = icon
+				typeUI.SpriteGUIRendererComponent.ImageRUID = type
+				
+				iconBackUI.Enable = true
+				
+			-- 재료가 없다면
+			else 
+				slot:GetChildByName("NoUse").Enable = true
+				
+				iconBackUI.Enable = false
+			end
+		end
+		
+		
+		-- 결과창을 갱신합니다.
+		local resultPreshowPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/BasePanel/ResultPreshow")
+		resultPreshowPanel:GetChildByName("Level_before").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(_UserService.LocalPlayer.PlayerAccessory.Proficiency, nil)
+		resultPreshowPanel:GetChildByName("Level_after").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(_UserService.LocalPlayer.PlayerAccessory.Proficiency +1, nil)
+		resultPreshowPanel:GetChildByName("Ability_before").TextComponent.Text = "× ".._ThousandsSeparator:ConvertToMetricPrefixString(_UserService.LocalPlayer.PlayerAccessory.Proficiency, nil)
+		resultPreshowPanel:GetChildByName("Ability_after").TextComponent.Text = "× ".._ThousandsSeparator:ConvertToMetricPrefixString(_UserService.LocalPlayer.PlayerAccessory.Proficiency +1, nil)
+		
+		
+		-- 재료 리스트를 갱신합니다.
+		local selectMaterialPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/SelectMaterialPanel")
+		if self.currentSelectingMaterialSlotIdx ~= nil and self.currentSelectingMaterialSlotIdx ~= 0 then
+			local listPanel = selectMaterialPanel:GetChildByName("ListPanel")
+			listPanel.Enable = true
+			
+			local haveItems = _UserService.LocalPlayer.PlayerAccessory.haveItems
+			local slotIdx = 1
+			for i=1, #haveItems do 
+				local itemKey = haveItems[i]
+				local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey) -- 1:part, 2:grade, 3:set, 4:ability
+				
+				if itemData[2] >= 4 then
+					local slot = listPanel:GetChildByName("Slot_"..tostring(math.floor(slotIdx)))
+					if slot == nil then
+						slot = listPanel:GetChildByName("Slot"):Clone("Slot_"..tostring(math.floor(slotIdx)))
+					end
+					
+					local iconBackUI = slot:GetChildByName("Grade")
+					local iconUI = iconBackUI:GetChildByName("Icon")
+					local typeUI = iconBackUI:GetChildByName("Type")
+					local abilityIconUI = slot:GetChildByName("Icon_Ability")
+					local abilityTextUI = slot:GetChildByName("Ability")
+					local selectBtn = slot:GetChildByName("Button_Select")
+					
+					local iconBack = gradeTable:GetCell(itemData[2], "iconback")
+					local icon = accessoryIconTable:GetCell(itemData[1], string.format("RUID_%d", tonumber(itemData[3])))
+					local typeIcon = accessorySetTable:GetCell(itemData[3], "SetRUID")
+					local abilityIcon = abilityIconTable:GetCell(itemData[1], 2)
+					local ability = _ThousandsSeparator:ConvertToMetricPrefixString(itemData[4], nil)
+					
+					iconBackUI.SpriteGUIRendererComponent.ImageRUID = iconBack
+					iconUI.SpriteGUIRendererComponent.ImageRUID = icon
+					typeUI.SpriteGUIRendererComponent.ImageRUID = typeIcon
+					abilityIconUI.SpriteGUIRendererComponent.ImageRUID = abilityIcon
+					abilityTextUI.TextComponent.Text = "+"..ability
+					
+					
+					selectBtn.EquipmentStorageUI_AccessoryProficiencyUp_SlotSelectButton.itemIdx = i
+					
+					
+					-- 이미 재료로 선택됐다면 선택 불가하도록 버튼 비활성화
+					local isMaterial = false
+					for j=1, 3 do
+						if self.materialIdx[j] == i then
+							selectBtn.ButtonComponent.Enable = false
+							
+							isMaterial = true
+						end
+					end
+					if isMaterial == false then
+						selectBtn.ButtonComponent.Enable = true
+					end
+					
+					slot.Enable = true
+					slotIdx = slotIdx + 1
+				end
+			end
+			
+			while true do
+				local slot = listPanel:GetChildByName("Slot_"..tostring(math.floor(slotIdx)))
+				if slot == nil then
+					break
+				else 
+					slot.Enable = false
+					slotIdx = slotIdx + 1
+				end
+			end
+			
+		else 
+			local listPanel = selectMaterialPanel:GetChildByName("ListPanel")
+			listPanel.Enable = false
+		end
+		
+		
+		-- 승급하기 버튼을 (비)활성화합니다.
+		local allRegisted = true
+		for i=1, 3 do
+			if self.materialIdx[i] == nil or self.materialIdx[i] == 0 then
+				allRegisted = false
+			end
+		end
+		
+		if allRegisted == true then
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/BasePanel/Button_Upgrade").ButtonComponent.Enable = true
+		else 
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/BasePanel/Button_Upgrade").ButtonComponent.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SelectAccessoryGradeupMaterial(number selectedIdx)
+		-- 장신구 숙련도 업그레이드에 사용할 재료를 선택
+		-- 검증
+		if _UserService.LocalPlayer.PlayerAccessory.haveItems[selectedIdx] == nil then
+			log("nil")
+			return
+		end
+		
+		-- 이미 선택한 재료는 다시 고를 수 없음
+		for i=1, 3 do
+			if self.materialIdx[i] == selectedIdx then
+				return
+			end
+		end
+		
+		self.materialIdx[self.currentSelectingMaterialSlotIdx] = selectedIdx
+		self.currentSelectingMaterialSlotIdx = 0
+		
+		self:RefreshAccessoryGradeupPanel()
+	end
+
+	@ExecSpace("Client")
+	method void PlayAccessoryGradeupDirection(number afterLevel)
+		-- 장신구 숙련도 업그레이드 연출을 재생
+		self.IsPlayingDirection = true
+		----------------------------------------------------------------------------------
+		local warningpanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/WarningPopup")
+		local selectPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/SelectMaterialPanel/ListPanel")
+		local upgradeBtn = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/BasePanel/Button_Upgrade")
+		local exitBtn = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/TitlePanel/ExitButton")
+		
+		warningpanel.Enable = false
+		selectPanel.Enable = false
+		upgradeBtn.Enable = false
+		exitBtn.Enable = false
+		----------------------------------------------------------------------------------
+		-- 연출이 아닌 기본 팝업의 내용을 갱신합니다.
+		
+		
+		----------------------------------------------------------------------------------
+		-- 기본 내용을 결정합니다.
+		local directionPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_GradeupDirection")
+		directionPanel.SpriteGUIRendererComponent.Color.a = 0
+		directionPanel.Enable = true
+		
+		for i=1, #directionPanel.Children do
+			local child = directionPanel.Children[i]
+			
+			if child.TextComponent ~= nil then
+				child.TextComponent.FontColor.a = 0
+			end
+			
+			if child.Name ~= "Panel" then
+				child.SpriteGUIRendererComponent.Color.a = 0
+			end
+		end
+		
+		directionPanel:GetChildByName("Level_before").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(afterLevel-1, nil)
+		directionPanel:GetChildByName("Level_after").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(afterLevel, nil)
+		directionPanel:GetChildByName("Ability_before").TextComponent.Text = "× ".._ThousandsSeparator:ConvertToMetricPrefixString(afterLevel-1, nil)
+		directionPanel:GetChildByName("Ability_after").TextComponent.Text = "× ".._ThousandsSeparator:ConvertToMetricPrefixString(afterLevel, nil)
+		
+		----------------------------------------------------------------------------------
+		-- (1) 재료 리스트를 순차적으로 지웁니다. 지울 때 이펙트를 발생시킵니다.
+		local materialList = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/BasePanel/MaterialList")
+		for i=1, 3 do
+			local slot = materialList:GetChildByName("Slot_"..tostring(i))
+			local icon = slot:GetChildByName("Grade"):GetChildByName("Icon")
+			local effect = slot:GetChildByName("effect")
+			local cloneEffect = function()
+				local clonedEffect = effect:Clone("clonedEffect")
+				icon.SpriteGUIRendererComponent.ImageRUID = "08533840b61f49f5a4c6ad3fd4ed2cca"
+				clonedEffect:Destroy(1)
+			end
+			_TimerService:SetTimerOnce(cloneEffect, 0.2*i)
+		end
+		
+		-- (2) 블랙 패널의 투명도를 높입니다.
+		local blackAlpha = 0
+		local setBlackAlphaUp = function()
+			blackAlpha = blackAlpha + 1/30
+			directionPanel.SpriteGUIRendererComponent.Color.a = blackAlpha
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setBlackAlphaUp, 0.6+i/60)
+		end
+		
+		
+		-- (3) 박스 패널 사이즈를 키웁니다.
+		local gradPanel = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_GradeupDirection/Panel")
+		gradPanel.UITransformComponent.RectSize.y = 0
+		local size = 0
+		local frame = 0
+		local panelSizeup = function()
+			frame = frame + 1/30
+			size = 200 * (1-math.pow(1-frame, 5))
+			gradPanel.UITransformComponent.RectSize.y = size
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(panelSizeup, 1.1+i/60)
+		end
+		
+		-- (4) 글씨들의 투명도를 올립니다.
+		local textAlpha = 0
+		local textAlphaUp = function()
+			textAlpha = textAlpha + 1/30
+			for i=1, #directionPanel.Children do
+				local child = directionPanel.Children[i]
+				if child.TextComponent ~= nil then
+					child.TextComponent.FontColor.a = textAlpha
+				end
+				
+				if child.Name == "ExitButton" then
+					child.SpriteGUIRendererComponent.Color.a = textAlpha
+				end
+			end
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(textAlphaUp, 1.6+i/30 )
+		end
+		
+		local setIsPlayingDireciton = function()
+			self.IsPlayingDirection = false
+		end
+		_TimerService:SetTimerOnce(setIsPlayingDireciton, 2.61)
+	end
+
+	@EventSender("Entity", "b42528d5-abbd-4449-ac7d-63f3c0b0a1f4")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 일반 장비 필터 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetFilterIdx(1)
+	end
+
+	@EventSender("Entity", "7d0ea5c0-21fd-48a7-a8fe-cbffae1874a1")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 신화 장비 필터 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetFilterIdx(2)
+	end
+
+	@EventSender("Entity", "6545f30e-3b82-4be1-9cca-7525d3a649ca")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 장신구 필터 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetFilterIdx(3)
+	end
+
+	@EventSender("Entity", "be3fe27f-3dfa-481a-b92c-a5692a15ccea")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 구슬 상세 정보 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:ShowBeadsDetailInfo()
+	end
+
+	@EventSender("Entity", "fb2b8edc-56f0-4d4c-8f27-46d9d2f30f35")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 일반 장비 필터 버튼 클릭 이벤트 처리 (중복)
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self:SetFilterIdx(1)
+	end
+
+	@EventSender("Entity", "9352e870-7064-4324-9c2d-cad8b03b22f0")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- 장비 장착 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		_UserService.LocalPlayer.PlayerData:ChangeEquipment(self.secondFilterIdx, self.showingIdx)
+		Entity.Parent.Enable = false
+	end
+
+	@EventSender("Entity", "885fc85f-561a-4a54-9fdf-21e760b777cb")
+	handler HandleButtonClickEvent9(ButtonClickEvent event)
+		-- 장비 해제 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		_UserService.LocalPlayer.PlayerData:ChangeEquipment(self.secondFilterIdx, 0)
+		Entity.Parent.Enable = false
+	end
+
+	@EventSender("Entity", "78202a4f-920e-4048-8b7b-60685adc5b37")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 장신구 장착 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		_UserService.LocalPlayer.PlayerAccessory:EquipItem(self.showingIdx, true)
+	end
+
+	@EventSender("Entity", "96af9fa1-d536-4680-804b-5a62e845649b")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 장신구 해제 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		_UserService.LocalPlayer.PlayerAccessory:EquipItem(self.showingIdx, false)
+	end
+
+	@EventSender("Entity", "76c97296-15c4-441c-abc7-101e24d22014")
+	handler HandleButtonClickEvent10(ButtonClickEvent event)
+		-- 장신구 숙련도 업그레이드 재료 초기화 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		for i=1, 3 do
+			self.materialIdx[i] = 0
+		end
+		
+		self.currentSelectingMaterialSlotIdx = 0
+		
+		self:RefreshAccessoryGradeupPanel()
+	end
+
+	@EventSender("Entity", "57c86c47-b67f-4caf-9f1a-c976b6b44546")
+	handler HandleButtonClickEvent11(ButtonClickEvent event)
+		-- 장신구 숙련도 업그레이드 재료 슬롯 1 선택 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.currentSelectingMaterialSlotIdx = 1
+		self:RefreshAccessoryGradeupPanel()
+	end
+
+	@EventSender("Entity", "57571dea-661f-4949-8e31-2d3d85653fb2")
+	handler HandleButtonClickEvent12(ButtonClickEvent event)
+		-- 장신구 숙련도 업그레이드 재료 슬롯 2 선택 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.currentSelectingMaterialSlotIdx = 2
+		self:RefreshAccessoryGradeupPanel()
+	end
+
+	@EventSender("Entity", "8e81c592-293c-4b54-b506-519bb1472759")
+	handler HandleButtonClickEvent13(ButtonClickEvent event)
+		-- 장신구 숙련도 업그레이드 재료 슬롯 3 선택 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.currentSelectingMaterialSlotIdx = 3
+		self:RefreshAccessoryGradeupPanel()
+	end
+
+	@EventSender("Entity", "1bac33ba-5d81-4cdd-b8ab-028087249d89")
+	handler HandleButtonClickEvent14(ButtonClickEvent event)
+		-- 장신구 숙련도 업그레이드 실행 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		----------------------------------------------------------
+		-- 승급하기 버튼을 (비)활성화합니다.
+		local allRegisted = true
+		for i=1, 3 do
+			if self.materialIdx[i] == nil or self.materialIdx[i] == 0 then
+				allRegisted = false
+			end
+		end
+		
+		if allRegisted == true then
+			_EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/WarningPopup").Enable = true
+		else 
+			_UIToast:ShowMessage("모든 재료를 등록해야 합니다.")
+			Entity.ButtonComponent.Enable = false
+		end
+	end
+
+	@EventSender("Entity", "15b271ea-f9a1-4560-ac46-b41069317f2e")
+	handler HandleButtonClickEvent15(ButtonClickEvent event)
+		-- 장신구 숙련도 업그레이드 확인 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		local materialIdxs = _UtilLogic:TableToString(self.materialIdx)
+		_UserService.LocalPlayer.PlayerAccessory:UpgradeProficiency(materialIdxs)
+		
+		Entity.ButtonComponent.Enable = false
+		local buttonReEnable = function()
+			Entity.ButtonComponent.Enable = true
+		end
+		_TimerService:SetTimerOnce(buttonReEnable, 1)
+	end
+
+	@EventSender("Entity", "6e0782b3-837e-4aec-aec7-7e36d34dfead")
+	handler HandleButtonClickEvent16(ButtonClickEvent event)
+		-- 장신구 숙련도 업그레이드 취소 버튼 클릭 이벤트 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		for i=1, 3 do
+			self.materialIdx[i] = 0 
+		end
+		
+		self.currentSelectingMaterialSlotIdx = 0
+		 
+		
+		
+		local upgradeBtn = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/BasePanel/Button_Upgrade")
+		local exitBtn = _EntityService:GetEntityByPath("/ui/EquipmentStorageGroup/EquipmentStorage/Accessory_Gradeup/TitlePanel/ExitButton")
+		upgradeBtn.Enable = true
+		exitBtn.Enable = true
+		
+		self:RefreshUI()
+		self:RefreshAccessoryGradeupPanel()
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- ESC키 입력 시 장비 보관함 UI를 닫는 이벤트 처리
+		-- Parameters
+		local key = event.key
+		---------------------------------------------------------
+		if key == KeyboardKey.Escape and self.IsPlayingDirection == false then
+			self.Entity.Enable = false
+		end
+	end
+
+end

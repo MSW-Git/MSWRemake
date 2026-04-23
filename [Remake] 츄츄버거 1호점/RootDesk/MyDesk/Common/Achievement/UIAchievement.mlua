@@ -1,0 +1,233 @@
+@Component
+script UIAchievement extends Component
+
+	property integer SelectTab = 0
+
+	property table Tabs = {}
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 초기화 및 탭 버튼, 닫기 버튼 이벤트 설정
+		local tabRoot = self.Entity:GetChildByName("MenuBar"):GetChildByName("Tabs")
+		
+		table.clear(self.Tabs)
+		for i, entity in pairs(tabRoot.Children) do
+			if isvalid(entity.UIToggleTypeA) then
+				entity.UIToggleTypeA:SetIndex(i)
+				entity.UIToggleTypeA:SetText(self:GetTabTitle(i))
+				entity.UIToggleTypeA.OnClickedButton = function(event, index) 
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+					self:SetSelectTab(index)
+				end
+				
+				table.insert(self.Tabs, entity)
+			end
+		end
+		
+		_UIEntityLogic_AchievementGroup.CloseButton:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			self:Close()	
+		end)
+		_UIEntityLogic_AchievementGroup.GetAllRewardButton.UIButtonTypeA.OnClickedButton = function(event) 
+			self:OnGetAllRewardButtonClicked() 
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Open()
+		-- 업적 UI를 열고 달성된 업적이 있는 탭을 기본으로 선택
+		_UIGroupManager:EnableAchievementGroup(true)
+		
+		local openTab = function()
+			for i, entity in pairs(self.Tabs) do
+				local isAnyAchievementAchieved = _UserService.LocalPlayer.PlayerAchievement:IsAnyAchievementAchievedInTab(i)
+				if isAnyAchievementAchieved then
+					return i
+				end
+			end
+			
+			return 1
+		end
+		
+		self:SetSelectTab(openTab())
+		
+	end
+
+	@ExecSpace("Client")
+	method void Close()
+		-- 업적 UI를 닫기
+		_UIGroupManager:EnableAchievementGroup(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnGetAllRewardButtonClicked()
+		-- 모든 보상 받기 버튼 클릭 시 처리
+		
+		local playerAchievement = _UserService.LocalPlayer.PlayerAchievement
+		playerAchievement:RequestGainAllReward()
+	end
+
+	method table GetAchiTypesByTab(integer selectTab)
+		-- 선택된 탭에 해당하는 업적 타입 목록을 정렬하여 반환
+		local typeDatas = _AchievementDataSetLogic.AchiTypeData
+		
+		local tabTypes = {}
+		for k, v in pairs(typeDatas) do
+			---@type AchievementTypeData
+			local typeData = v
+			if typeData.Category == selectTab then
+				table.insert(tabTypes, k)
+			end
+		end
+		
+		table.sort(tabTypes)
+		
+		return tabTypes
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSelectTab(integer selectTab)
+		-- 탭 선택 시 UI 상태 업데이트 및 업적 목록 표시
+		self.SelectTab = selectTab
+		self:OnSelectTab(selectTab)
+		self:Apply(selectTab)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSelectTab(integer selectTab)
+		-- 탭 선택 상태에 따른 UI 시각적 효과 적용
+		for i, entity in ipairs(self.Tabs) do
+			---@type Entity
+			local tab = entity
+			local tabIndex = tab.UIToggleTypeA.index
+			local isSelect = tabIndex == selectTab
+			local textColor = isSelect and _ColorCodeEnum:GetColor("#FFFFFF") or _ColorCodeEnum:GetColor("#BB9A59")
+			
+			tab.UIToggleTypeA:SetSelect(isSelect)
+			tab.UIToggleTypeA:SetTextColor(textColor)
+			tab.UIToggleTypeA:SetTextOutLine(isSelect, _ColorCodeEnum:GetColor("#985F05"))
+			
+			tab:GetChildByName("UISpriteIcon").SpriteGUIRendererComponent.Color.a = isSelect and 1 or 0.5
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Apply(integer selectTab)
+		-- 선택된 탭의 업적들을 달성 상태별로 분류하고 정렬하여 UI에 표시
+		self:ClearSlots()
+		
+		local achieves = self:GetAchiTypesByTab(selectTab)
+		local playerAchievement = _UserService.LocalPlayer.PlayerAchievement
+		
+		local achieved = {}
+		local progress = {}
+		local completed = {}
+		
+		for i = 1, #achieves do
+			local achiType = achieves[i]
+			local id = playerAchievement:ReturnAchievementIdByType(achiType)
+			
+			if id == nil then
+				continue
+			end
+			
+			if playerAchievement:IsAchievementComplete(id) then
+				table.insert(completed, achiType)
+			else
+				if playerAchievement:IsAchievementAchieved(id) then
+					table.insert(achieved, achiType)
+				else
+					table.insert(progress, achiType)
+				end
+			end
+		end
+		
+		table.sort(achieved, function(a, b)
+			local aOrder = _AchievementDataSetLogic:GetAchievementTypeData(a).UIOrder
+			if aOrder == nil then aOrder = 999 end
+			local bOrder = _AchievementDataSetLogic:GetAchievementTypeData(b).UIOrder
+			if bOrder == nil then bOrder = 999 end
+			
+			return aOrder < bOrder
+		end)
+		
+		table.sort(progress, function(a, b)
+			local aOrder = _AchievementDataSetLogic:GetAchievementTypeData(a).UIOrder
+			if aOrder == nil then aOrder = 999 end
+			local bOrder = _AchievementDataSetLogic:GetAchievementTypeData(b).UIOrder
+			if bOrder == nil then bOrder = 999 end
+			
+			return aOrder < bOrder
+		end)
+		
+		table.sort(completed, function(a, b)
+			local aOrder = _AchievementDataSetLogic:GetAchievementTypeData(a).UIOrder
+			if aOrder == nil then aOrder = 999 end
+			local bOrder = _AchievementDataSetLogic:GetAchievementTypeData(b).UIOrder
+			if bOrder == nil then bOrder = 999 end
+			
+			return aOrder < bOrder
+		end)
+		
+		local index = 1
+		for i = 1, #achieved do	
+			local type = achieved[i]
+			local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_UIAchievementSlotRenderer", index, _UIEntityLogic_AchievementGroup.LayoutEntity)
+			slot.UIAchievementSlotRenderer:Init(type)
+			
+			index = index + 1
+		end
+		
+		for i = 1, #progress do
+			local type = progress[i]
+			
+			local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_UIAchievementSlotRenderer", index, _UIEntityLogic_AchievementGroup.LayoutEntity)
+			slot.UIAchievementSlotRenderer:Init(type)
+			
+			index = index + 1
+		end
+		
+		for i = 1, #completed do
+			local type = completed[i]
+			
+			local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_UIAchievementSlotRenderer", index, _UIEntityLogic_AchievementGroup.LayoutEntity)
+			slot.UIAchievementSlotRenderer:Init(type)
+			
+			index = index + 1
+		end
+		
+		_UIEntityLogic_AchievementGroup.LayoutEntity.ScrollLayoutGroupComponent:SetScrollPositionByItemIndex(0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearSlots()
+		-- 업적 슬롯들을 모두 클리어
+		local achieveSlots = _UIEntityLogic_AchievementGroup.LayoutEntity.Children
+		for i, entity in ipairs(achieveSlots) do
+			entity.UIAchievementSlotRenderer:Clear()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetTabTitle(integer tabIndex)
+		-- 탭 인덱스에 해당하는 현지화된 탭 제목 반환
+		return _GetLocalizationTextLogic:GetText("AchievementTabTitle"..tabIndex)
+	end
+
+	@EventSender("Entity", "463a81ef-5679-4a9d-8e17-ee6bb6c1807b")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 업적 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open()
+	end
+
+end

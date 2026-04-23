@@ -1,0 +1,151 @@
+@Component
+script UIAnimation extends Component
+
+	property string clipName = "Anim_Gacha"
+
+	property boolean autoPlay = true
+
+	property boolean loop = true
+
+	property number positionScale = 1
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- CSV 데이터를 기반으로 UI 애니메이션 클립 초기화
+		local data = _DataService:GetTable(self.clipName)
+		
+		self._T.clipData = {}
+		self._T.isPlaying = false
+		local rowCnt = data:GetRowCount()
+		
+		
+		for i = 1, rowCnt do
+			local frameData = {}
+			local entityPath = data:GetCell(i,"entity")
+			local entity = self.Entity
+			if _UtilLogic:IsNilorEmptyString(entityPath) == false then
+				entity = _EntityService:GetEntityByPath(entity.Path .."/"..entityPath)
+			else
+				entityPath = "self"
+			end
+			if isvalid(entity) then		
+				frameData.frame = tonumber(data:GetCell(i,"frame"))
+			
+				local x = tonumber(data:GetCell(i,"x")) * self.positionScale
+				local y = tonumber(data:GetCell(i,"y")) * self.positionScale
+				frameData.position = Vector2(x,y) 
+				frameData.angle = tonumber(data:GetCell(i,"angle"))				
+				local scaleX = tonumber(data:GetCell(i,"scaleX")) / 100
+				local scaleY = tonumber(data:GetCell(i,"scaleY")) / 100
+				frameData.scale = Vector3(scaleX,scaleY,1)
+				frameData.alpha = tonumber(data:GetCell(i,"alpha")) / 100
+				frameData.targetUITransform = entity.UITransformComponent
+				frameData.originPosition = entity.UITransformComponent.anchoredPosition:Clone()
+				frameData.tween = data:GetCell(i,"tween")
+				local spriteGUI = entity.SpriteGUIRendererComponent
+				local text = entity.TextComponent
+				if spriteGUI ~= nil then
+					frameData.color = spriteGUI.Color
+				elseif text ~= nil then
+					frameData.color = text.FontColor
+				end
+				
+				if self._T.clipData[entityPath] == nil then
+					self._T.clipData[entityPath] = {}
+					self._T.clipData[entityPath].currentFrameIndex = 1
+					self._T.clipData[entityPath].frameCount = 0
+					self._T.clipData[entityPath].prevFrameData = frameData
+					self._T.clipData[entityPath].nextFrameData = frameData
+					self._T.clipData[entityPath].isPlaying = false
+				end
+				table.insert(self._T.clipData[entityPath],frameData)
+			end
+		end
+		
+		if self.autoPlay then
+			self:Play()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 애니메이션 업데이트 및 트윈 처리
+		if self._T.isPlaying == false then
+			return
+		end
+		
+		
+		for k,v in pairs(self._T.clipData) do
+			if v.isPlaying then
+				v.frameCount = v.frameCount + 1
+				if v.nextFrameData.frame <= v.frameCount then
+					self:UpdateNextFrame(v)
+				else
+					self:TweenNextFrame(v)
+				end	
+			end
+		end
+	end
+
+	method void Play()
+		-- 애니메이션 재생 시작
+		self._T.isPlaying = true
+		
+		for k,v in pairs(self._T.clipData) do
+			v.isPlaying = true
+			self:UpdateNextFrame(v)
+		end
+		
+	end
+
+	method void UpdateNextFrame(table clip)
+		-- 다음 프레임 데이터로 UI 속성 업데이트
+		local frame = clip.nextFrameData
+		frame.targetUITransform.anchoredPosition = frame.originPosition + frame.position
+		frame.targetUITransform.ZRotation = frame.angle
+		frame.targetUITransform.UIScale = frame.scale
+		frame.color.a = frame.alpha
+		
+		clip.currentFrameIndex = clip.currentFrameIndex + 1
+		
+		clip.prevFrameData = frame
+		
+		
+		if clip.currentFrameIndex > #clip then
+			clip.frameCount = 0
+			clip.currentFrameIndex = 1
+			clip.nextFrameData = clip[clip.currentFrameIndex]
+			if self.loop == false then
+				clip.isPlaying = false
+				for k,v in pairs(self._T.clipData) do
+					if v.isPlaying then
+						return
+					end
+				end
+				self._T.isPlaying = false
+				self.Entity:SendEvent(OnFinishedUIAnimation())
+			end
+		else
+			clip.nextFrameData = clip[clip.currentFrameIndex]
+		end
+	end
+
+	method void TweenNextFrame(table clip)
+		-- 이전 프레임과 다음 프레임 사이의 트윈 처리
+		if clip.prevFrameData.tween == "none" then
+			return
+		end
+		local totalFrame = clip.nextFrameData.frame - clip.prevFrameData.frame
+		if totalFrame == 0 then
+			return
+		end
+		local value = (clip.frameCount - clip.prevFrameData.frame) / totalFrame
+		local frame = clip.prevFrameData
+		local nextFrame = clip.nextFrameData
+		frame.targetUITransform.anchoredPosition = frame.originPosition + frame.position * (1-value) + nextFrame.position * (value) 
+		frame.targetUITransform.ZRotation = frame.angle * (1-value) + nextFrame.angle * (value) 
+		frame.targetUITransform.UIScale = frame.scale * (1-value) + nextFrame.scale * (value) 
+		frame.color.a  = frame.alpha * (1-value) + nextFrame.alpha * (value) 
+	end
+
+end

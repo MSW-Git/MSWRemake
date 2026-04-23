@@ -1,0 +1,462 @@
+@Component
+script UISelectChuchuInCollection extends Component
+
+	property string SelectedChuchuId = ""
+
+	property Entity ChuchuInfoPanel = "c02a22d2-e0ef-44c0-8e3e-a13f4150d480"
+
+	property Entity ChuchuListEntity = "91cb2a02-3d2e-4b40-8228-0e4be119aef6"
+
+	property Entity ChuchuSlot_Origin = "cec4753f-7692-4bbd-a33e-259ab0a45839"
+
+	property Entity ChuchuInfoEquipPanel = "4399ba36-68dd-4951-bf16-85fde829bdf8"
+
+	property TextComponent ChuchuInfoEquipPanel_DescText = "a169196b-7d23-4a1a-bee9-b0e791f4f054"
+
+	property Entity FilterPanel = "fd87f3e7-5f45-4059-a121-2f68a31f231b"
+
+	property Entity BuyEquipBtn = "39316683-ad9d-403f-b2bf-d2f92664be59"
+
+	property Entity DefaultPanel_L = "07b14596-3400-42d6-9666-cd4c695f8094"
+
+	property Entity SelectBtn = "57c02e9c-d2b6-4418-885e-bdf00d818514"
+
+	property TextComponent ChuchuInfoEquipPanel_LvText = "4bca2f7b-99c8-4ef2-b166-5b01f638ba4d"
+
+	property SyncTable<integer, string> ChuchuIndexTable
+
+	property SyncTable<string, Entity> FilterOptions
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 UI 초기화를 처리하는 함수
+		
+		local tooltip = function(btn, tooltipEntity)
+			if isvalid(btn) then 
+				btn:ConnectEvent(ButtonClickEvent, function()
+					if _UIGroupManager:IsEnableOpenPopUp() == false then
+						return
+					end
+					_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+					_TooltipService:OpenTooltip(tooltipEntity, nil)
+				end)
+			end
+		end
+		
+		local skill1Btn = self.ChuchuInfoPanel:GetChildByName("Skill1")
+		local skill1InfoBtn = skill1Btn:GetChildByName("UIButton")
+		local skill1ToolTip = skill1InfoBtn:GetChildByName("ToolTip")
+		skill1ToolTip:SetEnable(false)
+		
+		local skill2Btn = self.ChuchuInfoPanel:GetChildByName("Skill2")
+		local skill2InfoBtn = skill2Btn:GetChildByName("UIButton")
+		
+		local skill2ToolTip = skill2InfoBtn:GetChildByName("ToolTip")
+		skill2ToolTip:SetEnable(false)
+		
+		tooltip(skill1Btn, skill1ToolTip)
+		tooltip(skill1InfoBtn, skill1ToolTip)
+		tooltip(skill2Btn, skill2ToolTip)
+		tooltip(skill2InfoBtn, skill2ToolTip)
+		
+		for i, child in pairs(self.FilterPanel.Children) do
+			if isvalid(child.ButtonComponent) == false then
+				continue
+			end
+			
+			self.FilterOptions[child.Name] = child
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateChuchuList(string filter)
+		-- 필터에 따라 츄츄 목록을 업데이트하는 함수
+		self.FilterPanel.Enable = false
+		local chuchuCollection = _UserService.LocalPlayer.ChuchuCollectionDB.ChuchuCollection
+		local chuchuList = {}
+		for id, bool in pairs(chuchuCollection) do
+			if _UIGroupManager.EmploymentGroup.Enable then
+				if _UserService.LocalPlayer.EmployeeManager:CheckEmployeeAlreadyHave(id) then
+					continue
+				end
+			end	
+			if bool == true then
+				local type = _EmployeeService:GetData(id).Type
+				if filter == "All" or type == filter then
+					table.insert(chuchuList, id)
+				end
+			end
+		end
+		
+		table.sort(chuchuList, function(a,b) 
+			local equipLevelA = _UserService.LocalPlayer.EmployeeManager:GetEmployeeOutgameDetail(a).EquipLevel
+			local equipLevelB = _UserService.LocalPlayer.EmployeeManager:GetEmployeeOutgameDetail(b).EquipLevel
+			return a > b
+		end)
+		
+		self.ChuchuSlot_Origin.Enable = false
+		self.SelectedChuchuId = nil
+		self.ChuchuInfoPanel.Enable = false
+		
+		for i = 1, #chuchuList do
+			self.ChuchuIndexTable[i] = chuchuList[i]
+		end
+		
+		self:RegisterRecycleScrollLayoutCallback()
+		
+		if #chuchuList <= 0 then
+			self.DefaultPanel_L.Enable = true
+			self.ChuchuInfoPanel.Enable = false
+		else
+			self.DefaultPanel_L.Enable = false
+		end
+		
+		local count = #table.keys(chuchuList)
+		self.ChuchuListEntity.RecycleScrollView:SetTotalCount(count)
+		self.ChuchuListEntity.RecycleScrollView:Refresh(true)
+		
+		if #chuchuList > 0 then
+			for i, entity in pairs(self.ChuchuListEntity.Children) do
+				if _UtilLogic:Contains(entity.Name, "Item") then
+					local index = entity.UIEmployeeManageListRenderer.Index
+					if index == 1 then
+						local empId = entity.UIEmployeeManageListRenderer.EmployeeId
+						self:OnClickChuchuSlot(empId)
+					end
+				end
+			end
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickChuchuSlot(string chuchuId)
+		-- 츄츄 슬롯 클릭 시 상세 정보를 표시하는 함수
+		self:UpdateSlotOutline(chuchuId)
+		
+		local inCollection = _UserService.LocalPlayer.ChuchuCollectionDB.ChuchuCollection[chuchuId]
+		if not isvalid(inCollection) or inCollection == false then
+			self.ChuchuInfoPanel.Enable = false
+			return 
+		end
+		
+		local data = _EmployeeService:GetData(chuchuId)
+		if not isvalid(data) then return end 
+		
+		---@type EmployeeOutgameDetailData
+		local outgameData = _UserService.LocalPlayer.EmployeeManager:GetEmployeeOutgameDetail(data.Id)
+		if not isvalid(outgameData) then
+			return
+		end
+		
+		self.SelectedChuchuId = chuchuId
+		local ui = self.ChuchuInfoPanel
+		ui.Enable = true
+		
+		local portraitImage = ui:GetChildByName("Portrait"):GetChildByName("UISpriteCardBg")
+		portraitImage.SpriteGUIRendererComponent.ImageRUID = data.StandRUID
+		local equip = portraitImage:GetChildByName("equip")
+		
+		
+		if isvalid(outgameData) and outgameData.EquipLevel >= 0 then
+			equip.SpriteGUIRendererComponent.ImageRUID = data.EquipStandRUID
+		else
+			equip.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.Empty
+		end
+		ui:GetChildByName("Portrait"):GetChildByName("Name").TextComponent.Text = _GetLocalizationTextLogic:GetText(data.NameKey) 
+		
+		
+		local stageId =  _ChuchuGroupLogic:ReturnStageIdFromGroupId(data.GroupId)
+		local stageIcon = _StageDataSetLogic:GetStageData(stageId).BadgeIconRUID
+		ui:GetChildByName("StageIcon").SpriteGUIRendererComponent.ImageRUID = stageIcon
+		if _UserService.LocalPlayer.PlayerStage.NowStage == stageId then
+			ui:GetChildByName("StageIcon").SpriteGUIRendererComponent:ChangeMaterial(_IconRuidEnum.ScorePreviewMaterial)
+		else
+			ui:GetChildByName("StageIcon").SpriteGUIRendererComponent:ChangeMaterial(nil)
+		end
+		
+		ui:GetChildByName("ChuchuChatBalloon"):GetChildByName("Text").TextComponent.Text = _LocalizationService:GetText("ChuchuChatBalloonText")
+		
+		ui:GetChildByName("TypeName").TextComponent.Text =  _GetLocalizationTextLogic:GetText(data.Type)
+		ui:GetChildByName("TypeIcon").SpriteGUIRendererComponent.ImageRUID = _EmployeeRUID:ReturnIconRUIDByStatType(data.Type) 
+		
+		_EmployeeSkillService:DisplaySkillSlot(chuchuId, ui, true)
+		
+		local empManager =  _UserService.LocalPlayer.EmployeeManager
+		local detailData = empManager:GetEmployeeDetail(chuchuId)
+		local outgameDetailData = empManager:GetEmployeeOutgameDetail(chuchuId)
+		
+		local equipLevel = outgameDetailData.EquipLevel 
+		local equipPanel = ui:GetChildByName("EquipPanel")
+		local lockedEquipIcon = equipPanel:GetChildByName("LockedIcon")
+		local equipIcon =  equipPanel:GetChildByName("Icon")
+		local equipName =  _LocalizationService:GetText("LockedEquipIconName")
+		local equipDesc =  _LocalizationService:GetText("LockedEquipIconDesc")
+		
+		if equipLevel >= 0 then
+			equipIcon.Enable = true
+			lockedEquipIcon.Enable = false
+			equipIcon.SpriteGUIRendererComponent.ImageRUID = data.EquipIcon
+			equipName = _LocalizationService:GetText(data.EquipNameKey)
+			equipPanel:GetChildByName("Name").Enable = true
+			equipPanel:GetChildByName("Stars").Enable = true
+		else
+			equipIcon.Enable = false
+			lockedEquipIcon.Enable = true
+			equipPanel:GetChildByName("Name").Enable = true
+			equipPanel:GetChildByName("Stars").Enable = false
+		end
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:ResetEquipStarsUI(equipPanel, equipLevel)
+		equipPanel:GetChildByName("Name").TextComponent.Text = equipName
+		ui:GetChildByName("EquipInfoPanel"):GetChildByName("Desc").TextComponent.Text = equipDesc
+		
+		equipPanel:GetChildByName("BuyEquipBtn").Enable = false
+		equipPanel:GetChildByName("UpgradeEquipBtn").Enable = false
+		equipPanel:GetChildByName("Complete").Enable = false
+		
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:ResetEquipDesc(equipLevel, self.ChuchuInfoEquipPanel_LvText, self.ChuchuInfoEquipPanel_DescText)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenUI(string filter)
+		-- 츄츄 선택 UI를 여는 함수
+		_UIGroupManager:EnableSelectChuchuInCollection(true)
+		if not isvalid(filter) then
+			filter = "All"
+		end
+		self:OnClickFilterCategory(filter)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseUI()
+		-- 츄츄 선택 UI를 닫는 함수
+		_UIGroupManager:EnableSelectChuchuInCollection(false)
+		if _UIGroupManager.EmploymentGroup.Enable then
+			_UserService.LocalPlayer.PlayerEmployment:OnSelectChuchuInCollection(nil)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickSelectBtn()
+		-- 선택 버튼 클릭 시 처리하는 함수
+		if isvalid(self.SelectedChuchuId) then
+			
+			if _UIGroupManager.EmploymentGroup.Enable then
+				local chuchuName = _EmployeeService:GetData(self.SelectedChuchuId).NameKey
+				chuchuName = _LocalizationService:GetText(chuchuName)
+				local cost = _UserService.LocalPlayer.PlayerEmployment:ReturnCostByScoutLv()
+				local costString = _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(cost))
+				
+				_UIPopup:Open(_LocalizationService:GetTextFormat("ScoutChuchuPopupDesc", chuchuName, costString),
+					function() 
+						_UserService.LocalPlayer.PlayerEmployment:OnSelectChuchuInCollection(self.SelectedChuchuId)
+					end,
+					function() 
+					
+					end,
+					_LocalizationService:GetText("ScoutChuchuPopupTitle")
+				)
+				
+				
+			elseif _UIGroupManager.StageInfoGroup.Enable == true and _StageDataSetLogic.UIStageSetting.Entity.Enable == true then
+				local empPage = _StageDataSetLogic.UIStageSetting.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Employee)].UIStageSettingEmployee
+				local empData = _EmployeeService:GetData(self.SelectedChuchuId)
+				
+				if empPage.NowSlotType ~= empData.Type then
+					_UIToast:ShowMessage(_LocalizationService:GetTextFormat("SelectChuchuInCollection_CantSettingMsg", _GetLocalizationTextLogic:GetText(empPage.NowSlotType)))
+					return
+				end		
+				
+				empPage:SetSlot(empData.Type, self.SelectedChuchuId)		
+				
+				_TutorialManager:CheckForceTo()
+				self:CloseUI()
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickFilterBtn()
+		-- 필터 버튼 클릭 시 처리하는 함수
+		self.FilterPanel.Enable = not self.FilterPanel.Enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickFilterCategory(string filterType)
+		-- 필터 카테고리 선택 시 처리하는 함수
+		self:UpdateChuchuList(filterType)
+		
+		_SelectDropDownLogic:RefreshSelected(self.FilterOptions, filterType)
+		self.FilterPanel.Parent:GetChildByName("Text").TextComponent.Text = _LocalizationService:GetText(filterType)
+		
+		local icon 
+		if filterType == _EmployeeTypeEnum.Cook then
+			icon = _IconRuidEnum.SkillIcon_Cook
+		elseif filterType == _EmployeeTypeEnum.Serving then
+			icon = _IconRuidEnum.SkillIcon_Serving 
+		else
+			icon = _IconRuidEnum.Empty
+		end
+		self.FilterPanel.Parent:GetChildByName("Text"):GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = icon
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RegisterRecycleScrollLayoutCallback()
+		-- 리사이클 스크롤 레이아웃 콜백을 등록하는 함수
+		if self.ChuchuListEntity.RecycleScrollView.onUpdateCell ~= nil then
+			return
+		end
+		
+		local recycleFunc = function(index, entity)
+			self:RecycleScrollOnUpdateByIndex(index, entity)
+		end
+		self.ChuchuListEntity.RecycleScrollView.onUpdateCell = recycleFunc
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RecycleScrollOnUpdateByIndex(integer index, Entity entity)
+		-- 리사이클 스크롤의 인덱스 업데이트를 처리하는 함수
+		local empId = self:CalcEmpIdFromIndex(index)
+		entity.UIEmployeeManageListRenderer:Init_SelectChuchuInCollection(index, empId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string CalcEmpIdFromIndex(integer index)
+		-- 인덱스로 직원 ID를 계산하는 함수
+		local empId = self.ChuchuIndexTable[index]
+		
+		return empId
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateSlotOutline(string empId)
+		-- 선택된 슬롯의 외곽선을 업데이트하는 함수
+		for i=1, #self.ChuchuListEntity.Children do 
+			if not _UtilLogic:Contains( self.ChuchuListEntity.Children[i].Name, "Item") then
+				continue
+			end
+			local slotEmp = self.ChuchuListEntity.Children[i].UIEmployeeManageListRenderer
+		
+			if isvalid(slotEmp.EmployeeId) then 
+				if slotEmp.EmployeeId ~= "" and (slotEmp.EmployeeId) == empId then 
+					slotEmp:EnableOutline()
+				else 
+					slotEmp:DisableOutline()
+				end
+			end	
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "57c02e9c-d2b6-4418-885e-bdf00d818514")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 선택 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickSelectBtn()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "d1d3f6cb-d915-4685-bb1f-91b799e59435")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- UI 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if _TutorialManager.target == self.SelectBtn then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:CloseUI()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- UI 열기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OpenUI(nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "c6587f63-636b-4869-b403-198761f08edd")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 전체 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickFilterCategory(_EmployeeTypeEnum.Cook)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "78bd7f6d-62cc-493b-8e5e-bc06c1c46fe6")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 서빙 직원 필터 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickFilterCategory(_EmployeeTypeEnum.Serving)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "ab296316-4ae6-481c-b293-cc78fd6e63c2")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 필터 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickFilterBtn()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "0e48d79c-52b5-4570-a511-17f013c197e9")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 전체 필터 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickFilterCategory("All")
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "39316683-ad9d-403f-b2bf-d2f92664be59")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- 장비 구매 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:OpenBuyEquipPopup()
+	end
+
+end

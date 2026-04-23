@@ -1,0 +1,184 @@
+@Component
+script UIBoosterPackRenderer extends Component
+
+	property integer SlotNum = 0
+
+	property SpriteGUIRendererComponent ItemThumnail = nil
+
+	property Entity PriceText = nil
+
+	property Entity FreeBtnText = nil
+
+	property Entity ItemDetail = nil
+
+	property Entity PurchaseSuccessText = nil
+
+	property TextComponent ItemName = nil
+
+	property Entity BlockBuyComponent = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 부스터 팩 렌더러 UI 컴포넌트 초기화
+		local bg = self.Entity:GetChildByName("Bg")
+		self.ItemThumnail = bg:GetChildByName("ItemThumnail").SpriteGUIRendererComponent
+		self.ItemName = bg:GetChildByName("ItemName").TextComponent
+		self.ItemDetail = bg:GetChildByName("ItemDetail")
+		
+		local purchaseButton = self.Entity:GetChildByName("PurchaseButton")
+		self.PriceText = purchaseButton:GetChildByName("PriceText")
+		self.FreeBtnText = purchaseButton:GetChildByName("FreeBtnText")
+		self.PurchaseSuccessText = purchaseButton:GetChildByName("PurchaseSuccessText")
+		
+		self.BlockBuyComponent = self.Entity:GetChildByName("BlockBuyComponent")
+		purchaseButton:ConnectEvent(ButtonClickEvent, function() self:OnClickPurchaseButton() end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init(integer slotNum)
+		-- 부스터 팩 슬롯 초기화 및 데이터 설정
+		self.SlotNum = slotNum
+		
+		local player = _UserService.LocalPlayer
+		local myStageId = player.PlayerStage.NowStage
+		if myStageId < 2 then
+			return
+		end
+		
+		local itemIdPricePair = _BoosterPackDataLogic:GetBoosterPackData(myStageId).BoosterPackItemIdPricePair[self.SlotNum]
+		local packageItemId = itemIdPricePair[1]
+		local packagePrice = itemIdPricePair[2]
+		
+		
+		self:ResetPurchaseButton()
+		
+		local packageItemData = _ItemDataSetLogic:GetItemData(packageItemId)
+		
+		self.ItemThumnail.ImageRUID = packageItemData.IconRUID
+		self.ItemName.Text = _LocalizationService:GetText(packageItemData.NameKey)
+		
+		local itemList = packageItemData:GetUseItems_List()
+		for i=1, #self.ItemDetail.Children do
+			self.ItemDetail.Children[i].UIItemDetailSlot:Init(itemList[i][1], itemList[i][2], _BoosterPackDataLogic.UIBoosterPack.ItemDescTooltip)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickPurchaseButton()
+		-- 부스터 팩 구매 버튼 클릭 이벤트 처리
+		local player = _UserService.LocalPlayer
+		local myStageId = player.PlayerStage.NowStage
+		if myStageId < 2 then
+			return
+		end
+		
+		local itemIdPricePair = _BoosterPackDataLogic:GetBoosterPackData(myStageId).BoosterPackItemIdPricePair[self.SlotNum]
+		local packageItemId = itemIdPricePair[1]
+		local packageItemPrice = itemIdPricePair[2]
+		
+		local ownDiamond = player.PlayerOutgameManager:GetDiamondCount()
+		
+		if packageItemPrice > 0 and ownDiamond < packageItemPrice then
+			_SoundService:PlaySound(_ResourceManager.SFXTable["placeholder_alert"], 1)
+			_UIToast:ShowMessage(_LocalizationService:GetText("ShopErrorMessage1"))
+			_UIGroupManager.DiaInfoGroup.UIDiaInfo:OpenUI()
+		    return
+		end
+		
+		local items = _ItemDataSetLogic:GetItemData(packageItemId):GetUseItems_List()
+		for i=1 , #items do
+			local itemId = items[i][1]
+			local count = items[i][2]
+			
+			local maxCount = player.PlayerInventory:IsItemOverMaxCount(itemId, count)
+			
+			if maxCount > 0 then
+				_UIPurchasePopupLogic:OpenOverMaxCountPopup(itemId, _ItemDataSetLogic:GetItemData(itemId).NameKey, maxCount, nil, false, true)
+				return
+			end
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["System_PremiumShop_Cart_01"], 1)
+		
+		if packageItemPrice > 0 then
+			_UIPurchasePopupLogic:OpenNoRefunablePurchasePopup(_StringUtilLogic:ReturnThousandsSeparatedString(packageItemPrice), function()
+				_PaidLogic:RequestPurchase_BoosterPack(self.SlotNum, _UserService.LocalPlayer.PlayerComponent.UserId)
+			end, true)
+		else
+			_PaidLogic:RequestPurchase_BoosterPack(self.SlotNum, _UserService.LocalPlayer.PlayerComponent.UserId)
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetPurchaseButton()
+		-- 구매 버튼 상태 및 표시 업데이트
+		if self.SlotNum == 0 then
+			return
+		end
+		
+		self.PriceText.Parent.ButtonComponent.Enable = true
+		local player = _UserService.LocalPlayer
+		local myStageId = player.PlayerStage.NowStage
+		if myStageId < 2 then
+			return
+		end
+		local itemIdPricePair = _BoosterPackDataLogic:GetBoosterPackData(myStageId).BoosterPackItemIdPricePair[self.SlotNum]
+		local packageItemId = itemIdPricePair[1]
+		local packagePrice = itemIdPricePair[2]
+		
+		if packagePrice == 0 then
+			self.FreeBtnText.Enable = true
+			self.PriceText.Enable = false
+		else
+			self.FreeBtnText.Enable = false
+			self.PriceText.Enable = true
+			self.PriceText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(packagePrice)
+			
+			local ownDiamond = player.PlayerOutgameManager:GetDiamondCount()
+			
+			if ownDiamond < packagePrice then
+				self.PriceText.TextComponent.FontColor = _BoosterPackDataLogic.PriceColor[1]
+				self.PriceText.TextComponent.OutlineColor = _BoosterPackDataLogic.PriceOutlineColor[1]
+			else
+				self.PriceText.TextComponent.FontColor = _BoosterPackDataLogic.PriceColor[2]
+				self.PriceText.TextComponent.OutlineColor = _BoosterPackDataLogic.PriceOutlineColor[2]
+			end
+		end
+		
+		if self:GetBoosterPackPurchased(myStageId) then
+			self.BlockBuyComponent.Enable = true
+		else
+			self.BlockBuyComponent.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean GetBoosterPackPurchased(integer stage)
+		-- 해당 스테이지의 부스터 팩 구매 여부 확인
+		local player = _UserService.LocalPlayer
+		if self.SlotNum == 1 then
+			return player.PlayerOutgameManager.BoosterPack1PurchaseTable[player.PlayerStage.NowStage]
+		elseif self.SlotNum == 2 then
+			return player.PlayerManagement:IsPreminumBoosterPackPurchased(stage)
+		end
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerBoosterPackPurchaseChangedEvent(PlayerBoosterPackPurchaseChangedEvent event)
+		-- 플레이어 부스터 팩 구매 상태 변경 시 버튼 업데이트
+		if self.SlotNum ~= 0 and self.SlotNum == event.packNumber then
+			self:ResetPurchaseButton()
+		end
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerPurchaseCountChangedEvent(PlayerPurchaseCountChangedEvent event)
+		-- 플레이어 구매 카운트 변경 시 프리미엄 부스터 팩 버튼 업데이트
+		if self.SlotNum == 2 then
+			self:ResetPurchaseButton()
+		end
+		
+	end
+
+end

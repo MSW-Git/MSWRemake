@@ -1,0 +1,230 @@
+@Logic
+script RecipeTagDataSetLogic extends Logic
+
+	property table RecipeTagData = {}
+
+	property table RecipeComboData = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 데이터셋을 로드하는 함수
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- 레시피 태그 데이터셋을 로드하는 함수
+		table.clear(self.RecipeTagData)
+		local tagDataSet = _DataService:GetTable("RecipeTagData")
+		for i = 1, tagDataSet:GetRowCount() do
+			local tagData = RecipeTagData()
+			tagData:Load(tagDataSet, i)
+			
+			if self.RecipeTagData[tagData.Type] ~= nil then
+				break
+			end
+		
+			self.RecipeTagData[tagData.Type] = tagData
+		end
+		
+		table.clear(self.RecipeComboData)
+		local comboDataSet = _DataService:GetTable("RecipeComboData")
+		for i = 1, comboDataSet:GetRowCount() do
+			local comboData = RecipeComboData()
+			comboData:Load(comboDataSet, i)
+			
+			if self.RecipeTagData[comboData.Id] ~= nil then
+				break
+			end
+		
+			self.RecipeComboData[comboData.Id] = comboData
+		end
+	end
+
+	method string ReturnMainTypeOfIngres(table ingres, Entity player)
+		-- 재료들의 주요 타입을 반환하는 함수
+		local typeData = {}
+		
+		local spiciness = 0
+		for k, v in pairs(ingres) do
+			---@type RecipeIngreDrawData
+			local drawData = v
+			
+			if drawData.DrawType == _RecipeIngreDrawEnum.Ingredient then
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(drawData.Id)
+				if isvalid(ingreData.SpicyPoint) then
+					spiciness = spiciness + ingreData.SpicyPoint
+				end		
+				if isvalid(self.RecipeTagData[ingreData.Type]) then
+					if typeData[ingreData.Type] == nil then
+						typeData[ingreData.Type] = 0
+					end
+					typeData[ingreData.Type] = typeData[ingreData.Type] + 1
+				end
+			end
+		end
+		
+		local spicinessThreshold = _IngredientDataSetLogic:GetSpicyThreshold(player)
+		if spiciness >= spicinessThreshold then
+			return _RecipeTagEnum.Spicy
+		end
+		
+		local sortTable = {}
+		for k, v in pairs(typeData) do
+			table.insert(sortTable, {k, v})
+		end
+		
+		table.sort(sortTable, function(a, b) return a[2]>b[2] end)
+		
+		local mostType = sortTable[1]
+		if mostType == nil then
+			return _RecipeTagEnum.Mixed
+		end
+		
+		if mostType[1] == _RecipeTagEnum.Veggie then
+			if #sortTable == 1 then
+				return mostType[1]
+			else
+				mostType = sortTable[2]
+				if isvalid(sortTable[3]) then
+					if mostType[2] > sortTable[3][2] then
+						return mostType[1]
+					end
+					return _RecipeTagEnum.Mixed
+				end
+				return mostType[1]
+			end
+		else
+			if isvalid(sortTable[2]) then
+				local nextType = sortTable[2]
+				if nextType[1] == _RecipeTagEnum.Veggie then
+					if isvalid(sortTable[3]) then
+						nextType = sortTable[3]
+					else
+						return mostType[1]
+					end			
+				end
+				
+				if mostType[2] > nextType[2] then
+					return mostType[1]
+				end
+				return _RecipeTagEnum.Mixed
+			end
+			return mostType[1]
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PopRecipeTypeIcon(Entity parent, Entity attachParent, integer ingreId, number duration)
+		-- 레시피 타입 아이콘을 팝업으로 표시하는 함수
+		local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+		local ingreType = ingreData.Type
+		
+		local types = {}
+		if isvalid(self.RecipeTagData[ingreType]) then
+			table.insert(types, ingreType)
+		end
+		
+		local spiciness = ingreData.SpicyPoint
+		if spiciness ~= nil then
+			if spiciness > 0 then
+				table.insert(types, _RecipeTagEnum.Spicy)
+			end
+		end
+		
+		for i = 1, #types do
+			local tagType = types[i]
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_UIRecipeTypeIcon", i, parent)
+			
+			local sizeFactor = nil
+			if tagType == _RecipeTagEnum.Veggie then
+				sizeFactor = 0.6
+			elseif tagType == _RecipeTagEnum.Spicy then
+				if spiciness / _IngredientDataSetLogic:GetSpicyThreshold(_UserService.LocalPlayer) < 1 then
+					sizeFactor = 0.3
+				end
+			end
+			
+			local rectSize = 75
+			if sizeFactor ~= nil then
+				rectSize = rectSize * sizeFactor
+			end
+			entity.UITransformComponent.RectSize = Vector2(rectSize, rectSize)
+			
+			if attachParent ~= nil then
+				entity:AttachTo(attachParent)
+				parent = attachParent
+			end
+			
+			---@type RecipeTagData
+			local tagData = _RecipeTagDataSetLogic.RecipeTagData[tagType]
+			entity.SpriteGUIRendererComponent.ImageRUID = tagData.IconRUID
+			
+			_UIEntityService:PlayPopFadeTween(entity, false, -parent.UITransformComponent.RectSize.y/2, duration)
+		end
+		
+	end
+
+	method integer ReturnRecipeTagSortIndex(string tag)
+		-- 레시피 태그의 정렬 인덱스를 반환하는 함수
+		if tag == _RecipeTagEnum.Meat then
+			return 1
+		elseif tag == _RecipeTagEnum.Chicken then
+			return 2
+		elseif tag == _RecipeTagEnum.Seafood then
+			return 3
+		elseif tag == _RecipeTagEnum.Veggie then
+			return 4
+		elseif tag == _RecipeTagEnum.Spicy then
+			return 5
+		else
+			return 9
+		end
+	end
+
+	method boolean IsRecipeComboActiveForRecipe(Entity player, integer recipeId)
+		-- 레시피에 대해 레시피 콤보가 활성화되어 있는지 확인하는 함수
+		local comboId = player.PlayerRecipe.ActiveRecipeCombo
+		if comboId == 0 then
+			return false
+		end
+		
+		---@type RecipeComboData
+		local comboData = self.RecipeComboData[comboId]
+		local effectTarget = comboData.EffectTarget
+		if effectTarget == _RecipeTagEnum.All then
+			return true
+		elseif effectTarget == _RecipeTagEnum.None then
+			return false
+		end
+		
+		---@type RecipeData
+		local recipeData = player.PlayerRecipe.Recipes[recipeId]
+		local recipeTag = recipeData.Tag
+		
+		return recipeTag == effectTarget
+	end
+
+	method boolean IsRecipeComboActiveForTag(Entity player, string recipeTag)
+		-- 태그에 대해 레시피 콤보가 활성화되어 있는지 확인하는 함수
+		local comboId = player.PlayerRecipe.ActiveRecipeCombo
+		if comboId == 0 then
+			return false
+		end
+		
+		---@type RecipeComboData
+		local comboData = self.RecipeComboData[comboId]
+		local effectTarget = comboData.EffectTarget
+		if effectTarget == _RecipeTagEnum.All then
+			return true
+		elseif effectTarget == _RecipeTagEnum.None then
+			return false
+		end
+		
+		return recipeTag == effectTarget
+	end
+
+	method RecipeTagData GetRecipeTagData(string tag)
+		-- 태그로 레시피 태그 데이터를 가져오는 함수
+		return self.RecipeTagData[tag]
+	end
+
+end

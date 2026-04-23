@@ -1,0 +1,556 @@
+@Component
+script UIStagePass extends Component
+
+	property Entity UIStagePassGroup = "cdd1d61f-a6b1-45e6-a32d-f0a193a36c46"
+
+	property Entity UITabMenuLayoutEntity = "28c5b180-2483-4723-aae5-db69967bb329"
+
+	property Entity UIPassLevelLayoutEntity = "48b605ba-ddba-4592-8870-7f0fb8a45bbc"
+
+	property SyncTable<integer, Entity> PassProductButtonEntity
+
+	property string SeletecdGroupId = ""
+
+	property any PurchaseCountEventHandler = nil
+
+	property UIButtonTypeA GetAllRewardButton = "3a4b7421-facb-44a5-b0b3-9d7b3772dc7f"
+
+	property Entity NextButtonR = "1cec8c0a-77da-4d8c-afa5-e10e4b68d4e6"
+
+	property Entity NextButtonL = "f82811a0-079d-4261-953b-854c21d1e348"
+
+	property Entity ItemDescTooltip = "90bb6d7d-5aad-41d4-922c-6734ef3b8bb2"
+
+	property SyncTable<Entity> StagePassButton
+
+	property UIStagePassBackgroundRenderer UIPassMenu = "fdf45cfe-8856-47b5-bbda-8244656c60ba"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 스테이지 패스 UI 초기화 시 실행되는 함수
+		self.PassProductButtonEntity[1] = _EntityService:GetEntity("fc909776-cbb0-4d95-85f2-916410bb541f")
+		self.PassProductButtonEntity[2] = _EntityService:GetEntity("c2a6e452-a5ba-43a7-850b-e8a989766661")
+		self.PassProductButtonEntity[3] = _EntityService:GetEntity("08e7ffca-2779-43ac-a14e-4b0ae9881093")
+		self.PassProductButtonEntity[4] = _EntityService:GetEntity("63c1b7ff-e72b-4e65-9605-a19d809c0310")
+		
+		self.StagePassButton[1] = _EntityService:GetEntity("d09a64d2-b9eb-4f09-91e9-b97089b74d1f")
+		self.StagePassButton[2] = _EntityService:GetEntity("92157d11-5687-43ee-a25f-31664ec932fc")
+		self.StagePassButton[3] = _EntityService:GetEntity("d0e000d2-b609-4b99-9796-4e6d805771e1")
+		self:ResetRedDot()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(string openGroupId)
+		-- 스테이지 패스 UI를 열고 초기화하는 함수
+		self:RegisterRecycleScrollLayoutCallback()
+		
+		
+		_UIGroupManager:EnableStagePassGroup(true)
+		
+		local playerOutgameManager = _UserService.LocalPlayer.PlayerOutgameManager
+		if openGroupId == nil then
+			if not _UtilLogic:IsNilorEmptyString(playerOutgameManager.StagePassRecentOpenedGroupId) then
+				openGroupId = playerOutgameManager.StagePassRecentOpenedGroupId
+			else
+				openGroupId = "1"
+			end
+		end
+		
+		self:DisableGroupEntity()
+		self:ResetPassGroupTab()
+		
+		self:OnChangedSelectedGroup(openGroupId)
+		
+		self:HandlePurchaseCountChangedEvent(true, self.PurchaseCountEventHandler, function(e) 
+			if self.SeletecdGroupId == nil then
+				return		
+			end
+			self:ResetUIsByGroupTab()
+			self:ResetRedDot()
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 스테이지 패스 UI를 닫는 함수
+		_UIGroupManager:EnableStagePassGroup(nil)
+		
+		self:HandlePurchaseCountChangedEvent(false, self.PurchaseCountEventHandler, nil)
+		
+		self.SeletecdGroupId = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetPassGroupTab()
+		-- 패스 그룹 탭을 리셋하는 함수
+		local datas = _StagePassDataLogic.StagePassGroupId_Sorted
+		for i, groupId in pairs(datas) do
+			---@type StagePassGroupData
+			local groupData = _StagePassDataLogic.StagePassGroupData[groupId]
+		
+			local groupTab = self:GetOrCreatGroupTabRenderer(i)
+			local groupTabTextEntity = groupTab:GetChildByName("PassGroupNameText")
+			local groupTabIconEntity = groupTab:GetChildByName("PassGroupIcon")
+		
+			groupTab.UIStagePassGroup.GroupId = groupData.GroupId
+			groupTabTextEntity.TextComponent.Text = "Part".." "..tostring(groupId)
+			groupTabIconEntity.SpriteGUIRendererComponent.ImageRUID = groupData.GroupIconRUID
+			
+			local hasReward = self:HasTotalRewards(_UserService.LocalPlayer.PlayerComponent.UserId, groupId)
+			groupTab.UIStagePassGroup.RedDot:SetEnable(hasReward)
+			
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetUIsByGroupTab()
+		-- 그룹 탭에 따라 UI를 리셋하는 함수
+		self:ResetPassProductButton()
+		self:DisableLevelEntity()
+		self:ResetPassLevelBar()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetPassLevelBar()
+		-- 패스 레벨 바를 리셋하는 함수
+		local datas = _StagePassDataLogic.StagePassLevelId_Sorted
+		local totalCount = _StagePassDataLogic.StagePassGroupData[self.SeletecdGroupId].PassLevelCount
+		self.UIPassLevelLayoutEntity.RecycleScrollView:SetTotalCount(totalCount)
+		
+		local recentRewardId = _UserService.LocalPlayer.PlayerOutgameManager.StagePassRecentRewardId[self.SeletecdGroupId]
+		if not _UtilLogic:IsNilorEmptyString(recentRewardId) then
+			self.UIPassLevelLayoutEntity.RecycleScrollView.TotalCount = totalCount
+			self:SetScrollToRewardSlotId(recentRewardId)
+			return
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity GetOrCreatGroupTabRenderer(integer index)
+		-- 그룹 탭 렌더러를 가져오거나 생성하는 함수
+		local entityName = "GroupTabRenderer" .. tostring(index)
+		local entity = self.UITabMenuLayoutEntity:GetChildByName(entityName, true)
+		if entity == nil then
+		
+			local rendererModel = _EntryService:GetModelIdByName("Model_PassGroupTab")
+			local parent = self.UITabMenuLayoutEntity
+			local newEntity = _SpawnService:SpawnByModelId(rendererModel, entityName, Vector3.zero, parent)
+			return newEntity
+		end
+		entity.Enable = true
+		return entity
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HandlePurchaseCountChangedEvent(boolean connect, any eventHandlerBase, any func)
+		-- 구매 횟수 변경 이벤트를 처리하는 함수
+		local player = _UserService.LocalPlayer
+		
+		if connect then
+			if eventHandlerBase ~= nil then
+				return
+			else
+				player:ConnectEvent(PlayerPurchaseCountChangedEvent, func)
+			end
+		else
+			player:DisconnectEvent(PlayerPurchaseCountChangedEvent, eventHandlerBase)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity GetOrCreatePassLevelRenderer(integer index)
+		-- 패스 레벨 렌더러를 가져오거나 생성하는 함수
+		
+		local entityName = "Item" .. tostring(index)
+		local entity = self.UIPassLevelLayoutEntity:GetChildByName(entityName, true)
+		if entity == nil then
+			_SpecialShopDataLogic:CommonLog('스테이지 패스 여기 전에 생성해야함')
+		end
+		entity.Enable = true
+		return entity
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnChangedSelectedGroup(string openGroupId)
+		-- 선택된 그룹이 변경될 때 처리하는 함수
+		if self.SeletecdGroupId == openGroupId then
+			return
+		end
+		
+		self.SeletecdGroupId = openGroupId
+		_UserService.LocalPlayer.PlayerOutgameManager:SetRecentOpenedStagePassGroup(self.SeletecdGroupId)
+		
+		for k, entity in pairs(self.UITabMenuLayoutEntity.Children) do
+			if entity.UIStagePassGroup.GroupId == openGroupId then
+				entity.UIStagePassGroup:ResetUIActivated()
+			else
+				entity.UIStagePassGroup:ResetUIDeactivated()
+			end
+		end
+		
+		self.GetAllRewardButton:SetEnable(false)
+		
+		
+		self:ResetUIsByGroupTab()
+		
+		self.UIPassMenu:ResetResourcesBackgroundByGroupId(openGroupId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DisableGroupEntity()
+		-- 그룹 엔티티를 비활성화하는 함수
+		local entities = self.UITabMenuLayoutEntity.Children
+		for i, entity in ipairs(entities) do
+			entity.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DisableLevelEntity()
+		-- 레벨 엔티티를 비활성화하는 함수
+		local entities = self.UIPassLevelLayoutEntity.Children
+		for i, entity in ipairs(entities) do
+			entity.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AddEnableReward(string id)
+		-- 보상 활성화를 추가하는 함수
+		self.GetAllRewardButton:SetEnable(true)
+		self:ResetGroupTabRedDot(self.SeletecdGroupId, true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RemoveEnableReward(string targetId)
+		-- 보상 활성화를 제거하는 함수
+		
+		local hasReward = self:HasReward(_UserService.LocalPlayer.PlayerComponent.UserId, self.SeletecdGroupId)
+		local hasPurchaseReward = self:HasPurchaseReward(_UserService.LocalPlayer.PlayerComponent.UserId, self.SeletecdGroupId)
+		
+		self.GetAllRewardButton:SetEnable(hasReward)
+		self:ResetGroupTabRedDot(self.SeletecdGroupId, hasReward or hasPurchaseReward)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetPassProductButton()
+		-- 패스 상품 버튼을 리셋하는 함수
+		for i=1, 4 do
+			local entity = self.PassProductButtonEntity[i]
+		
+			if self.SeletecdGroupId ~= tostring(math.tointeger((i-1) / 2 + 1)) then
+				entity:SetEnable(false)
+				continue
+			end
+			
+			entity:SetEnable(true)
+			---@type StagePassProductData
+			local productData = _StagePassDataLogic.StagePassProductData[self.SeletecdGroupId..tostring(math.tointeger((i-1)%2+1))]
+		
+			local itemThumbnail = entity:GetChildByName("ItemThumnail")
+			local PriceText = entity:GetChildByName("PriceText")
+			local PurchaseDoneText = entity:GetChildByName("PurchaseDoneText")
+			local ButtonEntity = entity:GetChildByName("Button")
+			
+			entity.UIStagePassProduct:Init(productData)
+			
+			itemThumbnail.SpriteGUIRendererComponent.ImageRUID = productData.PassIconRUID
+			
+			local player = _UserService.LocalPlayer
+			local myPurchaseCount = player.PlayerOutgameManager:GetPurchaseCount(productData.ProductId)
+			if myPurchaseCount == 0 then
+				PriceText.Enable = true
+				PriceText.TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(productData.Price)
+				PurchaseDoneText.Enable = false
+				entity.ButtonComponent.Enable = true
+				ButtonEntity.Enable = true
+			else
+				PriceText.Enable = false
+				PurchaseDoneText.Enable = true
+				entity.ButtonComponent.Enable = false
+				ButtonEntity.Enable = false
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RegisterRecycleScrollLayoutCallback()
+		-- 리사이클 스크롤 레이아웃 콜백을 등록하는 함수
+		if self.UIPassLevelLayoutEntity.RecycleScrollView.onUpdateCell ~= nil then
+			return
+		end
+		
+		local recycleFunc = function(index, entity)
+			local slotId = string.format("%02d", index)
+		
+			local levelId = self.SeletecdGroupId..slotId
+			---@type StagePassLevelData
+			local levelData = _StagePassDataLogic.StagePassLevelData[levelId]
+			if levelData == nil then
+				_SpecialShopDataLogic:AbnormalLog()
+			end
+			entity.UIStagePassLevel:Init(levelData, self.SeletecdGroupId)
+			
+			
+			local firstIndex = 999999
+			local lastIndex = 0
+			for i, e in pairs(self.UIPassLevelLayoutEntity.RecycleScrollView.CalcCells) do
+				---@type Entity
+				local levelEntity = e.Entity
+				local levelIndex = tonumber(string.sub(levelEntity.UIStagePassLevel.Id, 2, 3))
+				if firstIndex > levelIndex then
+					firstIndex = levelIndex
+				end
+				
+				if lastIndex < levelIndex then
+					lastIndex = levelIndex
+				end
+			end
+		
+			local firstCloseClearIndex = firstIndex - firstIndex % 7
+			lastIndex -= 2
+			local lastCloseClearIndex = lastIndex + (7 - lastIndex % 7)
+			
+			if firstIndex == 1 or firstCloseClearIndex < 1 then
+				self.NextButtonL.Enable = false
+			else
+				self.NextButtonL.UIStagePassPageButton:Init(self.SeletecdGroupId.."2"..string.format("%02d", firstCloseClearIndex))
+			end
+			
+			---@type StagePassGroupData
+			local productData = _StagePassDataLogic.StagePassGroupData[self.SeletecdGroupId]
+			
+		
+			if lastCloseClearIndex > productData.PassLevelCount or lastCloseClearIndex < 1 then
+				self.NextButtonR.Enable = false
+			else
+				self.NextButtonR.UIStagePassPageButton:Init(self.SeletecdGroupId.."2"..string.format("%02d", lastCloseClearIndex))
+			end
+		end
+		
+		self.UIPassLevelLayoutEntity.RecycleScrollView.onUpdateCell = recycleFunc
+		self.UIPassLevelLayoutEntity.RecycleScrollView.onDragEndCallback = function() self.NextButtonR.Enable = false end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickPurchasePassProductButton(table rewardList)
+		-- 패스 상품 구매 버튼 클릭 시 처리하는 함수
+		local player = _UserService.LocalPlayer
+		
+		if rewardList == nil then
+			rewardList = self:GetEnableRewards(player.PlayerComponent.UserId, self.SeletecdGroupId)
+		end
+		
+		for i, id in pairs(rewardList) do
+		
+			---@type StagePassRewardData
+			local rewardData = _StagePassDataLogic.StagePassRewardData[id]
+			local maxCount = player.PlayerInventory:IsItemOverMaxCount(rewardData.RewardItemId, rewardData.RewardItemCount)
+			
+			if maxCount > 0 then
+				_UIPurchasePopupLogic:OpenOverMaxCountPopup(rewardData.RewardItemId, _ItemDataSetLogic:GetItemData(rewardData.RewardItemId).NameKey, maxCount, nil, false, true)
+				return
+			end
+		end
+		_PaidLogic:RequestGetReward_StagePass(rewardList, player.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetScrollToRewardSlotId(string rewardId)
+		-- 보상 슬롯 ID로 스크롤을 설정하는 함수
+		local recycleScrollView = self.UIPassLevelLayoutEntity.RecycleScrollView
+		local slotId = tonumber(string.sub(rewardId, 3, 4))
+		slotId -= (recycleScrollView.MaxColumnCount / 2)
+		recycleScrollView:ScrollToIndex_Horizontal(slotId)
+	end
+
+	method table GetEnableRewards(string userId, string targetGroupId)
+		-- 활성화된 보상 목록을 가져오는 함수
+		local receivableRewardTable = {} 
+		for id, data in pairs(_StagePassDataLogic.StagePassRewardData) do
+			if targetGroupId ~= nil and self.SeletecdGroupId ~= string.sub(id, 1, 1) then
+				continue
+			end
+			
+			---@type StagePassRewardData
+			local rewardData = data
+			if _StagePassDataLogic:CanReceiveReward(rewardData.Id, userId) then
+				table.insert(receivableRewardTable, rewardData.Id)
+			end
+		end
+		
+		return receivableRewardTable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetRedDot()
+		-- 빨간 점 표시를 리셋하는 함수
+		local uiStageSettingStrategy = _StageDataSetLogic.UIStageSetting.EnumPages[_StageSettingEnum:GetIndexByKey(_StageSettingEnum.Strategy)].UIStageSettingStrategy
+		if uiStageSettingStrategy.EnableInHierarchy == true then
+			uiStageSettingStrategy:SetPassBtnRedDot()
+		end
+		
+		local hasRewards = {}
+		hasRewards[1] = self:HasTotalRewards(_UserService.LocalPlayer.PlayerComponent.UserId, "1")
+		hasRewards[2] = self:HasTotalRewards(_UserService.LocalPlayer.PlayerComponent.UserId, "2")
+		
+		local RedDotBtnOn = false
+		if hasRewards[1] or hasRewards[2] then
+			RedDotBtnOn = true
+		end
+		if #self.StagePassButton > 0 then
+			for _, e in pairs(self.StagePassButton) do
+				e:GetChildByName("RedDot").Enable = RedDotBtnOn
+			end
+		end
+		
+		for i=1 , 2 do 
+			local groupId = tostring(i)
+			if hasRewards[i] then
+				self:ResetGroupTabRedDot(groupId, true)
+			else
+				self:ResetGroupTabRedDot(groupId, false)
+			end
+		end
+	end
+
+	method boolean HasTotalRewards(string userId, string groupId)
+		-- 총 보상이 있는지 확인하는 함수
+		--    ---@type StagePassRewardData
+		--    ---@type StagePassProductData
+		
+		return self:HasReward(userId, groupId) or self:HasPurchaseReward(userId, groupId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetGroupTabRedDot(string groupId, boolean onRedDot)
+		-- 그룹 탭의 빨간 점을 리셋하는 함수
+		local entities = self.UITabMenuLayoutEntity.Children
+		for i, entity in ipairs(entities) do
+			if entity.UIStagePassGroup.GroupId == groupId then
+				entity.UIStagePassGroup.RedDot:SetEnable(onRedDot)
+				return
+			end
+		end
+	end
+
+	method boolean HasReward(string userId, string groupId)
+		-- 보상이 있는지 확인하는 함수
+		
+		for id, data in pairs(_StagePassDataLogic.StagePassRewardData) do
+			
+			if groupId ~= nil and string.sub(id, 1, 1) ~= groupId then
+				continue
+			end
+			
+			---@type StagePassRewardData
+			local rewardData = data
+			if _StagePassDataLogic:CanReceiveReward(rewardData.Id, userId) then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	method boolean HasPurchaseReward(string userId, string groupId)
+		-- 구매 보상이 있는지 확인하는 함수
+		for id, data in pairs(_StagePassDataLogic.StagePassProductData) do
+			if groupId ~= nil and string.sub(id, 1, 1) ~= groupId then
+				continue
+			end
+			---@type StagePassProductData
+			local productData = data
+			local isPassProductPurchased = _StagePassDataLogic:IsPassProductPurchased(productData.Id, userId)
+			local isReceived = _UserService:GetUserEntityByUserId(userId).PlayerOutgameManager:GetStagePassPurchaseRewardReceived(productData.Id)
+			
+			if isPassProductPurchased and not isReceived then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	@EventSender("Entity", "60606417-e4eb-40f0-8358-63c5c1f58b91")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+	@EventSender("Entity", "92157d11-5687-43ee-a25f-31664ec932fc")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 스테이지 패스 열기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open(nil)
+	end
+
+	@EventSender("Entity", "f0d1bac1-f94b-4896-b675-5ad8067b4799")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 모든 보상 받기 버튼 클릭 이벤트를 처리하는 핸들러
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		
+		self:OnClickPurchasePassProductButton(nil)
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@EventSender("Entity", "2a757d33-72ae-489e-940b-25575731ceee")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 첫 번째 상품 구매 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		
+		_UIPurchasePopupLogic:OpenWithdrawalNoticePopup()
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@EventSender("Entity", "bd7b8e90-4645-4316-8cd1-3df8f4c7840a")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 두 번째 상품 구매 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+		    return
+		end
+		
+		_UIPurchasePopupLogic:OpenWithdrawalNoticePopup()
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerStagePassRewardReceivedChangedEvent(PlayerStagePassRewardReceivedChangedEvent event)
+		-- 플레이어 스테이지 패스 보상 수령 상태 변경 이벤트를 처리하는 핸들러
+		self:ResetRedDot()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerStagePassPurchaseRewardReceivedChangedEvent(PlayerStagePassPurchaseRewardReceivedChangedEvent event)
+		-- 플레이어 스테이지 패스 구매 보상 수령 상태 변경 이벤트를 처리하는 핸들러
+		self:ResetRedDot()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleplayerStageProgressChangedEvent(playerStageProgressChangedEvent event)
+		-- 플레이어 스테이지 진행도 변경 이벤트를 처리하는 핸들러
+		self:ResetRedDot()
+	end
+
+end

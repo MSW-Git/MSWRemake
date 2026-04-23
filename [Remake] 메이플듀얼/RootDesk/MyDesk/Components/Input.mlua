@@ -1,0 +1,580 @@
+@Component
+script Input extends Component
+
+	property DeckManager deckManager = "e920267e-c338-457c-af06-67081552ceca"
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property Duel duel = nil
+
+	property CommandManager commandManager = nil
+
+	property Entity castAreaEntity = nil
+
+	property Entity placeAreaEntity = nil
+
+	property Entity putAreaEntity = nil
+
+	property Entity eraseAreaEntity = nil
+
+	property Entity scopeEntity = "dacdfb4a-e58f-4cc7-8848-98dffa6ed398"
+
+	property Entity lineEntity = "7b757cd0-3875-4639-94be-71ca026b5d55"
+
+	property string state = "Idle"
+
+	property Card touchingCard = nil
+
+	property Minion touchingMinion = nil
+
+	property Thumbnail touchingThumbnail = nil
+
+	property Card card = nil
+
+	property Unit target = nil
+
+	property Thumbnail thumbnail = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 입력 시스템 초기화 및 트리거 이벤트 연결
+		local duel = self.Entity.CurrentMap.Map.duel
+		if isvalid(duel) then
+			self.duel = duel
+			self.commandManager = self.duel.commandManager
+		end
+		
+		self.castAreaEntity:ConnectEvent(TriggerEnterEvent, function(event)
+			-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+			
+			if self.state == "DraggingCard" and TriggerBodyEntity == self.card.actor.Entity then
+				if self.card.isPlayable then
+					if self.card.category == "Skill" then
+						if self.card.requiresTarget then
+							self:SetState("TargetingSkill")
+						else
+							self:SetState("CastingSkill")
+						end
+					end
+				else
+					self:SetState("Idle")
+					self.touchingCard = nil
+				end
+			end
+		end)
+		
+		self.castAreaEntity:ConnectEvent(TriggerLeaveEvent, function(event)
+			-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+			
+			if self.state == "CastingSkill" and TriggerBodyEntity == self.card.actor.Entity then
+				self:SetState("DraggingCard")
+			end
+		end)
+		
+		self.scopeEntity:ConnectEvent(TriggerEnterEvent, function(event)
+			-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+			
+			local unit = TriggerBodyEntity.UnitBody and TriggerBodyEntity.UnitBody.object
+			if self.state == "TargetingSkill" and isvalid(unit) and unit.signState == "Targetable" and not isvalid(self.target) then
+				self:SetTarget(unit)
+			end
+		end)
+		
+		self.scopeEntity:ConnectEvent(TriggerLeaveEvent, function(event)
+			-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+			
+			local unit = TriggerBodyEntity.UnitBody and TriggerBodyEntity.UnitBody.object
+			if self.state == "TargetingSkill" and isvalid(unit) and self.target == unit then
+				self:SetTarget(nil)
+			end
+		end)
+		
+		self.placeAreaEntity:ConnectEvent(TriggerEnterEvent, function(event)
+			-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+			
+			if self.state == "DraggingCard" and TriggerBodyEntity == self.card.actor.Entity then
+				if self.card.isPlayable then
+					local field = self.card.player.field
+					if self.card.category == "Minion" and not field:IsFull() and field.isPlaceable then
+						self:SetState("PlacingMinion")
+					end
+				else
+					self:SetState("Idle")
+					self.touchingCard = nil
+				end
+			end
+		end)
+		
+		self.placeAreaEntity:ConnectEvent(TriggerLeaveEvent, function(event)
+			-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+			
+			if self.state == "PlacingMinion" and TriggerBodyEntity == self.card.actor.Entity then
+				self.duel.placingMinion:ClearBlueprint()
+				self.card.player.field:RemovePlacingMinion()
+				self:SetState("DraggingCard")
+			end
+		end)
+		
+		self.putAreaEntity:ConnectEvent(TriggerEnterEvent, function(event)
+				-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+		
+			if self.state == "PuttingCard" and TriggerBodyEntity == self.card.actor.Entity then
+				local deckEditPanel = self.uiManager.CardModule.deckEditPanel
+				if not self.deckManager:IsDeckComplete(deckEditPanel.deck) then
+					self:SetState("PuttingThumbnail")
+				end
+			end
+		end)
+		
+		self.putAreaEntity:ConnectEvent(TriggerLeaveEvent, function(event)
+				-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+		
+			if self.state == "PuttingThumbnail" and TriggerBodyEntity == self.card.actor.Entity then
+				self:SetState("PuttingCard")
+				local deckEditPanel = self.uiManager.CardModule.deckEditPanel
+				deckEditPanel:EndPuttingThumbnail()
+				deckEditPanel:RemoveThumbnail(deckEditPanel.puttingThumbnail)
+			end
+		end)
+		
+		self.eraseAreaEntity:ConnectEvent(TriggerEnterEvent, function(event)
+				-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+		
+			if self.state == "ErasingCard" and TriggerBodyEntity == self.thumbnail.Entity then
+				self:SetState("ErasingThumbnail")
+				local cardPanel = self.uiManager.CardModule.cardPanel
+				local deckEditPanel = self.uiManager.CardModule.deckEditPanel
+				cardPanel:EndErasingCard(false)
+				deckEditPanel:InsertThumbnail(self.thumbnail)
+			end
+		end)
+		
+		self.eraseAreaEntity:ConnectEvent(TriggerLeaveEvent, function(event)
+				-- Parameters
+			local TriggerBodyEntity = event.TriggerBodyEntity
+			---------------------------------------------------------
+		
+			if self.state == "ErasingThumbnail" and TriggerBodyEntity == self.thumbnail.Entity then
+				self:SetState("ErasingCard")
+			end
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetState(string toState)
+		-- 입력 상태 전환 및 UI/게임 로직 처리
+		if self.state == toState then
+			return
+		end
+		
+		local fromState = self.state
+		self.state = toState
+		
+		if fromState == "Idle" and toState == "DraggingCard" then
+			self.card = self.touchingCard
+			self.card:DestroyTweener()
+			self.card.actor.Entity:AttachTo(self.card.hand.Entity)
+			self.card:SetDisplayTimer(0.25)
+		end
+		
+		if fromState == "Idle" and toState == "PuttingCard" then
+			local cardPanel = self.uiManager.CardModule.cardPanel
+			cardPanel:BeginPuttingCard(self.touchingCard)
+			self.card = cardPanel.puttingCard
+			
+			self.touchingCard = nil
+		end
+		
+		if fromState == "Idle" and toState == "ErasingThumbnail" then
+			local deckEditPanel = self.uiManager.CardModule.deckEditPanel
+			self.thumbnail = self.touchingThumbnail
+			self.thumbnail:DestroyTweener()
+			self.thumbnail.Entity:AttachTo(deckEditPanel.Entity)
+			
+			self.touchingThumbnail = nil
+		end
+		
+		if (fromState == "CastingSkill" or fromState == "TargetingSkill" or fromState == "PlacingMinion") and (toState == "DraggingCard" or toState == "Idle") then
+			_Server:Request(self.card, "EndPlaying", {})
+			self.commandManager:SetPlayableSigns()
+		end
+		
+		if fromState == "PlacingMinion" and (toState == "DraggingCard" or toState == "Idle") then
+			self.card.actor.Entity.Visible = true
+			self.card.touchAreaEntity.Enable = true
+		end
+		
+		if fromState == "DraggingCard" and toState == "Idle" then
+			self.card:ClearDisplayTimer()
+		end
+		
+		if fromState == "DraggingCard" and (toState == "CastingSkill" or toState == "TargetingSkill" or toState == "PlacingMinion") then
+			_Server:Request(self.card, "BeginPlaying", {})
+			self.card:ClearDisplayTimer()
+			self.card.isDisplayable = false
+		end
+		
+		if fromState == "DraggingCard" and (toState == "CastingSkill" or toState == "TargetingSkill") then
+			self.commandManager:SetCastingSigns(self.card)
+		end
+		
+		if fromState == "DraggingCard" and toState == "PlacingMinion" then
+			self.commandManager:SetPlacingSigns()
+		end
+		
+		if fromState == "DraggingCard" and toState == "TargetingSkill" then
+			self.commandManager:SetTargetableSigns(self.card)
+			self.card:TransformToTarget()
+		end
+		
+		if fromState == "DraggingCard" and toState == "PlacingMinion" then
+			self.card.actor.Entity.Visible = false
+			self.card.touchAreaEntity.Enable = false
+			self.duel.placingMinion:SetBlueprint(self.card:GetMinionBlueprint())
+		end
+		
+		if fromState == "TargetingSkill" and (toState == "DraggingCard" or toState == "Idle") then
+			self:HideScope()
+			self:SetTarget(nil)
+		end
+		
+		if (fromState == "DraggingCard" or fromState == "CastingSkill" or fromState == "TargetingSkill" or fromState == "PlacingMinion") and toState == "Idle" then
+			self.card:AttachToAnchor()
+			self.card:TransformToAnchor()
+			self.card.isDisplayable = true
+			self.card = nil
+		end
+		
+		if fromState == "PuttingCard" and toState == "PuttingThumbnail" then
+			self.card.actor.Entity.Visible = false
+			self.card.touchAreaEntity.Enable = false
+			
+			local deckEditPanel = self.uiManager.CardModule.deckEditPanel
+			deckEditPanel:BeginPuttingThumbnail(self.card)
+			deckEditPanel:InsertThumbnail(deckEditPanel.puttingThumbnail)
+		end
+		
+		if fromState == "PuttingThumbnail" and (toState == "PuttingCard" or toState == "Idle") then
+			self.card.actor.Entity.Visible = true
+			self.card.touchAreaEntity.Enable = true
+		end
+		
+		if fromState == "PuttingCard" and toState == "Idle" then
+			local cardPanel = self.uiManager.CardModule.cardPanel
+			cardPanel:EndPuttingCard(false)
+			self.card = nil
+		end
+		
+		if fromState == "PuttingThumbnail" and toState == "Idle" then
+			local cardPanel = self.uiManager.CardModule.cardPanel
+			cardPanel:EndPuttingCard(true)
+			self.card = nil
+		end
+		
+		if fromState == "ErasingThumbnail" and toState == "ErasingCard" then
+			self.thumbnail.Entity.Visible = false
+			self.thumbnail.touchAreaEntity.Enable = false
+			
+			self.thumbnail:ClearDisplayTimer()
+			self.thumbnail.isDisplayable = false
+			
+			local cardPanel = self.uiManager.CardModule.cardPanel
+			local deckEditPanel = self.uiManager.CardModule.deckEditPanel
+			cardPanel:BeginErasingCard(self.thumbnail)
+			deckEditPanel:RemoveThumbnail(self.thumbnail)
+		end
+		
+		if fromState == "ErasingCard" and (toState == "ErasingThumbnail" or toState == "Idle") then
+			self.thumbnail.Entity.Visible = true
+			self.thumbnail.touchAreaEntity.Enable = true
+		end
+		
+		if fromState == "ErasingThumbnail" and toState == "Idle" then
+			self.thumbnail:ClearDisplayTimer()
+		end
+		
+		if fromState == "ErasingThumbnail" and toState == "Idle" then
+			self.thumbnail:AttachToAnchor()
+			self.thumbnail:TransformToAnchor()
+			self.thumbnail.isDisplayable = true
+			self.thumbnail = nil
+		end
+		
+		if fromState == "ErasingCard" and toState == "Idle" then
+			local cardPanel = self.uiManager.CardModule.cardPanel
+			cardPanel:EndErasingCard(true)
+			
+			self.thumbnail.Entity:Destroy()
+			self.thumbnail = nil
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HideScope()
+		-- 타겟팅 스코프 숨기기
+		self.scopeEntity.TransformComponent.WorldPosition = Vector3(100, 100, 0)
+		self.lineEntity.TransformComponent.WorldPosition = Vector3(100, 100, 0)
+		
+		local spriteRenderer = self.scopeEntity.SpriteRendererComponent
+		local resource = self.resourceManager:GetResource("Scope")
+		spriteRenderer.SpriteRUID = resource.inactiveAnimation
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceScope(Vector2 target)
+		-- 타겟팅 스코프와 라인 위치 설정
+		local source = self.card.actor.Entity.TransformComponent.WorldPosition
+		
+		local dx = target.x - source.x
+		local dy = target.y - source.y
+		local length = math.sqrt(dx * dx + dy * dy)
+		local lineTransform = self.lineEntity.TransformComponent
+		local scopeTransform = self.scopeEntity.TransformComponent
+		
+		lineTransform.Scale.x = length
+		lineTransform.WorldZRotation = math.deg(_Math:Atan2(dy, dx))
+		lineTransform.WorldPosition.x = (source.x + target.x) * 0.5
+		lineTransform.WorldPosition.y = (source.y + target.y) * 0.5
+		lineTransform.WorldPosition.z = 1
+		scopeTransform.WorldPosition.x = target.x
+		scopeTransform.WorldPosition.y = target.y
+		scopeTransform.WorldPosition.z = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTarget(Unit target)
+		-- 타겟팅 대상 설정 및 스코프 비주얼 업데이트
+		self.target = target
+		
+		local spriteRenderer = self.scopeEntity.SpriteRendererComponent
+		local resource = self.resourceManager:GetResource("Scope")
+		if isvalid(target) then
+			spriteRenderer.SpriteRUID = resource.activeAnimation
+		else
+			spriteRenderer.SpriteRUID = resource.inactiveAnimation
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchHoldEvent(ScreenTouchHoldEvent event)
+		-- 화면 터치 홀드 이벤트 처리 - 카드 드래그 등
+		--------------- Native Event Sender Info ----------------
+		-- Sender: InputService
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		---------------------------------------------------------
+		
+		local state = self.state
+		local worldPosition = _UILogic:ScreenToWorldPosition(TouchPoint)
+		
+		if state == "Idle" then
+			if isvalid(self.touchingCard) and self.touchingCard.isFront then
+				if isvalid(self.touchingCard.hand) and self.touchingCard.player:IsOwner() then
+					self:SetState("DraggingCard")
+				end
+				
+				local cardModule = self.uiManager.CardModule
+				if isvalid(cardModule) and cardModule.isDeckEditMode and not self.uiManager.GalleryModule.isOpen and not self.touchingCard:IsInTouchArea(worldPosition) 
+					and cardModule.cardPanel:GetCardCount(self.touchingCard) > 0 and self.deckManager:GetCardCountByName(cardModule.deckEditPanel.deck, self.touchingCard.name) < 2 
+					and not self.deckManager:IsDeckComplete(cardModule.deckEditPanel.deck) then
+					
+					_SoundService:PlaySound(self.resourceManager:GetResource("Input").pickCardSound, 1)
+					
+					self:SetState("PuttingCard")
+				end
+			end
+			
+			if isvalid(self.touchingThumbnail) then
+				local cardModule = self.uiManager.CardModule
+				if isvalid(cardModule) and cardModule.isDeckEditMode and not self.uiManager.GalleryModule.isOpen and not self.touchingThumbnail:IsInTouchArea(worldPosition) then
+					_SoundService:PlaySound(self.resourceManager:GetResource("Input").pickCardSound, 1)
+					
+					self:SetState("ErasingThumbnail")
+				end 
+			end
+		end
+		
+		if state == "DraggingCard" or state == "CastingSkill" or state == "PlacingMinion" or state == "PuttingCard" or state == "PuttingThumbnail" then
+			local transform = self.card.actor.Entity.TransformComponent
+			transform.WorldPosition.x = worldPosition.x
+			transform.WorldPosition.y = worldPosition.y
+			transform.WorldZRotation = 0
+			self.card:PlaceFront()
+		end
+		
+		if state == "TargetingSkill" then
+			self:PlaceScope(worldPosition)
+		end
+		
+		if state == "PlacingMinion" then
+			local minion = self.duel.placingMinion
+			local transform = minion.actor.Entity.TransformComponent
+			transform.WorldPosition.x = worldPosition.x
+			transform.WorldPosition.y = worldPosition.y
+			minion:PlaceFront()
+			
+			local field = self.card.player.field
+			field:InsertPlacingMinon(worldPosition.x)
+		end
+		
+		if state == "PuttingThumbnail" then
+			local thumbnail = self.uiManager.CardModule.deckEditPanel.puttingThumbnail
+			local transform = thumbnail.Entity.TransformComponent
+			transform.WorldPosition.x = worldPosition.x
+			transform.WorldPosition.y = worldPosition.y
+			thumbnail:PlaceFront()
+		end
+		
+		if state == "ErasingThumbnail" or state == "ErasingCard" then
+			local transform = self.thumbnail.Entity.TransformComponent
+			transform.WorldPosition.x = worldPosition.x
+			transform.WorldPosition.y = worldPosition.y
+			transform.WorldZRotation = 0
+			self.thumbnail:PlaceFront()
+		end
+		
+		if state == "ErasingCard" then
+			local card = self.uiManager.CardModule.cardPanel.erasingCard
+			local transform = card.actor.Entity.TransformComponent
+			transform.WorldPosition.x = worldPosition.x
+			transform.WorldPosition.y = worldPosition.y
+			transform.WorldZRotation = 0
+			card:PlaceFront()
+		end
+		
+		if state == "CastingSkill" or state == "TargetingSkill" or state == "PlacingMinion" then
+			if not self.card.isPlayable then
+				if state == "PlacingMinion" then
+					self.duel.placingMinion:ClearBlueprint()
+					self.card.player.field:RemovePlacingMinion()
+				end
+				self:SetState("Idle")
+				self.touchingCard = nil
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchReleaseEvent(ScreenTouchReleaseEvent event)
+		-- 화면 터치 릴리즈 이벤트 처리 - 카드 플레이 등
+		--------------- Native Event Sender Info ----------------
+		-- Sender: InputService
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		---------------------------------------------------------
+		
+		local state = self.state
+		local worldPosition = _UILogic:ScreenToWorldPosition(TouchPoint)
+		
+		if isvalid(self.touchingCard) and self.touchingCard:IsInTouchArea(worldPosition) then
+			if self.uiManager.GalleryModule.isOpen then
+				if self.touchingCard.isFront then
+					_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+					
+					self.uiManager.GalleryModule:SelectNext()
+				end
+			elseif self.touchingCard.isDisplayable then
+				self.uiManager.GalleryModule:Open(self.touchingCard)
+			end
+		elseif isvalid(self.touchingMinion) and self.touchingMinion:IsInTouchArea(worldPosition) then
+			self.uiManager.GalleryModule:Open(self.touchingMinion)
+		elseif isvalid(self.touchingThumbnail) and self.touchingThumbnail:IsInTouchArea(worldPosition) and self.touchingThumbnail.isDisplayable then
+			self.uiManager.GalleryModule:Open(self.touchingThumbnail)
+		end
+		
+		if state == "DraggingCard" then
+			self:SetState("Idle")
+		end
+		
+		if state == "PuttingCard" then
+			_SoundService:PlaySound(self.resourceManager:GetResource("Input").putCardSound, 1)
+			
+			self:SetState("Idle")
+		end
+		
+		if state == "ErasingThumbnail" then
+			_SoundService:PlaySound(self.resourceManager:GetResource("Input").putCardSound, 1)
+			
+			self:SetState("Idle")
+		end
+		
+		if state == "PuttingThumbnail" then
+			_SoundService:PlaySound(self.resourceManager:GetResource("Input").putCardSound, 1)
+			
+			local deckEditPanel = self.uiManager.CardModule.deckEditPanel
+			local thumbnail = deckEditPanel.puttingThumbnail
+			deckEditPanel:Put(thumbnail.info)
+			thumbnail:TransformToAnchor()
+			deckEditPanel:SpawnAndSetPuttingThumbnail()
+			
+			self:SetState("Idle")
+		end
+		
+		if state == "ErasingCard" then
+			_SoundService:PlaySound(self.resourceManager:GetResource("Input").putCardSound, 1)
+			
+			local cardPanel = self.uiManager.CardModule.cardPanel
+			local deckEditPanel = self.uiManager.CardModule.deckEditPanel
+			deckEditPanel:Erase(self.thumbnail.info)
+			
+			self:SetState("Idle")
+		end
+		
+		if state == "CastingSkill" then
+			_Server:Request(self.card, "EndPlaying", {})
+			self.commandManager:RunCommand("Play", {self.card}, {})
+		end
+		
+		if state == "TargetingSkill" then
+			if isvalid(self.target) then
+				_Server:Request(self.card, "EndPlaying", {})
+				self.commandManager:RunCommand("Play", {self.card, self.target, nil}, {})
+			else
+				self:SetState("Idle")
+			end
+		end
+		
+		if state == "PlacingMinion" then
+			local field = self.card.player.field
+			local minion = self.duel.placingMinion
+			field:InsertPlacingMinon(minion.actor.Entity.TransformComponent.WorldPosition.x)
+			_Server:Request(self.card, "EndPlaying", {})
+			self.commandManager:RunCommand("Play", {self.card, nil, self.card.player.field:FindPlacePivot()}, {})
+		end
+		
+		self.touchingCard = nil
+		self.touchingMinion = nil
+		self.touchingThumbnail = nil
+	end
+
+end

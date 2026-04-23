@@ -1,0 +1,648 @@
+@Component
+script StorageUI extends Component
+
+	property number filterIdx = 1
+
+	property number showingSlotIdx = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 클라이언트에서 컴포넌트 초기화 수행
+		
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUI()
+		-- 저장소 UI 전체를 새로고침하여 필터, 재화, 아이템 정보 갱신
+		-- 필터 버튼들을 갱신합니다.
+		local filterList = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/Panel/FilterList")
+		for i=1, 3 do
+			local filterBtn = filterList:GetChildByName("Filter_"..tostring(i))
+			if i == self.filterIdx then
+				filterBtn.ButtonComponent.Enable = false
+				filterBtn.TextComponent.FontColor = Color.FromHexCode("#653122")
+			else 
+				filterBtn.ButtonComponent.Enable = true
+				filterBtn.TextComponent.FontColor = Color.FromHexCode("#FFE398")
+			end
+		end
+		-----------------------------------------------------------------------
+		-- 재화 리스트를 갱신합니다.
+		local currencyList = _UserService.LocalPlayer.PlayerStorage.currencyItems
+		local currencyTable = _DataService:GetTable("CurrencyItems")
+		local list = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/Panel/Panel_left/ListPanel")
+		local slotEntity = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/Panel/Panel_left/ListPanel/Slot")
+		for i=1, #currencyList do
+			local slot = list:GetChildByName("Slot_"..tostring(i))
+			if slot == nil then
+				slot = slotEntity:Clone("Slot_"..tostring(i))
+				local icon = slot:GetChildByName("Panel"):GetChildByName("Icon")
+				icon.SpriteGUIRendererComponent.ImageRUID = currencyTable:GetCell(i, "iconRUID")
+				slot.UIMouseHover.Type3_Name = _LocalizationService:GetText(currencyTable:GetCell(i, "Name"))
+				slot.UIMouseHover.Type3_Desc = _LocalizationService:GetText(currencyTable:GetCell(i, "Desc"))
+				slot.UIMouseHover.Type3_Icon = currencyTable:GetCell(i, "iconRUID")
+				
+			end
+			
+			local amountEntity = slot:GetChildByName("Panel"):GetChildByName("Amount")
+			local amount = currencyList[i]
+			-- 예외처리
+			if i==1 then
+				amount = amount + _UserService.LocalPlayer.PlayerData.Money
+			
+			elseif i == 3 then
+				amount = amount + _UserService.LocalPlayer.PlayerData.PetEgg
+				
+			elseif i == 4 then
+				amount = amount + _UserService.LocalPlayer.PlayerEmoticon.EmotToken
+			end
+			
+			amountEntity.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(amount, nil)
+		end
+		-----------------------------------------------------------------------
+		-- 광물 무게 정보를 갱신합니다.
+		local storageAmount = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/Panel/Panel_right/StorageAmount")
+		
+		local maxStorageAmount = _UserService.LocalPlayer.PlayerBackpack.maxStorageNum
+		local currentStorageAmount = 0
+		local currentStorageList = _UserService.LocalPlayer.PlayerBackpack.storageList
+		for i=1, #currentStorageList do
+			currentStorageAmount = currentStorageAmount + currentStorageList[i]
+		end
+		
+		storageAmount:GetChildByName("Fill").UITransformComponent.RectSize.x = 380 * (currentStorageAmount / maxStorageAmount)
+		storageAmount:GetChildByName("RatioNum").TextComponent.Text = string.format("%.2f%%", currentStorageAmount/maxStorageAmount * 100)
+		-----------------------------------------------------------------------
+		-- 아이템 리스트를 갱신합니다.
+		if self.filterIdx == 1 then
+			self:Refresh_ConsumableItems()
+			storageAmount.Enable = false
+		elseif self.filterIdx == 2 then
+			self:Refresh_Minerals()
+			storageAmount.Enable = true
+		elseif self.filterIdx == 3 then
+			self:Refresh_Relics()
+			storageAmount.Enable = false
+		else 
+			log("wrong filter index")
+			return
+		end
+		-----------------------------------------------------------------------
+		-- 팝업을 활성화합니다.
+		local popup = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/DetailInfoPopup")
+		popup.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void Refresh_ConsumableItems()
+		-- 소모품 아이템 목록을 새로고침하고 보유량에 따라 UI 업데이트
+		local listPanel = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/Panel/Panel_right/ListPanel")
+		local itemData = _DataService:GetTable("ConsumableItems")
+		
+		for i=1, itemData:GetRowCount() do
+			local slot = listPanel:GetChildByName("Slot_"..tostring(i))
+			if slot == nil then
+				slot = listPanel:GetChildByName("Slot"):Clone("Slot_"..tostring(i))
+				slot.Enable = false
+			end
+			
+			local amount = _UserService.LocalPlayer.PlayerStorage.consumableItems[i]
+			if amount == nil then
+				amount = 0
+			end
+			
+			-- 예외처리
+			if i==1 or i==2 then
+				if _UserService.LocalPlayer.PlayerRelic.havingRelicBoxNum[i] ~= nil then
+					amount = amount + _UserService.LocalPlayer.PlayerRelic.havingRelicBoxNum[i]
+				end
+			end
+			
+			
+			if amount == 0 then
+				slot.Enable = false
+			else 
+				slot.Enable = true
+			end
+			
+			local iconBack = itemData:GetCell(i, 2) 
+			if iconBack ~= "" then
+				slot.SpriteGUIRendererComponent.ImageRUID = iconBack
+			else 
+				slot.SpriteGUIRendererComponent.ImageRUID = "08533840b61f49f5a4c6ad3fd4ed2cca"
+			end
+			
+			slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = itemData:GetCell(i, 3)
+			slot:GetChildByName("Amount").TextComponent.Text = string.format("%d", amount)
+			slot:GetChildByName("selected_line").Enable = false
+			slot:GetChildByName("Icon_relic").Enable = false
+			
+		end
+		
+		-- 현재 필터에 해당하지 않는 슬롯들은 비활
+		local idx = itemData:GetRowCount() + 1
+		while true do 
+			local slot = listPanel:GetChildByName("Slot_"..tostring(idx))
+			
+			if slot == nil then
+				break
+			else
+				slot.Enable = false
+				idx = idx + 1
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Refresh_Minerals()
+		-- 광물 아이템 목록을 새로고침하고 보유량에 따라 UI 업데이트
+		local listPanel = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/Panel/Panel_right/ListPanel")
+		local itemData = _DataService:GetTable("DropItem")
+		
+		for i=1, itemData:GetRowCount() do
+			local slot = listPanel:GetChildByName("Slot_"..tostring(i))
+			if slot == nil then
+				slot = listPanel:GetChildByName("Slot"):Clone("Slot_"..tostring(i))
+				slot.Enable = false
+			end
+			
+			
+			slot.SpriteGUIRendererComponent.ImageRUID = "08533840b61f49f5a4c6ad3fd4ed2cca"
+			slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = itemData:GetCell(i, "IconRUID")
+			
+			local amount = _UserService.LocalPlayer.PlayerBackpack.storageList[i]
+			slot:GetChildByName("Amount").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(amount, nil)
+			slot:GetChildByName("selected_line").Enable = false
+			slot:GetChildByName("Icon_relic").Enable = false
+			
+			if amount == 0 then
+				slot.Enable = false
+			else 
+				slot.Enable = true
+			end
+		end
+		
+		-- 현재 필터에 해당하지 않는 슬롯들은 비활
+		local idx = itemData:GetRowCount() + 1
+		while true do 
+			local slot = listPanel:GetChildByName("Slot_"..tostring(idx))
+			
+			if slot == nil then
+				break
+			else
+				slot.Enable = false
+				idx = idx + 1
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Refresh_Relics()
+		-- 유물 아이템 목록을 새로고침하여 정화된/정화되지 않은 유물 표시
+		local listPanel = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/Panel/Panel_right/ListPanel")
+		local itemData = _DataService:GetTable("Relic")
+		local gradeData = _DataService:GetTable("GradeIconback")
+		local relicCount = itemData:GetRowCount()
+		
+		
+		-- 정화되지 않은 아이템
+		for i=1, relicCount do
+			local slot = listPanel:GetChildByName("Slot_"..tostring(i))
+			if slot == nil then
+				slot = listPanel:GetChildByName("Slot"):Clone("Slot_"..tostring(i))
+				slot.Enable = false
+			end
+			
+			slot.SpriteGUIRendererComponent.ImageRUID = "4db1f9400ba54e58960b9e0fbac95250"
+			slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = itemData:GetCell(i, 2)
+			
+			local amount = _UserService.LocalPlayer.PlayerRelic.HavingDirtyItem[i]
+			if amount == nil then amount = 0 end
+			
+			if amount == 0 then
+				slot.Enable = false
+			else 
+				slot.Enable = true
+			end
+			
+			slot:GetChildByName("Amount").TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(amount, nil)
+			slot:GetChildByName("Icon_relic").Enable = true
+			
+			if self.showingSlotIdx == i then
+				slot:GetChildByName("selected_line").Enable = true
+			else 
+				slot:GetChildByName("selected_line").Enable = false
+			end
+			
+		end
+		
+		
+		-- 정화된 유물
+		for i=relicCount+1, relicCount*2 do
+			local slot = listPanel:GetChildByName("Slot_"..tostring(i))
+			if slot == nil then
+				slot = listPanel:GetChildByName("Slot"):Clone("Slot_"..tostring(i))
+				slot.Enable = false
+			end
+			
+			local idx = i-relicCount
+			
+			slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = itemData:GetCell(idx, 2)
+			local amount = _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem[idx]
+		
+			
+			if amount == 0 then
+				slot.Enable = false
+			else 
+				slot.Enable = true
+			end
+				
+			slot:GetChildByName("Amount").TextComponent.Text = string.format("%d", amount)
+			slot:GetChildByName("Icon_relic").Enable = false
+			if self.showingSlotIdx == i then
+				slot:GetChildByName("selected_line").Enable = true
+			else 
+				slot:GetChildByName("selected_line").Enable = false
+			end
+			
+			local grade = itemData:GetCell(idx, 4)
+			if grade == "Grade_2" then
+				slot.SpriteGUIRendererComponent.ImageRUID = "d5f72796e87647fab528eeec3b04805e"
+				
+			elseif grade == "Grade_3" then
+				slot.SpriteGUIRendererComponent.ImageRUID = "db5d4ddb2d3f4c659fcb160df0fb1cab"
+				
+			elseif grade == "Grade_4" then
+				slot.SpriteGUIRendererComponent.ImageRUID = "23df4a65508f42afacec3fb533735e80"
+				
+			elseif grade == "Grade_5" then
+				slot.SpriteGUIRendererComponent.ImageRUID = "3065e9c1bc364495bf1ce2abc2e78dcd"
+			end
+			
+		end
+		
+		-- 현재 필터에 해당하지 않는 슬롯들은 비활
+		local idx = relicCount*2 + 1
+		while true do 
+			local slot = listPanel:GetChildByName("Slot_"..tostring(idx))
+			
+			if slot == nil then
+				break
+			else
+				slot.Enable = false
+				idx = idx + 1
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowDetailPopup(number slotIdx)
+		-- 선택된 아이템의 상세 정보 팝업을 열고 필터에 따라 적절한 정보 표시
+		local popup = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/DetailInfoPopup")
+		self.showingSlotIdx = slotIdx
+		--log("self.showingSlotIdx = ", self.showingSlotIdx)
+		------------------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------------------
+		-- 팝업의 내용을 갱신합니다.
+		------------------------------------------------------------------------------------------------------
+		local name = popup:GetChildByName("Name")
+		local iconback = popup:GetChildByName("IconBack")
+		local icon = iconback:GetChildByName("Icon")
+		local type = popup:GetChildByName("Type")
+		local desc = popup:GetChildByName("Desc")
+		local detailDesc = popup:GetChildByName("Scroll_box"):GetChildByName("DetailDesc")
+		local holdingQuantity = popup:GetChildByName("HoldingQuantity") 
+		local useButton = popup:GetChildByName("Button_Use")
+		
+		local nameText = ""
+		local iconbackRUID = ""
+		local iconRUID = ""
+		local typeTxt = ""
+		local descText = ""
+		local detaildescText = ""
+		local amount = 0
+		
+		local gradeTable = _DataService:GetTable("GradeIconback")
+		------------------------------------------------------------------------------------------------------
+		-- 소모품 아이템인 경우
+		if self.filterIdx == 1 then
+			local itemTable = _DataService:GetTable("ConsumableItems")
+			nameText = _LocalizationService:GetText(itemTable:GetCell(slotIdx, 1))
+			iconbackRUID = itemTable:GetCell(slotIdx, 2)
+			if iconbackRUID == nil or iconbackRUID == "" then
+				iconbackRUID = "08533840b61f49f5a4c6ad3fd4ed2cca"
+			end
+			iconRUID = itemTable:GetCell(slotIdx, 3)
+			typeTxt = _LocalizationService:GetText("ItemType_ConsumableItem")
+			descText = _LocalizationService:GetText(itemTable:GetCell(slotIdx, 4))
+			detaildescText = _LocalizationService:GetText(itemTable:GetCell(slotIdx, 5))
+			amount = _UserService.LocalPlayer.PlayerStorage.consumableItems[slotIdx]
+			
+			
+			-- 예외처리
+			if slotIdx==1 or slotIdx==2 then
+				amount = amount + _UserService.LocalPlayer.PlayerRelic.havingRelicBoxNum[slotIdx]
+			end
+			useButton.Enable = true
+			
+			local currentMapName = _UserService.LocalPlayer.CurrentMapName
+			if amount > 0 and string.sub(currentMapName, 1, 4) == "Town" then
+				useButton.ButtonComponent.Enable = true
+			else 
+				useButton.ButtonComponent.Enable = false
+			end
+			
+			type.TextComponent.FontColor = Color.FromHexCode("#ffcc00")
+			
+		------------------------------------------------------------------------------------------------------	
+		-- 광물류 아이템인 경우
+		elseif self.filterIdx == 2 then
+			local itemTable = _DataService:GetTable("DropItem")
+			nameText = _LocalizationService:GetText(itemTable:GetCell(slotIdx, 1))
+			iconbackRUID = "08533840b61f49f5a4c6ad3fd4ed2cca" 
+			iconRUID = itemTable:GetCell(slotIdx, 2)
+			typeTxt = _LocalizationService:GetText(itemTable:GetCell(slotIdx, 6))
+			descText = _LocalizationService:GetText(itemTable:GetCell(slotIdx, 4))
+			detaildescText = _LocalizationService:GetText("SellingPrice")..": ".._ThousandsSeparator:ConvertToMetricPrefixString(tonumber(itemTable:GetCell(slotIdx, 5)), nil)
+			-- 화석인 경우
+			if slotIdx >= 43 and slotIdx <= 49 then
+				detaildescText = detaildescText.."\n".._LocalizationService:GetText("DetailDesc_Fossil")
+			end 
+			
+			amount = _UserService.LocalPlayer.PlayerBackpack.storageList[slotIdx]
+			useButton.Enable = false
+			
+			type.TextComponent.FontColor = Color.FromHexCode("#ffcc00")
+			
+		------------------------------------------------------------------------------------------------------	
+		-- 유물인 경우
+		elseif self.filterIdx == 3 then
+			local itemIdx = slotIdx
+			if slotIdx > 90 then
+				itemIdx = slotIdx - 90
+			end
+			
+			local itemTable = _DataService:GetTable("Relic")
+			
+			nameText = _LocalizationService:GetText(itemTable:GetCell(itemIdx, 1))
+			local grade = itemTable:GetCell(itemIdx, 4)
+			--iconbackRUID = itemTable:GetCell(slotIdx, 2)
+			iconRUID = itemTable:GetCell(itemIdx, 2)
+			typeTxt = _LocalizationService:GetText(grade).." ".._LocalizationService:GetText("ItemType_Relic")	
+			descText = _LocalizationService:GetText(itemTable:GetCell(itemIdx, 3))
+			--detaildescText = itemTable:GetCell(slotIdx, 5)
+			if slotIdx > 90 then
+				amount = _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem[itemIdx]
+			else 
+				amount = _UserService.LocalPlayer.PlayerRelic.HavingDirtyItem[itemIdx]
+			end
+			useButton.Enable = false
+			
+			
+			-- 등급에 따라 텍스트 및 아이콘 배경 변경
+			local gradeNum = tonumber(string.sub(grade, 7, -1))
+			type.TextComponent.FontColor = Color.FromHexCode(gradeTable:GetCell(gradeNum, "color"))
+			iconbackRUID = gradeTable:GetCell(gradeNum, "iconback")
+		end
+		------------------------------------------------------------------------------------------------------
+		-- 가져온 정보를 UI에 반영
+		name.TextComponent.Text = nameText
+		if iconback ~= nil and iconback ~= "" then
+			iconback.SpriteGUIRendererComponent.ImageRUID = iconbackRUID
+		else 
+			iconback.SpriteGUIRendererComponent.ImageRUID = "08533840b61f49f5a4c6ad3fd4ed2cca"
+		end
+		icon.SpriteGUIRendererComponent.ImageRUID = iconRUID
+		type.TextComponent.Text = typeTxt
+		desc.TextComponent.Text = descText
+		detailDesc.TextComponent.Text = detaildescText
+		if detaildescText == nil or detaildescText == "" then
+			detailDesc.Parent.Enable = false
+		else 
+			detailDesc.Parent.Enable = true
+		end
+		holdingQuantity.TextComponent.Text = _ThousandsSeparator:ConvertToMetricPrefixString(amount, nil)
+		------------------------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------------------------
+		-- 아이템 목록을 정리합니다.
+		------------------------------------------------------------------------------------------------------
+		local listPanel = _EntityService:GetEntityByPath("/ui/InventoryGroup/Storage/Panel/Panel_right/ListPanel")
+		for i=1, #listPanel.Children do
+			local slot = listPanel.Children[i]
+			
+			if slot.Name == "Slot_"..tostring(math.floor(slotIdx)) then
+				slot:GetChildByName("selected_line").Enable = true
+			else 
+				slot:GetChildByName("selected_line").Enable = false
+			end
+		end
+		------------------------------------------------------------------------------------------------------
+		------------------------------------------------------------
+		popup.Enable = true
+	end
+
+	@ExecSpace("Client")
+	method void UseConsumableItem()
+		-- 선택된 소모품 아이템을 사용하거나 유물상자를 열어 결과 처리
+		if self.showingSlotIdx == 1 or self.showingSlotIdx == 2 then
+			_UserService.LocalPlayer.PlayerRelic:OpenRelicBox(self.showingSlotIdx)
+		else
+			_UserService.LocalPlayer.PlayerStorage:UseConsumableItem(self.showingSlotIdx)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayAccessoryBoxOpenDirection(string itemKey)
+		-- 장신구 상자 개봉 연출을 실행하여 슬롯머신 효과와 결과 표시
+		local panelUI = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult")
+		local nameUI = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult/Panel/Name")
+		local iconbackUI = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult/Panel/iconBack")
+		local iconUI = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult/Panel/icon")
+		local gradeUI = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult/Panel/Grade")
+		local abilityUI = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult/Panel/Ability")
+		local flavorTextUI = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult/Panel/FlavorText")
+		local exitbuttonUI = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult/Panel/Button_Exit")
+		local whitepanel = _EntityService:GetEntityByPath("/ui/InventoryGroup/AccessoryBoxOpenResult/Panel/whitepanel")
+		
+		panelUI.Enable = true
+		nameUI.Enable = false
+		gradeUI.Enable = false
+		abilityUI.Enable = false
+		flavorTextUI.Enable = false
+		exitbuttonUI.Enable = false
+		
+		local accessoryIconTable = _DataService:GetTable("AccessoryIcon")
+		local accessorySetTable = _DataService:GetTable("AccessorySet")
+		local accessoryInfoTable = _DataService:GetTable("AccessoryInfo")
+		
+		local iconTable = {}
+		local iconBackTable = {"d5f72796e87647fab528eeec3b04805e", "db5d4ddb2d3f4c659fcb160df0fb1cab", "23df4a65508f42afacec3fb533735e80", "3065e9c1bc364495bf1ce2abc2e78dcd"}
+		
+		for i=1, 3 do
+			for j=1, 5 do
+				local icon = accessoryIconTable:GetCell(i, j+1)
+				table.insert(iconTable, icon)
+			end
+		end
+		
+		-- 슬롯머신 돌아가는 연출
+		local slotmachineDir = function()
+		 	local icon = _UtilLogic:RandomIntegerRange(1, #iconTable)
+			local iconBack = _UtilLogic:RandomIntegerRange(1, #iconBackTable)
+			
+			iconUI.SpriteGUIRendererComponent.ImageRUID = iconTable[icon]
+			iconbackUI.SpriteGUIRendererComponent.ImageRUID = iconBackTable[iconBack]
+			
+			_SoundService:PlaySound("078020c2e00a4bd2897ca6c1d7e1c6fb", 0.3)
+		end
+		for i=1, 45 do
+			_TimerService:SetTimerOnce(slotmachineDir, i/30)
+		end
+		
+		
+		-- 화면이 하얘진다
+		local alpha = 0
+		local setWhitepanelColor = function()
+			alpha = alpha + 1/60
+			whitepanel.SpriteGUIRendererComponent.Color.a = alpha
+		end
+		for i=1, 60 do
+			_TimerService:SetTimerOnce(setWhitepanelColor, 0.5 + i/60)
+		end
+		
+		local playWhitepanelSound = function()
+			_SoundService:PlaySound("07913fa9199e4fd29081749be10c20a7", 0.5)
+		end
+		_TimerService:SetTimerOnce(playWhitepanelSound, 0.5)
+		
+		
+		
+		-- 화면 정상화되고 결과 보여줌
+		local showResult = function()
+			local itemData = _AccessoryLogic:GetAccessoryInfo(itemKey)
+			-------------------------------------------------------------
+			local itemName = 
+				_LocalizationService:GetText(accessoryInfoTable:GetCell(itemData[2],"name_grade")).." "
+				.._LocalizationService:GetText(accessoryInfoTable:GetCell(itemData[3],"name_set")).." "
+				.._LocalizationService:GetText(accessoryInfoTable:GetCell(itemData[1],"name_part"))
+			nameUI.TextComponent.Text = itemName
+			-------------------------------------------------------------
+			-- 등급에 따라 슬롯 ruid 변경
+			if itemData[2] == 1 then
+				iconbackUI.SpriteGUIRendererComponent.ImageRUID = "08533840b61f49f5a4c6ad3fd4ed2cca"
+			elseif itemData[2] == 2 then 
+				iconbackUI.SpriteGUIRendererComponent.ImageRUID = "d5f72796e87647fab528eeec3b04805e"
+			elseif itemData[2] == 3 then
+				iconbackUI.SpriteGUIRendererComponent.ImageRUID = "db5d4ddb2d3f4c659fcb160df0fb1cab"
+			elseif itemData[2] == 4 then
+				iconbackUI.SpriteGUIRendererComponent.ImageRUID = "23df4a65508f42afacec3fb533735e80"
+			elseif itemData[2] == 5 then
+				iconbackUI.SpriteGUIRendererComponent.ImageRUID = "3065e9c1bc364495bf1ce2abc2e78dcd"
+			else 
+				log("grade is wrong")
+			end
+			
+			iconUI.SpriteGUIRendererComponent.ImageRUID = accessoryIconTable:GetCell(itemData[1], "RUID_"..tostring(math.floor(itemData[3])))
+			
+			local flavorTxtIdx = 15*(itemData[3]-1) + 3*(itemData[2]-1) + itemData[1]
+			flavorTextUI.TextComponent.Text = _LocalizationService:GetText(accessoryInfoTable:GetCell(flavorTxtIdx,"flavorText"))
+			
+			abilityUI.TextComponent.Text = _LocalizationService:GetText(string.format("%d", 8000+itemData[1])).." +".._ThousandsSeparator:ConvertToMetricPrefixString(itemData[4], nil)
+			
+			gradeUI.TextComponent.Text = _LocalizationService:GetText("Grade_"..tostring(math.floor(itemData[2])))
+			
+			whitepanel.SpriteGUIRendererComponent.Color.a = 0
+			nameUI.Enable = true
+			gradeUI.Enable = true
+			abilityUI.Enable = true
+			flavorTextUI.Enable = true
+			exitbuttonUI.Enable = true
+			
+			_SoundService:PlaySound("07ed95a3d9a045eea34abb14086390ca", 1)
+		end
+		_TimerService:SetTimerOnce(showResult, 2)
+	end
+
+	@EventSender("Entity", "1fff9d0b-1509-4aca-8f87-6d027d324a73")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 첫 번째 필터 버튼 클릭 시 소모품 필터로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.filterIdx = 1
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "82bb6a08-9bf7-4b17-af20-c4a64759c0eb")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 두 번째 필터 버튼 클릭 시 광물 필터로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.filterIdx = 2
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "323cec76-7f99-4591-9d47-346cc1a7fcf9")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 세 번째 필터 버튼 클릭 시 유물 필터로 전환
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.filterIdx = 3
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "83269517-4e1d-442c-8721-0751688feec6")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 저장소 UI를 새로 열 때 매번 소모품 필터로 초기화하고 새로고침
+		--------------------------------------------------------
+		-- UI를 새로 열 때마다 새로고침합니다.
+		--------------------------------------------------------
+		self.filterIdx = 1
+		self:RefreshUI()
+	end
+
+	@EventSender("Entity", "78d82069-7a43-46b9-b4b9-917ff531e78c")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 소모품 사용 버튼 클릭 시 선택된 소모품 사용 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		if self.filterIdx ~= 1 then
+			return
+		end
+		
+		self:UseConsumableItem()
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 키보드 입력 처리: I키로 인벤토리 열기/닫기, ESC키로 닫기
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if key == KeyboardKey.I then
+			self.Entity.Enable = not self.Entity.Enable
+			self.filterIdx = 1
+			self.showingSlotIdx = 0
+			self:RefreshUI()
+			
+		elseif key == KeyboardKey.Escape then
+			self.Entity.Enable = false
+		end
+	end
+
+	@EventSender("Entity", "8aec349b-b945-45c2-bc5d-a2894e9e92ee")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 인벤토리 단축버튼 클릭 시 UI 열기/닫기 토글 처리
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		self.Entity.Enable = not self.Entity.Enable
+		self.filterIdx = 1
+		self.showingSlotIdx = 0
+		self:RefreshUI()
+	end
+
+end

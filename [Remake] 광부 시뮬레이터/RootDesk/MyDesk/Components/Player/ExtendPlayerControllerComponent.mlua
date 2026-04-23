@@ -1,0 +1,819 @@
+@Component
+script ExtendPlayerControllerComponent extends PlayerControllerComponent
+
+	property number failStack = 0
+
+	property string runKeyWait = ""
+
+	property number runDuration = 0
+
+	property number runCooldown = 0
+
+	property number Superjump_gauge = 0
+
+	property boolean Superjump_isCharging = false
+
+	property boolean Flashjump_used = false
+
+	property boolean arrowHold = false
+
+	property number holdTime = 0
+
+	property number leftAirJumpCount = 0
+
+	property boolean isFastFalling = false
+
+	property boolean isSlowFalling = false
+
+	property boolean canSlowFalling = true
+
+	property boolean isDashCooltime = false
+
+	property Entity SkillInfo_dash = "36361e8f-8ee1-4ad1-8017-72f685b7d431"
+
+	property Entity SkillInfo_2 = "b3aae01c-1a81-471d-9b1e-3c19812cee63"
+
+	property Entity SkillInfo_3 = "7e2e64df-86e7-4f2d-a64f-4d4075fb79ea"
+
+	property Entity SkillInfo_5 = "e8513d19-7187-496e-a942-1d5f16981108"
+
+	property Entity SkillInfo_8 = "61349069-fc33-45ca-8242-46a02527dc00"
+
+	method void ActionDownJump()
+		-- 아래 점프 사용 비활성화 (기존 또는 대의성)
+		--__base:ActionDownJump()
+	end
+
+	method void ActionSit()
+		-- 앉아서 의자 기능 사용 (마을에서만 사용 가능)
+		__base:ActionSit()
+		
+		local parentMap = self.Entity.Parent.Name
+		if string.sub(parentMap, 1, 4) == "Town" then
+			if self.Entity.StateComponent.CurrentStateName == "SIT" then
+				
+				self:SitOnChair_Server()
+			
+				_UserService.LocalPlayer.PlayerChair:SetSitEnable(true)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ActionDash()
+		-- 대쉬 스킬 실행 - MP 소모, 쿨다운, 공허 아이템 효과 처리
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if self.Entity.RigidbodyComponent:IsOnGround() == false then
+			return
+		end
+		
+		if self.isDashCooltime == true then
+			return
+		end
+		
+		if self.Entity.PlayerIngameData.MP < 30 then
+			_UIToast:ShowMessage(_LocalizationService:GetText("Message_HaveNoMP"))
+			self.failStack = self.failStack + 1
+			if self.failStack >= 3 then
+				local showGuideMessage = function()
+					_UIToast:ShowMessage(_LocalizationService:GetText("Message_Tip_BuyShoes"))
+				end
+				_TimerService:SetTimerOnce(showGuideMessage, 4)
+				self.failStack = -7
+			end
+			return
+		end
+		
+		-- 쿨타임 관련 처리
+		local cooldownCoverImage_pc = _EntityService:GetEntityByPath("/ui/IngameGroup/Button_Dash_pc/CooldownCover")
+		local cooldownCoverImage_mobile = _EntityService:GetEntityByPath("/ui/IngameGroup/Button_Dash/CooldownCover")
+		local cooldownText_pc = _EntityService:GetEntityByPath("/ui/IngameGroup/Button_Dash_pc/CooldownText")
+		local cooldownText_mobile = _EntityService:GetEntityByPath("/ui/IngameGroup/Button_Dash/CooldownText")
+		
+		self.isDashCooltime = true
+		local resetCooltime = function()
+			self.isDashCooltime = false
+			--self.SkillInfo_dash.Enable = false
+			cooldownText_pc.Enable = false
+			cooldownText_mobile.Enable = false
+			cooldownCoverImage_pc.Enable = false
+			cooldownCoverImage_mobile.Enable = false
+		end
+		_TimerService:SetTimerOnce(resetCooltime, 3)
+		
+		
+		
+		local leftCooltime = 3.0
+		local setCooltimeInfoHUD = function()
+			leftCooltime = leftCooltime - 1/30
+			
+			--self.SkillInfo_dash:GetChildByName("Number").TextComponent.Text = string.format("%.1f", leftCooltime)
+			cooldownText_pc.TextComponent.Text = string.format("%.1f", leftCooltime)
+			cooldownText_mobile.TextComponent.Text = string.format("%.1f", leftCooltime)
+			cooldownCoverImage_mobile.SpriteGUIRendererComponent.FillAmount = leftCooltime / 3.0
+			cooldownCoverImage_pc.SpriteGUIRendererComponent.FillAmount = leftCooltime / 3.0
+			
+			
+			--self.SkillInfo_dash.Enable = true
+			cooldownText_pc.Enable = true
+			cooldownText_mobile.Enable = true
+			cooldownCoverImage_pc.Enable = true
+			cooldownCoverImage_mobile.Enable = true
+			
+		end
+		for i=1, 89 do
+			_TimerService:SetTimerOnce(setCooltimeInfoHUD, i/30)
+		end
+		
+		
+		
+		-- 마나 소모
+		self.Entity.PlayerIngameData:UseMP(30)
+		
+		-- 이동 처리
+		local moveDir = math.abs(self.LookDirectionX)/self.LookDirectionX
+		self.Entity.RigidbodyComponent:SetForce(Vector2(moveDir*6, 2.5))
+		
+		-- dash effect
+		_EffectService:PlayEffectAttached("2a4693d85a8c4ca49ff315218316cacc",
+			self.Entity,
+			Vector3(0, 0, 0),
+			0,
+			Vector3(-moveDir*1, 1, 1))
+		
+		-- sound
+		_SoundService:PlaySound("3cc6e9d3ad6b41fbbe2a6ab17b364b94", 0.5)
+		
+		
+		-- 공허 아이템 효과 적용
+		local voidItemLv = _UserService.LocalPlayer.PlayerVoidItem.haveItems[6] 
+		local voidItemTable = _DataService:GetTable("VoidItems")
+		if voidItemLv > 0 then
+			local initAbility = tonumber(voidItemTable:GetCell(6, "InitAbility"))
+			local levelAbility = tonumber(voidItemTable:GetCell(6, "AbilityPerLevel"))
+			local currentAbility = initAbility + levelAbility * voidItemLv
+			
+			local randValue = _UtilLogic:RandomIntegerRange(1, 10)
+			if randValue <= 3 then
+				_UserService.LocalPlayer.PlayerIngameData:RecoverHP(currentAbility)		 
+				_UIGetLog:PrintVoidItemLog(6)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SitOnChair()
+		-- 의자에 앉기 - 중력 비활성화 및 위치 조정
+		local alreadySitState = false
+		if self.Entity.RigidbodyComponent.Enable == false then
+			alreadySitState = true
+		end
+		
+		self.Entity.RigidbodyComponent.Gravity = 0
+		self.Entity.RigidbodyComponent.Enable = false
+		
+		local chairTable = _DataService:GetTable("Chair")
+		
+		if self.Entity.PlayerChair.equipedIdx > 0 then
+			local playerPosY = tonumber(chairTable:GetCell(self.Entity.PlayerChair.equipedIdx, 7))
+			if playerPosY ~= nil and alreadySitState == false then
+				self.Entity.TransformComponent.Position.y = self.Entity.TransformComponent.Position.y + playerPosY
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SitOnChair_Server()
+		-- 서버에서 의자에 앉아벤그상 점프 비활성화
+		self:SitOnChair()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 상태 체크 및 기본 값 설정
+		if self.Entity ~= _UserService.LocalPlayer then
+			if self.Entity.StateComponent.CurrentStateName == "SIT" then
+				self:SitOnChair()
+			end
+		end
+		
+		self._T.downKeyInputted = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Skill_Run()
+		-- 2번 펫의 달리기 스킬 - 레벨에 따른 지속시간과 쿨다운
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if self.runCooldown > 0 then
+			return
+		end
+		
+		if self.Entity.PlayerPet.useSkill[2] == false then
+			return
+		end
+		
+		self.runKeyWait = ""
+		
+		local level = self.Entity.PlayerPet.havePet[2]
+		
+		if level == 0 or self.Entity.PlayerIngameData.MP < 80 then
+			return
+		elseif level == 1 then
+			self.runCooldown = 10
+			self.runDuration = 5
+		elseif level == 2 then
+			self.runCooldown = 11.5
+			self.runDuration = 7.5
+		elseif level == 3 then
+			self.runCooldown = 13
+			self.runDuration = 10
+		end
+		
+		_EffectService:PlayEffectAttached("991be3c78b2d4af8b86a38f0bfae4ed0",
+			self.Entity,
+			Vector3.zero,
+			0,
+			Vector3.one
+			)
+		_SoundService:PlaySound("06f080c8c42e431785a46e20ec9be5bb", 1)
+		self.Entity.PlayerIngameData:UseMP(80)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임마다 펫 스킬 UI 업데이트 및 각종 스킬 지속 효과 처리
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		-- 달리기 관련 
+		self.runCooldown = self.runCooldown - delta
+		self.runDuration = self.runDuration - delta
+		
+		if self.runDuration > 0 then
+			self.Entity.RigidbodyComponent.WalkSpeed = 1.8
+		else
+			self.Entity.RigidbodyComponent.WalkSpeed = 1.2
+		end
+		
+		if self.runDuration > 0 then
+			self.SkillInfo_2.Enable = true
+			self.SkillInfo_2.SpriteGUIRendererComponent.Color = Color.white
+			self.SkillInfo_2:GetChildByName("Number").TextComponent.Text = string.format("%.1f", self.runDuration)
+		elseif self.runCooldown > 0 then
+			self.SkillInfo_2.Enable = true
+			self.SkillInfo_2.SpriteGUIRendererComponent.Color = Color.gray 
+			self.SkillInfo_2:GetChildByName("Number").TextComponent.Text = string.format("%.1f", self.runCooldown)
+		else 
+			self.SkillInfo_2.Enable = false
+		end
+		---------------------------------------
+		-- 도움닫기 관련
+		if self.Superjump_isCharging == true and self.Superjump_gauge < 1 and self.Entity.PlayerIngameData.MP >= 100 then
+			self.Superjump_gauge = self.Superjump_gauge + delta
+			self.Entity.AvatarRendererComponent:SetColor((1-self.Superjump_gauge/2), 1, (1-self.Superjump_gauge/2), 1)
+		
+			self.SkillInfo_3.Enable = true
+			self.SkillInfo_3:GetChildByName("Number").TextComponent.Text = string.format("%.1f", self.Superjump_gauge)
+		
+			if self.Superjump_gauge >= 1 then
+				self.Superjump_gauge = 1
+				
+				_ParticleService:PlayBasicParticleAttached(BasicParticleType.CircleBurst, self.Entity,
+					Vector3.zero, 0, Vector3.one) -- 충전 완료 이펙트
+			end
+		else 
+			self.SkillInfo_3.Enable = false
+			self.SkillInfo_3:GetChildByName("Number").TextComponent.Text = "0.0"
+		end
+		---------------------------------------
+		-- 가속 관련
+		if self.arrowHold == true then
+			local level = self.Entity.PlayerPet.havePet[5] 
+			
+			if level < 1 then
+				self.SkillInfo_5.Enable = false
+				goto cont
+			end
+			
+			if self.Entity.PlayerPet.useSkill[5] == false then
+				self.SkillInfo_5.Enable = false
+				goto cont
+			end
+			
+			self.holdTime = self.holdTime + delta
+			
+			if self.holdTime > 0.5 then
+			
+				local moveSpeedRate = 1 + (self.holdTime-0.5)*0.1*level
+				if moveSpeedRate >= 2 then
+					moveSpeedRate = 2
+				end
+				
+				self.SkillInfo_5.Enable = true
+				self.SkillInfo_5:GetChildByName("Number").TextComponent.Text = string.format("%.1f", moveSpeedRate)
+				
+				self.Entity.RigidbodyComponent.WalkSpeed = self.Entity.RigidbodyComponent.WalkSpeed * moveSpeedRate
+				--self.Entity.PlayerIngameData:UseMP(10*delta)
+			end
+		else
+			self.SkillInfo_5.Enable = false
+		end
+		
+		::cont::
+		---------------------------------------
+		-- 활강 관련
+		if self.isSlowFalling == true then
+			self.Entity.PlayerIngameData:UseMP(10*delta)
+			self.SkillInfo_8.Enable = true
+		else 
+			self.SkillInfo_8.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Skill_Superjump()
+		-- 3번 펫의 도움닫기 점프 스킬 - 게이지 충전량에 비례한 점프력
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		------------------------------------------------------------------------------------
+		------------------------------------------------------------------------------------
+		-- 예외 상황에 대한 처리
+		
+		-- 스킬 레벨이 0 이하이거나, 마나가 없다면
+		local level =  self.Entity.PlayerPet.havePet[3] 
+		if level <= 0 or self.Entity.PlayerIngameData.MP < 100 then
+			return
+		end
+		
+		-- 충전 게이지가 0.5 미만이라면
+		if self.Superjump_gauge < 0.5 then
+			return
+		end
+		
+		-- 스킬 OFF 라면
+		if self.Entity.PlayerPet.useSkill[3] == false then
+			return
+		end
+		
+		-- 땅에 붙어있지 않다면
+		if self.Entity.RigidbodyComponent:IsOnGround() == false then
+			return
+		end
+		------------------------------------------------------------------------------------
+		
+		local jumpRate = 1.9
+		if level == 2 then
+			jumpRate = 2.2
+		elseif level == 3 then
+			jumpRate = 2.5 
+		end
+		
+		jumpRate = jumpRate * (self.Superjump_gauge)
+		
+		self.Entity.RigidbodyComponent:JustJump(Vector2(0, jumpRate))
+		
+		
+		local effectPos = self.Entity.TransformComponent.WorldPosition:Clone()
+		_EffectService:PlayEffect(
+					"c1996d3f0225490ca9a551fad51eb29e",
+					self.Entity,
+					effectPos,
+					0,
+					Vector3.one*self.Superjump_gauge
+					)
+		
+		self.Superjump_gauge = 0
+		self.Entity.PlayerIngameData:UseMP(100)
+	end
+
+	@ExecSpace("Client")
+	method void Skill_Flashjump()
+		-- 4번 펫의 공중 대쉬 스킬 - 레벨에 따른 MP 소모량 감소
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		local level = self.Entity.PlayerPet.havePet[4]
+		if level <= 0 then
+			return
+		end
+		
+		if self.Flashjump_used == true then
+			return
+		end
+		
+		if self.Entity.StateComponent.CurrentStateName == "LADDER" or self.Entity.StateComponent.CurrentStateName == "CLIMB" then
+			return
+		end
+		
+		if self.Entity.PlayerPet.useSkill[4] == false then
+			return
+		end
+		------------------------------------------------------------------------------------
+		
+		-- 활강을 일시적으로 비활성화합니다.
+		self.canSlowFalling = false
+		if self.Entity.PlayerStateAtStage.playerInWater == false then
+			self.Entity.RigidbodyComponent.Gravity = 1
+		end
+		local setCanSlowfalling = function()
+			self.canSlowFalling = true
+		end
+		_TimerService:SetTimerOnce(setCanSlowfalling, 0.3)
+		
+		
+		
+		if level == 1 then
+			if self.Entity.PlayerIngameData.MP < 100 then
+				return
+			end
+			self.Entity.PlayerIngameData:UseMP(100)
+		elseif level == 2 then
+			if self.Entity.PlayerIngameData.MP < 75 then
+				return
+			end
+			self.Entity.PlayerIngameData:UseMP(75)
+		elseif level == 3 then
+			if self.Entity.PlayerIngameData.MP < 50 then
+				return
+			end
+			self.Entity.PlayerIngameData:UseMP(50)
+			
+		end
+		
+		self.Flashjump_used = true
+		
+		local moveDir = self.LookDirectionX
+		local moveSpeed = self.Entity.RigidbodyComponent.WalkSpeed / 1.2
+		
+		self.Entity.RigidbodyComponent:SetForce(Vector2(moveDir*5*moveSpeed, 5*moveSpeed+0.1))
+		
+		
+		-- dash effect
+		_EffectService:PlayEffectAttached("2a4693d85a8c4ca49ff315218316cacc",
+			self.Entity,
+			Vector3(0, 0, 0),
+			0,
+			Vector3(-moveDir*1, 1, 1))
+		
+		-- sound
+		_SoundService:PlaySound("3cc6e9d3ad6b41fbbe2a6ab17b364b94", 0.5)
+	end
+
+	@ExecSpace("Client")
+	method void Skill_AirJump()
+		-- 6번 펫의 공중점프 스킬 - 현재 Y 속도 유지하며 위로 점프
+		if self.Entity.PlayerIngameData.MP < 10 then
+			return
+		end
+		
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if self.leftAirJumpCount <= 0 then
+			return
+		end
+		
+		if self.Entity.PlayerPet.useSkill[6] == false then
+			return
+		end
+		
+		if self.Entity.StateComponent.CurrentStateName == "LADDER" or self.Entity.StateComponent.CurrentStateName == "CLIMB" then
+			return
+		end
+		------------------------------------------------------------------------------------
+		
+		self.leftAirJumpCount = self.leftAirJumpCount - 1
+		self.Entity.PlayerIngameData:UseMP(10)
+		
+		local velX = self.Entity.RigidbodyComponent.RealMoveVelocity.x
+		self.Entity.RigidbodyComponent:SetForce(Vector2(velX, 5))
+		
+		_EffectService:PlayEffect("66e6b33e109e45ec939b347b4f6202f4", self.Entity, self.Entity.TransformComponent.WorldPosition, 0, Vector3.one)
+		_SoundService:PlaySound("14cbd48af5474ecc9ba5c133d5b28fac", 1)
+	end
+
+	@ExecSpace("Client")
+	method void Skill_FastFall()
+		-- 7번 펫의 고속 낙하 스킬 - 레벨에 비례한 낙하 속도
+		if self.Entity.PlayerIngameData.MP < 30 then
+			return
+		end
+		
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if self.isFastFalling == true then
+			return
+		end
+		
+		local level = self.Entity.PlayerPet.havePet[7]
+		if level < 1 then
+			 return
+		end
+		
+		if self.Entity.PlayerPet.useSkill[7] == false then
+			return
+		end
+		
+		if self.Entity.StateComponent.CurrentStateName == "LADDER" or self.Entity.StateComponent.CurrentStateName == "CLIMB" then
+			return
+		end
+		------------------------------------------------------------------------------------
+		
+		self.isFastFalling = true
+		local velX = self.Entity.RigidbodyComponent.RealMoveVelocity.x
+		self.Entity.RigidbodyComponent:SetForce(Vector2(velX, -15 -(7.5*level)))
+		
+		self.Entity.PlayerIngameData:UseMP(30)
+		
+		_SoundService:PlaySound("14cbd48af5474ecc9ba5c133d5b28fac", 1)
+		_EffectService:PlayEffectAttached("173e5f5f81994d73b16b0e21dff1f52a",
+			self.Entity,
+			Vector3.zero,
+			0,              
+			Vector3.one)
+	end
+
+	@ExecSpace("Client")
+	method void Skill_SlowFall()
+		-- 마나가 적으면 발동 안함
+		if self.Entity.PlayerIngameData.MP < 30 then
+			return
+		end
+		
+		-- 본인이 아닌 경우 발동 안함
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		-- 펫이 없으면 발동 안함
+		local level = self.Entity.PlayerPet.havePet[8]
+		if level < 1 then
+			 return
+		end
+		
+		-- 스킬 OFF 상태이면 발동 안함 
+		if self.Entity.PlayerPet.useSkill[8] == false then
+			return
+		end
+		
+		-- 사다리나 밧줄에 매달린 상태에서는 발동 안함
+		if self.Entity.StateComponent.CurrentStateName == "LADDER" or self.Entity.StateComponent.CurrentStateName == "CLIMB" then
+			self.isSlowFalling = false
+			return
+		end
+		------------------------------------------------------------------------------------
+		
+		if self.Entity.RigidbodyComponent:IsOnGround() == false and self.Entity.RigidbodyComponent.RealMoveVelocity.y < 0 and self.canSlowFalling then
+			self.isSlowFalling = true
+			
+			local gravity = {0.5, 0.35, 0.2}
+			self.Entity.RigidbodyComponent.Gravity = gravity[level]
+			self.SkillInfo_8:GetChildByName("Number").TextComponent.Text = string.format("%d", level)
+		
+		else 
+			self.isSlowFalling = false
+			self.Entity.RigidbodyComponent.Gravity = 1
+			
+		end
+	end
+
+	method void ActionJump()
+		-- 기본 점프 시 활강 상태 일시 비활성화 뒤 기본 점프 수행
+		-- 활강을 일시적으로 비활성화합니다.
+		self.canSlowFalling = false
+		if self.Entity.PlayerStateAtStage.playerInWater == false then
+			self.Entity.RigidbodyComponent.Gravity = 1
+		end
+		local setCanSlowfalling = function()
+			self.canSlowFalling = true
+		end
+		_TimerService:SetTimerOnce(setCanSlowfalling, 1/60)
+		
+		__base:ActionJump()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 키 눌렀을 때 각종 펫 스킬 실행 (Shift: 대쉬/공중대쉬, Space: 공중점프, S: 고속냙하)
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if self.Entity.MovementComponent.Enable == false or _UserService.LocalPlayer.StateComponent.CurrentStateName == "SIT" then
+			return
+		end
+		
+		if key == KeyboardKey.LeftShift then
+			if self.Entity.RigidbodyComponent:IsOnGround() == false then
+				self:Skill_Flashjump()
+			else 
+				self:ActionDash()
+			end
+		end
+		
+		if (key == KeyboardKey.Space or key == KeyboardKey.LeftAlt) and self.Entity.RigidbodyComponent:IsOnGround() == false then
+			self:Skill_AirJump()
+		end
+		
+		if (key == KeyboardKey.DownArrow or key == KeyboardKey.S) and self.Entity.RigidbodyComponent:IsOnGround() == false then
+		
+			if self._T.downKeyInputted == true then
+				self:Skill_FastFall()
+				self._T.downKeyInputted = false
+			else
+				self._T.downKeyInputted = true
+				local setDownKeyConditionDisable = function()
+					self._T.downKeyInputted = false
+				end
+				_TimerService:SetTimerOnce(setDownKeyConditionDisable, 0.3)
+			end
+		
+		end
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent2(KeyDownEvent event)
+		-- 두 번째 키 눌렀 핸들러 - 달리기와 도움닫기 차징 효과
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if self.Entity.MovementComponent.Enable == false or _UserService.LocalPlayer.StateComponent.CurrentStateName == "SIT" then
+			return
+		end
+		
+		-- 달리기 : 좌우키를 연속2회 누르면...
+		if (key == KeyboardKey.LeftArrow or key == KeyboardKey.A) and self.Entity.PlayerPet.havePet[2] >= 1 then
+			if self.runKeyWait == "left" then
+				self:Skill_Run()
+			else
+				self.runKeyWait = "left"
+				local setKeyWait = function()
+					self.runKeyWait = ""
+				end
+				_TimerService:SetTimerOnce(setKeyWait, 0.3)
+			end
+		elseif (key == KeyboardKey.RightArrow or key == KeyboardKey.D) and self.Entity.PlayerPet.havePet[2] >= 1 then
+			if self.runKeyWait == "right" then
+				self:Skill_Run()
+			else
+				self.runKeyWait = "right"
+				local setKeyWait = function()
+					self.runKeyWait = ""
+				end
+				_TimerService:SetTimerOnce(setKeyWait, 0.3)
+			end
+		end
+		
+		-- 도움닫기(파티클 재생용) : 파티클 재생은 KeyDown으로 받습니다.
+		if (key == KeyboardKey.DownArrow or key == KeyboardKey.S) 
+			and self.Entity.RigidbodyComponent:IsOnGround() 
+			and	self.Superjump_gauge < 2 
+			and self.Entity.PlayerIngameData.MP >= 100 then
+			if self.Entity.PlayerPet.havePet[3] > 0 and self.Entity.PlayerPet.useSkill[3] == true then
+				self._T.attachedParticle = _ParticleService:PlayBasicParticleAttached(BasicParticleType.Charge, self.Entity, Vector3.zero, 0, Vector3.one*0.3)
+			end
+		end
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyHoldEvent(KeyHoldEvent event)
+		-- 키 계속 누르고 있을 때 - 도움닫기 차징, 가속, 활강 스킬 처리
+		-- Parameters
+		local key = event.key
+		----------------------------------------------------------------------------------------------------------------
+		-- 움직임이 불가한 상황이면 return 합니다.
+		if self.Entity.MovementComponent.Enable == false or _UserService.LocalPlayer.StateComponent.CurrentStateName == "SIT" then
+			self.Superjump_isCharging = false
+			self.Superjump_gauge = 0
+			self.Entity.AvatarRendererComponent:SetColor(1, 1, 1, 1)
+			return
+		end
+		
+		if (key == KeyboardKey.DownArrow or key == KeyboardKey.S)  then
+			if self.Entity.PlayerPet.havePet[3] > 0 
+				and self.Entity.PlayerPet.useSkill[3] == true
+				and self.Entity.RigidbodyComponent:IsOnGround() then
+				self.Superjump_isCharging = true
+			else 
+				self.Superjump_isCharging = false
+				_ParticleService:RemoveParticle(self._T.attachedParticle)
+			end
+		end
+		
+		if (key == KeyboardKey.LeftArrow or key == KeyboardKey.A) or (key == KeyboardKey.RightArrow or key == KeyboardKey.D) then 
+			self.arrowHold = true
+		end
+		
+		
+		-- 활강
+		if  (key == KeyboardKey.UpArrow or key == KeyboardKey.W) and (self.Entity.RigidbodyComponent:IsOnGround() == false) and self.Entity.RigidbodyComponent.RealMoveVelocity.y < 0 then
+			self:Skill_SlowFall()
+		end
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyUpEvent(KeyUpEvent event)
+		-- 키에서 손 떼을 때 - 도움닫기 점프 실행, 가속 종료, 활강 종료
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if self.Entity.MovementComponent.Enable == false or self.Entity.StateComponent.CurrentStateName == "SIT" then
+			return
+		end
+		
+		if (key == KeyboardKey.DownArrow or key == KeyboardKey.S) then
+			self.Superjump_isCharging = false
+			self:Skill_Superjump()
+			self.Superjump_gauge = 0
+			self.Entity.AvatarRendererComponent:SetColor(1, 1, 1, 1)
+			if self._T.attachedParticle ~= nil then
+				_ParticleService:RemoveParticle(self._T.attachedParticle)
+				self._T.attachedParticle = nil
+			end
+		end
+		
+		if (key == KeyboardKey.LeftArrow or key == KeyboardKey.A) or (key == KeyboardKey.RightArrow or key == KeyboardKey.D) then 
+			self.arrowHold = false
+			self.holdTime = 0 
+		end 
+		
+		-- 활강 종료
+		if (key == KeyboardKey.UpArrow or key == KeyboardKey.W) then
+			if _UserService.LocalPlayer.PlayerStateAtStage.playerInWater == false then
+				self.Entity.RigidbodyComponent.Gravity = 1
+			end
+			self.isSlowFalling = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleFootholdCollisionEvent(FootholdCollisionEvent event)
+		-- 지형과 충돌했을 때 공중 스킬 상태 리셋 (사다리나 버티컬 면에는 리셋 안됨)
+		-- Parameters
+		local FootholdNormal = event.FootholdNormal
+		local ImpactDir = event.ImpactDir
+		local ImpactForce = event.ImpactForce
+		local ReflectDir = event.ReflectDir
+		local Rigidbody = event.Rigidbody
+		--------------------------------------------------------
+		--log("FootholdNormal =", FootholdNormal)
+		if Rigidbody == self.Entity.RigidbodyComponent and 
+			not (FootholdNormal ==  Vector2(1, 0) or FootholdNormal == Vector2(-1, 0)) then
+			self.Flashjump_used = false
+			self.leftAirJumpCount = self.Entity.PlayerPet.havePet[6]
+			self.isFastFalling = false
+		
+			self.Entity.RigidbodyComponent.Gravity = 1
+		
+			self.isSlowFalling = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleStateChangeEvent(StateChangeEvent event)
+		-- 상태 변경시 특대 가능 상태에서 공중 스킬들 리셋
+		-- Parameters
+		local CurrentStateName = event.CurrentStateName
+		local PrevStateName = event.PrevStateName
+		--------------------------------------------------------
+		--log("CurrentStateName = ", CurrentStateName)
+		
+		if CurrentStateName == "CLIMB" or CurrentStateName == "LADDER" then
+			self.Flashjump_used = false
+			self.leftAirJumpCount = self.Entity.PlayerPet.havePet[6]
+			self.isFastFalling = false
+			if not _UserService.LocalPlayer.PlayerStateAtStage.playerInWater then
+				self.Entity.RigidbodyComponent.Gravity = 1
+			end
+			self.isSlowFalling = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleFootholdLeaveEvent(FootholdLeaveEvent event)
+		-- 지형에서 떨어졌을 때 생성되는 이벤트 (현재 비어있음)
+		-- Parameters
+		local Entity = event.Entity
+		local Foothold = event.Foothold
+		--------------------------------------------------------
+		if self.Superjump_isCharging == true then
+			self.Superjump_isCharging = false
+		end
+	end
+
+end

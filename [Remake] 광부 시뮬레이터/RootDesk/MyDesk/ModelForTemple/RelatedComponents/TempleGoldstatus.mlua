@@ -1,0 +1,134 @@
+@Component
+script TempleGoldstatus extends InteractionComponent
+
+	@Sync
+	property Entity guideImage = nil
+
+	@Sync
+	property number coolDown = 0
+
+	method void OnBeginPlay()
+		-- 서버 시작 시 상호작용 가능한 가이드 이미지를 초기화
+		if self:IsServer() then
+		
+			local guideImage = self.Entity:GetChildByName("GuideImage")
+			self.guideImage = guideImage
+		end
+	end
+
+	@ExecSpace("Client")
+	method void OnInteractionEvent()
+		-- 플루투스의 황금지팡이 상호작용 시 사운드 재생과 서버 로직 호출
+		-- 사운드
+		_SoundService:PlaySound("fc15ba902a28413c87acaf06b7953136", 0.7)
+		
+		
+		-- 건설7 : 지하신전에서 플루투스의 황금지팡이를 발견할 수 있습니다. 상호작용하면 골드를 획득합니다.
+		local constuctionLv = _UserService.LocalPlayer.PlayerConstruction.haveItems[7] 
+		if constuctionLv > 1 then
+			self:OnInteractionEventOnServer(_UserService.LocalPlayer)
+		end
+		
+		
+		-- 엔티티 제거
+		self.Entity.Enable = false
+	end
+
+	@ExecSpace("Server")
+	method void OnInteractionEventOnServer(Entity player)
+		-- 서버에서 황금 지팡이 상호작용 처리: 쿨다운 확인, 골드 지급, UI 업데이트
+		-- 검증
+		if self.coolDown > 0 then
+			return
+		end
+		------------------------------------------------------------
+		self.coolDown = 3
+		local setDownCool = function()
+			self.coolDown = self.coolDown - 0.1
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setDownCool, 0.1*i)
+		end
+		
+		local currentFloor = player.PlayerIngameData.TempleFloor_Current
+		local goldAmount = 50000000000 * (1+ 0.6*(currentFloor-1)) * _UtilLogic:RandomIntegerRange(100, 300)/100
+		player.PlayerData:GetMoney(goldAmount)
+		self:SetGoldRewardUI(goldAmount, player.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetGoldRewardUI(number amount)
+		-- 황금 지팡이 상호작용 결과 UI를 설정하고 일정 시간 후 비활성화
+		local resultUI = _EntityService:GetEntity("54996a97-addd-483d-98bb-1fda7c4b94bc")
+		resultUI:SetEnable(true)
+		------------------------------
+		local titleUI = _EntityService:GetEntity("63f877a5-d9c2-43b0-b5b6-a68075b3a235")
+		local amountUI = _EntityService:GetEntity("014751fa-c4ea-415d-85b8-0aa33ed022a4")
+		
+		--------------------------------
+		titleUI.TextComponent.Text = _LocalizationService:GetTextFormat("Messag_GoldStatueReward")
+		--string.format(_LocalizationService:GetText("Message_GoldBoxOpen"), level)
+		amountUI.TextComponent.Text = string.format("+ %s", _ThousandsSeparator:ConvertToMetricPrefixString(amount, nil))
+		--------------------------------
+		local DisableUI = function()
+			resultUI.Enable = false
+		end
+		
+		_TimerService:SetTimerOnce(DisableUI, 3.5)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 엔티티 상호작용 이벤트 핸들러: OnInteractionEvent 메소드 호출
+		self:OnInteractionEvent()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 상호작용 영역 진입 시 E키 가이드 UI를 생성하고 표시
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			local spawnPos = Vector3(0, 0.5, 0)
+			local guideUI = _SpawnService:SpawnByModelId("model://85ad2718-739a-4bf9-aee4-f439cda53303", "Guide_Key", spawnPos, self.Entity)
+			guideUI:GetChildByName("UIText").TextComponent.Text = _LocalizationService:GetText("Use")
+			
+			guideUI:GetChildByName("icon_key_E").UITransformComponent.WorldPosition.x = guideUI:GetChildByName("icon_key_E").UITransformComponent.WorldPosition.x + 0.2
+			guideUI:GetChildByName("UIText").UITransformComponent.RectSize = Vector2(420, 100)
+		
+			if InteractionEntity ~= _UserService.LocalPlayer then
+				guideUI.Enable = false
+			else 
+				guideUI.Enable = true
+			end
+		else
+			guideKeyWorldUI.Enable = true
+		end
+		
+		self.guideImage.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 상호작용 영역 떠날 때 E키 가이드 UI를 비활성화하고 기본 가이드 이미지 표시
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		local guideKeyWorldUI = self.Entity:GetChildByName("Guide_Key")
+		
+		if guideKeyWorldUI == nil then
+			log("가이드 키가 없습니다.")
+			return
+		end
+		
+		guideKeyWorldUI.Enable = false
+		self.guideImage.Enable = true
+	end
+
+end

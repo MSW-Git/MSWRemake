@@ -1,0 +1,492 @@
+@Component
+script PlayerUpgrade extends Component
+
+	@TargetUserSync
+	property SyncTable<integer, integer> Upgrades
+
+	property boolean IsServerProcessing = false
+
+	@TargetUserSync
+	property SyncTable<string, integer> Subscriptions
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 업그레이드 데이터를 데이터베이스에 저장
+		local total = {}
+		total["Upgrades"] = _UtilLogic:TableToString(self.Upgrades)
+		total["Subscriptions"] = _UtilLogic:TableToString(self.Subscriptions)
+		
+		saveData["UpgradeData"] = total
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 업그레이드 데이터를 로드하여 초기화
+		local dataTable = loadedData["UpgradeData"]
+		if dataTable == nil then
+			dataTable = {}
+		end
+		
+		if #table.keys(dataTable) > 0 then
+			
+			if dataTable["Upgrades"] then
+				local value = _UtilLogic:StringToTable(dataTable["Upgrades"])
+				table.initialize(self.Upgrades, value)
+				self:SyncToClientUpgrades(value, self.Entity.PlayerComponent.UserId)
+			end
+			self.Entity.PlayerRecipe:CalculateActiveRecipeCombo()
+			
+			if dataTable["Subscriptions"] then
+				table.initialize(self.Subscriptions, _UtilLogic:StringToTable(dataTable["Subscriptions"]))
+			end
+		
+		else
+			
+		end
+		
+		_UIButtonUnlockLogic:SetButtonsUnlock(self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerEvent:RefreshAllToDoSecretaryInfo()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 업그레이드 컴포넌트의 모든 데이터를 초기화
+		table.clear(self.Upgrades)
+		table.clear(self.Subscriptions)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer UpgradeFunction(integer typeId, boolean isCheat)
+		-- 업그레이드 수행 로직으로 조건 검사후 비용 차감 및 레벨 업 처리
+		
+		if self.Entity.PlayerCheatComponent.IsCheatMode then
+			isCheat = true
+		end
+		
+		if _UpgradeDataSetLogic.UpgradeData[typeId] == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return 1
+		end
+		
+		local currentLevel = self:ReturnPlayerUpgradeLevelOfType(typeId)
+		local nextLevel = currentLevel + 1
+		
+		---@type UpgradeTypeData
+		local typeData = _UpgradeDataSetLogic.UpgradeData[typeId]
+		if currentLevel == typeData:GetMaxLevel(self.Entity) then
+			_GetLocalizationTextLogic:CallToastByLocalizationKey("UpgradeErrorMessage1", nil, false, self.Entity.PlayerComponent.UserId)
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return 2
+		end
+		
+		---@type UpgradeLevelData
+		local nextLevelData = typeData.LevelData[nextLevel]
+		if self.Entity.PlayerInventory.Money < nextLevelData:GetUpgradeCost(self.Entity) then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return 3
+		end
+		
+		local canUpgrade = _UpgradeDataSetLogic:CanUpgrade(self.Entity, typeId, self.Entity.PlayerComponent.UserId)
+		if canUpgrade == false then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return 4
+		end
+		
+		local cost = nextLevelData:GetUpgradeCost(self.Entity)
+		
+		self.Entity.PlayerInventory:ModifyMoney(-cost,"Upgrade","Upgrade popup")
+		
+		self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.M_Upgrade, cost)
+		
+		self.Upgrades[typeId] = nextLevel
+		
+		local tutorialProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.UpgradeCount)
+		self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.UpgradeCount, tutorialProgress+1)
+		
+		local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.UpgradeCount)
+		self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.UpgradeCount, achiProgress+1)
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["System_CashShop_Buy_01"], 1, self.Entity.PlayerComponent.UserId)
+		
+		self:RequestApplyUpgradeDataServer(typeId, isCheat)
+		
+		_TimerService:SetTimerOnce(function()
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+		end, 0.3)
+		
+		self.Entity.PlayerLog:UpgradeFlow(tostring(nextLevel),tostring(typeId),tostring(typeData.Tab), tostring(currentLevel))
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.RecommendedUpgrade)
+		
+		return 0
+	end
+
+	@ExecSpace("Server")
+	method void RequestUpgrade(integer typeId, boolean isCheat)
+		-- 클라이언트에서 업그레이드 요청을 받아 처리
+		self:UpgradeFunction(typeId, isCheat)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestApplyUpgradeDataServer(integer typeId, boolean isCheat)
+		-- 업그레이드 타입에 따라 각종 시설 및 기능 업데이트를 수행하고 성과 처리
+		local themeLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.InteriorLevel)
+		local interiorLv = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity,_UpgradeTypeEnum.InteriorLevel)
+		local expansionLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.ExpansionStep)
+		local decoLv = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.StoreDeco)
+		
+		local grillCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.GrillCount)
+		local displayCount = _KitchenAppService:ReturnDisplayNum(self.Entity)
+		local counterCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.CounterCount)
+		
+		local level = self:ReturnPlayerUpgradeLevelOfType(typeId)
+		local levelValue = _UpgradeDataSetLogic:ReturnValueOfTypeLevel(typeId, level, self.Entity)
+		_UpgradeDataSetLogic:MakeUpgradeReport(typeId, level, self.Entity.PlayerComponent.UserId)
+		
+		if typeId == _UpgradeTypeEnum.GrillCount then 
+			
+			_KitchenAppService:UpdateKitchenAppSpriteByID(themeLv,expansionLv,_KitchenAppEnumType.Grill,levelValue,self.Entity,self.Entity.PlayerComponent.UserId)
+			
+			_UIEmployeeManageService:RequestStoreMangeRedDot(self.Entity.PlayerComponent.UserId)
+			
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.Employment)
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeDeploy)
+			
+			
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.LobbyAppCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.LobbyAppCount, achiProgress+1)
+			
+			local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.AppCounterOrGrill)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.AppCounterOrGrill, tutProgress+1)
+			
+			local tutProgress2 = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.AppGrill)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.AppGrill, tutProgress2+1)
+			
+			_InteractionUIService:CloseUIKitchenAppNone(self.Entity.PlayerComponent.UserId)
+		
+			
+		elseif typeId == _UpgradeTypeEnum.DisplayCount then 
+			
+			_KitchenAppService:UpdateDisplaySpriteByID(levelValue,"None",0,self.Entity,expansionLv, self.Entity.PlayerComponent.UserId)
+			
+			_KitchenAppService:UpdateKitchenAppPosByID(expansionLv,themeLv,_KitchenAppEnumType.Display,levelValue, self.Entity.PlayerComponent.UserId)
+			
+			_InteractionUIService:OpenDisplayBurgerCount(levelValue,expansionLv,self.Entity.PlayerComponent.UserId)
+			_InteractionUIService:RefreshDisplayTextBySlotID(levelValue,0,self.Entity,expansionLv,self.Entity.PlayerComponent.UserId)
+			
+			_LobbyRenovationService:UpdateInnerWallByAppIdx(_KitchenAppEnumType.Display,levelValue,expansionLv,interiorLv,self.Entity,self.Entity.PlayerComponent.UserId)
+		
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmptyDisplay)
+			
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.LobbyAppCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.LobbyAppCount, achiProgress+1)
+			
+			local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.AppDisplay)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.AppDisplay, tutProgress+1)
+		
+			if levelValue >= 2 then
+				
+				self.Entity.CustomerManager:RefreshSpawnTable()
+			end
+			
+			_InteractionUIService:CloseUIKitchenAppNone(self.Entity.PlayerComponent.UserId)
+		
+		elseif typeId == _UpgradeTypeEnum.CounterCount then 
+			
+			_KitchenAppService:UpdateKitchenAppSpriteByID(themeLv,expansionLv,_KitchenAppEnumType.Counter,levelValue,self.Entity,self.Entity.PlayerComponent.UserId)
+			
+			_LobbyRenovationService:UpdateInnerWallByAppIdx(_KitchenAppEnumType.Counter,levelValue,expansionLv,interiorLv,self.Entity,self.Entity.PlayerComponent.UserId)
+			
+			_LobbyRenovationService:UpdateWaitSeatPos(expansionLv, self.Entity.PlayerComponent.UserId)
+			
+			self.Entity.CustomerManager:UpdateAllWaitCustomerPos(expansionLv, self.Entity.PlayerComponent.UserId) 
+			
+			
+			
+			_UIEmployeeManageService:RequestStoreMangeRedDot(self.Entity.PlayerComponent.UserId)
+			
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.Employment)
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeDeploy)
+				
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.LobbyAppCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.LobbyAppCount, achiProgress+1)
+			
+			local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.AppCounterOrGrill)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.AppCounterOrGrill, tutProgress+1)
+			
+			local tutProgress2 = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.AppCounter)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.AppCounter, tutProgress2+1)
+			
+			_InteractionUIService:CloseUIKitchenAppNone(self.Entity.PlayerComponent.UserId)
+			
+		elseif typeId == _UpgradeTypeEnum.ExpansionStep then 
+			
+			if isCheat == false then
+				_UpgradeDataSetLogic:RequestCloseUpgradeUI(self.Entity.PlayerComponent.UserId)	
+				_EventManager:SetEventReferKeyData("C8001", "Expansion", self.Entity.PlayerComponent.UserId)
+				self.Entity.PlayerEvent:RequestCallEvent("C8001")
+				
+			else
+				_LobbyRenovationService:ExpandLobby(expansionLv,interiorLv,decoLv,grillCount,displayCount,counterCount,self.Entity, self.Entity.PlayerComponent.UserId)
+				
+			end
+				
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.Expansion, levelValue)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.ExpansionCount, level)
+				
+			self.Entity.CustomerManager:CalcMyAttractive()
+			if self.Entity.PlayerCheatComponent:HasAuthority() then
+				self.Entity.PlayerDebugMonitor:UpdateDebugMonitorAttractive(self.Entity.PlayerComponent.UserId) 
+			end
+		elseif typeId == _UpgradeTypeEnum.InteriorLevel then 
+			
+			if isCheat == false then
+				_UpgradeDataSetLogic:RequestCloseUpgradeUI(self.Entity.PlayerComponent.UserId)	
+			    _EventManager:SetEventReferKeyData("C8002", "Interior", self.Entity.PlayerComponent.UserId)
+			    self.Entity.PlayerEvent:RequestCallEvent("C8002")
+				
+			else
+				_LobbyRenovationService:RedesignInterior(interiorLv,expansionLv, decoLv, self.Entity.PlayerComponent.UserId)
+				_KitchenAppService:VisibleKitAppsEntity(expansionLv,interiorLv,grillCount,displayCount,counterCount, self.Entity.PlayerComponent.UserId)		
+			end	
+			
+			local achiValue = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.Interior)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.Interior, level)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.InteriorLevel, level)
+			
+			self.Entity.CustomerManager:CalcMyAttractive()
+			if self.Entity.PlayerCheatComponent:HasAuthority() then 
+				self.Entity.PlayerDebugMonitor:UpdateDebugMonitorAttractive(self.Entity.PlayerComponent.UserId) 
+			end
+		elseif typeId == _UpgradeTypeEnum.TipStorageLevel then 
+				
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.BuyTipStorage)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.BuyTipStorage, achiProgress+1)
+		
+		elseif typeId == _UpgradeTypeEnum.DisplayResearch then 
+		
+			
+			_InteractionUIService:OpenDisplayBurgerCount(levelValue,expansionLv,self.Entity.PlayerComponent.UserId)
+			
+		
+			for i=levelValue - 5, levelValue do 
+				_KitchenAppService:UpdateDisplaySpriteByID(i,"None",0,self.Entity,expansionLv, self.Entity.PlayerComponent.UserId) 
+				
+				_KitchenAppService:UpdateKitchenAppPosByID(expansionLv,themeLv,_KitchenAppEnumType.Display,i, self.Entity.PlayerComponent.UserId) 
+			
+				_InteractionUIService:RefreshDisplayTextBySlotID(i,0,self.Entity,expansionLv,self.Entity.PlayerComponent.UserId) 
+				_LobbyRenovationService:UpdateInnerWallByAppIdx(_KitchenAppEnumType.Display,i,expansionLv,themeLv,self.Entity,self.Entity.PlayerComponent.UserId)
+			end	
+			
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.LobbyAppCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.LobbyAppCount, achiProgress+5)
+					
+		elseif typeId == _UpgradeTypeEnum.GrillLevel then 
+			
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.LobbyAppLevel)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.LobbyAppLevel, achiProgress+1)
+			
+			local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.GrillLevelUp)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.GrillLevelUp, tutProgress+1)
+			
+		elseif typeId == _UpgradeTypeEnum.DisplaystandLevel then
+		
+			_InteractionUIService:RefreshDisplayTextAll(levelValue,expansionLv,self.Entity,self.Entity.PlayerComponent.UserId)
+			
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.LobbyAppLevel)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.LobbyAppLevel, achiProgress+1)
+				 
+		elseif typeId == _UpgradeTypeEnum.CounterLevel then 
+		
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.LobbyAppLevel)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.LobbyAppLevel, achiProgress+1)
+			
+		elseif typeId == _UpgradeTypeEnum.LunchBoxCapacity then
+			self.Entity.PlayerInventory:UpdateLunchBoxUpgradeInfo()
+			
+		elseif typeId == _UpgradeTypeEnum.AutoTrainingOpen then
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.AutoTrainingTruckCount, level)
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.AutoTraining)
+			
+		elseif typeId == _UpgradeTypeEnum.VIPOrderCount then
+			self.Entity.PlayerVIPOrder:RefreshCompleteStatus()
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.VIPOrderCount)
+			
+		elseif typeId == _UpgradeTypeEnum.StoreDeco then 
+			if isCheat == false then
+				_UpgradeDataSetLogic:RequestCloseUpgradeUI(self.Entity.PlayerComponent.UserId)
+			    self.Entity.PlayerEvent:RequestCallEvent("C8003")
+			else
+				_LobbyRenovationService:UpdateInteriorObject(level, self.Entity, self.Entity.PlayerComponent.UserId)
+			end	
+			
+			self.Entity.CustomerManager:CalcMyAttractive()
+			if self.Entity.PlayerCheatComponent:HasAuthority() then 
+				self.Entity.PlayerDebugMonitor:UpdateDebugMonitorAttractive(self.Entity.PlayerComponent.UserId) 
+			end
+			
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.StoreDeco, level)
+		end
+		
+		local appLevelEnums = {_UpgradeTypeEnum.GrillLevel, _UpgradeTypeEnum.DisplaystandLevel, _UpgradeTypeEnum.CounterLevel}
+		local minAppLevel = 99
+		for i = 1, #appLevelEnums do
+			local appLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, appLevelEnums[i])
+			minAppLevel = math.min(appLevel, minAppLevel)
+		end
+		
+		local appLevelProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_RecordAchievementTypeEnum.AppLevelMin)
+		if minAppLevel > appLevelProgress then
+			self.Entity.PlayerAchievement:ChangeProgress(_RecordAchievementTypeEnum.AppLevelMin, minAppLevel)
+		end
+	end
+
+	method integer ReturnPlayerUpgradeLevelOfType(integer typeId)
+		-- 지정된 업그레이드 타입의 현재 레벨을 반환
+		local level = self.Upgrades[typeId]
+		if level == nil then
+			level = 0
+		end
+		
+		return level
+	end
+
+	@ExecSpace("Client")
+	method void ChangeConnectingStatus(boolean status)
+		-- 서버 처리 상태를 변경하여 로딩 상태 관리
+		self.IsServerProcessing = status
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성에 따라 관련 UI 업데이트 및 버튼 잠금 해제 처리
+		if name == "Upgrades" then	
+			if _UpgradeDataSetLogic.UIUpgradePanel.Enable then
+				if _UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel.SelecteTab == 0 then
+					_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel:SetSelectTab(_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel.SelecteTab, nil)
+				else
+					_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel:Refresh(_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel.SelecteTab, _UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel.NowSelected)
+				end
+				
+				
+			end
+			
+			if _UIGroupManager.RecipeSetGroup.Enable then
+				_UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder:RefreshRecipeCountBar()
+			end
+			
+			if _UIEntityLogic_RecipeGroup.UIRecipeBook.Enable then
+				self.Entity.PlayerRecipe:RequestRefreshRecipeUI(nil)
+			end
+			
+			if _UILobbyManager.StoreInfoRecordPage.Enable then
+				self.Entity.PlayerSettlement:RequestSyncSettlementDataFromServer()
+			end
+		
+			if _UIGroupManager.TrainingAutoGroup.Enable then
+				_UIGroupManager.TrainingAutoGroup.UITrainingAuto:UpdateUpgradeInfo()
+			end
+			
+			if _UIGroupManager.TrainingSettingGroup.Enable then
+				_UIGroupManager.TrainingSettingGroup.UITrainingSetting:UpdateUpgradeInfo()
+			end
+			
+			_LobbyHUDService:UpdateTipMaxText()
+			_LobbyHUDService:EnableTipUI(true)
+			_UILobbyManager:RefreshMenuInfo()
+			_LobbyHUDService:UpdateVIPOrderBtn(self.Entity)
+			
+			_MainMenuRedDotManager:EnableRecipeRedDot(self.Entity)
+			
+			_UIButtonUnlockLogic:SetButtonsUnlock()
+			self.Entity.PlayerAutoTrainingManager:UpdateUnlockCondition()
+			
+			if _UIGroupManager.VIPOrderGroup.Enable then
+				_VIPOrderDataSetLogic.UIVIPOrderPanel:RefreshCountBar()
+		    end
+				
+		elseif name == "Subscriptions" then
+			if _UpgradeDataSetLogic.UIUpgradePanel.Enable then
+				_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel:Refresh(_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel.SelecteTab, _UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel.NowSelected)
+			end
+			
+			_SubscriptionService:UpdateHUDSubscriptionInfo(self.Entity)
+				
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateIngreBoxSubscriptionStatus(string itemId)
+		-- 재료 박스 구독 상태를 업데이트하고 월 초에 재료를 구독 박스에 추가
+		if self.Subscriptions[itemId] == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		if self.Entity.TimeManager.Utc.Day ~= 1 then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self.Entity.PlayerIngredient:AddToIngreSubscriptionBox(itemId)
+		
+		self.Subscriptions[itemId] = self.Subscriptions[itemId]-1
+		
+		if self.Subscriptions[itemId] <= 0 then
+			self.Subscriptions[itemId] = nil
+			_UpgradeDataSetLogic:MakeSubscriptionExpireReport(itemId, self.Entity.PlayerComponent.UserId)
+		end
+		
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddNewSubscription(string id)
+		-- 새로운 구독을 추가하여 기존 구독 기간과 합산하여 설정
+		if _UpgradeDataSetLogic.SubscriptionData[id] == nil then
+			self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		local subsData = _UpgradeDataSetLogic:GetSubscriptionData(id)
+		local giveCount = 0
+		if isvalid(self.Subscriptions[subsData.TargetItem]) then
+			giveCount += self.Subscriptions[subsData.TargetItem]
+		end
+		
+		giveCount += subsData.Expiration
+		self.Subscriptions[subsData.TargetItem] = giveCount
+		self:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void ForceSetUpgradeLevel(integer typeId, integer level)
+		-- 치트용 업그레이드 레벨 강제 설정 및 관련 시설 업데이트
+		
+		self.Upgrades[typeId] = level
+		
+		local themeLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.InteriorLevel)
+		local interiorLv = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity,_UpgradeTypeEnum.InteriorLevel)
+		local expansionLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.ExpansionStep)
+		local decoLv = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.StoreDeco)
+		
+		local grillCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.GrillCount)
+		local displayCount = _KitchenAppService:ReturnDisplayNum(self.Entity)
+		local counterCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.CounterCount)
+		
+		if typeId == _UpgradeTypeEnum.StoreDeco then
+			_LobbyRenovationService:UpdateInteriorObject(0, self.Entity, self.Entity.PlayerComponent.UserId)
+		elseif typeId == _UpgradeTypeEnum.ExpansionStep then
+			_LobbyRenovationService:ExpandLobby(expansionLv,interiorLv,decoLv,grillCount,displayCount,counterCount,self.Entity, self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncToClientUpgrades(SyncTable<integer, integer> value)
+		-- 클라이언트에 업그레이드 데이터를 동기화하는 함수
+		table.initialize(self.Upgrades, value)
+		self:OnSyncProperty("Upgrades", value)
+	end
+
+end

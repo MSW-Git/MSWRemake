@@ -1,0 +1,168 @@
+@Logic
+script MultiFieldBattleLogic extends Logic
+
+	property table d = {}
+
+	property boolean isMultiField = false
+
+	property number buuffstat1 = 0
+
+	property boolean isChanged = false
+
+	property number lastSyncTime = 0
+
+	method void AddDamage(Entity target, number damage)
+		-- 대상에게 주어진 데미지를 누적
+		if self.d[target.Id] == nil then
+			self.d[target.Id] = damage
+		else
+			self.d[target.Id] += damage
+		end
+	end
+
+	method void SyncDamage()
+		-- 누적된 데미지 정보를 서버와 동기화
+		if self.isChanged == false then
+			return
+		end
+		if (_UtilLogic.ServerElapsedSeconds - self.lastSyncTime) < 0.4 then
+			return
+		end
+		
+		self.lastSyncTime = _UtilLogic.ServerElapsedSeconds
+		self:RequestSyncDamage(self.d)
+		self:Clear()
+	end
+
+	method void Clear()
+		-- 누적된 데미지 데이터 초기화
+		table.clear(self.d)
+	end
+
+	method void OnBeginPlay()
+		-- 멀티필드 배틀 로직 초기화
+		if self:IsServer() then
+		else
+			_TimerService:SetTimerRepeat(function() 
+				if self.isMultiField == false then
+					return
+				end		
+				self:SyncDamage()	
+			end,0.5,1)
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestSyncDamage(table info)
+		-- 서버에서 데미지 동기화 요청 처리
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		if isvalid(player) == false then
+			return
+		end
+		local battlePlayer = player.MultiBattlePlayer
+		if battlePlayer == nil then
+			return
+		end
+		
+		local atkBuff = (1+battlePlayer:GetBuffValue("Atk"))
+		for k,v in pairs(info) do
+			local entity = _EntityService:GetEntity(k)
+			if isvalid(entity) then
+				
+				
+				
+				local damage = 0
+				
+				for slot,atkCount in pairs(v) do
+					local eachDamage = battlePlayer:GetWeaponDamageBySlot(slot)
+					local criticalMultifly = battlePlayer:GetWeaponCriticalDamageMultiflyBySlot(slot)
+					
+					damage += (eachDamage * math.min(10, atkCount.n) + eachDamage * math.min(10, atkCount.c) * criticalMultifly)
+				end
+				local user = _UserService:GetUserEntityByUserId(senderUserId)
+				if isvalid(user) and user.CurrentMap == entity.CurrentMap then
+					entity.MultiMonsterWrapper.target = user
+				end
+				if damage < 0 then
+				end
+				entity.MultiMonsterWrapper:SetDamage(damage * atkBuff,entity.MultiMonsterWrapper.position:ToVector3(),senderUserId,"",false)
+				
+				
+			end
+		end
+	end
+
+	method void BuffPotion()
+		-- 버프 포션 처리 (미구현)
+		
+	end
+
+	method void AddAttackInfo(Entity target, string uniqueKey, boolean critical)
+		-- 공격 정보를 대상에게 추가 (울트라 스킬 및 일반 공격 처리)
+		local isUltraSkill = uniqueKey:sub(1,1) == "["
+		
+		
+		if isUltraSkill then	
+			local result,error = pcall(function() 
+				local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage
+				local keys = _HttpService:JSONDecode(uniqueKey)
+				for k,v in pairs(keys) do
+					local itemStorage = storage[v]
+					if itemStorage ~= nil then
+						local id = itemStorage.originalId
+						local weaponSpec = _WeaponSpecLogic:GetWeaponSpec(id)
+						if weaponSpec ~= nil then
+							self:AddEachAttackInfo(target,v,critical,weaponSpec.specialBuffDamageRate)
+						end
+					end
+				end
+			end)
+			if result == false then
+			end
+			return
+		end
+		self:AddEachAttackInfo(target,uniqueKey,critical,1)
+	end
+
+	method void AddEachAttackInfo(Entity target, string uniqueKey, boolean critical, number attackCnt)
+		-- 개별 무기의 공격 정보를 누적
+		
+		local storage = _UserService.LocalPlayer.PlayerStorageComponent.storage
+		if storage[uniqueKey] == nil then
+			return
+		end
+		local slot = storage[uniqueKey].equippedSlotNum
+		
+		if slot <= 0 then
+			return
+		end
+		
+		
+		if self.d[target.Id] == nil then
+			self.d[target.Id] = {}
+		end
+		
+		if self.d[target.Id][slot] == nil then
+			self.d[target.Id][slot] = {n = 0,c = 0}
+		end
+		
+		if critical then
+			self.d[target.Id][slot].c+=attackCnt
+		else
+			self.d[target.Id][slot].n+=attackCnt
+		end
+		self.isChanged = true
+		
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleOnMapEnter(OnMapEnter event)
+		-- 맵 진입 시 멀티필드 상태 및 데이터 초기화
+		local currentMap = event.currentMap
+		local userEnter = event.userEnter
+		self:Clear()
+		self.isMultiField = currentMap.MultiBattleMap ~= nil
+	end
+
+end

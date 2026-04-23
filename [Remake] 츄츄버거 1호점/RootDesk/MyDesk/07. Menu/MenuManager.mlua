@@ -1,0 +1,498 @@
+@Component
+script MenuManager extends Component
+
+	property table lastSetRecipes = {}
+
+	property table CurrentSetRecipes = {}
+
+	property boolean ResetInProgress = false
+
+	property table DisplayBurger = {}
+
+	@TargetUserSync
+	property SyncTable<integer, integer> SalesBurger
+
+	property SyncTable<integer, integer> DeleteBurger
+
+	property number BurgerIdx = 0
+
+	property table BurgerEntityPool = {}
+
+	property number CurBurgerEntityNum = 0
+
+	property table CookingBurger = {}
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- 메뉴 매니저의 모든 데이터를 초기화하는 함수
+		table.clear(self.DisplayBurger)
+		table.clear(self.DeleteBurger)
+		table.clear(self.CookingBurger)
+		self.ResetInProgress = false
+		self.BurgerIdx = 0
+		self.CurBurgerEntityNum = 0
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 로비 맵 진입 시 메뉴 매니저를 초기화하는 함수
+		if _UtilLogic:Contains(enteredMap.Name, "Lobby") then 
+			self:Init()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMapLeave(Entity leftMap)
+		-- 로비 맵 이탈 시 메뉴 매니저를 초기화하는 함수
+		if _UtilLogic:Contains(leftMap.Name, "Lobby") then 
+			self:Init()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer ReturnSlotIdxByUniqueID(integer uniqueId)
+		-- 고유 ID로 레시피 슬롯 인덱스를 찾아 반환하는 함수
+		local setRecipe = _UserService.LocalPlayer.PlayerRecipe.SetRecipes
+		local playerRecipe = _UserService.LocalPlayer.PlayerRecipe.Recipes
+		
+		for slotIdx,Id in pairs(setRecipe) do 
+		
+			---@type RecipeData
+			local data = playerRecipe[Id]
+			
+			if data.UniqueId == uniqueId then 
+		
+				return slotIdx 
+		
+			end
+		
+		end
+		 
+		return nil
+	end
+
+	method integer ReturnRecipeUniqueID(integer recipeId)
+		-- 레시피 ID로 고유 ID를 찾아 반환하는 함수
+		if recipeId == -1 then return recipeId end 
+		
+		local playerRecipe = self.Entity.PlayerRecipe.Recipes
+		
+		---@type RecipeData
+		local recipeData = playerRecipe[recipeId]
+		
+		if not isvalid(recipeData) then 
+			return -1
+		end
+		
+		return recipeData.UniqueId
+		
+	end
+
+	method RecipeData ReturnRecipeDataByUniqueID(integer uniqueId)
+		-- 고유 ID로 레시피 데이터를 찾아 반환하는 함수
+		local setRecipes = self.Entity.PlayerRecipe.SetRecipes
+		local playerRecipe = self.Entity.PlayerRecipe.Recipes
+		
+		if isvalid(setRecipes) then 
+			
+			for i, v in pairs(setRecipes) do
+		
+				if isvalid(v) then 
+					
+					---@type RecipeData
+					local copy = playerRecipe[v]
+						
+					if copy.UniqueId == uniqueId then  							
+						return copy
+		
+					end
+		
+				end
+			end
+			
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetMenu(SyncTable<integer, integer> lastSetRecipes, SyncTable<integer, integer> currentSetRecipes)
+		-- 메뉴 설정을 업데이트하고 변경사항이 있으면 처리하는 함수
+		self.lastSetRecipes = lastSetRecipes
+		self.CurrentSetRecipes = currentSetRecipes
+		
+		
+		local recipeChange = self:HasChangedMenuRecipe() 
+		local slotChange = self:HasChangedMenuSlot()
+		
+		if recipeChange == false and slotChange == false then
+			return
+		end
+		
+		self.ResetInProgress = true
+		
+		if recipeChange == true then 
+			_MenuService:ChangeMenuRecipe(self.Entity)
+		end
+		
+		_MenuService:ChangeMenuSlot(self.Entity)
+		
+		wait(1)
+		
+		self.ResetInProgress = false 
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean HasChangedMenuSlot()
+		-- 메뉴 슬롯 위치가 변경되었는지 확인하는 함수
+		local slotChange = {false,false,false,false,false}
+		local playerRecipe = _UserService.LocalPlayer.PlayerRecipe.Recipes 
+				
+		
+		for lastSlot , lastUniqueId in pairs(self.lastSetRecipes) do 
+			
+			for curSlot, curId in pairs(self.CurrentSetRecipes) do 
+					
+				local recipeData = playerRecipe[curId]
+				if not isvalid(recipeData) then 
+					slotChange[lastSlot] = true
+					continue
+				end
+				
+				
+				local curUniqueID = recipeData.UniqueId
+			
+				if lastUniqueId == curUniqueID then
+					 
+					if lastSlot ~= curSlot then 
+						
+						slotChange[lastSlot] = true
+						
+					end			
+					
+				end	
+			end	
+		end
+		
+		
+		for k,v in pairs(slotChange) do 
+			if v == true then 
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean HasChangedMenuRecipe()
+		-- 메뉴 레시피가 변경되었는지 확인하는 함수
+		local change = {false,false,false,false,false}
+		local playerRecipe = _UserService.LocalPlayer.PlayerRecipe.Recipes
+		for lastSlot , lastUniqueId in pairs(self.lastSetRecipes) do 
+			
+			for curSlot, curId in pairs(self.CurrentSetRecipes) do 
+			
+				local recipeData = playerRecipe[curId]
+				if not isvalid(recipeData) then 
+					change[lastSlot] = true
+					break
+				end
+				
+				local curUniqueID = recipeData.UniqueId
+						
+				if lastUniqueId == curUniqueID then 
+					
+					change[lastSlot] = false
+					break			
+		
+				else
+					
+					change[lastSlot] = true
+					
+				end	
+			end	
+		end
+		
+		
+		for k,v in pairs(change) do 
+			if v == true then 
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean HasDiplayBurger(integer uniqueID, integer slotIdx)
+		-- 특정 슬롯에 표시할 버거가 있는지 확인하는 함수
+		local displayData = self.DisplayBurger[uniqueID]
+		if not isvalid(displayData) then 
+			return false 
+		end
+		
+		if isvalid(displayData[slotIdx])then 
+			if displayData[slotIdx] > 0 then 
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ModifyDisplayBurger(integer uniqueID, integer slotIdx, integer vlaue)
+		-- 표시 버거 수량을 수정하고 UI를 업데이트하는 함수
+		if not isvalid(self.DisplayBurger[uniqueID]) then 
+			self.DisplayBurger[uniqueID] = {}
+			for i=1,15 do 
+				self.DisplayBurger[uniqueID][i] = 0 
+			end
+		
+		end
+		
+		local slotAmountBef = self.DisplayBurger[uniqueID][slotIdx]
+		
+		self.DisplayBurger[uniqueID][slotIdx] = math.max(0,slotAmountBef + vlaue)
+		
+		local slotAmountAft = self.DisplayBurger[uniqueID][slotIdx]
+		
+		local tag = self:ReturnRecipeDataByUniqueID(uniqueID).Tag
+		
+		local expansionLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity,_UpgradeTypeEnum.ExpansionStep)
+		
+		_KitchenAppService:UpdateDisplaySpriteByID(slotIdx,tag,slotAmountAft,self.Entity,expansionLv)
+		
+		
+		_InteractionUIService:RefreshDisplayTextBySlotID(slotIdx,slotAmountAft,self.Entity,expansionLv)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshDisplayBurger()
+		-- 표시 버거 데이터를 새로고침하고 메뉴 변경사항을 반영하는 함수
+		
+		local copySlotAmount = {} 
+		local isKeepSetting = false
+		table.clear(self.DeleteBurger)
+		
+		
+		local findRecipe = function(uniqueID)
+			for slotIdx,curRecipeId in pairs(self.CurrentSetRecipes) do		
+			
+				local setRecipeUniqueID = self:ReturnRecipeUniqueID(curRecipeId)
+				
+				if uniqueID == setRecipeUniqueID then 
+					return slotIdx 
+				end
+			
+			end
+			
+			return -1
+			
+		end
+		
+		
+		
+		for uniqueID, slotAmountData in pairs(self.DisplayBurger) do 
+			local menuSlotIdx = findRecipe(uniqueID)	
+			local count = 0 
+		
+		 	for befSlotIdx,amount in pairs(slotAmountData) do
+				
+				if menuSlotIdx == -1 then			
+					if not isvalid(self.DeleteBurger[uniqueID]) then 
+						self.DeleteBurger[uniqueID] = 0
+					end
+					
+					self.DeleteBurger[uniqueID] += amount
+					continue
+				end
+				
+				
+				if amount > 0 then
+					
+					
+					if not isvalid(copySlotAmount[uniqueID]) then 
+						copySlotAmount[uniqueID] = {} 
+						for i=1,15 do 
+							copySlotAmount[uniqueID][i] = 0
+						end
+		
+					end
+					
+					copySlotAmount[uniqueID][menuSlotIdx] = amount
+					count += amount
+					menuSlotIdx +=5
+				end
+				
+			end
+			
+		end
+		
+		
+		table.clear(self.DisplayBurger)
+		for uniqueId,slotAmountData in pairs(copySlotAmount) do
+			if not isvalid(self.DisplayBurger[uniqueId]) then 
+				self.DisplayBurger[uniqueId] = {}
+			end
+			
+			local count = 0
+			for slotIdx, amount in pairs(slotAmountData) do
+				self.DisplayBurger[uniqueId][slotIdx] = amount
+				count += amount
+			end
+		end
+		
+		
+		
+		if #table.keys(self.DeleteBurger) > 0 then 
+			for k,v in pairs(self.DeleteBurger) do 
+				local recipeData = self:ReturnRecipeDataByUniqueID(k)
+				if isvalid(recipeData) then
+					_ReportMessageMaker:RequestAddToReportQueue(8016, recipeData.Name, _StringUtilLogic:ReturnThousandsSeparatedString(v), "")
+				end		
+			end
+			
+			_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.ChangeMenuSetting)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void AddSaleBurgerCount(integer uniqueId, integer amount)
+		-- 판매된 버거 수량을 누적하여 기록하는 함수
+		if not isvalid(self.SalesBurger[uniqueId]) then 
+			self.SalesBurger[uniqueId] = 0 
+		end
+		self.SalesBurger[uniqueId] = self.SalesBurger[uniqueId] + amount
+	end
+
+	@ExecSpace("Client")
+	method integer ReturnSalesBurgerByRecipeID(integer recipeId)
+		-- 레시피 ID로 판매된 버거 수량을 조회하는 함수
+		local uniqueId = self:ReturnRecipeUniqueID(recipeId)
+		local count = self.SalesBurger[uniqueId]
+		if isvalid(count) then 
+			return count
+		else
+			return 0
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AllClearSalesBurger()
+		-- 모든 판매 버거 기록을 초기화하는 함수
+		table.clear(self.SalesBurger)
+	end
+
+	@ExecSpace("Server")
+	method void ClearSaleBurgerByRecipeID(integer recipeID)
+		-- 특정 레시피의 판매 기록을 삭제하는 함수
+		local uniqueId = self:ReturnRecipeUniqueID(recipeID)
+		for k, v in pairs(self.SalesBurger) do
+			if recipeID == k then
+				self.SalesBurger[k] = nil
+				return
+			end
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화 프로퍼티 변경 시 UI를 업데이트하는 함수
+		if name == "SalesBurger" then
+			_UILobbyManager:RefreshMenuInfo()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetDisplayedBurgerCount(integer uniqueId, integer slotIdx)
+		-- 특정 슬롯의 표시된 버거 개수를 반환하는 함수
+		if not isvalid(self.DisplayBurger[uniqueId]) then 
+			self.DisplayBurger[uniqueId] = {}
+			for i=1,15 do 
+				self.DisplayBurger[uniqueId][i] = 0 
+			end
+		
+		end
+		
+		return self.DisplayBurger[uniqueId][slotIdx]
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetDisplayedBurgerCountByUniqueId(integer uniqueId)
+		-- 고유 ID로 모든 슬롯의 표시된 버거 총 개수를 반환하는 함수
+		local totalBurgerCount = 0
+		
+		if not isvalid(self.DisplayBurger[uniqueId]) then 
+			self.DisplayBurger[uniqueId] = {}
+			for i=1,15 do 
+				self.DisplayBurger[uniqueId][i] = 0 
+			end
+		else
+			for i=1, 15 do
+				totalBurgerCount += self.DisplayBurger[uniqueId][i]
+			end
+		end
+		
+		
+		return totalBurgerCount
+	end
+
+	@ExecSpace("Client")
+	method void ClearLastRecipes()
+		-- 이전 레시피 설정 기록을 초기화하는 함수
+		table.clear(self.lastSetRecipes)
+	end
+
+	method void AddCookingBurgers(integer uniqueId, integer count)
+		-- 요리 중인 버거 개수를 추가하는 함수
+		local cookingBurgerCount = self.CookingBurger[uniqueId]
+		
+		if cookingBurgerCount == nil then
+			self.CookingBurger[uniqueId] = count
+		else
+			self.CookingBurger[uniqueId] += count
+		end
+		
+	end
+
+	method void SubCookingBurgers(integer uniqueId, integer count)
+		-- 요리 중인 버거 개수를 차감하는 함수
+		local cookingBurgerCount = self.CookingBurger[uniqueId]
+		
+		if cookingBurgerCount == nil then
+		else
+			self.CookingBurger[uniqueId] -= count
+			if self.CookingBurger[uniqueId] < 0 then
+				self.CookingBurger[uniqueId] = 0
+			end
+		end
+		
+	end
+
+	method integer GetCookingBurgers(integer uniqueId)
+		-- 요리 중인 버거 개수를 조회하는 함수
+		if self.CookingBurger[uniqueId] == nil then
+			self.CookingBurger[uniqueId] = 0
+		end
+		
+		
+		return self.CookingBurger[uniqueId]
+	end
+
+	method void ResetCookingBurgers(integer uniqueId)
+		-- 요리 중인 버거 개수를 초기화하는 함수
+		
+		if uniqueId == nil then
+			table.clear(self.CookingBurger)
+		
+			return
+		end
+		
+		self.CookingBurger[uniqueId] = 0
+		
+	end
+
+end

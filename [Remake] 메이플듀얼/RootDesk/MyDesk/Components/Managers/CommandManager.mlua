@@ -1,0 +1,1044 @@
+@Component
+script CommandManager extends Component
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property table signableArray = {}
+
+	property Duel duel = nil
+
+	property TaskManager taskManager = nil
+
+	property table publicPackageArray = {}
+
+	property table perCharacterPackageArray = {}
+
+	property table packageArray = {}
+
+	property number packageIndex = 0
+
+	property Character commander = nil
+
+	property table allyTable = {}
+
+	property table commandQueue = {}
+
+	property table destroyedEntityArray = {}
+
+	property table inputStateTable = {}
+
+	property integer inputGateCount = 0
+
+	property table playableArray = {}
+
+	property table watchingData = {}
+
+	property boolean isCommandRunning = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 클라이언트에서 명령어 큐를 초기화하고 지속적으로 명령어를 처리하는 루프 시작
+		_Queue:Initialize(self.commandQueue)
+			while true do
+				while _Queue:Front(self.commandQueue) do
+					local command = _Queue:Pop(self.commandQueue)
+					self:RunCommandInClient(command)
+				end
+			
+				wait(0.01)
+			end
+	end
+
+	method boolean IsCommander()
+		-- 현재 플레이어가 명령을 내린 지휘관인지 확인
+		return isvalid(self.commander) and self.commander:IsOwner()
+	end
+
+	method void RunCommand(string commandName, table publicArgs, table privateArgs)
+		-- 클라이언트/서버에서 명령어를 실행하기 위한 진입점
+		local args = _Table:Concat(publicArgs, privateArgs)
+		
+		if self:IsServer() then
+			self:RunCommandInServer(commandName, publicArgs, args, self.duel.commandId)
+		else
+			self:ClearInputStates()
+			_Server:Request(self, "RunCommandInServer", {commandName, publicArgs, args, self.duel.commandId})
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean VerifyCommand(string commandName, table args, integer commandId)
+		-- 서버에서 명령어의 유효성을 검증 (ID 일치 및 개별 검증 함수 호출)
+		if self.duel.commandId ~= commandId then
+			return false
+		end
+		
+		return _Util:Call(self, "Verify" .. commandName, args)
+	end
+
+	@ExecSpace("Client")
+	method void OnVerifyCommandFailed(string commandName, table args)
+		-- 명령어 검증 실패 시 클라이언트에서 입력 상태를 초기화하고 오류 메시지 표시
+		self.Entity.CurrentMap.Map.input:SetState("Idle")
+		
+		_Util:Call(self, "OnVerify" .. commandName .. "Failed", args)
+		
+		self.uiManager.ToastModule:ShowMessage(_LocalizationService:GetText("Unable"))
+	end
+
+	method void RunCommandInServerServerAttribute()
+		-- 서버 속성 메소드 (빈 구현체)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RunCommandInServer(string commandName, table publicArgs, table args, integer commandId)
+		-- 서버에서 명령어를 검증하고 실행한 후 모든 클라이언트에게 결과를 전송
+		if not self:VerifyCommand(commandName, args, commandId) then
+			log(string.format("[Command] %s verification failed.", commandName))
+			
+			if _Server:IsRequesting() then
+				self:OnVerifyCommandFailed(commandName, args, _Server.sender.Entity.Name)
+				self:SetInputStates()
+			end
+			
+			return
+		end
+		
+		local commander = _Server.sender
+		
+		_Server.sender = nil
+		
+		table.clear(self.perCharacterPackageArray)
+		table.clear(self.publicPackageArray)
+		table.clear(self.destroyedEntityArray)
+		
+		if isvalid(commander) then
+			self:PreRunCommand(commandName, args, commander.Entity.Name)
+		end
+		
+		self:RunCommandLogic(commandName, args)
+		
+		local perCharacterPackageArray = {}
+		for character, privatePackageArray in pairs(self.perCharacterPackageArray) do
+			local packageArray = _Table:ShallowCopy(self.publicPackageArray)
+			for i = #privatePackageArray, 1, -1 do
+				local privatePackage = privatePackageArray[i][1]
+				local packageIndex = privatePackageArray[i][2]
+				local insert = privatePackageArray[i][3]
+				if insert then
+					table.insert(packageArray, packageIndex, privatePackage)
+				else
+					packageArray[packageIndex] = privatePackage
+				end
+			end
+			perCharacterPackageArray[character] = packageArray
+		end
+		
+		local userEntityArray = _UserService:GetUsersByMapComponent(self.Entity.CurrentMap.MapComponent)
+		for _, userEntity in ipairs(userEntityArray) do
+			local character = userEntity.Character
+			local isAlly = isvalid(commander) and commander:IsAllyWith(character)
+			local characterPackageArray = perCharacterPackageArray[character]
+			local allyTable = {}
+			for _, player in ipairs(self.duel.playerArray) do
+				allyTable[player] = player:IsAllyWith(character)
+			end
+			self:PushCommandInClient(commandName,
+				isAlly and args or publicArgs,
+				characterPackageArray or self.publicPackageArray,
+				commander, allyTable, userEntity.Name)
+		end
+		
+		self.duel:RecycleCards()
+		self.duel:RecycleMinions()
+		
+		for _, destroyedEntity in ipairs(self.destroyedEntityArray) do
+			destroyedEntity:Destroy()
+		end
+		
+		self:SetInputStates()
+		
+		if isvalid(commander) then
+			self:PostRunCommand(commandName, args, commander.Entity.Name)
+		end
+		
+		self.duel.commandId += 1
+	end
+
+	@ExecSpace("Client")
+	method void PreRunCommand(string commandName, table args)
+		-- 클라이언트에서 명령어 실행 전 처리 (입력 상태 설정 및 전처리 함수 호출)
+		self.Entity.CurrentMap.Map.input:SetState("Idle")
+		
+		_Util:Call(self, "Pre" .. commandName, args)
+	end
+
+	@ExecSpace("Client")
+	method void PostRunCommand(string commandName, table args)
+		-- 클라이언트에서 명령어 실행 후 처리 함수 호출
+		_Util:Call(self, "Post" .. commandName, args)
+	end
+
+	@ExecSpace("Client")
+	method void PushCommandInClient(string commandName, table args, table packageArray, Character commander, table allyTable)
+		-- 클라이언트 명령어 큐에 새로운 명령어를 추가
+		local command = {name = commandName, args = args, packageArray = packageArray, id = self.duel.commandId, commander = commander, allyTable = allyTable}
+		_Queue:Push(self.commandQueue, command)
+		
+		self.duel.commandId += 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RunCommandInClient(table command)
+		-- 클라이언트에서 큐에서 꺼낸 명령어를 실제로 실행
+		self.isCommandRunning = true
+		
+		self.packageArray = command.packageArray
+		self.packageIndex = 1
+		self.commander = command.commander
+		self.allyTable = command.allyTable
+		
+		self:RunCommandLogic(command.name, command.args)
+		
+		local nextCommand = _Queue:Front(self.commandQueue)
+		if not _Table:IsEmpty(self.watchingData) and (not nextCommand or nextCommand.id >= self.watchingData.commandId) then
+			self:SetWatchingCards()
+		end
+		
+		self.isCommandRunning = false
+	end
+
+	method void RunCommandLogic(string commandName, table args)
+		-- 명령어의 실제 로직을 실행하고 게임 종료 조건을 확인
+		-- log(string.format("[Command] Name: %s, Args: %s", commandName, _MSON:AnyToString(args)))
+		
+		_Util:Call(self, commandName, args)
+		
+		if self.duel:HasDeadPlayer() then
+			self.taskManager:EndDuel(self.duel:GetWinner())
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushPackage(any package)
+		-- 서버에서 모든 클라이언트에게 공유할 패키지를 추가
+		table.insert(self.publicPackageArray, package)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PushPrivatePackage(Player player, any privatePackage, any publicPackage)
+		-- 특정 플레이어와 동맹에게만 보이는 비공개 패키지와 다른 플레이어에게 보이는 공개 패키지를 추가
+		local packageIndex = #self.publicPackageArray + 1
+		self.publicPackageArray[packageIndex] = publicPackage
+		
+		if not isvalid(player.character) then
+			return
+		end
+		
+		local userEntityArray = _UserService:GetUsersByMapComponent(self.Entity.CurrentMap.MapComponent) 
+		for _, userEntity in ipairs(userEntityArray) do
+			if player.character:IsAllyWith(userEntity.Character) then
+				local ally = userEntity.Character
+				local privatePackageArray = self.perCharacterPackageArray[ally]
+				if not privatePackageArray then
+					privatePackageArray = {}
+					self.perCharacterPackageArray[ally] = privatePackageArray
+				end
+				table.insert(privatePackageArray, {privatePackage, packageIndex, publicPackage == nil})
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method any PopPackage()
+		-- 클라이언트에서 패키지 배열에서 다음 패키지를 가져옴
+		local package = self.packageArray[self.packageIndex]
+		self.packageIndex = self.packageIndex + 1
+		return package
+	end
+
+	method Entity ShareSpawnedEntity(string modelId, string name, Vector3 position, Entity parent)
+		-- 서버에서 엔티티를 생성하고 클라이언트와 동기화
+		local entity = nil
+		if self:IsServer() then
+			entity = _SpawnService:SpawnByModelId(modelId, name, 
+				position and position or Vector3.zero, 
+				isvalid(parent) and parent or self.Entity.CurrentMap)
+			self:PushPackage(entity)
+		else
+			entity = self:PopPackage()
+		end
+		
+		return entity
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Destroy(Entity entity)
+		-- 엔티티를 파괴 대기 목록에 추가 (명령어 처리 완료 후 일괄 파괴)
+		table.insert(self.destroyedEntityArray, entity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean IsAllyWith(Player player)
+		-- 클라이언트에서 특정 플레이어와 동맹 관계인지 확인
+		return self.allyTable[player] == true
+	end
+
+	method boolean ShareRandomBoolean()
+		-- 서버에서 랜덤 불린 값을 생성하고 모든 클라이언트와 동기화
+		local randomBoolean = false
+		if self:IsServer() then
+			randomBoolean = _UtilLogic:RandomDouble() < 0.5
+			self:PushPackage(randomBoolean)
+		else
+			randomBoolean = self:PopPackage()
+		end
+		
+		return randomBoolean
+	end
+
+	method number ShareRandomNumber()
+		-- 서버에서 랜덤 숫자를 생성하고 모든 클라이언트와 동기화
+		local randomNumber = 0
+		if self:IsServer() then
+			randomNumber = _UtilLogic:RandomDouble()
+			self:PushPackage(randomNumber)
+		else
+			randomNumber = self:PopPackage()
+		end
+		
+		return randomNumber
+	end
+
+	method number SharePrivateRandomNumber(Player player, integer default)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 값을, 다른 플레이어에게는 기본값을 제공
+		local randomNumber = nil
+		if self:IsServer() then
+			randomNumber = _UtilLogic:RandomDouble()
+			self:PushPrivatePackage(player, randomNumber, default)
+		elseif self:IsAllyWith(player) or default ~= nil then
+			randomNumber = self:PopPackage()
+		end
+		
+		return randomNumber
+	end
+
+	method integer ShareRandomIntegerRange(integer min, integer max)
+		-- 서버에서 범위 내 랜덤 정수를 생성하고 모든 클라이언트와 동기화
+		local randomInteger = 0
+		if self:IsServer() then
+			randomInteger = _UtilLogic:RandomIntegerRange(min, max)
+			self:PushPackage(randomInteger)
+		else
+			randomInteger = self:PopPackage()
+		end
+		
+		return randomInteger
+	end
+
+	method integer SharePrivateRandomIntegerRange(Player player, integer default, integer min, integer max)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 정수를, 다른 플레이어에게는 기본값을 제공
+		local randomInteger = nil
+		if self:IsServer() then
+			randomInteger = _UtilLogic:RandomIntegerRange(min, max)
+			self:PushPrivatePackage(player, randomInteger, default)
+		elseif self:IsAllyWith(player) or default ~= nil then
+			randomInteger = self:PopPackage()
+		end
+		
+		return randomInteger
+	end
+
+	method table ShareRandomIntegersRange(integer min, integer max, integer count)
+		-- 서버에서 범위 내 랜덤 정수 배열을 생성하고 모든 클라이언트와 동기화
+		local randomIntegerArray
+		if self:IsServer() then
+			randomIntegerArray = _Util:GetRandomIntegersRange(min, max, count)
+			self:PushPackage(randomIntegerArray)
+		else
+			randomIntegerArray = self:PopPackage()
+		end
+		
+		return randomIntegerArray
+	end
+
+	method table SharePrivateRandomIntegersRange(Player player, integer default, integer min, integer max, integer count)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 정수 배열을, 다른 플레이어에게는 기본값 배열을 제공
+		local randomIntegerArray
+		if self:IsServer() then
+			local defaultArray
+			if default ~= nil then
+				defaultArray = {}
+				for i = 1, count do
+					defaultArray[i] = default
+				end
+			end
+			randomIntegerArray = _Util:GetRandomIntegersRange(min, max, count)
+			self:PushPrivatePackage(player, randomIntegerArray, defaultArray)
+		elseif self:IsAllyWith(player) or default ~= nil then
+			randomIntegerArray = self:PopPackage()
+		end
+		
+		return randomIntegerArray
+	end
+
+	method table ShareRandomPermutationRange(integer min, integer max, integer count)
+		-- 서버에서 범위 내 랜덤 순열 배열을 생성하고 모든 클라이언트와 동기화
+		local randomPermutation
+		if self:IsServer() then
+			randomPermutation = _Util:GetRandomPermutationRange(min, max, count)
+			self:PushPackage(randomPermutation)
+		else
+			randomPermutation = self:PopPackage()
+		end
+		
+		return randomPermutation
+	end
+
+	method table SharePrivateRandomPermutationRange(Player player, integer default, integer min, integer max, integer count)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 순열 배열을, 다른 플레이어에게는 기본값 배열을 제공
+		local randomPermutation
+		if self:IsServer() then
+			local defaultArray
+			if default ~= nil then
+				defaultArray = {}
+				for i = 1, count do
+					defaultArray[i] = default
+				end
+			end
+			randomPermutation = _Util:GetRandomPermutationRange(min, max, count)
+			self:PushPrivatePackage(player, randomPermutation, defaultArray)
+		elseif self:IsAllyWith(player) or default ~= nil then
+			randomPermutation = self:PopPackage()
+		end
+		
+		return randomPermutation
+	end
+
+	method any ShareRandomElementInArray(table array)
+		-- 서버에서 배열에서 랜덤 요소를 선택하고 모든 클라이언트와 동기화
+		local randomElement = nil
+		if self:IsServer() then
+			randomElement = _Table:GetRandomElement(array)
+			self:PushPackage(randomElement)
+		else
+			randomElement = self:PopPackage()
+		end
+		
+		return randomElement
+	end
+
+	method any SharePrivateRandomElementInArray(Player player, any default, table array)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 요소를, 다른 플레이어에게는 기본값을 제공
+		local randomElement = nil
+		if self:IsServer() then
+			randomElement = _Table:GetRandomElement(array)
+			self:PushPrivatePackage(player, randomElement, default)
+		elseif self:IsAllyWith(player) or default ~= nil then
+			randomElement = self:PopPackage()
+		end
+		
+		return randomElement
+	end
+
+	method table ShareRandomElementsInArray(table array, integer count)
+		-- 서버에서 배열에서 여러 랜덤 요소를 선택하고 모든 클라이언트와 동기화
+		local randomElementArray = nil
+		if self:IsServer() then
+			randomElementArray = _Table:GetRandomElements(array, count)
+			self:PushPackage(randomElementArray)
+		else
+			randomElementArray = self:PopPackage()
+		end	
+		
+		return randomElementArray
+	end
+
+	method table SharePrivateRandomElementsInArray(Player player, any default, table array, integer count)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 요소 배열을, 다른 플레이어에게는 기본값 배열을 제공
+		local randomElementArray = nil
+		if self:IsServer() then
+			local defaultArray
+			if default ~= nil then
+				defaultArray = {}
+				for i = 1, count do
+					defaultArray[i] = default
+				end
+			end
+			randomElementArray = _Table:GetRandomElements(array, count)
+			self:PushPrivatePackage(player, randomElementArray, defaultArray)
+		elseif self:IsAllyWith(player) or default ~= nil then
+			randomElementArray = self:PopPackage()
+		end	
+		
+		return randomElementArray
+	end
+
+	method table ShareRandomElementInArrays(table arrays)
+		-- 서버에서 여러 배열에서 가중치를 고려하여 랜덤 요소를 선택하고 모든 클라이언트와 동기화
+		local randomElement = nil
+		if self:IsServer() then
+			local size = 0
+			for _, array in ipairs(arrays) do
+				size += #array
+			end
+			local randomIndex = _UtilLogic:RandomIntegerRange(1, size)
+			for _, array in ipairs(arrays) do
+				if randomIndex <= #array then
+					randomElement = array[randomIndex]
+					break
+				end
+				randomIndex -= #array
+			end
+			self:PushPackage(randomElement)
+		else
+			randomElement = self:PopPackage()
+		end
+		
+		return randomElement
+	end
+
+	method table SharePrivateRandomElementInArrays(Player player, any default, table arrays)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 요소를, 다른 플레이어에게는 기본값을 제공 (여러 배열 가중치 고려)
+		local randomElement = nil
+		if self:IsServer() then
+			local size = 0
+			for _, array in ipairs(arrays) do
+				size += #array
+			end
+			local randomIndex = _UtilLogic:RandomIntegerRange(1, size)
+			for _, array in ipairs(arrays) do
+				if randomIndex <= #array then
+					randomElement = array[randomIndex]
+					break
+				end
+				randomIndex -= #array
+			end
+			self:PushPrivatePackage(player, randomElement, default)
+		elseif self:IsAllyWith(player) or default ~= nil then
+			randomElement = self:PopPackage()
+		end
+		
+		return randomElement
+	end
+
+	method table ShareRandomElementsInArrays(table arrays, integer count)
+		-- 서버에서 여러 배열에서 가중치를 고려하여 여러 랜덤 요소를 선택하고 모든 클라이언트와 동기화
+		local randomElementArray = nil
+		if self:IsServer() then
+			local size = 0
+			for _, array in ipairs(arrays) do
+				size += #array
+			end
+			randomElementArray = {}
+			local randomIndexArray = _Util:GetRandomIntegersRange(1, size, count)
+			for i, randomIndex in ipairs(randomIndexArray) do
+				for _, array in ipairs(arrays) do
+					if randomIndex <= #array then
+						randomElementArray[i] = array[randomIndex]
+						break
+					end
+					randomIndex -= #array
+				end
+			end
+			self:PushPackage(randomElementArray)
+		else
+			randomElementArray = self:PopPackage()
+		end
+		
+		return randomElementArray
+	end
+
+	method table SharePrivateRandomElementsInArrays(Player player, any default, table arrays, integer count)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 요소 배열을, 다른 플레이어에게는 기본값 배열을 제공 (여러 배열 가중치 고려)
+		local randomElementArray = nil
+		if self:IsServer() then
+			local defaultArray
+			if default ~= nil then
+				defaultArray = {}
+				for i = 1, count do
+					defaultArray[i] = default
+				end
+			end
+			
+			local size = 0
+			for _, array in ipairs(arrays) do
+				size += #array
+			end
+			randomElementArray = {}
+			local randomIndexArray = _Util:GetRandomIntegersRange(1, size, count)
+			for i, randomIndex in ipairs(randomIndexArray) do
+				for _, array in ipairs(arrays) do
+					if randomIndex <= #array then
+						randomElementArray[i] = array[randomIndex]
+						break
+					end
+					randomIndex -= #array
+				end
+			end
+			self:PushPrivatePackage(player, randomElementArray, defaultArray)
+		elseif self:IsAllyWith(player) or default ~= nil then
+			randomElementArray = self:PopPackage()
+		end
+		
+		return randomElementArray
+	end
+
+	method table ShareRandomPermutationInArray(table array, integer count)
+		-- 서버에서 배열에서 랜덤 순열 배열을 생성하고 모든 클라이언트와 동기화
+		local randomPermutation = nil
+		if self:IsServer() then
+			randomPermutation = _Table:GetRandomPermutation(array, count)
+			self:PushPackage(randomPermutation)
+		else
+			randomPermutation = self:PopPackage()
+		end	
+		
+		return randomPermutation
+	end
+
+	method table SharePrivateRandomPermutationInArray(Player player, any default, table array, integer count)
+		-- 특정 플레이어와 동맹에게만 실제 랜덤 순열 배열을, 다른 플레이어에게는 기본값 배열을 제공
+		local randomPermutation = nil
+		if self:IsServer() then
+			count = math.min(count, #array)
+			local defaultArray
+			if default ~= nil then
+				defaultArray = {}
+				for i = 1, count do
+					defaultArray[i] = default
+				end
+			end
+			randomPermutation = _Table:GetRandomPermutation(array, count)
+			self:PushPrivatePackage(player, randomPermutation, defaultArray)
+		elseif self:IsAllyWith(player) then
+			randomPermutation = self:PopPackage()
+		end	
+		
+		return randomPermutation
+	end
+
+	method string ShareCardBack(Character character)
+		-- 서버에서 캐릭터의 카드 뒷면 정보를 가져와 모든 클라이언트와 동기화
+		local cardBack = ""
+		if self:IsServer() then
+			if isvalid(character) then
+				cardBack = character.cardBack
+			end
+			self:PushPackage(cardBack)
+		else
+			cardBack = self:PopPackage()
+		end
+		
+		return cardBack
+	end
+
+	method string ShareClass(Character character)
+		-- 서버에서 캐릭터의 클래스 정보를 가져와 모든 클라이언트와 동기화
+		local class = ""
+		if self:IsServer() then
+			if isvalid(character) then
+				class = character:GetDeck().class
+			end
+			self:PushPackage(class)
+		else
+			class = self:PopPackage()
+		end
+		
+		return class
+	end
+
+	method table SharePrivateBlueprints(Player player)
+		-- 특정 플레이어의 덕 카드 블루프린트를 동맹에게만 공유하고 다른 플레이어에게는 빈 배열 제공
+		local blueprintArray = {}
+		if self:IsServer() then
+			local defaultArray = {}
+			if isvalid(player.character) then
+				local deck = player.character:GetDeck()
+				local cardTable = deck.cardTable
+				if cardTable ~= nil then
+					local infoArray = deck.infoArray or self.cardManager:ToInfoArray(cardTable)
+					for i = 1, #infoArray do
+						local blueprint = {
+							info = infoArray[i],
+							enchantmentArray = {},
+							independentVariableTable = {}
+						}
+						blueprintArray[i] = blueprint
+						defaultArray[i] = {}
+					end
+				end
+			end
+			self:PushPrivatePackage(player, blueprintArray, defaultArray)
+		else
+			blueprintArray = self:PopPackage()
+		end
+		
+		return blueprintArray
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetInputStates()
+		-- 서버에서 모든 플레이어의 입력 상태를 업데이트하고 클라이언트에 전송
+		self.duel:Invoke("UpdateInputState", {})
+		local characterEntityArray = _UserService:GetUsersByMapComponent(self.Entity.CurrentMap.MapComponent)
+		for _, characterEntity in ipairs(characterEntityArray) do
+			local character = characterEntity.Character
+			local inputStateTable = self.duel:Invoke("GetInputState", {character})
+			self:SetInputStatesInClient(inputStateTable, self.inputGateCount, characterEntity.Name)
+		end
+		
+		self.inputGateCount = 0
+	end
+
+	method void InputGate()
+		-- 서버에서는 게이트 카운트를 증가시키고, 클라이언트에서는 감소시켜 입력 상태 동기화 제어
+		if self:IsServer() then
+			self.inputGateCount += 1
+		else
+			self.inputGateCount -= 1
+			if self.inputGateCount <= 0 then
+				self:ApplyInputStates()	
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetInputStatesInClient(table inputStateTable, integer inputGateCount)
+		-- 클라이언트에서 서버로부터 받은 입력 상태 정보를 저장하고 적용 준비
+		self.inputStateTable = inputStateTable
+		self.inputGateCount += inputGateCount
+		
+		self:ClearInputStates()
+		if self.inputGateCount <= 0 then
+			self:ApplyInputStates()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyInputStates()
+		-- 저장된 입력 상태를 모든 객체에 실제로 적용하고 플레이 가능 사인 표시
+		self.duel:Invoke("SetInputState", {})
+		for object, inputState in pairs(self.inputStateTable) do
+			object:SetInputState(inputState)
+		end	
+		self:SetPlayableSigns()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearInputStates()
+		-- 모든 객체의 입력 상태를 초기화하고 사인 상태도 리셋
+		for _, signable in ipairs(self.signableArray) do
+			signable:SetInputState(nil)
+		end
+		self.duel:Invoke("SetInputState", {})
+		self:SetPlayableSigns()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPlayableSigns()
+		-- 모든 사인을 지우고 플레이 가능한 객체들에만 플레이 가능 사인 표시
+		self:ClearSigns()
+		for _, playable in ipairs(self.playableArray) do
+			playable:SetPlayableSign()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTargetableSigns(Card card)
+		-- 모든 사인을 지우고 카드를 사용 중으로, 타겟 가능한 객체들에 타겟 가능 사인 표시
+		self:ClearSigns()
+		card:SetSignState("Casting")
+		for _, targetable in ipairs(card.targetableArray) do
+			targetable:SetSignState("Targetable")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCastingSigns(Card card)
+		-- 모든 사인을 지우고 카드에만 사용 중 사인 표시
+		self:ClearSigns()
+		card:SetSignState("Casting")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPlacingSigns()
+		-- 모든 사인을 지우고 배치 중인 미니언에만 배치 중 사인 표시
+		self:ClearSigns()
+		self.duel.placingMinion:SetSignState("Placing")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClearSigns()
+		-- 모든 사인 가능한 객체들의 사인 상태를 지움
+		for _, signable in ipairs(self.signableArray) do
+			signable:SetSignState(nil)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean VerifyBeginDuel()
+		-- 결투 시작 명령의 유효성 검증 (이미 결투 중이 아닌지 확인)
+		if self.duel.isDueling then
+			return false
+		end
+		
+		return true
+	end
+
+	method void BeginDuel()
+		-- 결투를 시작하고 튜토리얼 진행 상태 업데이트
+		local tutorial = self.duel.tutorial
+		if self:IsServer() and isvalid(tutorial) then
+			tutorial:Progress("PreBeginDuel")
+		end
+		
+		self.taskManager:BeginDuel()
+		
+		if self:IsClient() and isvalid(tutorial) then
+			_Server:Request(tutorial, "Progress", {"PostBeginDuel"})
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean VerifyEndDuel(Player winner)
+		-- 결투 종료 명령의 유효성 검증 (결투 중이고 승리자가 올바른지 확인)
+		if not self.duel.isDueling then
+			return false
+		end
+		
+		if _Server:IsRequesting() then
+			local commander = _Server.sender
+			
+			if not isvalid(commander.player) or winner ~= commander.player.opponent then
+				return false
+			end
+		end
+		
+		return true
+	end
+
+	method void EndDuel(Player winner)
+		-- 결투를 종료하고 승리자를 처리
+		self.taskManager:EndDuel(winner)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PreEndDuel()
+		-- 결투 종료 전 클라이언트 UI 정리
+		if isvalid(self.uiManager.PlayerModule) then
+			self.uiManager.PlayerModule:Close()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean VerifyDeclareEndRound(Player player, boolean isTimeout)
+		-- 라운드 종료 선언 명령의 유효성 검증 (플레이어 턴인지, 튜토리얼 상태 등 확인)
+		if not isvalid(player) or not player:IsOurTurn() then
+			return false
+		end
+		
+		if _Server:IsRequesting() then
+			local commander = _Server.sender
+			
+			if not isvalid(commander.player) or player ~= commander.player then
+				return false
+			end
+		end
+		
+		local tutorial = self.duel.tutorial
+		if isvalid(tutorial) then
+			local sequence = tutorial.sequence
+			if sequence == 3 or sequence == 5 or sequence == 12 or sequence == 19 then
+				return false
+			end
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PreDeclareEndRound(Player player)
+		-- 라운드 종료 선언 전 클라이언트 UI 업데이트 (종료 사인 표시, 손패 변환, 턴 사인 업데이트)
+		player.endRoundSignEntity.Visible = true
+		player.hand:TransformToEndRound()
+		if player.opponent.isEndRoundDeclared then
+			self.duel.turnSign:SetState("Waiting")
+		else
+			self.duel.turnSign:SetStateByTurnPlayer(player.opponent)
+		end
+	end
+
+	method void DeclareEndRound(Player player, boolean isTimeout)
+		-- 라운드 종료를 선언하고 튜토리얼 진행 상태 업데이트
+		local tutorial = self.duel.tutorial
+		if self:IsServer() and isvalid(tutorial) then
+			tutorial:Progress("PreDeclareEndRound")
+		end
+		
+		self.taskManager:DeclareEndRound(player, isTimeout)
+		
+		if self:IsClient() and isvalid(tutorial) then
+			_Server:Request(tutorial, "Progress", {"PostDeclareEndRound"})
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean VerifyPlay(Card card, Unit target, Minion pivot)
+		-- 카드 플레이 명령의 유효성 검증 (카드 유효성, 비용, 타겟, 필드 공간, 플레이어 턴 등 확인)
+		if not isvalid(card) or _Table:IsEmpty(card.info) then
+			return
+		end
+		
+		if card.cost > card.player.mp then
+			return false
+		end
+		
+		if card.requiresTarget and not _Table:Contains(card.targetableArray, target) then
+			return false
+		end
+		
+		if card.category == "Minion" then
+			if card.player.field:IsFull() then
+				return false
+			end
+			if isvalid(pivot) and pivot.player ~= card.player then
+				return false
+			end
+		end
+		
+		if _Server:IsRequesting() then
+			local commander = _Server.sender
+			
+			if not isvalid(commander.player) or card.player ~= commander.player or not commander.player:IsOurTurn() then
+				return false
+			end
+		end
+		
+		local tutorial = self.duel.tutorial
+		if isvalid(tutorial) then
+			local sequence = tutorial.sequence
+			if sequence == 3 or sequence == 16 then
+				return false
+			end
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnVerifyPlayFailed(Card card)
+		-- 카드 플레이 검증 실패 시 클라이언트 정리 작업 (미니언 배치 취소)
+		if card.category == "Minion" then
+			self.duel.placingMinion:ClearBlueprint()
+			card.player.field:RemovePlacingMinion()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PrePlay(Card card)
+		-- 카드 플레이 전 클라이언트 준비 작업 (손패에서 제거, 미니언 배치 준비 등)
+		card.hand:RemovePlayingCard(card)
+		card:SetActorEnable(false)
+		
+		if card.category == "Minion" then
+			self.duel.placingMinion:AttachToAnchor()
+			self.duel.placingMinion:SummonCoroutine()
+		end
+		
+		if not card.player.opponent.isEndRoundDeclared then
+			card.player.hand:TransformToRest()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PostPlay(Card card)
+		-- 카드 플레이 후 클라이언트 UI 업데이트 (턴 사인 업데이트)
+		if card.player.opponent.isEndRoundDeclared then
+			self.duel.turnSign:SetStateByTurnPlayer(card.player)
+		else
+			self.duel.turnSign:SetStateByTurnPlayer(card.player.opponent)
+		end
+	end
+
+	method void Play(Card card, Unit target, Minion pivot)
+		-- 카드를 플레이하고 튜토리얼 진행 상태 업데이트
+		local tutorial = self.duel.tutorial
+		if self:IsServer() and isvalid(tutorial) then
+			tutorial:Progress("PrePlay")
+		end
+		
+		self.taskManager:Play(card, target, pivot)
+		
+		if self:IsClient() and isvalid(tutorial) then
+			_Server:Request(tutorial, "Progress", {"PostPlay"})
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetWatching(Character watcher, Player player)
+		-- 서버에서 관전자가 특정 플레이어의 손패를 볼 수 있도록 데이터 준비
+		local isAlly = player:IsAllyWith(watcher)
+		local cardArray = player.hand:GetCards(nil)
+		local properties
+		if isAlly then
+			properties = {}
+			for _, card in ipairs(cardArray) do
+				table.insert(properties, card:GetProperties())
+			end
+		end
+		
+		local watchingData = {
+			commandId = self.duel.commandId,
+			player = player,
+			isAlly = isAlly,
+			cardArray = player.hand:GetCards(nil),
+			properties = properties	
+		}
+		
+		self:SetWatchingInClient(watchingData, watcher.Entity.Name)
+	end
+
+	@ExecSpace("Client")
+	method void SetWatchingInClient(table watchingData)
+		-- 클라이언트에서 관전 데이터를 저장하고 명령어 실행 완료 후 적용 대기
+		self.watchingData = watchingData
+		
+		if not self.isCommandRunning then
+			self:SetWatchingCards()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetWatchingCards()
+		-- 관전 데이터를 바탕으로 손패 카드들의 정보를 설정하고 메시지 표시
+		local character = self.watchingData.player.character
+		if not isvalid(character) then
+			return
+		end
+		
+		for i, card in ipairs(self.watchingData.cardArray) do
+			if self.watchingData.isAlly then
+				local propertyArray = self.watchingData.properties[i]
+				card:SetProperties(propertyArray)
+				card:OnSyncProperties()
+				
+				local user = _UserService.Users[character.Entity.Name]
+				self.uiManager.ToastModule:ShowMessage(_LocalizationService:GetTextFormat("CanSeeHandCards", user.Nickname))
+				character.player:HideFriendRequestButton()
+			else
+				card:ClearBlueprint()
+				
+				local user = _UserService.Users[character.Entity.Name]
+				self.uiManager.ToastModule:ShowMessage(_LocalizationService:GetTextFormat("CantSeeHandCards", user.Nickname))
+				character.player:ShowFriendRequestButton()
+			end
+		end
+		
+		self.watchingData = nil
+	end
+
+end

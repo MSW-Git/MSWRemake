@@ -1,0 +1,198 @@
+@Component
+script JumpingMachine extends InteractionComponent
+
+	property number dirType = 0
+
+	property number dirChangeTime = 0
+
+	property number jumpingPower = 0
+
+	property boolean onPlayer = false
+
+	property Entity targetPos = nil
+
+	property Entity guideUI = nil
+
+	property Vector3 jumpingDir1 = Vector3(0,0,0)
+
+	property Vector3 jumpingDir2 = Vector3(0,0,0)
+
+	property Vector3 jumpingDir3 = Vector3(0,0,0)
+
+	property Vector3 jumpingDir = Vector3(0,0,0)
+
+	property number rotationSpeed = 0
+
+	@ExecSpace("Client")
+	method void ready(Entity targetPlayer)
+		-- 플레이어를 점프 머신에 올려놓고 발사 준비 상태로 설정
+		--[[
+		_CameraService.TransitionBlendType = CameraBlendType.Cut
+		_CameraService:SwitchCameraTo(self.Entity.CameraComponent)
+		]]--
+		
+		targetPlayer.RigidbodyComponent:SetPosition(Vector2(self.Entity.TransformComponent.WorldPosition.x, self.Entity.TransformComponent.WorldPosition.y))
+		targetPlayer.RigidbodyComponent.Enable = false
+		-- targetPlayer.TransformComponent.WorldPosition = self.Entity.TransformComponent.WorldPosition
+		
+		targetPlayer.PlayerIngameData.CompulsiveRigidbodyOff = true--targetPlayer.MovementComponent.Enable = true
+		--targetPlayer.Visible = true
+		
+		--targetPlayer.MovementComponent.Enable = false
+		--targetPlayer.Visible = false
+		
+		
+		
+		if self.dirType == 3 then
+			self:ChangeDirection()
+		elseif self.dirType == 1 then
+			self.targetPos = self.Entity:GetChildByName("JumpingDirArrow")
+			self.targetPos.Enable = true
+			-- self.jumpingDir = self.jumpingDir1
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeDirection()
+		-- 점프 방향 화살표를 주기적으로 변경하여 방향을 선택할 수 있게 함
+		local change = function()
+			self._T.arrowDirCount = self._T.arrowDirCount + 1
+			for i = 1 , #self.Entity.Children do
+				if string.sub(self.Entity.Children[i].Name, 1, 4) == "Jump" then
+					self.Entity.Children[i].Enable = false
+				end
+			end
+			if self._T.arrowDirCount == 1 then
+				self.targetPos = self.Entity:GetChildByName("JumpingDirArrow_1")
+				self.Entity:GetChildByName("JumpingDirArrow_1").Enable = true
+				self.jumpingDir = self.jumpingDir1
+			elseif self._T.arrowDirCount == 2 then
+				self.targetPos = self.Entity:GetChildByName("JumpingDirArrow_2")
+				self.Entity:GetChildByName("JumpingDirArrow_2").Enable = true
+				self.jumpingDir = self.jumpingDir2
+			elseif self._T.arrowDirCount == 3 then
+				self.targetPos = self.Entity:GetChildByName("JumpingDirArrow_3")
+				self.Entity:GetChildByName("JumpingDirArrow_3").Enable = true
+				self.jumpingDir = self.jumpingDir3
+				self._T.arrowDirCount = 0
+			end
+		end
+		self._T.changeTimer = _TimerService:SetTimerRepeat(change, self.dirChangeTime, 0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void jumping(Entity targetPlayer)
+		-- 설정된 방향과 힘으로 플레이어를 점프시켜 발사
+		if self.dirType == 1 then
+			local dist = Vector2(self.Entity:GetChildByName("JumpingDirArrow").TransformComponent.WorldPosition.x - self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity:GetChildByName("JumpingDirArrow").TransformComponent.WorldPosition.y - self.Entity.TransformComponent.WorldPosition.y)
+			
+			self.jumpingDir = Vector3(dist.x, dist.y, 0)
+		end
+		
+		targetPlayer.RigidbodyComponent.Enable = true
+		targetPlayer.PlayerIngameData.CompulsiveRigidbodyOff = false
+		
+		--targetPlayer.MovementComponent.Enable = true
+		--targetPlayer.Visible = true
+		
+		--[[
+		_CameraService.TransitionBlendType = CameraBlendType.Cut
+		_CameraService:SwitchCameraTo(targetPlayer.CameraComponent)
+		]]--
+		
+		local shotVector = Vector2(self.jumpingDir.x, self.jumpingDir.y)
+		targetPlayer.RigidbodyComponent.Gravity = 1
+		targetPlayer.RigidbodyComponent:SetForce(shotVector * self.jumpingPower)
+		_SoundService:PlaySound("b0b271efb636496e9541f2244ebd9878", 1)
+		_EffectService:PlayEffectAttached("0238e0962a5c47499bb98f2ec9592680", self.Entity, Vector3.zero, 0, Vector3(5,5,5))
+		
+		if self.dirType == 3 then
+			_TimerService:ClearTimer(self._T.changeTimer)
+		end
+		
+		self:reset()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 시작 시 점프 머신을 초기 상태로 리셋
+		self:reset()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void reset()
+		-- 점프 머신의 모든 상태를 초기화하고 화살표를 숨김
+		self._T.arrowDirCount = 0
+		self.onPlayer = false
+		for i = 1, #self.Entity.Children do
+			if string.sub(self.Entity.Children[i].Name, 1, 4) == "Jump" then
+				self.Entity.Children[i].Enable = false
+			end
+		end
+		
+		if isvalid(self.guideUI) then
+			self.guideUI:Destroy()
+		end
+		self.onPlayer = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 회전형 점프 머신의 경우 지속적으로 회전시킴
+		if self.dirType == 1 then
+			self.Entity.TransformComponent.WorldZRotation = self.Entity.TransformComponent.WorldZRotation + self.rotationSpeed * delta
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 플레이어가 점프 머신과 상호작용할 때 준비 또는 발사 상태 전환
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		local miningGamne = _EntityService:GetEntity("cf7e8298-08f2-4352-b1bc-6a21d7d3992f")
+		--------------------------------------------------------
+		if isvalid(InteractionEntity.PlayerControllerComponent) and not miningGamne.MiningGame.onMining then
+			if not self.onPlayer then -- ready 상태
+				self.onPlayer = true
+				--self.guideUI:GetChildByName("UIText").TextComponent.Text = "발사하기"
+				self:ready(InteractionEntity)
+			else -- shot상태
+				self:jumping(InteractionEntity)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 플레이어가 점프 머신 상호작용 범위를 벗어났을 때 리셋
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		if self.onPlayer then
+			return
+		end
+		
+		if isvalid(InteractionEntity.PlayerControllerComponent) and not self.onPlayer then
+			self:reset()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 플레이어가 점프 머신 상호작용 범위에 들어왔을 때 가이드 UI 표시
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------)
+		if isvalid(InteractionEntity.PlayerControllerComponent) and not self.onPlayer then
+			local spawnPos = self.Entity.TransformComponent.WorldPosition
+			self.guideUI = _SpawnService:SpawnByModelId("model://b230d239-ceb9-430b-a760-797ed57c2d73", "Guide_Key", Vector3(spawnPos.x, spawnPos.y, 0), self.Entity.CurrentMap)
+			self.guideUI.TransformComponent.WorldZRotation = 0
+		end
+		
+	end
+
+end

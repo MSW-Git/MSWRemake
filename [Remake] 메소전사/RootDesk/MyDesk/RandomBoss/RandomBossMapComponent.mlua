@@ -1,0 +1,422 @@
+@Component
+script RandomBossMapComponent extends BattleMap
+
+	property EntityRef spawnPoint = "9658cd7d-6587-4109-8129-97f286f471a3"
+
+	property EntityRef tile = "f5b495ef-4a97-4fd2-a75d-159612f89b4a"
+
+	property UILevelUpPopup levelUpPopUp = nil
+
+	property EntityRef mapEntities = "0ec54c87-8983-404e-89ba-3206d220d9fd"
+
+	property integer lastWave = 3
+
+	property table bossInfo = {}
+
+	property TriggerComponentRef innerTrigger = "97d2178b-86c9-430e-a61a-a09a56ec9f54"
+
+	property MapLayerComponentRef playerLayer = "cf0f0833-e70d-4b9f-9dde-24ebafc46986"
+
+	property RectTileMapComponentRef rectTile = "2d428242-1bb4-4bd9-b787-656cdda0096c"
+
+	property RectTileMapComponentRef fenceRectTile = "9302b710-1de2-40c3-9ca7-304913793b9e"
+
+	property RectTileMapComponentRef fenceBottomRectTile = "171700f9-7568-4b4f-bda6-a15e26551741"
+
+	method void OnBeginPlay()
+		-- 랜덤 보스 맵 컴포넌트 초기화 및 풀링 설정
+		if self:IsServer() then
+			return
+		end
+		self._T.currentSpawners = {}
+		self._T.startedWaveTime = 0
+		self._T.leftBottom = self.leftBottom
+		self._T.rightTop = self.rightTop
+		
+		_PoolingLogic:PreLoad(_MonsterLogic.baseModel,self.Entity,20)
+		_PoolingLogic:PreLoad("model://afa7a38c-67b8-45f5-87f5-d90af408383f",self.Entity,20)
+		_BattleUIManager.suddenMissionUI:ForceClose()
+	end
+
+	method void Init()
+		-- 랜덤 보스 맵 초기화 및 웨이브 시작
+		if self:IsClient() then
+			self.width = 20
+			self.height = 12
+			_TimerLogic:Resume()
+			self:SetBoss()
+			self:SetTile()
+		end
+		self.isClear = false
+		
+		self:StartWave()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTile()
+		-- 랜덤하게 선택된 스테이지 테마에 따라 타일과 사운드 설정
+		local stageStep = _UtilLogic:RandomIntegerRange(1, #table.keys(_StageLogic.stageData) - 4)
+		local tile = "754ffa66c5384fb0967eb6199af24f5c"
+		
+		for key, value in pairs(_StageLogic.stageData) do
+			if value.step == stageStep then
+				tile = value.tile
+				self.theme = value.theme
+				self.stageData = value
+				break
+			end
+		end
+		
+		---@type Entity
+		local mapEntities = self.mapEntities 
+		local soundComponent = self.Entity.SoundComponent
+		
+		self.tile.SpriteRendererComponent.SpriteRUID = tile
+		
+		if self.theme == "forest" then
+			soundComponent.AudioClipRUID = "7ca2c33f65204582959207ac4c7c9870"
+		elseif self.theme == "desert" then
+			soundComponent.AudioClipRUID = "2dd03c76b331416bbf9752f6a897988e"
+		elseif self.theme == "pirates" then
+			soundComponent.AudioClipRUID = "bc60a5ce1e754011b22c1a29e938106c"
+		elseif self.theme == "factory" then
+			soundComponent.AudioClipRUID = "87784fb48a1e435dad1c33f348322dc4"
+		elseif self.theme == "cookie" then
+			soundComponent.AudioClipRUID = "754991d9176c47ea9bda8929f4f3733f"
+		elseif self.theme == "winter" then
+			soundComponent.AudioClipRUID = "3c7eac1135c54c06963e44aeea3306f7"
+		elseif self.theme == "temple" then
+			soundComponent.AudioClipRUID = "b096f4699a334cdbb084d78bf7f590a5"
+		elseif self.theme == "hotSpring" then
+			soundComponent.AudioClipRUID = "729f9844bceb480089e5f1b2aed9fcb9"
+		end
+		
+		mapEntities.Visible = false
+		self._T.mapEntites = mapEntities
+		
+		if self.stageData == nil or self.stageData.width == nil then
+			self:SetMapSize(20,12)
+		else
+			self:SetMapSize(self.stageData.width,self.stageData.height)
+		end
+		
+		self.tile.SpriteRendererComponent.SortingLayer = "Layer1"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitPlayer()
+		-- 플레이어 무기 초기화 및 카드 레벨 최대치로 설정
+		local player = _UserService.LocalPlayer
+		local battlePlayer = player.BattlePlayer
+		
+		for i = 1, _GameConfig:GetConfig().MAX_EQUIPMENT_CNT do
+			battlePlayer:AddWeapon("")
+		end
+		
+		for key, value in pairs(battlePlayer.equipGun) do
+			---@type BattleGunObject
+			local gun = value.gun.BattleGunObject
+			
+			for i = 1, _GameConfig:GetConfig().WEAPONCARD_LV_MAX - 1 do
+				gun:CardLevelUp(false)
+			end
+		end
+		
+	end
+
+	method void SpawnWave(table wave)
+		-- 웨이브에 따라 보스 몰스터를 스폰
+		self.isTimerOut = false
+		
+		local pos = _UserService.LocalPlayer.TransformComponent.Position
+		local monsterCnt = 1
+		local isBoss = false
+		
+		if self.wave == self.lastWave then
+			monsterCnt = 1
+			isBoss = true
+		end
+		
+		local angleOffset = math.rad(_UtilLogic:RandomDouble() * 360)
+		local angle = angleOffset
+		
+		local monsters = {}
+		
+		if self.wave == self.lastWave then
+			table.insert(monsters, self.bossInfo)
+		else
+			local bossMonsters = {}
+			
+			for key, value in pairs(_MonsterLogic.monsterData) do
+				if value.purpose == "common" then
+					if value ~= self.bossInfo and value.type == "boss" and not _UtilLogic:Contains(value.id, "Boss_Kariaine") then
+						table.insert(bossMonsters, value)
+					end
+				end
+			end
+			
+			table.insert(monsters, bossMonsters[_UtilLogic:RandomIntegerRange(1, #bossMonsters)])
+		end
+		
+		local offsetX = 0
+		local offsetY = 0
+		local radius = 0
+		local x = 0
+		local y = 0
+		local z = 0
+		
+		local posSet = function()
+			offsetX = 5 * (_UtilLogic:RandomDouble()  - 0.5)
+			offsetY = 5 * (_UtilLogic:RandomDouble()  - 0.5)
+			
+			angle = angleOffset * math.rad(_UtilLogic:RandomDouble() * 360)
+			radius = _UtilLogic:RandomIntegerRange(15, 20)
+			
+			x = radius * math.cos(angle) + pos.x + offsetX
+			y = radius * math.sin(angle) + pos.y + offsetY
+			z = pos.z
+		end
+		
+		posSet()
+		
+		for i = 1,monsterCnt do
+			local monsterData = monsters[_UtilLogic:RandomIntegerRange(1, #monsters)]
+		
+			if monsterData == nil then
+			else
+				local spawnFunc = function(monster)
+					if self.totalmonsterCnt % 10 == 0 then
+						posSet()
+					end
+					---@type MonsterObject
+					local monsterComp = monster.MonsterObject
+					monsterComp:SetPosition(Vector2(x,y))
+					monsterComp:Init(monsterData.id, false,false,3)
+					monsterComp.speed = monsterComp.speed
+					monsterComp:SetTarget(_UserService.LocalPlayer)
+					monsterComp.respawnPosition = Vector2(x,y)
+					if monsterComp.id == 0 then
+						monsterComp.id = self.totalmonsterCnt
+						self.totalmonsterCnt = self.totalmonsterCnt + 1
+					end
+				end
+				
+				_PoolingLogic:SpawnModelAsync(monsterData.model,Vector3(x,y,z),self.Entity,spawnFunc)
+			end		
+		end
+	end
+
+	method void StartWave()
+		-- 웨이브 시작 및 몰스터 스폰 타이머 설정
+		if self._T.startedWaveTime + 5 > _TimerLogic.ElapsedSeconds then
+			
+			self._T.startedWaveTime = _TimerLogic.ElapsedSeconds
+			
+			return
+		end
+		
+		
+		local maxSpawnCount = 1
+		local battlePlayer = _UserService.LocalPlayer.BattlePlayer
+		
+		if self.wave ~= self.lastWave then
+			_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast7"),self.wave))
+			_ArmorSkillLogic:SendEvent(WaveStartEvent(false, self.wave))
+		else
+		
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast9"))
+			_ArmorSkillLogic:SendEvent(WaveStartEvent(true, self.wave))
+		end
+		_BattleUIManager:RefreshCurrentWave()
+		
+		self._T.waveSpawnEnd = false
+		self.spawnedBox = 0
+		
+		self._T.totalTimer = 0
+		self._T.monsterSpawnCall = 0
+		
+		local repeatId = 0
+		
+		local spawnCount = 0
+		self._T.totalTimer = self._T.totalTimer + 1
+		repeatId = _TimerLogic:SetTimerRepeat(function() 
+				if self == nil then
+					_TimerLogic:ClearTimer(repeatId)
+				else
+					spawnCount = spawnCount + 1
+					self:SpawnWave({})
+					if spawnCount >= maxSpawnCount then				
+						self._T.totalTimer = self._T.totalTimer - 1
+						if self._T.totalTimer == 0 then
+							self.isTimerOut = true
+						end
+						_TimerLogic:ClearTimer(repeatId)
+					end
+				end
+				
+		end, 5, 5, "RandomBossMapComponent.StartWave")
+		self._T.currentSpawners = repeatId
+		_StageLogic.startTime = _TimerLogic.ElapsedSeconds
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetBoss()
+		-- 랜덤하게 보스 몰스터 선택 및 설정
+		table.clear(self.bossInfo)
+		
+		local bossMonsters = {}
+		
+		for key, value in pairs(_MonsterLogic.monsterData) do
+			if value.purpose == "common" then
+				if value.type == "boss" then
+					
+					
+					
+					if _UserService.LocalPlayer.PlayerDropsComponent.isDropGoodItem then
+						if _UtilLogic:Contains(value.id, "Boss_Kariaine") then
+							table.insert(bossMonsters, value)
+							break
+						end
+					else
+						if not _UtilLogic:Contains(value.id, "EliteBoss") and not _UtilLogic:Contains(value.id, "Boss_Kariaine") then
+							table.insert(bossMonsters, value)
+						end
+					end
+					
+				end
+			end
+		end
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, #bossMonsters)
+		self.bossInfo = bossMonsters[rand]
+	end
+
+	method void ForceClear()
+		-- 강제로 웨이브 클리어 처리
+		_TimerLogic:ClearTimer(self._T.currentSpawners)
+		self._T.waveSpawnEnd = true
+		
+		_MonsterLogic:SendEvent(MonsterCountChange(0, true))
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "MonsterLogic")
+	handler HandleMonsterCountChange(MonsterCountChange event)
+		-- 몰스터 수 변경 이벤트 처리 및 웨이브 진행 상태 관리
+		local count = event.count
+		local causeForceClear = event.causeForceClear
+		local tempEnd = false
+		
+		if self.isTimerOut then
+			if self._T.monsterSpawnCall == 0 then
+				self._T.waveSpawnEnd = true		
+			end
+		end
+		_EditorTextLog:Log("monstercount",string.format("몬스터수 : %d",count))
+		
+		if count <= 0 and not self.isClear then
+			if self.wave == self.lastWave then
+				if causeForceClear then return end
+				
+				_TimerLogic:ClearTimer(self._T.currentSpawners)
+				tempEnd = true
+			end
+		
+			if self._T.waveSpawnEnd then
+				self.isClear = true
+				if self.wave == self.lastWave then
+					_UserService.LocalPlayer.BattlePlayer:ApplyInvincible(999999)
+					local droppedItems = self.Entity:GetChildComponentsByTypeName("DroppedItemComponent")
+		
+					for _, item in pairs(droppedItems) do
+						item.waveClear = true
+					end
+					
+					_TimerService:SetTimerOnce(function()
+						if isvalid(_UserService.LocalPlayer) and isvalid(_UserService.LocalPlayer.BattlePlayer) then
+							_UserService.LocalPlayer.BattlePlayer:OnEndBattle(true)
+						end
+					end, 5)
+					
+					
+					return
+				end
+		
+				_WaveLogic:SendEvent(WaveEndEvent())
+				self.isClear = false
+				self.wave = self.wave + 1
+				if self.wave == self.lastWave then
+					_BattleUIManager.bossAlertUI:Show()
+				end
+				self:StartWave()
+			end
+			
+			if tempEnd then
+				self._T.waveSpawnEnd = true
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleBattleChapterEnd(BattleChapterEnd event)
+		-- 랜덤 보스 전투 종료 이벤트 처리 및 결과 로깅
+		local clear = event.clear
+		_TimerLogic:Resume()
+		self.isEnd = true
+		_BattleUIManager:Resume()
+		_BattleUIManager.levelUpPopup:Hide("",0,1)
+		_BuffLogic:Init()
+		_UserService.LocalPlayer.PlayerArmorSkillComponent:ResetArmorSkill(_UserService.LocalPlayer)
+		
+		_MonsterWaveManageLogic:Clear()
+		
+		if clear then
+			if self.requestedClearRewardTime + 5 < _UtilLogic.ServerElapsedSeconds then
+				_UserService.LocalPlayer.PlayerTempStorageComponent:RequestGetRewards(clear)
+				self.requestedClearRewardTime = _UtilLogic.ServerElapsedSeconds
+			else
+				
+				return
+			end
+		end
+		
+		local player = _UserService.LocalPlayer
+		local playerQuest = player.PlayerQuestComponent
+		
+		playerQuest:AddObjectiveCount("randomBossClear", "randomBossClear", 1, playerQuest.currentQuestId, true, "play")
+		_WorldLog:RequestLogQuestFlow(playerQuest.questProgress[playerQuest.currentQuestId], _WorldLog.FlowType_Quest_Change, "play")
+		
+		local playFlow = _WorldLog.FlowType_PlayFlow_Drop
+		
+		if clear then
+			self.isClear = true
+			playFlow = _WorldLog.FlowType_PlayFlow_Success
+		else
+			if _UserService.LocalPlayer.BattlePlayer.isDead then
+				playFlow = _WorldLog.FlowType_PlayFlow_Fail
+			else
+				playFlow = _WorldLog.FlowType_PlayFlow_Drop
+			end
+		end
+		
+		_WorldLog:LogIngameFlowExit(_HttpService:JSONEncode(_BuffLogic.selectedCard), _HttpService:JSONEncode(_BuffLogic:GetStats()), player.BattlePlayer.hitInfo, 
+			player.MyPlayer.deviceType, tostring(self.wave), _GameConfig:GetConfig().GAMEMODE_RANDOMBOSS, player, playFlow, tostring(_TimerLogic.ElapsedSeconds - _StageLogic.startTime),_BossBalanceLogic:GetResult())
+		table.clear(_BuffLogic.selectedCard)
+		_StageLogic:SendEvent(StageEndEvent())
+		
+		if self._T.effectAttachedId ~= nil then
+			_EffectService:RemoveEffect(self._T.effectAttachedId)
+			self._T.effectAttachedId = nil
+		end
+		
+		_ResultUILogic.resultUI:Show(clear)
+		
+		if isvalid(self._T.bossBackground) then
+			for k,v in pairs(self._T.bossBackground) do
+				v:Destroy()
+			end
+		end
+	end
+
+end

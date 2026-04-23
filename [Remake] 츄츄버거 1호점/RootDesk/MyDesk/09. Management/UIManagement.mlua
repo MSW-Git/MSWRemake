@@ -1,0 +1,274 @@
+@Component
+script UIManagement extends Component
+
+	property Entity GoalList = "6f3f99b1-bd1a-49b1-ae35-8464532d43ca"
+
+	property Entity LevelText = "68eddc4a-5f51-454a-91c2-4318fea8a83b"
+
+	property Entity LevelUpBtn = "a4a4344b-467a-4c14-ad84-373589af09ec"
+
+	property Entity GradeIcon = "6dbef2d0-ffea-4471-bc73-2b0224fe3775"
+
+	property Entity LevelUpDim = "0448f06b-70d4-4486-9870-c770307cf02c"
+
+	property Entity Contents = "0b765947-710b-49c3-aa5e-3aa4ff773161"
+
+	property Entity CloseBtn = "de2c1b6a-caab-411f-955e-232485146e78"
+
+	property Entity GoalEnd = "b2521c01-3b2d-410a-b3a6-018f0653e2aa"
+
+	property TextComponent GoalEndNextGoal = "6f21fe34-e63b-4525-a333-fb995544766f"
+
+	property Entity MoveToRankingBtn = "a5ef0dd3-264b-411d-9710-28d3cfee5292"
+
+	property Entity MoveToStageSelectBtn = "9aebe3b4-3a6f-4a5c-ac63-7fe0a82a3b23"
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 관리 UI를 열고 오픈 애니메이션을 재생하는 함수
+		if self.Entity.Parent.Enable then
+			return
+		end
+		
+		_UIGroupManager:EnableManagementGroup(true)
+		self:Refresh()
+		
+		self.GradeIcon.CanvasGroupComponent.GroupAlpha = 0
+		self.CloseBtn.CanvasGroupComponent.GroupAlpha = 0
+		self.Contents.CanvasGroupComponent.GroupAlpha = 0
+		self._T.isProcessing = true
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Open_Management"], 1)
+		
+		_UIEntityService:PlayUIOpenAnim(self.Entity, self.Entity.UITransformComponent.anchoredPosition, Vector2.down, 0.6, nil, nil, "CubicEaseOut", nil)
+		_TimerService:SetTimerOnce(function()
+			_UIEntityService:PlayUIOpenAnim(self.Contents, self.Contents.UITransformComponent.anchoredPosition, Vector2.up, 0.6, nil, Vector2(100, 100), "Linear", nil)
+			
+			_TimerService:SetTimerOnce(function()
+				_UIEntityService:PlayUIOpenAnim(self.CloseBtn, self.CloseBtn.UITransformComponent.anchoredPosition, Vector2.down, 0.6, nil, Vector2(50, 50), nil, nil)
+				
+				_TimerService:SetTimerOnce(function()
+					_UIEntityService:PlayUIOpenAnim(self.GradeIcon, self.GradeIcon.UITransformComponent.anchoredPosition, Vector2.right, 0.6, nil, Vector2(50, 50), nil, function()
+						self._T.isProcessing = false
+					end)
+				end, 0.2)		
+			end, 0.2)
+			
+		end, 0.2)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 관리 UI를 닫는 함수
+		_UIGroupManager:EnableManagementGroup(false)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 플레이어의 관리 레벨과 목표 상태에 따라 UI를 갱신하는 함수
+		local player = _UserService.LocalPlayer
+		local playerLevel = player.PlayerManagement.ManagementLevel
+		local nextLevel = playerLevel + 1
+		
+		local leftRUID = function(a)
+			if a == 0 then
+				return "5205cc51dca2451f8a3579a3f4f782c3"
+			elseif a == 1 then
+				return "cac55933b5804a6789310363c6d3ff83"
+			elseif a == 2 then
+				return "5c9c79bc04574891a8e4771bd8a8a9dd"
+			elseif a == 3 then
+				return "c6cac32771ae4c229dc3661303515bbf"
+			elseif a == 4 then
+				return "eea8a14d87a24572a872ebea6baf7a64"
+			elseif a == 5 then
+				return "4379b1ce409c47a78ef443f165fa4660"
+			end
+		end
+		
+		---@type ManagementLevelData
+		local levelUIData = _ManagementDataSetLogic.ManagementLevelData[playerLevel]
+		self.LevelText.TextComponent.Text = _GetLocalizationTextLogic:GetText(levelUIData.NameKey)
+		self.LevelText.TextComponent.OutlineColor = levelUIData.OutlineColor
+		self.GradeIcon.SpriteGUIRendererComponent.ImageRUID = leftRUID(playerLevel)
+		
+		local stageClearProgress = _StageDataSetLogic:GetStageClearProgress(player.PlayerStage.NowStage)
+		local managementMaxLevel = stageClearProgress < _ManagementDataSetLogic.ManagementMaxLevel and stageClearProgress or _ManagementDataSetLogic.ManagementMaxLevel
+		self.GoalList.Enable = not (nextLevel > managementMaxLevel)
+		self.LevelUpBtn.Enable = not (nextLevel > managementMaxLevel)
+		self.GoalEnd.Enable = nextLevel > managementMaxLevel
+		
+		if nextLevel > managementMaxLevel then
+			
+			local userProgress = player.PlayerStage.StageProgress[player.PlayerStage.NowStage]
+			if userProgress == nil then
+				userProgress = 0
+			end
+			
+			self.MoveToRankingBtn.Enable = userProgress < stageClearProgress
+			self.MoveToStageSelectBtn.Enable = not (userProgress < stageClearProgress)
+			
+			
+			if userProgress < stageClearProgress then
+				self.GoalEndNextGoal.Text = _GetLocalizationTextLogic:GetText("ManagementNextGoalRankingText")
+				
+			else
+				self.GoalEndNextGoal.Text = _GetLocalizationTextLogic:GetText("ManagementNextGoalStageText")
+				
+			end
+			
+		else
+			local levelData = _ManagementDataSetLogic:GetManagementGoalData(player.PlayerStage.NowStage, nextLevel)
+			local isAllCompleted = true
+			for k, v in pairs(levelData.IndexData) do
+				---@type ManagementGoalIndexData
+				local indexData = v
+				local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_ManagementGoalSlotRenderer", k, self.GoalList)
+				
+				local isCompleted = player.PlayerManagement.CurrentGoals[k]
+				if isCompleted == false then
+					isAllCompleted = false
+				end
+				entity.UIManagementGoalSlotRenderer:Refresh(indexData, isCompleted, k)
+			end
+			
+			self.LevelUpBtn.Enable = true
+			self.LevelUpDim.Enable = not isAllCompleted
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickLevelUpBtn()
+		-- 관리 레벨 업 버튼 클릭 시 조건을 확인하고 레벨업을 요청하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local managementMaxLevel = player.PlayerStage.NowStage == 1 and 2 or _ManagementDataSetLogic.ManagementMaxLevel
+		if player.PlayerManagement.ManagementLevel > managementMaxLevel then
+			_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("ManagementErrorMessage2"))
+			return
+		end
+		
+		local allCompleted = true
+		for k, v in pairs(player.PlayerManagement.CurrentGoals) do
+			if v == false then
+				allCompleted = false
+				break
+			end
+		end
+		
+		if allCompleted == false then
+			_UIToast:ShowMessage(_GetLocalizationTextLogic:GetText("ManagementErrorMessage1"))
+			return
+		end
+		
+		player.PlayerManagement:RequestManagementLevelUp()
+		player.PlayerManagement:ChangeConnectingStatus(true)
+	end
+
+	@EventSender("Entity", "1d232549-4f51-462b-b0fa-02b2eefb82f4")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 관리 UI 열기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open()
+	end
+
+	@EventSender("Entity", "de2c1b6a-caab-411f-955e-232485146e78")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 관리 UI 닫기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+	@EventSender("Entity", "a4a4344b-467a-4c14-ad84-373589af09ec")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 레벨업 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		local player = _UserService.LocalPlayer
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if player.PlayerManagement.IsServerProcessing then
+			return
+		end
+		
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickLevelUpBtn()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerManagementChangedEvent(PlayerManagementChangedEvent event)
+		-- 플레이어 관리 상태 변경 이벤트 처리
+		if self.Entity.Parent.Enable == false then
+			return
+		end
+		self:Refresh()
+	end
+
+	@EventSender("Entity", "328c6487-8444-42c6-ad41-5e08db696a87")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 추가 관리 UI 열기 버튼 클릭 이벤트 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open()
+	end
+
+	@EventSender("Entity", "a5ef0dd3-264b-411d-9710-28d3cfee5292")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 랭킹 보기 버튼 클릭 이벤트 처리
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Close()
+		_StoreRankingDataSetLogic.UIStoreRanking.UIStoreRanking:Open()
+	end
+
+	@EventSender("Entity", "9aebe3b4-3a6f-4a5c-ac63-7fe0a82a3b23")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 스테이지 선택 버튼 클릭 이벤트 처리
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Close()
+		_StageDataSetLogic.UIStageSelect:Open(nil)
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandleplayerStageProgressChangedEvent(playerStageProgressChangedEvent event)
+		-- 플레이어 스테이지 진행도 변경 이벤트 처리
+		if self.Entity.Parent.Enable == false then
+			return
+		end
+		self:Refresh()
+	end
+
+end

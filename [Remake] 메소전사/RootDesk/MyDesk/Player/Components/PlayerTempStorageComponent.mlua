@@ -1,0 +1,145 @@
+@Component
+script PlayerTempStorageComponent extends Component
+
+	property table tempItemRewards = {}
+
+	property string userId = ""
+
+	@HideFromInspector
+	property number rewardedTime = 0
+
+	@HideFromInspector
+	property number lossRatio = 0.3
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID 설정
+		self.userId = self.Entity.PlayerComponent.UserId
+	end
+
+	@ExecSpace("Server")
+	method void ClearRewards()
+		-- 임시 보상 목록을 초기화
+		if self:IsClient() and self.Entity.PlayerComponent.UserId ~= senderUserId then 
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		table.clear(self.tempItemRewards)
+		self.tempItemRewards = {}
+		
+		self:ClearRewardsInClient(self.userId)
+		
+	end
+
+	@ExecSpace("Client")
+	method void ClearRewardsInClient()
+		-- 클라이언트에서 임시 보상 목록 초기화
+		table.clear(self.tempItemRewards)
+		self.tempItemRewards = {}
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InsertRewardInTemp(string originalId)
+		-- 임시 보상 목록에 아이템 추가
+		table.insert(self.tempItemRewards, originalId)
+		
+		self:SyncTempRewardsInClient(self.tempItemRewards, self.userId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncTempRewardsInClient(table tempItemRewards)
+		-- 클라이언트에서 임시 보상 목록 동기화
+		self.tempItemRewards = tempItemRewards
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetRewards(boolean isClear)
+		-- 임시 보상을 실제 인벤토리로 지급 요청 처리
+		if self.Entity.PlayerComponent.UserId ~= senderUserId then 
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		if self.rewardedTime + 10 > _UtilLogic.ServerElapsedSeconds then 
+		
+			return 
+		end
+		self.rewardedTime = _UtilLogic.ServerElapsedSeconds
+		
+		local playerStorage = self.Entity.PlayerStorageComponent
+		local playerDropsCompo = self.Entity.PlayerDropsComponent
+		local containInvalidItem = false
+		
+		for key, itemId in pairs(self.tempItemRewards) do
+			if not playerDropsCompo:IsValidItem(itemId) then
+				containInvalidItem = true
+				
+				break
+			end
+		end
+		
+		
+		if containInvalidItem then
+			
+		else
+			self:PayReward(isClear)
+		end
+		
+		self:ClearRewards()
+	end
+
+	@ExecSpace("Server")
+	method void RequestInsertRewardInTemp(string itemId)
+		-- 임시 보상 목록에 아이템 추가 요청 처리
+		if self.Entity.PlayerComponent.UserId ~= senderUserId then 
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		local fixedDropTable = self.Entity.PlayerDropsComponent.fixedDropTable
+		
+		if isvalid(fixedDropTable[itemId]) and fixedDropTable[itemId] >= 1 then 
+			self:InsertRewardInTemp(itemId)
+		else
+			local str = ""
+			for key, value in pairs(fixedDropTable) do
+				str = string.format("%s\n%s - %s", str, key, value)
+			end
+			
+		
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PayReward(boolean isClear)
+		-- 임시 보상을 실제 아이템으로 지급
+		local playerStorage = self.Entity.PlayerStorageComponent
+		
+		for key, itemId in pairs(self.tempItemRewards) do
+			local splitedId =_UtilLogic:Split(itemId, "_")
+			local category = splitedId[1]
+			
+			if category == _GameConfig:GetConfig().ITEMTYPE_EGG then
+				playerStorage:RequestAddEgg(itemId, 1, itemId, 1, "", 0,"Stage")
+			elseif category == _GameConfig:GetConfig().ITEMTYPE_CURRENCY then
+				if splitedId[2] == "000001" then
+					_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, 1, self.userId,"Stage",string.format("%d",self.Entity.PlayerDropsComponent.currentStage))
+				end
+			else
+				playerStorage:RequestAddItemFromServer(_GameUtil:CreateGUID(), 1, itemId, 1, self.userId,"Stage","")
+			end
+		end
+		
+		if isClear then
+			self.Entity:SendEvent(NewbieMissionUpdateEvent("stageClear", tostring(self.Entity.PlayerDropsComponent.currentStage), 1))
+		end
+	end
+
+end

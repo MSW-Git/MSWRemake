@@ -1,0 +1,146 @@
+@Component
+script RC30019 extends RuneCardComponent
+
+	property number RuneStack = 0
+
+	property number SetMaxStack = 60
+
+	property number SetDamageDecreasePercent = 0.5
+
+	property number SetAddDealingDamagePercent = 1
+
+	@ExecSpace("ServerOnly")
+	method void SellUnitHandler(any event)
+		__base:SellUnitHandler(event)
+		
+		-- 캐릭터 판매 시 코인을 얻지 못합니다.
+		-- 대신 판매한 비용만큼 중첩을 얻고, 1 중첩당 모든 아군의 가해량은 1% 증가하고, 피해량은 0.5% 감소합니다.
+		-----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		
+		---@type Entity
+		local unit = event.Unit
+		local unitInfo = unit.UnitInfo
+		-----------------------------------------------------------
+		if self.SetTeamType == "User" then
+			local sellCost = 0
+			if unitInfo.level == 1 then
+				sellCost = unitInfo.cost
+			else
+				sellCost = ( unitInfo.cost * (3)^(unitInfo.level - 1) ) - math.floor( (2 + unitInfo.cost) / 4 )
+			end
+			
+			self:SetRuneStackInfo(math.min(self.SetMaxStack, self.RuneStack + sellCost))
+			
+			unitInfo.cost = 0
+			unitInfo.level = 1
+			
+			local stack=self.RuneStack
+			self:PlayEffect(stack, "", "", true, user.PlayerComponent.UserId)
+			
+			--업적: 룬카드 [달리어]로 n 중첩 도달하기 
+			_AchievementService:UpdateProgress_RuneCard("AC004013",stack,user)
+		
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartBattleHandler(any event)
+		__base:StartBattleHandler(event)
+		
+		-- 1 중첩당 모든 아군의 가해량은 1% 증가하고, 피해량은 0.5% 감소합니다.
+		-----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local units = {}
+		local enemy = {}
+		-----------------------------------------------------------
+		if self.SetTeamType == "User" then	
+			for _, unit in pairs(teamManager.OwnUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					_StatusChangeLogic:GetBuff(unit, "Add_DealingDamageRate", self.RuneStack * self.SetAddDealingDamagePercent, -1)
+					_StatusChangeLogic:GetBuff(unit, "DamageDecrease_Per", self.RuneStack * self.SetDamageDecreasePercent, -1)
+					table.insert(units,unit)
+				end
+			end
+		else
+			-- 스택 임의로 넣어줘야 함 (스테이지 비례)
+			local stack = math.floor(60 * gameManager.Stage / 8)
+			self:SetRuneStackInfo(stack)
+			
+			for _, unit in pairs(teamManager.EnemyUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					_StatusChangeLogic:GetBuff(unit, "Add_DealingDamageRate", self.RuneStack * self.SetAddDealingDamagePercent, -1)
+					_StatusChangeLogic:GetBuff(unit, "DamageDecrease_Per", self.RuneStack * self.SetDamageDecreasePercent, -1)
+					table.insert(enemy, unit)
+				end
+			end
+		end
+		
+		units = _UtilLogic:TableToString(units)
+		enemy = _UtilLogic:TableToString(enemy)
+		self:PlayEffect(self.RuneStack, units, enemy, false, user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(number stack, string units, string enemy, boolean Ready)
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		units = _UtilLogic:StringToTable(units)
+		enemy = _UtilLogic:StringToTable(enemy)
+		------------------------------------------------------------
+		if stack < 0 then stack = 0 end
+		
+		if Ready == false then
+			--룬 카드 발동 연출
+			if #units > 0 then
+				local index = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+				_RuneCardDirector:ShakingCard_Battle(index, false)
+				_RuneCardDirector:IconToastDirector_Battle(index,{_RuneCardDirectEnum.DealingDamageRate, _RuneCardDirectEnum.DamageDecrease}, 
+														{tostring(math.floor(stack*self.SetAddDealingDamagePercent)).."%", tostring(stack*-self.SetDamageDecreasePercent).."%"}, false)
+			end
+			
+			if #enemy > 0 then
+				local index=_RuneCardDirector:GetRuneCardIndex(self.Entity, true)
+				_RuneCardDirector:ShakingCard_Battle(index, true)
+				local value = stack*0.5
+				_RuneCardDirector:IconToastDirector_Battle(index, {_RuneCardDirectEnum.DealingDamageRate, _RuneCardDirectEnum.DamageDecrease}, 
+															{tostring(math.floor(stack*self.SetAddDealingDamagePercent)).."%", tostring(stack*-self.SetDamageDecreasePercent).."%"}, true)
+			end
+			
+		
+		else
+			local gap = stack - _RuneCardDirector.RuneCardManagingValue["RC30019"][self.Entity.Id]
+			if gap > 0 then
+				--발동 연출
+				local index = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+				_RuneCardDirector:ShakingCard_Ready(index)
+				-- gap만큼 스택
+				_RuneCardDirector:IconToastDirector_Ready(index, 0, "+"..tostring(math.floor(gap)))
+				_RuneCardDirector.RuneCardManagingValue["RC30019"][self.Entity.Id] = stack
+				_RuneCardDirector:CheckRuneCardManagingValue("RC30019", index)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InGameDataLoadHandler(any event)
+		__base:InGameDataLoadHandler(event)
+		----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		----------------------------------------------------------
+		self:SetDirectorValue(self.RuneStack,user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetDirectorValue(number stack)
+		--DB에서 값을 불러왔을 떄 연출용 값들을 세팅하는 함수입니다.
+		local runeindex = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+		_RuneCardDirector.RuneCardManagingValue["RC30019"][self.Entity.Id] = stack
+		_RuneCardDirector:CheckRuneCardManagingValue("RC30019", runeindex)
+	end
+
+end

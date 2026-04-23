@@ -1,0 +1,150 @@
+@Logic
+script BalanceDataSetLogic extends Logic
+
+	property table EarningLevelData = {}
+
+	property table StageConfigData = {}
+
+	property boolean IsLoadConfigData = false
+
+	property table StoreAttractiveLevelData = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 밸런스 데이터셋을 로드
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- 스테이지 설정 데이터와 매장 매력도 레벨 데이터를 로드
+		table.clear(self.StageConfigData)
+		local scDataSet = _DataService:GetTable("StageConfigData")
+		for i = 1, scDataSet:GetRowCount() do
+			local scData = StageConfigData()
+			scData:Load(scDataSet, i)
+			
+			if self.StageConfigData[scData.StageId] ~= nil then
+				break
+			end
+			
+			self.StageConfigData[scData.StageId] = scData
+		end
+		
+		self.IsLoadConfigData = true
+		
+		table.clear(self.StoreAttractiveLevelData)
+		local aDataSet = _DataService:GetTable("StoreAttractiveLevelData")
+		for i = 1, aDataSet:GetRowCount() do
+			local aData = StoreAttractiveLevelData()
+			aData:Load(aDataSet, i)
+			
+			if self.StoreAttractiveLevelData[aData.StoreAttractiveLevel] ~= nil then
+				break
+			end
+			
+			self.StoreAttractiveLevelData[aData.StoreAttractiveLevel] = aData
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetEarningLevelByEarningRecord(Entity player)
+		-- 플레이어의 수익 기록에 따라 수익 레벨을 설정
+		if _UtilLogic:Contains(player.CurrentMapName, "Lobby") == false then
+			return
+		end
+		
+		local managementLevel = player.PlayerManagement.ManagementLevel
+		
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		local earningRecord = player.PlayerSettlement.BestRecipeEarnings
+		
+		
+		local earningLevel = 1
+		if isvalid(stageData.StageEarningLevelData) == false then
+			player.PlayerSettlement:UpdateEarningLevel(earningLevel)
+			return
+		end
+		
+		for i = 1, #stageData.StageEarningLevelData do
+			local seData = stageData:GetStageEarningLevelData(i)
+			
+			local nextLevel = i+1
+			if i == #stageData.StageEarningLevelData then
+				break 
+			end
+			
+			if managementLevel < 1 then
+				if player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.ChuchuAtOnceSetCount) < 4 and nextLevel == 4 then
+					break
+				end
+				
+				if player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.AppDisplay) < 1 and nextLevel == 5 then
+					break
+				end
+			end
+			
+			if earningRecord >= seData.BestRecipeEarnings then
+				local nextStageEarningLevelData = stageData:GetStageEarningLevelData(nextLevel)
+				if managementLevel < nextStageEarningLevelData.ManagementLevel then
+					break
+				end
+				
+				earningLevel = nextLevel
+			else
+				break
+				
+			end
+			
+		end
+		
+		if player.PlayerSettlement.EarningLevel >= earningLevel then
+			return
+		end
+		
+		
+		player.PlayerSettlement:UpdateEarningLevel(earningLevel)
+		
+		
+		if #player.CustomerManager.LessThen1YearCustomerOrderTags == 0 then
+			
+			local repeatTimer = 0
+			
+			local loadDelay = function()
+				
+				if #player.CustomerManager.LessThen1YearCustomerOrderTags ~= 0 then
+				
+					player.CustomerManager:RefreshSpawnTable()
+					player.CustomerManager:SetCustomerSpawnDelay(nil)
+					
+					_TimerService:ClearTimer(repeatTimer)
+					repeatTimer = 0
+				end
+			end
+			
+			repeatTimer = _TimerService:SetTimerRepeat( loadDelay , 0.1 , 0.1 )
+			
+			return
+		end
+		player.CustomerManager:RefreshSpawnTable()
+		player.CustomerManager:SetCustomerSpawnDelay(nil)
+		
+		
+	end
+
+	method StageConfigData GetStageConfigData(integer stageId)
+		-- 스테이지 ID에 해당하는 설정 데이터를 반환
+		return self.StageConfigData[stageId]
+	end
+
+	method StoreAttractiveLevelData GetStoreAttractiveLevelData(integer level)
+		-- 매력도 레벨에 해당하는 매장 매력도 데이터를 반환
+		return self.StoreAttractiveLevelData[level]
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerManagementChangedEvent(PlayerManagementChangedEvent event)
+		-- 플레이어 경영 정보 변경 시 수익 레벨을 재계산
+		local player = _UserService.LocalPlayer
+		_BalanceDataSetLogic:SetEarningLevelByEarningRecord(player)
+	end
+
+end

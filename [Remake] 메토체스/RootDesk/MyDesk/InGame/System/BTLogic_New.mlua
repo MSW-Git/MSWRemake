@@ -1,0 +1,2116 @@
+@Logic
+script BTLogic_New extends Logic
+
+	property number ASpeedValue = 1
+
+	property number SSpeedValue = 1.3
+
+	@ExecSpace("Server")
+	method table GetPath(table startNode, table endNode, Entity moveEntity, Entity targetEntity, string userId)
+		-- A* 알고리즘을 사용하여 시작점에서 목적지까지의 최적 경로를 찾는 함수
+		
+		---@type table
+		local checkList = nil
+		
+		-- 조금 더 간소화 시켜서, 경로를 굳이 다 찾을 필요는 없고 다음 타일만 찾으면 될 듯하다
+		
+		-- 경로 우선 순위 (타일 칸 기준 더 짧은 곳으로)
+		local xGap = (endNode[1] - startNode[1]) / 2	-- 가로
+		local yGap = endNode[2] - startNode[2]			-- 세로
+		
+		
+		-- 주변 노드 체크
+		-- 가로가 더 먼 경우
+		if math.abs(xGap) >= math.abs(yGap) then
+			-- 우측 이동이 필요한 경우
+			if xGap > 0 then
+				if yGap >= 0 then
+					checkList = {{2, 0}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}, {-2, 0}}
+				else
+					checkList = {{2, 0}, {1, -1}, {1, 1}, {-1, -1}, {-1, 1}, {-2, 0}}
+				end
+			-- 좌측 이동이 필요한 경우
+			else
+				if yGap >= 0 then
+					checkList = {{-2, 0}, {-1, 1}, {-1, -1}, {1, 1}, {1, -1}, {2, 0}}
+				else
+					checkList = {{-2, 0}, {-1, -1}, {-1, 1}, {1, -1}, {1, 1}, {2, 0}}
+				end
+			end
+		-- 세로가 더 먼 경우(같은 경우)
+		else
+			-- 아래 이동이 필요한 경우
+			if yGap > 0 then
+				if xGap >= 0 then
+					checkList = {{1, 1}, {-1, 1}, {2, 0}, {-2, 0}, {1, -1}, {-1, -1}}
+				else
+					checkList = {{-1, 1}, {1, 1}, {-2, 0}, {2, 0}, {-1, -1}, {1, -1}}
+				end
+			-- 위로 이동이 필요한 경우
+			else
+				if xGap >= 0 then
+					checkList = {{1, -1}, {-1, -1}, {2, 0}, {-2, 0}, {1, 1}, {-1, 1}}
+				else
+					checkList = {{-1, -1}, {1, -1}, {-2, 0}, {2, 0}, {-1, 1}, {1, 1}}
+				end
+			end
+		end
+		
+		
+		
+		local units = _UnitSetLogic_New.UnitsParentEntity[userId]
+		
+		---@type table
+		local checkset = {}
+		
+		-- 사용 중인 유닛만 체크해서 경로 찾기
+		for _, unit in pairs(units.Children) do
+			if unit.UnitInfo.use then
+				if unit ~= moveEntity and unit ~= targetEntity then
+					local tile = unit.UnitInfo.setTile
+					
+					if isvalid(tile) then
+						local yNode = tile.TileComponent_New.verticalNum
+						local xNode = tile.TileComponent_New.horizontalNum * 2 - yNode%2
+						
+						table.insert(checkset, {xNode, yNode})
+					end
+				end
+			end
+		end
+		
+		-- Astar Algorithm
+		
+		local openList = {}
+		local closeList = {}
+		-- local startNodeKey = math.floor(startNode[1]) .. "," .. math.floor(startNode[2])
+		local startNodeKey = startNode[1] * 100 + startNode[2]
+		closeList[startNodeKey] = {startNode, 0, 0, 0, {0,0}}
+		--log("startNodeKey", startNodeKey)
+		
+		local nextmainNode = {startNode, 0}
+		local find = false
+		
+		while true do
+			-- 0. mainNode 설정
+			local mainNode = nextmainNode[1]
+			-- local mainNodeKey = math.floor(nextmainNode[1][1]) .. "," .. math.floor(nextmainNode[1][2])
+			local mainNodeKey = mainNode[1] * 100 + mainNode[2]
+			--log("mainNodeKey", mainNodeKey)
+			local mainGScore = closeList[mainNodeKey][3]
+			nextmainNode = nil
+			
+			-- 1. openList에 주변 노드 넣기
+			for i = 1, #checkList do
+				local checkNode = {mainNode[1] + checkList[i][1], mainNode[2] + checkList[i][2]}
+				--local checkNodeKey = math.floor(checkNode[1]) .. "," .. math.floor(checkNode[2])
+				local checkNodeKey = checkNode[1] * 100 + checkNode[2]
+				--log(checkNode)
+				
+				-- 맵 밖을 벗어나는지 (세로)
+				if checkNode[2] >= 1 and checkNode[2] <= 7 then
+					local bool = false
+					
+					-- 이미 다른 캐릭터가 있는지
+					for _, v in pairs(checkset) do
+						if v[1] == checkNode[1] and v[2] == checkNode[2] then
+							bool = true
+						end
+					end
+					
+					-- 이미 그 위치가 CloseList에 들어가있는지
+					for k, _ in pairs(closeList) do
+						local kNode1 = math.floor(k/100)
+						local kNode2 = k % 100
+						if kNode1 == checkNode[1] and kNode2 == checkNode[2] then
+							bool = true
+						end
+					end
+					
+					
+					-- 맵 밖을 벗어나는지 (가로)
+					if not bool and checkNode[1] >= 1 and checkNode[1] <= 17 then
+						local gScore = mainGScore + 1
+						local hScore = math.pow(math.abs(checkNode[1] - endNode[1])^2 + math.abs(checkNode[2] - endNode[2])^2, 0.5)
+						local fScore = mainGScore + 1 + hScore
+						
+						-- 기존에 OpenList에 없는지
+						if not isvalid(openList[checkNodeKey]) then
+							openList[checkNodeKey] = {checkNode, fScore, gScore, hScore, mainNode}
+						-- 기존에 있다면, gScore가 더 작은지
+						elseif openList[checkNodeKey][3] > gScore then
+							openList[checkNodeKey] = {checkNode, fScore, gScore, hScore, mainNode}
+						end
+					end
+				end
+			end
+			
+			-- 2. openList 체크해서 가장 fScore가 낮은 노드 mainNode로 잡기
+			local openListCount = 0
+			for k, v in pairs(openList) do
+				if not isvalid(nextmainNode) then
+					nextmainNode = {v[1], v[2]}
+				elseif nextmainNode[2] > v[2] then
+					nextmainNode = {v[1], v[2]}
+				end
+				openListCount += 1
+			end
+			
+			-- 더이상 경로가 없으면 false
+			-- log(openListCount)
+			if openListCount == 0 then
+				find = false
+				return nil
+			end
+			
+			
+			-- 3. nextmainNode를 가져와서 CloseList에 넣기
+			-- local nextMainNodeKey = math.floor(nextmainNode[1][1]) .. "," .. math.floor(nextmainNode[1][2])
+			local nextMainNodeKey = nextmainNode[1][1] * 100 + nextmainNode[1][2]
+			closeList[nextMainNodeKey] = openList[nextMainNodeKey]
+			openList[nextMainNodeKey] = nil
+			
+			-- 4. nextmainNode가 endNode인지 확인후 while 나오기
+			if nextmainNode[1][1] == endNode[1] and nextmainNode[1][2] == endNode[2] then
+				find = true
+				break
+			end
+		end
+		
+		-- 찾은 경우
+		local NodeList = {}
+		if find then
+			-- closeList 역출력
+			local printNode = nextmainNode[1]
+			local printNodeKey = printNode[1] * 100 + printNode[2]
+			while true do
+				printNodeKey = printNode[1] * 100 + printNode[2]
+				table.insert(NodeList, closeList[printNodeKey][1])
+				printNode = closeList[printNodeKey][5]
+				
+				if printNode[1] == 0 then
+					break
+				end
+			end
+		end
+		
+		return NodeList
+	end
+
+	@ExecSpace("Server")
+	method table getDistance(table startNode, table endNode)
+		-- 두 노드 사이의 거리와 가로세로 간격을 계산하는 함수
+		local startX = startNode[1]
+		local startY = startNode[2]
+		
+		local endX = endNode[1]
+		local endY = endNode[2]
+		
+		local checkXGap = math.abs(startX - endX)
+		local checkYGap = math.abs(startY - endY)
+		
+		local distance = 0
+		-- 거리 계산
+		
+		distance = checkXGap
+		for i = 1, checkYGap do
+			if distance > 0 then
+				distance -= 1
+			else
+				distance += 1
+			end
+		end
+				
+		distance = (distance/2) + checkYGap
+		
+		return {distance, checkXGap, checkYGap}
+	end
+
+	@ExecSpace("Server")
+	method SyncTable<Entity> getEntities(SyncTable<Entity> entities, string type)
+		-- AttackAble
+		-- Alive
+		
+		---@type table<Entity>
+		local returnEntities = {}
+		
+		if not isvalid(entities) then
+			return {}
+		end
+		
+		
+		for _, checkUnit in pairs(entities) do
+			if isvalid(checkUnit) then
+				local checkUnitStatus = checkUnit.UnitStatus
+				
+				-- 생존, 은신 상태
+				if checkUnit.UnitAIWanderComponent.Enable then
+					if type == "Alive" then
+						if checkUnit.UnitAIWanderComponent.stopUnit then
+						elseif checkUnitStatus.HP > 0.0 then
+							table.insert(returnEntities, checkUnit)
+						end
+					elseif type == "AttackAble" then
+						if checkUnitStatus.HP <= 0.0 then
+						elseif checkUnitStatus.StatusEffect["SE0002"] then
+						elseif checkUnit.UnitAIWanderComponent.stopUnit then
+						else
+							table.insert(returnEntities, checkUnit)
+						end
+					end
+				end
+			end
+		end
+		
+		return returnEntities
+	end
+
+	@ExecSpace("Server")
+	method Entity getTarget(Entity mainTile, SyncTable<Entity> enemies, string type)
+		-- mainTile 위치를 기준으로, enemies 중 type에 따라 결정된 타겟을 반환합니다.
+		--------------------------------------------------------
+		-- 1. 가장 가까운 유닛 :  Nearest
+		-- 2. 가장 먼 유닛 :  Farthest
+		-- 3. 체력 수치에 따라
+		-- 4. 체력 비율에 따라
+		-- 5. 공속 수치에 따라
+		-- 6. 랜덤
+		-- 7. S10006(추격자) : 마법 방어력이 가장 낮은 적
+		--------------------------------------------------------
+		if not isvalid(enemies) then
+			return nil
+		elseif #enemies == 0 then
+			return nil
+		end 
+		
+		local typeInfo = _UtilLogic:Split(type, "_")
+		--------------------------------------------------------
+		---@type Entity
+		local target = nil
+		--------------------------------------------------------
+		-- case1. 가장 가까운 적
+		if typeInfo[1] == "Nearest" then
+			if not isvalid(mainTile) then
+				return nil
+			end
+			local tileCompo = mainTile.TileComponent_New
+			
+			local mainVerticalNode = tileCompo.verticalNum
+			local mainHorizontalNode = tileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+			
+			local minDistance = 999
+			local minVerticalGap = 0
+			local minHorizontalGap = 0
+		
+			for _, checkUnit in pairs(enemies) do
+				local checkTile = checkUnit.UnitInfo.setTile
+				if isvalid(checkTile) then
+					local setChange = false
+					local checkInfo = checkUnit.UnitInfo
+					
+					-- 타일 번호 가져오기
+					local verticalNode = checkTile.TileComponent_New.verticalNum
+					local horizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (verticalNode%2)
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {horizontalNode, verticalNode})
+					
+					local distance = distanceInfo[1]
+					local checkHorizonalGap = distanceInfo[2]
+					local checkVerticalGap = distanceInfo[3]
+					
+					-- 우선 순위 체크
+					-- 1. 거리
+					-- 2. 가로 이동 거리
+					-- 3. 세로 이동 거리
+					if minDistance > distance then
+						setChange = true
+					elseif minDistance == distance then
+						if minHorizontalGap > checkHorizonalGap then
+							setChange = true
+						elseif minHorizontalGap == checkHorizonalGap then
+							if minVerticalGap > checkVerticalGap then
+								setChange = true
+							end
+						end
+					end
+						
+					-- 우선 순위가 높으면 Change
+					if setChange then
+						target = checkUnit
+						minDistance = distance
+						minVerticalGap = checkVerticalGap
+						minHorizontalGap = checkHorizonalGap
+					end
+				end
+			end	
+		--------------------------------------------------------
+		-- case2. 가장 먼 적
+		elseif typeInfo[1] == "Farthest" then
+			if not isvalid(mainTile) then
+				return nil
+			end
+			local tileCompo = mainTile.TileComponent_New
+			
+			local mainVerticalNode = tileCompo.verticalNum
+			local mainHorizontalNode = tileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+			
+			local maxDistance = -1
+			local maxVerticalGap = 0
+			local maxHorizontalGap = 0
+		
+			for _, checkUnit in pairs(enemies) do
+				local checkTile = checkUnit.UnitInfo.setTile
+				if isvalid(checkTile) then
+					local setChange = false
+					local checkInfo = checkUnit.UnitInfo
+					
+					-- 타일 번호 가져오기
+					local verticalNode = checkTile.TileComponent_New.verticalNum
+					local horizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (verticalNode%2)
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {horizontalNode, verticalNode})
+					
+					local distance = distanceInfo[1]
+					local checkHorizonalGap = distanceInfo[2]
+					local checkVerticalGap = distanceInfo[3]
+					
+					-- 우선 순위 체크
+					-- 1. 거리
+					-- 2. 가로 이동 거리
+					-- 3. 세로 이동 거리
+					if maxDistance < distance then
+						setChange = true
+					elseif maxDistance == distance then
+						if maxHorizontalGap < checkHorizonalGap then
+							setChange = true
+						elseif maxHorizontalGap == checkHorizonalGap then
+							if maxVerticalGap < checkVerticalGap then
+								setChange = true
+							end
+						end
+					end
+						
+					-- 우선 순위가 높으면 Change
+					if setChange then
+						target = checkUnit
+						maxDistance = distance
+						maxVerticalGap = checkVerticalGap
+						maxHorizontalGap = checkHorizonalGap
+					end
+				end
+			end
+		--------------------------------------------------------
+		-- case3. 체력 비율에 따라
+		elseif typeInfo[1] == "HPper" then
+			if typeInfo[2] == "High" then
+				for _, checkUnit in pairs(enemies) do
+					if typeInfo[3] == "ExceptionMe" and mainTile == checkUnit.UnitInfo.setTile then	-- 본인 제외인 경우
+						continue
+					end
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						local hpPer = target.UnitStatus.HP / target.UnitStatus.MaxHP
+						local checkHpPer = checkUnit.UnitStatus.HP / checkUnit.UnitStatus.MaxHP
+						
+						if hpPer < checkHpPer then
+							target = checkUnit
+						end
+					end
+				end
+			elseif typeInfo[2] == "Low" then
+				for _, checkUnit in pairs(enemies) do
+					if typeInfo[3] == "ExceptionMe" and mainTile == checkUnit.UnitInfo.setTile then -- 본인 제외인 경우
+						continue
+					end
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						local hpPer = target.UnitStatus.HP / target.UnitStatus.MaxHP
+						local checkHpPer = checkUnit.UnitStatus.HP / checkUnit.UnitStatus.MaxHP
+						
+						if hpPer > checkHpPer then
+							target = checkUnit
+						end
+					end
+				end
+			end
+		--------------------------------------------------------
+		-- case4. 체력 값에 따라
+		elseif typeInfo[1] == "HP" then
+			if typeInfo[2] == "High" then
+				for _, checkUnit in pairs(enemies) do
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						if target.UnitStatus.HP < checkUnit.UnitStatus.HP then
+							target = checkUnit
+						end
+					end
+				end
+			elseif typeInfo[2] == "Low" then
+				for _, checkUnit in pairs(enemies) do
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						if target.UnitStatus.HP > checkUnit.UnitStatus.HP then
+							target = checkUnit
+						end
+					end
+				end
+			end
+		--------------------------------------------------------
+		-- case5. 공격속도에 따라
+		elseif typeInfo[1] == "AttackSpeed" then
+			if typeInfo[2] == "High" then
+				for _, checkUnit in pairs(enemies) do
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						if target.UnitStatus.AttackSpeed < checkUnit.UnitStatus.AttackSpeed then
+							target = checkUnit
+						end
+					end
+				end
+			elseif typeInfo[2] == "Low" then
+				for _, checkUnit in pairs(enemies) do
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						if target.UnitStatus.AttackSpeed > checkUnit.UnitStatus.AttackSpeed then
+							target = checkUnit
+						end
+					end
+				end
+			elseif typeInfo[2] == "LowButNotZero" then
+				for _, checkUnit in pairs(enemies) do
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						if checkUnit.UnitStatus.AttackSpeed ~= 0 then
+							if target.UnitStatus.AttackSpeed > checkUnit.UnitStatus.AttackSpeed then
+								target = checkUnit
+							end
+						end
+					end
+				end
+			end
+		--------------------------------------------------------
+		-- case6. 랜덤
+		elseif typeInfo[1] == "Random" then
+			local targetIndex = _UtilLogic:RandomIntegerRange(1, #enemies)
+			target = enemies[targetIndex]
+		--------------------------------------------------------
+		-- case7. 마법 저항력에 따라 (추격자)
+		elseif typeInfo[1] == "MagicResistance" then
+			if typeInfo[2] == "High" then
+				for _, checkUnit in pairs(enemies) do
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						if target.UnitStatus.MagicalResistance < checkUnit.UnitStatus.MagicalResistance then
+							target = checkUnit
+						end
+					end
+				end
+			elseif typeInfo[2] == "Low" then
+				for _, checkUnit in pairs(enemies) do
+					if not isvalid(target) then
+						target = checkUnit
+					else
+						if target.UnitStatus.MagicalResistance > checkUnit.UnitStatus.MagicalResistance then
+							target = checkUnit
+						end
+					end
+				end
+			end
+		end
+		
+		return target
+	end
+
+	@ExecSpace("Server")
+	method SyncTable<Entity> getTargets(Entity mainTile, SyncTable<Entity> enemies, string type)
+		-- Num 범위의 주위 유닛들 :  Around_MinNum_MaxNum
+		-- Num 라인 범위의 주위 유닛들 : Line_MinNum_MaxNum
+		-- 가장 가까운 Num개의 유닛들 : Nearest_Num
+		-- 가장 체력이 높은(낮은) Num개의 유닛들 : HP_High(Low)_Num
+		-- Num개의 랜덤한 유닛들 : Random_Num
+		----------------------------------------------------------------------------------------
+		if not isvalid(mainTile) then
+			return {}
+		end
+		
+		local mainTileCompo = mainTile.TileComponent_New
+		
+		
+		local mainVerticalNode = mainTileCompo.verticalNum
+		local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+		
+		local typeInfo = _UtilLogic:Split(type, "_")
+		
+		
+		---@type table<Entity>
+		local targets = {}
+		
+		-- Around_n : n 범위 내 유닛들 찾기
+		if typeInfo[1] == "Around" then
+			local minDistance = math.floor(tonumber(typeInfo[2]))
+			local maxDistance = math.floor(tonumber(typeInfo[3]))
+			
+			for _, checkUnit in pairs(enemies) do
+				local checkTile = checkUnit.UnitInfo.setTile
+				if isvalid(checkTile) then
+					-- 타일 번호 가져오기
+					local verticalNode = checkTile.TileComponent_New.verticalNum
+					local horizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (verticalNode%2)
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {horizontalNode, verticalNode})
+					local distance = distanceInfo[1]
+					
+					if distance <= maxDistance and distance >= minDistance then
+						table.insert(targets, checkUnit)
+					end
+				end
+			end
+		-- Line_n : n 라인 범위 내 유닛들 찾기
+		elseif typeInfo[1] == "Line" then
+			local minDistance = math.floor(tonumber(typeInfo[2]))
+			local maxDistance = math.floor(tonumber(typeInfo[3]))
+		
+			local tileTypeInfo = _UtilLogic:Split(mainTile.Name, "_")
+			local tileNum = tonumber(tileTypeInfo[2])
+			
+			for _, checkUnit in pairs(enemies) do
+				local checkTile = checkUnit.UnitInfo.setTile
+				if isvalid(checkTile) then
+					-- 타일 번호 가져오기
+					local verticalNode = checkTile.TileComponent_New.verticalNum
+					local horizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (verticalNode%2)
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {horizontalNode, verticalNode})
+					local distance = distanceInfo[1]
+		
+					if distance <= maxDistance and distance >= minDistance and verticalNode == mainVerticalNode then
+						table.insert(targets, checkUnit)
+					end
+				end
+			end
+			
+		-- Nearest_n : n명의 가장 가까운 유닛 찾기
+		elseif typeInfo[1] == "Nearest" then
+			local unitCount = math.floor(tonumber(typeInfo[2]))
+			
+			for i = 1, 10 do
+				for _, checkUnit in pairs(enemies) do
+					local setChange = false
+					local checkTile = checkUnit.UnitInfo.setTile
+					if isvalid(checkTile) then
+						-- 타일 번호 가져오기
+						local verticalNode = checkTile.TileComponent_New.verticalNum
+						local horizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (verticalNode%2)
+						
+						
+						
+						local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {horizontalNode, verticalNode})
+						local distance = distanceInfo[1]
+						
+						if distance == i then
+							table.insert(targets, checkUnit)
+							if #targets >= unitCount then
+								break
+							end
+						end
+					end
+				end
+				if #targets >= unitCount then
+					break
+				end
+			end
+		elseif typeInfo[1] == "HP" then
+			local unitCount = math.floor(tonumber(typeInfo[3]))
+			if typeInfo[2] == "High" then
+				table.sort(enemies, function(a,b) return a.UnitStatus.HP > b.UnitStatus.HP end)
+			elseif typeInfo[2] == "Low" then
+				table.sort(enemies, function(a,b) return a.UnitStatus.HP < b.UnitStatus.HP end)
+			end
+			
+			for i = 1, unitCount do
+				if isvalid(enemies[i]) then
+					table.insert(targets, enemies[i])
+				end
+			end
+			
+		elseif typeInfo[1] == "HPper" then
+			local unitCount = math.floor(tonumber(typeInfo[3]))
+			if typeInfo[2] == "High" then
+				table.sort(enemies, function(a,b) return (a.UnitStatus.HP / a.UnitStatus.MaxHP) > (b.UnitStatus.HP / b.UnitStatus.MaxHP) end)
+			elseif typeInfo[2] == "Low" then
+				table.sort(enemies, function(a,b) return (a.UnitStatus.HP / a.UnitStatus.MaxHP) < (b.UnitStatus.HP / b.UnitStatus.MaxHP) end)
+			end
+			
+			for i = 1, unitCount do
+				if isvalid(enemies[i]) then
+					table.insert(targets, enemies[i])
+				end
+			end
+			
+		elseif typeInfo[1] == "Random" then
+			local unitCount = math.floor(tonumber(typeInfo[2]))
+			local removeCount = math.max(0, #enemies - unitCount)
+			
+			for i = 1, removeCount do
+				local removeIdx = _UtilLogic:RandomIntegerRange(1, #enemies)
+				table.remove(enemies, removeIdx)
+			end
+			
+			targets = enemies
+		end
+		
+		return targets
+	end
+
+	@ExecSpace("Server")
+	method table getVector(Entity myUnit, string type)
+		-- Line 
+		local myUnitInfo = myUnit.UnitInfo
+		local mainTile = myUnitInfo.setTile
+		
+		
+		local ownerId = myUnitInfo.OwnerId
+		local teamType = myUnitInfo.TeamType
+		
+		local user = _UserService:GetUserEntityByUserId(ownerId)
+		local teamManager = user.TeamManager
+		
+		local mainTileCompo = mainTile.TileComponent_New
+		
+		local mainVerticalNode = mainTileCompo.verticalNum
+		local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+		
+		local checkRoom = mainTile.Parent.Parent
+		local typeInfo = _UtilLogic:Split(type, "_")
+		
+		
+		
+		local setVec = {0,0}
+		
+		-- Line_MostNum :  적이 가장 많은 줄
+		if typeInfo[1] == "Line" then
+		
+			-- 주변 방향 체크
+			local checkList = {{2, 0}, {-2, 0}, {1, -1}, {1, 1}, {-1, -1}, {-1, 1}}
+		
+			if typeInfo[2] == "MostEnemies" then
+				local checkEnemyCount = -1
+			
+				for i = 1, 6 do
+					local enemyCount = 0
+					local checkTileVerticalNode = mainVerticalNode
+					local checkTileHorizontalNode = mainHorizontalNode
+					while true do
+						checkTileVerticalNode += checkList[i][2]
+						checkTileHorizontalNode += checkList[i][1]
+						if checkTileHorizontalNode <= 0 or checkTileVerticalNode <= 0 or checkTileHorizontalNode >= 18 or checkTileVerticalNode >= 8 then
+							break
+						else
+							local nodeInfo = math.floor(checkTileHorizontalNode) .. "," .. math.floor(checkTileVerticalNode)
+							local checkTile = user.GameManager.RoomTile[nodeInfo]
+							
+							-- EnemyCheck
+							local checkEntity = teamManager.EntityOnTile[checkTile]
+							if isvalid(checkEntity) then
+								if teamType ~= checkEntity.UnitInfo.TeamType then
+									enemyCount += 1
+								end
+							end
+						end
+					end
+					
+					if enemyCount > checkEnemyCount then
+						setVec = checkList[i]
+						checkEnemyCount = enemyCount
+					end
+				end
+			elseif typeInfo[2] == "FewestEnemies" then
+				local checkEnemyCount = 9999
+			
+				for i = 1, 6 do
+					local enemyCount = 0
+					local checkTileVerticalNode = mainVerticalNode
+					local checkTileHorizontalNode = mainHorizontalNode
+					while true do
+						checkTileVerticalNode += checkList[i][2]
+						checkTileHorizontalNode += checkList[i][1]
+						if checkTileHorizontalNode <= 0 or checkTileVerticalNode <= 0 or checkTileHorizontalNode >= 18 or checkTileVerticalNode >= 8 then
+							break
+						else
+							local nodeInfo = math.floor(checkTileHorizontalNode) .. "," .. math.floor(checkTileVerticalNode)
+							local checkTile = user.GameManager.RoomTile[nodeInfo]
+							
+							-- EnemyCheck
+							local checkEntity = teamManager.EntityOnTile[checkTile]
+							if isvalid(checkEntity) then
+								if teamType ~= checkEntity.UnitInfo.TeamType then
+									enemyCount += 1
+								end
+							end
+						end
+					end
+					
+					if enemyCount < checkEnemyCount then
+						setVec = checkList[i]
+						checkEnemyCount = enemyCount
+					end
+				end
+			end
+		end
+		
+		
+		return setVec
+	end
+
+	@ExecSpace("Server")
+	method table getTile(Entity checkUnit, SyncTable<Entity> enemies, string type)
+		-- 범위 내 가장 많은 적이 모인 빈 타일 :  EmptyTileWithMostEnemies_All_Num
+		-- 범위 내 가장 많은 적이 모인 타일 : TileWithMostEnemies_All_Num
+		-- 모든 적 기준 가장 먼 타일 : FarFromTheEnemies
+		-- 해당 유닛에게 가장 가까운 빈 타일 : EmptyTileNearestToTheUnit
+		
+		local checkUnitInfo = checkUnit.UnitInfo
+		local mainTile = checkUnitInfo.setTile
+		
+		
+		local ownerId = checkUnitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(ownerId)
+		local teamManager = user.TeamManager
+		
+		local typeInfo = _UtilLogic:Split(type, "_")
+		local tiles = user.GameManager.RoomTile
+		
+		
+		---@type Entity
+		local setTile = nil
+		
+		local setTileVerticalNum = 0
+		local setTileHorizontalNum = 0
+		
+		local checkList = {{-2, 0}, {2, 0}, {1, -1}, {1, 1}, {-1, -1}, {-1, 1}}
+		
+		-- 범위 내 가장 많은 적이 모인 빈 타일 :  EmptyTileWithMostEnemies_All_Num
+		if typeInfo[1] == "EmptyTileWithMostEnemies" then
+			local setEnemiesCount = -1
+			
+			local range = math.floor(tonumber(typeInfo[3]))
+			
+			---@type table
+			local checkTileTable = {}
+			
+			for _, enemy in pairs(enemies) do
+				local checkTile = enemy.UnitInfo.setTile
+				if isvalid(checkTile) then
+					local checkVerticalNode = checkTile.TileComponent_New.verticalNum
+					local checkHorizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (checkVerticalNode%2)
+					
+					local tableIdx = checkVerticalNode * 100 + checkHorizontalNode
+					checkTileTable[tableIdx] = -1000
+					
+					for i = 1, 6 do
+						for j = 1, range do
+							local setTileNode = {checkHorizontalNode + (j*checkList[i][1]), checkVerticalNode + (j*checkList[i][2])}
+							local setTileIdx = setTileNode[2] * 100 + setTileNode[1]
+							if setTileNode[1] > 0 and setTileNode[1] < 18 and setTileNode[2] > 0 and setTileNode[2] < 8 then
+								if isvalid(checkTileTable[setTileIdx]) then
+									checkTileTable[setTileIdx] += 1
+								else
+									checkTileTable[setTileIdx] = 1
+								end
+							end
+						end
+					end
+				end
+			end
+			
+			
+			
+			-- 맵 전체 기준
+			if typeInfo[2] == "All" then
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileKey = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					local checkTile = tiles[checkTileKey]
+					
+					if setEnemiesCount < Count and not isvalid(teamManager.EntityOnTile[checkTile]) then
+						setTile = checkTile
+						setEnemiesCount = Count
+						setTileVerticalNum = checkTile.TileComponent_New.verticalNum
+						setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+					end
+				end
+			elseif typeInfo[2] == "Team" then
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileKey = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					local checkTile = tiles[checkTileKey]
+					
+					if setEnemiesCount < Count and not isvalid(teamManager.EntityOnTile[checkTile]) and checkTile.TileComponent_New.Zone == checkUnitInfo.TeamType then
+						setTile = checkTile
+						setEnemiesCount = Count
+						setTileVerticalNum = checkTile.TileComponent_New.verticalNum
+						setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+					end
+				end
+			-- 유닛 사거리 내
+			elseif typeInfo[2] == "AroundUnit" then
+				local mainTileCompo = mainTile.TileComponent_New
+				local mainVerticalNode = mainTileCompo.verticalNum
+				local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+				
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {checkHorizontalNode, checkVerticalNode})
+					
+					if distanceInfo[1] <= range then
+						local checkTileInfo = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+						
+						local checkTile = tiles[checkTileInfo]
+							
+						if setEnemiesCount < Count and not isvalid(teamManager.EntityOnTile[checkTile]) then
+							setTile = checkTile
+							setEnemiesCount = Count
+							setTileVerticalNum = checkTile.TileComponent_New.verticalNum
+							setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+						end
+					end
+				end
+			end
+		-- 범위 내 가장 많은 적이 모인 타일 : TileWithMostEnemies_All_Num
+		elseif typeInfo[1] == "TileWithMostEnemies" then
+			local setEnemiesCount = -1
+			
+			local range = math.floor(tonumber(typeInfo[3]))
+			
+			---@type table
+			local checkTileTable = {}
+			
+			for _, enemy in pairs(enemies) do
+				local checkTile = enemy.UnitInfo.setTile
+				if isvalid(checkTile) then
+					local checkVerticalNode = checkTile.TileComponent_New.verticalNum
+					local checkHorizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (checkVerticalNode%2)
+					
+					local tableIdx = checkVerticalNode * 100 + checkHorizontalNode
+					if isvalid(checkTileTable[tableIdx]) then
+						checkTileTable[tableIdx] += 1
+					else
+						checkTileTable[tableIdx] = 1
+					end
+					
+					
+					for i = 1, 6 do
+						for j = 1, range do
+							local setTileNode = {checkHorizontalNode + (j*checkList[i][1]), checkVerticalNode + (j*checkList[i][2])}
+							local setTileIdx = setTileNode[2] * 100 + setTileNode[1]
+							if setTileNode[1] > 0 and setTileNode[1] < 18 and setTileNode[2] > 0 and setTileNode[2] < 8 then
+								if isvalid(checkTileTable[setTileIdx]) then
+									checkTileTable[setTileIdx] += 1
+								else
+									checkTileTable[setTileIdx] = 1
+								end
+							end
+						end
+					end
+				end
+			end
+			
+			
+			
+			-- 맵 전체 기준
+			if typeInfo[2] == "All" then
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileInfo = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					
+					local checkTile = tiles[checkTileInfo]
+					
+					if setEnemiesCount < Count then
+						setTile = checkTile
+						setEnemiesCount = Count
+						setTileVerticalNum = checkTile.TileComponent_New.verticalNum
+						setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+					end
+				end
+			-- 유닛 사거리 내
+			elseif typeInfo[2] == "AroundUnit" then
+				local mainTileCompo = mainTile.TileComponent_New
+				local mainVerticalNode = mainTileCompo.verticalNum
+				local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+				
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {checkHorizontalNode, checkVerticalNode})
+					
+					if distanceInfo[1] <= range then
+						local checkTileInfo = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+						
+						local checkTile = tiles[checkTileInfo]
+							
+						if setEnemiesCount < Count then
+							setTile = checkTile
+							setEnemiesCount = Count
+							setTileVerticalNum = checkTile.TileComponent_New.verticalNum
+							setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+						end
+					end
+				end
+			end
+		-- 모든 적 기준 가장 먼 타일 : FarFromTheEnemies
+		elseif typeInfo[1] == "FarFromTheEnemies" then
+			local checkPoint = 0
+			
+			for y = 1, 7 do
+				for x = 1 + ((y+1)%2), 17 - ((y+1)%2), 2 do
+					
+					local checkTile = tiles[math.floor(x) .. "," .. math.floor(y)]
+					
+					if not isvalid(teamManager.EntityOnTile[checkTile]) then
+						local setPoint = 0
+						for _, enemy in pairs(enemies) do
+							if isvalid(enemy) then
+								local enemyTile = enemy.UnitInfo.setTile
+								local enemyVerticalNode = enemyTile.TileComponent_New.verticalNum
+								local enemyHorizontalNode = enemyTile.TileComponent_New.horizontalNum * 2 - (enemyVerticalNode%2)
+								
+								local enemyDistanceInfo = self:getDistance({x, y}, {enemyHorizontalNode, enemyVerticalNode})
+								setPoint += enemyDistanceInfo[1]
+							end
+							
+							if checkPoint < setPoint then
+								setTile = checkTile
+								checkPoint = setPoint
+								setTileVerticalNum = checkTile.TileComponent_New.verticalNum
+								setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+							end
+						end
+					end
+				end
+			end
+		-- 해당 유닛에게 가장 가까운 빈 타일 : EmptyTileNearestToTheUnit
+		elseif typeInfo[1] == "EmptyTileNearestToTheUnit" then
+			local checkType = typeInfo[2]
+			
+			local mainTileCompo = mainTile.TileComponent_New
+			local mainVerticalNode = mainTileCompo.verticalNum
+			local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+			
+			local randNum = _UtilLogic:RandomIntegerRange(0,5)
+			for range = 1, 12 do
+				for j = 0, 5 do
+					local idx = (j + randNum)%6 + 1
+					local setTileNode = {mainHorizontalNode + (range * checkList[idx][1]), mainVerticalNode + (range * checkList[idx][2])}
+					
+					if setTileNode[1] > 0 and setTileNode[1] < 18 and setTileNode[2] > 0 and setTileNode[2] < 8 then
+						local checkHorizontalNum = ( setTileNode[1] + (setTileNode[2]%2) ) / 2
+						local checkTileInfo = math.floor(setTileNode[1]) .. "," .. math.floor(setTileNode[2])
+						local checkTile = tiles[checkTileInfo]
+						
+						if checkType == "All" then
+							if not isvalid(teamManager.EntityOnTile[checkTile]) then
+								setTile = checkTile
+								setTileVerticalNum = setTileNode[2]
+								setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+								
+								break
+							end
+						elseif checkType == "NotNeutral" then
+							if not isvalid(teamManager.EntityOnTile[checkTile]) and checkTile.TileComponent_New.Zone ~= "Neutral" then
+								setTile = checkTile
+								setTileVerticalNum = setTileNode[2]
+								setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+								break
+							end
+						elseif checkType == "Team" then
+							if not isvalid(teamManager.EntityOnTile[checkTile]) and checkTile.TileComponent_New.Zone == checkUnitInfo.TeamType then
+								setTile = checkTile
+								setTileVerticalNum = setTileNode[2]
+								setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+								break
+							end
+						elseif checkType == "Enemy" then
+							local checkZone = ""
+							if checkUnitInfo.TeamType == "User" then
+								checkZone = "Enemy"
+							elseif checkUnitInfo.TeamType == "Enemy" then
+								checkZone = "User"
+							end
+							
+							if not isvalid(teamManager.EntityOnTile[checkTile]) and checkTile.TileComponent_New.Zone == "Enemy" then
+								setTile = checkTile
+								setTileVerticalNum = setTileNode[2]
+								setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+								break
+							end
+						end
+					end
+				end
+				if isvalid(setTile) then
+					break
+				end
+			end
+		end
+		
+		
+		return {setTile, setTileVerticalNum, setTileHorizontalNum}
+	end
+
+	@ExecSpace("Server")
+	method table getTiles(Entity checkUnit, Entity targetTile, SyncTable<Entity> enemies, string type)
+		-- StraightLine_Num : 지나치는 모든 라인의 타일들(타겟 지나감) 및 범위(Num)
+		-- LineSegment_Num : 지나가는 모든 라인의 타일들(타겟에서 멈춤) 및 범위(Num)
+		
+		
+		local checkUnitInfo = checkUnit.UnitInfo
+		local checkUnitStatus = checkUnit.UnitStatus
+		local mainTile = checkUnitInfo.setTile
+		local user = _UserService:GetUserEntityByUserId(checkUnitInfo.OwnerId)
+		
+		if not isvalid(mainTile) then
+			return {}
+		end
+		
+		
+		local mainTileCompo = mainTile.TileComponent_New
+		local mainVerticalNode = mainTileCompo.verticalNum
+		local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+		
+		local targetTileCompo = targetTile.TileComponent_New
+		local targetVerticalNode = targetTileCompo.verticalNum
+		local targetHorizontalNode = targetTileCompo.horizontalNum * 2 - (targetVerticalNode%2)
+		
+		local typeInfo = _UtilLogic:Split(type, "_")
+		local tiles = user.GameManager.RoomTile
+		
+		local verticalGap = targetVerticalNode - mainVerticalNode
+		local horizontalGap = targetHorizontalNode - mainHorizontalNode
+		
+		local checkList = {{-2, 0}, {2, 0}, {1, -1}, {1, 1}, {-1, -1}, {-1, 1}}
+		
+		---@type table<Entity>
+		local tileTable = {}
+		--------------------------------------------------------------------------------------------
+		-- 지나치는 모든 라인의 타일들(타겟 지나감) 및 범위(Num) 
+		if typeInfo[1] == "StraightLine" then
+			local range = typeInfo[2]
+			
+			local tileGap = {{1, 1}, {2, 0}, {1, -1}, {-1, -1}, {-2, 0}, {-1, 1}, {1, 1}, {2, 0}, {1, -1}}
+			
+			local gapX = targetTile.TransformComponent.WorldPosition.x - mainTile.TransformComponent.WorldPosition.x
+			local gapY = targetTile.TransformComponent.WorldPosition.y - mainTile.TransformComponent.WorldPosition.y 
+			
+			local targetRightAngle = Vector2.right:Angle(Vector2(gapX, gapY))
+			local targetUpAngle = Vector2.up:Angle(Vector2(gapX, gapY))
+			local targetAngle = 0
+			
+			if targetUpAngle <= 90 then
+				targetAngle = targetRightAngle
+			else
+				targetAngle = 360 - targetRightAngle
+			end
+			local vecNum = math.floor( (targetAngle + 30) / 60 ) + 2
+			
+			---@type table<Entity>
+			local alreadyCheckedTileTable = {}		-- 이미 한 번 체크한 타일들이 들어간 테이블
+			---@type table<Entity>
+			local checkNeedTileTable = {}			-- 체크 해야 할 타일들이 들어간 테이블
+			---@type table<Entity>
+			local addTileTable = {}					-- 이번에 체크되어서 들어온 타일들이 포함된 테이블
+			
+			table.insert(addTileTable, mainTile)
+			
+			for i = 1, 10 do
+				-- 1. 체크가 필요한 타일들을 가져옵니다.
+				table.clear(checkNeedTileTable)
+				for _, tile in pairs(addTileTable) do
+					table.insert(checkNeedTileTable, tile)
+				end
+				
+				-- 2. 현재 타일 기준으로 정해진 방향에 있는 타일을 테이블에 추가시킵니다.
+				for i, tile in pairs(checkNeedTileTable) do
+					local alreadyChecked = false
+					for _, checkedTile in pairs(alreadyCheckedTileTable) do
+						if checkedTile == tile then
+							alreadyChecked = true
+							break
+						end
+					end
+					
+					if not alreadyChecked then
+						table.insert(alreadyCheckedTileTable, tile)
+						
+						local tileVerticalNode = tile.TileComponent_New.verticalNum
+						local tileHorizontalNode = tile.TileComponent_New.horizontalNum * 2 - (tileVerticalNode%2)
+					
+						local hNode = tileHorizontalNode + tileGap[vecNum][1]
+						local vNode = tileVerticalNode + tileGap[vecNum][2]
+						
+						local addTile = tiles[math.floor(hNode) .. "," .. math.floor(vNode)]
+						
+						if vNode > 0 and isvalid(addTile) then
+							table.insert(addTileTable, addTile)
+						end
+					end
+				end
+			end
+			
+			-- 과정이 끝나면, 이미 체크한 타일들(alreadyCheckedTileTable)과 가장 마지막에 들어온 타일들(addTileTable)을 확인해 tileTable에 넣습니다.
+			for i, tile in pairs(alreadyCheckedTileTable) do
+				local added = false
+				for _, checkedTile in pairs(tileTable) do
+					if checkedTile == tile then
+						added = true
+						break
+					end
+				end
+				
+				if not added then
+					table.insert(tileTable, tile)
+				end
+			end
+			
+			for i, tile in pairs(addTileTable) do
+				local added = false
+				for _, checkedTile in pairs(tileTable) do
+					if checkedTile == tile then
+						added = true
+						break
+					end
+				end
+				
+				if not added then
+					table.insert(tileTable, tile)
+				end
+			end
+		--------------------------------------------------------------------------------------------	
+		-- 지나가는 모든 라인의 타일들(타겟에서 멈춤) 및 범위(Num)
+		--[[
+		elseif typeInfo[1] == "LineSegment" then
+			local range = tonumber(typeInfo[2])
+			
+			-- Vertical 차이가 더 큰 경우
+			if verticalGap >= (horizontalGap/2) then
+				local xPERy = horizontalGap / math.abs(verticalGap)
+				local checkVerticalCount = verticalGap / math.abs(verticalGap)
+				
+				local checkHorizontalNum = mainHorizontalNode
+				for vertical = mainVerticalNum, targetVerticalNode, checkVerticalCount do
+					
+					-- 범위 계산 1. max
+					local maxHorizontal = math.floor( checkHorizontalNum + (range/2 + xPERy) )
+					
+					-- 범위 계산 2. min
+					local minHorizontal = math.ceil( checkHorizontalNum - (range/2 + xPERy) )
+					
+					
+					for horizontal = minHorizontal, maxHorizontal do
+						-- 실제로 존재하는 타일이 범위 안에 걸리는지 확인
+						if vertical > 0 and vertical < 8 and horizontal > 0 and horizontal < 18 then
+							if (horizontal + vertical)%2 == 0 then
+								local checkTile = tiles[math.floor(horizontal) .. "," .. math.floor(vertical)]
+								
+								table.insert(tileTable, checkTile)
+							end
+						end
+					end
+					
+					-- 다음 Horizontal 계산
+					checkHorizontalNum += xPERy
+				end
+			else
+				-- Horizontal 차이가 더 큰 경우
+				local yPERx = verticalGap / math.abs(horizontalGap)
+				local checkHorizontalCount = horizontalGap / math.abs(horizontalGap)
+				
+				local checkVerticalNum = mainVerticalNode
+				for horizontal = mainHorizontalNum, targetHorizontalNode, checkHorizontalCount do
+					
+					-- 범위 계산 1. max
+					local maxVertical = math.floor( checkVerticalNum + (range/2 + (yPERx * 4/3)) )
+					
+					-- 범위 계산 2. min
+					local minVertical = math.ceil( checkVerticalNum - (range/2 + (yPERx * 4/3)) )
+					
+					for vertical = minVertical, maxVertical do
+						-- 실제로 존재하는 타일이 범위 안에 걸리는지 확인
+						if vertical > 0 and vertical < 8 and horizontal > 0 and horizontal < 18 then
+							if (horizontal + vertical)%2 == 0 then
+								local checkTile = tiles[math.floor(horizontal) .. "," .. math.floor(vertical)]
+								
+								table.insert(tileTable, checkTile)
+							end
+						end
+					end
+					
+					-- 다음 Vertical 계산
+					checkVerticalNum += yPERx
+				end
+			end
+		]]
+		--------------------------------------------------------------------------------------------
+		-- 범위 내 가장 많은 적이 모인 빈 타일 :  EmptyTilesWithMostEnemies_All_Num_Num
+		elseif typeInfo[1] == "EmptyTilesWithMostEnemies" then
+			local setEnemiesCount = -1
+			
+			local range = math.floor(tonumber(typeInfo[3]))
+			local needNum = math.floor(tonumber(typeInfo[4]))
+			
+			---@type table
+			local checkTileTable = {}
+			local sortTable = {}
+			
+			for _, enemy in pairs(enemies) do
+				local checkTile = enemy.UnitInfo.setTile
+				if isvalid(checkTile) then
+					local checkVerticalNode = checkTile.TileComponent_New.verticalNum
+					local checkHorizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (checkVerticalNode%2)
+					
+					local tableIdx = checkVerticalNode * 100 + checkHorizontalNode
+					checkTileTable[tableIdx] = -1000
+					
+					for i = 1, 6 do
+						for j = 1, range do
+							local setTileNode = {checkHorizontalNode + (j*checkList[i][1]), checkVerticalNode + (j*checkList[i][2])}
+							local setTileIdx = setTileNode[2] * 100 + setTileNode[1]
+							if setTileNode[1] > 0 and setTileNode[1] < 18 and setTileNode[2] > 0 and setTileNode[2] < 8 then
+								if isvalid(checkTileTable[setTileIdx]) then
+									checkTileTable[setTileIdx] += 1
+								else
+									checkTileTable[setTileIdx] = 1
+									table.insert(sortTable, setTileIdx)
+								end
+							end
+						end
+					end
+				end
+			end
+			
+			table.sort(sortTable, function(a,b) return checkTileTable[a] > checkTileTable[b] end)
+			
+			-- 맵 전체 기준
+			if typeInfo[2] == "All" then
+				local insertCount = 0
+				for _, checkTileIdx in pairs(sortTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileKey = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					local checkTile = tiles[checkTileKey]
+					
+					table.insert(tileTable, checkTile)
+					insertCount += 1
+					
+					if insertCount >= needNum then
+						break
+					end
+				end
+			-- 유닛 사거리 내
+			elseif typeInfo[2] == "AroundUnit" then
+				local insertCount = 0
+				for _, checkTileIdx in pairs(sortTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileKey = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					local checkTile = tiles[checkTileKey]
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {checkHorizontalNode, checkVerticalNode})
+					
+					if distanceInfo[1] <= checkUnitStatus.AttackRange then
+						table.insert(tileTable, checkTile)
+						insertCount += 1
+						
+						if insertCount >= needNum then
+							break
+						end
+					end
+				end
+			end
+		-- 범위 내 가장 많은 적이 모인 타일 : TilesWithMostEnemies_All_Num_Num
+		elseif typeInfo[1] == "TilesWithMostEnemies" then
+			local setEnemiesCount = -1
+			
+			local range = math.floor(tonumber(typeInfo[3]))
+			local needNum = math.floor(tonumber(typeInfo[4]))
+			
+			---@type table
+			local checkTileTable = {}
+			local sortTable = {}
+			
+			for _, enemy in pairs(enemies) do
+				local checkTile = enemy.UnitInfo.setTile
+				if isvalid(checkTile) then
+					local checkVerticalNode = checkTile.TileComponent_New.verticalNum
+					local checkHorizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (checkVerticalNode%2)
+					
+					local tableIdx = checkVerticalNode * 100 + checkHorizontalNode
+					if isvalid(checkTileTable[tableIdx]) then
+						checkTileTable[tableIdx] += 1
+					else
+						checkTileTable[tableIdx] = 1
+						table.insert(sortTable, tableIdx)
+					end
+					
+					
+					for i = 1, 6 do
+						for j = 1, range do
+							local setTileNode = {checkHorizontalNode + (j*checkList[i][1]), checkVerticalNode + (j*checkList[i][2])}
+							local setTileIdx = setTileNode[2] * 100 + setTileNode[1]
+							if setTileNode[1] > 0 and setTileNode[1] < 18 and setTileNode[2] > 0 and setTileNode[2] < 8 then
+								if isvalid(checkTileTable[setTileIdx]) then
+									checkTileTable[setTileIdx] += 1
+								else
+									checkTileTable[setTileIdx] = 1
+									table.insert(sortTable, setTileIdx)
+								end
+							end
+						end
+					end
+				end
+			end
+			
+			table.sort(sortTable, function(a,b) return checkTileTable[a] > checkTileTable[b] end)
+			
+			-- 맵 전체 기준
+			if typeInfo[2] == "All" then
+				local insertCount = 0
+				for _, checkTileIdx in pairs(sortTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileKey = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					local checkTile = tiles[checkTileKey]
+					
+					table.insert(tileTable, checkTile)
+					insertCount += 1
+					
+					if insertCount >= needNum then
+						break
+					end
+				end
+			-- 유닛 사거리 내
+			elseif typeInfo[2] == "AroundUnit" then
+				local insertCount = 0
+				for _, checkTileIdx in pairs(sortTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileKey = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					local checkTile = tiles[checkTileKey]
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {checkHorizontalNode, checkVerticalNode})
+					
+					if distanceInfo[1] <= checkUnitStatus.AttackRange then
+						table.insert(tileTable, checkTile)
+						insertCount += 1
+						
+						if insertCount >= needNum then
+							break
+						end
+					end
+				end
+			end
+		--------------------------------------------------------------------------------------------
+		-- 부채꼴 모양으로 범위 넓어지는 스킬
+		elseif typeInfo[1] == "CircularSector" then
+			local range = typeInfo[2]
+			
+			local tileGap = {{1, 1}, {2, 0}, {1, -1}, {-1, -1}, {-2, 0}, {-1, 1}, {1, 1}, {2, 0}, {1, -1}}
+			
+			local gapX = targetTile.TransformComponent.WorldPosition.x - mainTile.TransformComponent.WorldPosition.x
+			local gapY = targetTile.TransformComponent.WorldPosition.y - mainTile.TransformComponent.WorldPosition.y 
+			
+			local targetRightAngle = Vector2.right:Angle(Vector2(gapX, gapY))
+			local targetUpAngle = Vector2.up:Angle(Vector2(gapX, gapY))
+			local targetAngle = 0
+			
+			if targetUpAngle <= 90 then
+				targetAngle = targetRightAngle
+			else
+				targetAngle = 360 - targetRightAngle
+			end
+			local vecNum = math.floor( (targetAngle + 30) / 60 ) + 2
+			
+			
+			
+			
+			---@type table<Entity>
+			local alreadyCheckedTileTable = {}		-- 이미 한 번 체크한 타일들이 들어간 테이블
+			---@type table<Entity>
+			local checkNeedTileTable = {}			-- 체크 해야 할 타일들이 들어간 테이블
+			---@type table<Entity>
+			local addTileTable = {}					-- 이번에 체크되어서 들어온 타일들이 포함된 테이블
+			
+			table.insert(addTileTable, mainTile)
+			
+			for i = 1, range do
+				-- 1. 체크가 필요한 타일들을 가져옵니다.
+				table.clear(checkNeedTileTable)
+				for _, tile in pairs(addTileTable) do
+					table.insert(checkNeedTileTable, tile)
+				end
+				
+				-- 2. 현재 타일 기준으로 정해진 세 방향에 있는 타일을 테이블에 추가시킵니다.
+				for i, tile in pairs(checkNeedTileTable) do
+					local alreadyChecked = false
+					for _, checkedTile in pairs(alreadyCheckedTileTable) do
+						if checkedTile == tile then
+							alreadyChecked = true
+							break
+						end
+					end
+					
+					if not alreadyChecked then
+						table.insert(alreadyCheckedTileTable, tile)
+						
+						local tileVerticalNode = tile.TileComponent_New.verticalNum
+						local tileHorizontalNode = tile.TileComponent_New.horizontalNum * 2 - (tileVerticalNode%2)
+					
+						local startVec = vecNum - 1
+						-- log(tileVerticalNode, tileHorizontalNode, startVec)
+						for vec = startVec, vecNum + 1 do
+							local hNode = tileHorizontalNode + tileGap[vec][1]
+							local vNode = tileVerticalNode + tileGap[vec][2]
+							
+							local addTile = tiles[math.floor(hNode) .. "," .. math.floor(vNode)]
+							
+							if vNode > 0 and isvalid(addTile) then
+								table.insert(addTileTable, addTile)
+							end
+						end
+					end
+				end
+			end
+			
+			-- 과정이 끝나면, 이미 체크한 타일들(alreadyCheckedTileTable)과 가장 마지막에 들어온 타일들(addTileTable)을 확인해 tileTable에 넣습니다.
+			for i, tile in pairs(alreadyCheckedTileTable) do
+				local added = false
+				for _, checkedTile in pairs(tileTable) do
+					if checkedTile == tile then
+						added = true
+						break
+					end
+				end
+				
+				if not added then
+					table.insert(tileTable, tile)
+				end
+			end
+			
+			for i, tile in pairs(addTileTable) do
+				local added = false
+				for _, checkedTile in pairs(tileTable) do
+					if checkedTile == tile then
+						added = true
+						break
+					end
+				end
+				
+				if not added then
+					table.insert(tileTable, tile)
+				end
+			end
+		--------------------------------------------------------------------------------------------
+		-- checkUnit 또는 targetTile을 기준으로 주변 범위의 모든 타일
+		elseif typeInfo[1] == "Around" then
+			local range = typeInfo[2]
+			
+			if isvalid(checkUnit) == true then
+				targetTile = checkUnit.UnitInfo.setTile
+			end
+			
+			if isvalid(targetTile) == false then
+				log_error("targetTile이 nil 입니다.")
+				return
+			end
+			
+			local X = targetTile.TileComponent_New.horizontalNum
+			local Y = targetTile.TileComponent_New.verticalNum
+			for i = -range, range, 1 do
+				local targetY = Y + i
+				if targetY > 0 and targetY <= 7 then
+					local Xmin = 0
+					local Xmax = 0 
+					local Ygap = math.abs(i)
+					if Ygap % 2 == 0 then
+						Xmin = X - (Ygap/2)
+						Xmax = X + (Ygap/2) 
+					else
+						if Y%2 == 0 then
+							Xmin = X - math.floor(Ygap/2)
+							Xmax = X + math.ceil(Ygap/2)
+						else
+							Xmin = X - math.ceil(Ygap/2)
+							Xmax = X + math.floor(Ygap/2)
+						end
+					end
+					
+					Xmin -= math.abs(Ygap - range)
+					Xmax += math.abs(Ygap - range)
+					local line = user.CurrentMap:GetChildByName(string.format("Line_%d", targetY)) --_EntityService:GetEntityByPath(string.format("/maps/Arena/Line_%d", targetY))
+					if Xmin < 1 then Xmin = 1 end
+					if Xmax > 8 then 
+						if targetY%2 == 0 then
+							Xmax = 8	-- 짝수 행은 8열까지 있음
+						else
+							Xmax = 9	-- 홀수 행은 9열까지 있음
+						end
+					end
+					
+					for j = Xmin, Xmax do
+						local tile = line:GetChildByName(string.format("Tile_%d", j))
+						
+						if isvalid(tile) then
+							table.insert(tileTable, tile)
+						end
+					end
+				end
+			end
+		end
+		
+		return tileTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method table getTileFromTile(Entity checkTile, SyncTable<Entity> enemies, string type, string userId)
+		-- 범위 내 가장 많은 적이 모인 빈 타일 :  EmptyTileWithMostEnemies_All_Num
+		-- 범위 내 가장 많은 적이 모인 타일 : TileWithMostEnemies_All_Num
+		-- 모든 적 기준 가장 먼 타일 : FarFromTheEnemies
+		-- 해당 유닛에게 가장 가까운 빈 타일 : EmptyTileNearestToTheUnit
+		-------------------------------------------------------------------------
+		if not isvalid(checkTile) then
+			return nil
+		end
+		-------------------------------------------------------------------------
+		
+		local ownerId = userId
+		local user = _UserService:GetUserEntityByUserId(ownerId)
+		local teamManager = user.TeamManager
+		
+		local typeInfo = _UtilLogic:Split(type, "_")
+		local tiles = user.GameManager.RoomTile
+		
+		
+		---@type Entity
+		local setTile = nil
+		
+		local setTileVerticalNum = 0
+		local setTileHorizontalNum = 0
+		
+		-- local checkList = {{0, -2}, {0, 2}, {-1, 1}, {1, 1}, {-1, -1}, {1, -1}}
+		local checkList = {{-2, 0}, {2, 0}, {1, -1}, {1, 1}, {-1, -1}, {-1, 1}}
+		
+		-- 범위 내 가장 많은 적이 모인 빈 타일 :  EmptyTileWithMostEnemies_All_Num
+		if typeInfo[1] == "EmptyTileWithMostEnemies" then
+			local setEnemiesCount = -1
+			
+			local range = math.floor(tonumber(typeInfo[3]))
+			
+			---@type table
+			local checkTileTable = {}
+			
+			for _, enemy in pairs(enemies) do
+				if isvalid(checkTile) then
+					local checkVerticalNode = checkTile.TileComponent_New.verticalNum
+					local checkHorizontalNode = checkTile.TileComponent_New.horizontalNum * 2 - (checkVerticalNode%2)
+					
+					local tableIdx = checkVerticalNode * 100 + checkHorizontalNode
+					checkTileTable[tableIdx] = -1000
+					
+					for i = 1, 6 do
+						for j = 1, range do
+							local setTileNode = {checkHorizontalNode + (j*checkList[i][1]), checkVerticalNode + (j*checkList[i][2])}
+							local setTileIdx = setTileNode[2] * 100 + setTileNode[1]
+							if setTileNode[1] > 0 and setTileNode[1] < 18 and setTileNode[2] > 0 and setTileNode[2] < 8 then
+								if isvalid(checkTileTable[setTileIdx]) then
+									checkTileTable[setTileIdx] += 1
+								else
+									checkTileTable[setTileIdx] = 1
+								end
+							end
+						end
+					end
+				end
+			end
+			
+			
+			
+			-- 맵 전체 기준
+			if typeInfo[2] == "All" then
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileKey = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					
+					
+					if setEnemiesCount < Count and not isvalid(teamManager.EntityOnTile[checkTile]) then
+						setTile = checkTile
+						setEnemiesCount = Count
+						setTileVerticalNum = checkTile.TileComponent_New.verticalNum
+						setTileHorizontalNum = checkTile.TileComponent_New.horizontalNum
+					end
+				end
+			-- 유닛 사거리 내
+			elseif typeInfo[2] == "AroundUnit" then
+				local mainTileCompo = checkTile.TileComponent_New
+				local mainVerticalNode = mainTileCompo.verticalNum
+				local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+				
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {checkHorizontalNode, checkVerticalNode})
+					
+					if distanceInfo[1] <= range then
+						local checkTileInfo = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+						
+						local checkTile2 = tiles[checkTileInfo]
+							
+						if setEnemiesCount < Count and not isvalid(teamManager.EntityOnTile[checkTile2]) then
+							setTile = checkTile2
+							setEnemiesCount = Count
+							setTileVerticalNum = checkTile2.TileComponent_New.verticalNum
+							setTileHorizontalNum = checkTile2.TileComponent_New.horizontalNum
+						end
+					end
+				end
+			end
+		-- 범위 내 가장 많은 적이 모인 타일 : TileWithMostEnemies_All_Num
+		elseif typeInfo[1] == "TileWithMostEnemies" then
+			local setEnemiesCount = -1
+			
+			local range = math.floor(tonumber(typeInfo[3]))
+			
+			---@type table
+			local checkTileTable = {}
+			
+			for _, enemy in pairs(enemies) do
+				local enemyTile = enemy.UnitInfo.setTile
+				if isvalid(enemyTile) then
+					local checkVerticalNode = enemyTile.TileComponent_New.verticalNum
+					local checkHorizontalNode = enemyTile.TileComponent_New.horizontalNum * 2 - (checkVerticalNode%2)
+					
+					local tableIdx = checkVerticalNode * 100 + checkHorizontalNode
+					if isvalid(checkTileTable[tableIdx]) then
+						checkTileTable[tableIdx] += 1
+					else
+						checkTileTable[tableIdx] = 1
+					end
+					
+					
+					for i = 1, 6 do
+						for j = 1, range do
+							local setTileNode = {checkHorizontalNode + (j*checkList[i][1]), checkVerticalNode + (j*checkList[i][2])}
+							local setTileIdx = setTileNode[2] * 100 + setTileNode[1]
+							if setTileNode[1] > 0 and setTileNode[1] < 18 and setTileNode[2] > 0 and setTileNode[2] < 8 then
+								if isvalid(checkTileTable[setTileIdx]) then
+									checkTileTable[setTileIdx] += 1
+								else
+									checkTileTable[setTileIdx] = 1
+								end
+							end
+						end
+					end
+				end
+			end
+			
+			
+			
+			-- 맵 전체 기준
+			if typeInfo[2] == "All" then
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local checkTileInfo = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+					
+					local checkedTile = tiles[checkTileInfo]
+					
+					if setEnemiesCount < Count then
+						setTile = checkedTile
+						setEnemiesCount = Count
+						setTileVerticalNum = checkedTile.TileComponent_New.verticalNum
+						setTileHorizontalNum = checkedTile.TileComponent_New.horizontalNum
+					end
+				end
+			-- 유닛 사거리 내
+			elseif typeInfo[2] == "AroundUnit" then
+				local mainTileCompo = checkTile.TileComponent_New
+				local mainVerticalNode = mainTileCompo.verticalNum
+				local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+				
+				for checkTileIdx, Count in pairs(checkTileTable) do
+					local checkVerticalNode = math.floor(checkTileIdx/100)
+					local checkHorizontalNode = checkTileIdx%100
+					
+					local distanceInfo = self:getDistance({mainHorizontalNode, mainVerticalNode}, {checkHorizontalNode, checkVerticalNode})
+					
+					if distanceInfo[1] <= range then
+						local checkTileInfo = math.floor(checkHorizontalNode) .. "," .. math.floor(checkVerticalNode)
+						
+						local checkedTile = tiles[checkTileInfo]
+							
+						if setEnemiesCount < Count then
+							setTile = checkedTile
+							setEnemiesCount = Count
+							setTileVerticalNum = checkedTile.TileComponent_New.verticalNum
+							setTileHorizontalNum = checkedTile.TileComponent_New.horizontalNum
+						end
+					end
+				end
+			end
+		-- 모든 적 기준 가장 먼 타일 : FarFromTheEnemies
+		elseif typeInfo[1] == "FarFromTheEnemies" then
+			local checkPoint = 0
+			
+			for y = 1, 7 do
+				for x = 1 + ((y+1)%2), 17 - ((y+1)%2), 2 do
+					
+					local checkedTile = tiles[math.floor(x) .. "," .. math.floor(y)]
+					
+					if not isvalid(teamManager.EntityOnTile[checkedTile]) then
+						local setPoint = 0
+						for _, enemy in pairs(enemies) do
+							if isvalid(enemy) then
+								local enemyTile = enemy.UnitInfo.setTile
+								local enemyVerticalNode = enemyTile.TileComponent_New.verticalNum
+								local enemyHorizontalNode = enemyTile.TileComponent_New.horizontalNum * 2 - (enemyVerticalNode%2)
+								
+								local enemyDistanceInfo = self:getDistance({x, y}, {enemyHorizontalNode, enemyVerticalNode})
+								setPoint += enemyDistanceInfo[1]
+							end
+							
+							if checkPoint < setPoint then
+								setTile = checkedTile
+								checkPoint = setPoint
+								setTileVerticalNum = checkedTile.TileComponent_New.verticalNum
+								setTileHorizontalNum = checkedTile.TileComponent_New.horizontalNum
+							end
+						end
+					end
+				end
+			end
+		-- 해당 유닛에게 가장 가까운 빈 타일 : EmptyTileNearestToTheUnit
+		elseif typeInfo[1] == "EmptyTileNearestToTheUnit" then
+			local checkType = typeInfo[2]
+			
+			local mainTileCompo = checkTile.TileComponent_New
+			local mainVerticalNode = mainTileCompo.verticalNum
+			local mainHorizontalNode = mainTileCompo.horizontalNum * 2 - (mainVerticalNode%2)
+			
+			local randNum = _UtilLogic:RandomIntegerRange(0,5)
+			for range = 1, 12 do
+				for j = 0, 5 do
+					local idx = (j + randNum)%6 + 1
+					local setTileNode = {mainHorizontalNode + (range * checkList[idx][1]), mainVerticalNode + (range * checkList[idx][2])}
+					
+					if setTileNode[1] > 0 and setTileNode[1] < 18 and setTileNode[2] > 0 and setTileNode[2] < 8 then
+						local checkHorizontalNum = ( setTileNode[1] + (setTileNode[2]%2) ) / 2
+						local checkTileInfo = math.floor(setTileNode[1]) .. "," .. math.floor(setTileNode[2])
+						local checkedTile = tiles[checkTileInfo]
+						
+						if checkType == "All" then
+							if not isvalid(teamManager.EntityOnTile[checkedTile]) then
+								setTile = checkedTile
+								setTileVerticalNum = setTileNode[2]
+								setTileHorizontalNum = checkedTile.TileComponent_New.horizontalNum
+								break
+							end
+						elseif checkType == "NotNeutral" then
+							if not isvalid(teamManager.EntityOnTile[checkedTile]) and checkedTile.TileComponent_New.Zone ~= "Neutral" then
+								setTile = checkedTile
+								setTileVerticalNum = setTileNode[2]
+								setTileHorizontalNum = checkedTile.TileComponent_New.horizontalNum
+								break
+							end
+						--[[
+						elseif checkType == "Team" then
+							if not isvalid(teamManager.EntityOnTile[checkedTile]) and checkedTile.TileComponent_New.Zone == checkUnitInfo.TeamType then
+								setTile = checkedTile
+								setTileVerticalNum = setTileNode[2]
+								setTileHorizontalNum = checkedTile.TileComponent_New.horizontalNum
+								break
+							end
+						elseif checkType == "Enemy" then
+							local checkZone = ""
+							if checkUnitInfo.TeamType == "User" then
+								checkZone = "Enemy"
+							elseif checkUnitInfo.TeamType == "Enemy" then
+								checkZone = "User"
+							end
+							
+							if not isvalid(teamManager.EntityOnTile[checkedTile]) and checkedTile.TileComponent_New.Zone == checkZone then
+								setTile = checkedTile
+								setTileVerticalNum = setTileNode[2]
+								setTileHorizontalNum = checkedTile.TileComponent_New.horizontalNum
+								break
+							end
+						]]
+						end
+					end
+				end
+				if isvalid(setTile) then
+					break
+				end
+			end
+		end
+		
+		
+		return {setTile, setTileHorizontalNum, setTileVerticalNum}
+	end
+
+	@ExecSpace("Server")
+	method boolean CheckAttackAble(Entity attackUnit, Entity targetUnit, string type)
+		-- 스킬 사용 혹은 공격이 가능한 지 체크하는 함수
+		-------------------------------------------------------------------
+		-- 공격 시
+		if type == "Attack" then
+			-- 대상이 없는 경우
+			if not ( isvalid(attackUnit) and isvalid(targetUnit) ) then
+				return false
+			---------------------------------------------------------------
+			-- 대상이 사망한 경우
+			elseif not ( attackUnit.UnitAIWanderComponent.Enable and targetUnit.UnitAIWanderComponent.Enable ) then
+				return false 
+			---------------------------------------------------------------
+			-- 공격자 기절, 무장 해제의 경우
+			elseif ( attackUnit.UnitStatus.StatusEffect["SE0006"] or attackUnit.UnitStatus.StatusEffect["SE0004"] ) then
+				return false
+			---------------------------------------------------------------
+			-- SetBattle False
+			elseif not attackUnit.UnitAIWanderComponent.setBattle then
+				return
+			end
+		-------------------------------------------------------------------
+		-- 스킬 사용 시
+		elseif type == "Skill" then
+			-- 대상이 없는 경우
+			if not ( isvalid(attackUnit) and isvalid(targetUnit) ) then
+				return false
+			---------------------------------------------------------------
+			-- 대상이 사망한 경우
+			elseif not ( attackUnit.UnitAIWanderComponent.Enable and targetUnit.UnitAIWanderComponent.Enable ) then
+				return false
+			---------------------------------------------------------------
+			-- SetBattle False
+			elseif not attackUnit.UnitAIWanderComponent.setBattle then
+				return
+			end
+		-------------------------------------------------------------------
+		-- type 잘못 입력
+		else
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method table getNextMoveTile(table startNode, table endNode, Entity moveEntity, Entity targetEntity, string userId)
+		-- A* 알고리즘을 사용하여 다음 이동 타일의 경로를 계산하여 반환하는 함수
+		---@type table
+		local checkList = nil
+		
+		-- 조금 더 간소화 시켜서, 경로를 굳이 다 찾을 필요는 없고 다음 타일만 찾으면 될 듯하다
+		
+		-- 경로 우선 순위 (타일 칸 기준 더 짧은 곳으로)
+		local xGap = (endNode[1] - startNode[1]) / 2	-- 가로
+		local yGap = endNode[2] - startNode[2]			-- 세로
+		
+		
+		-- 주변 노드 체크
+		-- 가로가 더 먼 경우
+		if math.abs(xGap) >= math.abs(yGap) then
+			-- 우측 이동이 필요한 경우
+			if xGap > 0 then
+				if yGap >= 0 then
+					checkList = {{2, 0}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}, {-2, 0}}
+				else
+					checkList = {{2, 0}, {1, -1}, {1, 1}, {-1, -1}, {-1, 1}, {-2, 0}}
+				end
+			-- 좌측 이동이 필요한 경우
+			else
+				if yGap >= 0 then
+					checkList = {{-2, 0}, {-1, 1}, {-1, -1}, {1, 1}, {1, -1}, {2, 0}}
+				else
+					checkList = {{-2, 0}, {-1, -1}, {-1, 1}, {1, -1}, {1, 1}, {2, 0}}
+				end
+			end
+		-- 세로가 더 먼 경우(같은 경우)
+		else
+			-- 아래 이동이 필요한 경우
+			if yGap > 0 then
+				if xGap >= 0 then
+					checkList = {{1, 1}, {-1, 1}, {2, 0}, {-2, 0}, {1, -1}, {-1, -1}}
+				else
+					checkList = {{-1, 1}, {1, 1}, {-2, 0}, {2, 0}, {-1, -1}, {1, -1}}
+				end
+			-- 위로 이동이 필요한 경우
+			else
+				if xGap >= 0 then
+					checkList = {{1, -1}, {-1, -1}, {2, 0}, {-2, 0}, {1, 1}, {-1, 1}}
+				else
+					checkList = {{-1, -1}, {1, -1}, {-2, 0}, {2, 0}, {-1, 1}, {1, 1}}
+				end
+			end
+		end
+		
+		
+		
+		local units = _UnitSetLogic_New.UnitsParentEntity[userId]
+		
+		---@type table
+		local checkset = {}
+		
+		-- 사용 중인 유닛만 체크해서 경로 찾기
+		for _, unit in pairs(units.Children) do
+			if unit.UnitInfo.use then
+				if unit ~= moveEntity and unit ~= targetEntity then
+					local tile = unit.UnitInfo.setTile
+					
+					if isvalid(tile) then
+						local yNode = tile.TileComponent_New.verticalNum
+						local xNode = tile.TileComponent_New.horizontalNum * 2 - yNode%2
+						
+						table.insert(checkset, {xNode, yNode})
+					end
+				end
+			end
+		end
+		
+		
+		-- Astar Algorithm
+		local openList = {}
+		local closeList = {}
+		local closeListCount = 1
+		local startNodeKey = math.floor(startNode[1]) .. "," .. math.floor(startNode[2])
+		closeList[startNodeKey] = {startNode, 0, 0, 0, {0,0}}
+		
+		local nextmainNode = {startNode, 0}
+		local find = false
+		
+		while true do
+			-- 0. mainNode 설정
+			local mainNode = nextmainNode[1]
+			local mainNodeKey = math.floor(nextmainNode[1][1]) .. "," .. math.floor(nextmainNode[1][2])
+			local mainGScore = closeList[mainNodeKey][3]
+			--log(mainNode)
+			nextmainNode = nil
+			
+			-- 1. openList에 주변 노드 넣기
+			for i = 1, #checkList do
+				local checkNode = {mainNode[1] + checkList[i][1], mainNode[2] + checkList[i][2]}
+				local checkNodeKey = math.floor(checkNode[1]) .. "," .. math.floor(checkNode[2])
+				--log(checkNode)
+				
+				-- 맵 밖을 벗어나는지 (세로)
+				if checkNode[2] >= 1 and checkNode[2] <= 7 then
+					local bool = false
+					
+					-- (첫 노드인 경우) 이미 다른 캐릭터가 있는지
+					if closeListCount == 1 then
+						for _, v in pairs(checkset) do
+							if v[1] == checkNode[1] and v[2] == checkNode[2] then
+								bool = true
+							end
+						end
+					end
+					
+					-- 이미 그 위치가 CloseList에 들어가있는지
+					for k, _ in pairs(closeList) do
+						local kNode = _UtilLogic:Split(k, ",")
+						if tonumber(kNode[1]) == checkNode[1] and tonumber(kNode[2]) == checkNode[2] then
+							bool = true
+						end
+					end
+					
+					
+					-- 맵 밖을 벗어나는지 (가로)
+					if not bool and checkNode[1] >= 1 and checkNode[1] <= 17 then
+						local gScore = mainGScore + 1
+						local hScore = math.pow(math.abs(checkNode[1] - endNode[1])^2 + math.abs(checkNode[2] - endNode[2])^2, 0.5)
+						local fScore = mainGScore + 1 + hScore
+						
+						-- 기존에 OpenList에 없는지
+						if not isvalid(openList[checkNodeKey]) then
+							openList[checkNodeKey] = {checkNode, fScore, gScore, hScore, mainNode}
+						-- 기존에 있다면, gScore가 더 작은지
+						elseif openList[checkNodeKey][3] > gScore then
+							openList[checkNodeKey] = {checkNode, fScore, gScore, hScore, mainNode}
+						end
+					end
+				end
+			end
+			
+			-- 2. openList 체크해서 가장 fScore가 낮은 노드 mainNode로 잡기
+			local openListCount = 0
+			for k, v in pairs(openList) do
+				if not isvalid(nextmainNode) then
+					nextmainNode = {v[1], v[2]}
+				elseif nextmainNode[2] > v[2] then
+					nextmainNode = {v[1], v[2]}
+				end
+				openListCount += 1
+			end
+			
+			-- 더이상 경로가 없으면 false
+			-- log(openListCount)
+			if openListCount == 0 then
+				find = false
+				return nil
+			end
+			
+			
+			-- 3. nextmainNode를 가져와서 CloseList에 넣기
+			local nextMainNodeKey = math.floor(nextmainNode[1][1]) .. "," .. math.floor(nextmainNode[1][2])
+			closeList[nextMainNodeKey] = openList[nextMainNodeKey]
+			closeListCount += 1
+			openList[nextMainNodeKey] = nil
+			
+			-- 4. nextmainNode가 endNode인지 확인후 while 나오기
+			if nextmainNode[1][1] == endNode[1] and nextmainNode[1][2] == endNode[2] then
+				find = true
+				break
+			end
+		end
+		
+		-- 찾은 경우
+		local NodeList = {}
+		-- closeList 역출력
+		local printNode = nextmainNode[1]
+		local printNodeKey = math.floor(printNode[1]) .. "," .. math.floor(printNode[2])
+		while true do
+			-- log(printNodeKey)
+			printNodeKey = math.floor(printNode[1]) .. "," .. math.floor(printNode[2])
+			table.insert(NodeList, closeList[printNodeKey][1])
+			printNode = closeList[printNodeKey][5]
+			
+			if printNode[1] == 0 then
+				break
+			end
+		end
+		
+		return NodeList
+	end
+
+end

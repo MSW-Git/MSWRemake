@@ -1,0 +1,172 @@
+@Component
+script RC40002 extends RuneCardComponent
+
+	property number NeedCount = 333
+
+	property number SetPercent = 30
+
+	@ExecSpace("ServerOnly")
+	method void OnAttackedHandler(any event)
+		__base:OnAttackedHandler(event)
+		
+		-- 아군이 적에게 피해를 입힐 때마다 1콤보를 얻습니다.
+		-----------------------------------------------------------
+		---@type Entity
+		local attacker = event.Attacker
+		local target = event.Target
+		local user = self.Entity.Parent.Parent
+		-----------------------------------------------------------
+		if self.RuneStack < self.NeedCount then
+		--if self.RuneStack < 10 then
+			if isvalid(attacker) and isvalid(target) then
+				if self.SetTeamType == attacker.UnitInfo.TeamType and self.SetTeamType ~= target.UnitInfo.TeamType then
+					self:SetRuneStackInfo(self.RuneStack + 1)
+					self:RuneBuffCheck()
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartBattleHandler(any event)
+		__base:StartBattleHandler(event)
+		
+		-- 아군이 적에게 피해를 입힐 때마다 1콤보를 얻습니다.
+		-----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local gameManager = user.GameManager
+		-----------------------------------------------------------
+		if self.SetTeamType == "Enemy" then
+			-- 원래 스택 쌓아야 함
+			-- 적은 6-2스테이지 이후 그냥 활성화 된걸로
+			local setStack = gameManager.Stage * 170 + _UtilLogic:RandomIntegerRange(gameManager.Round * 50, 300)
+			self:SetRuneStackInfo(math.min(setStack, self.NeedCount))
+		end
+		
+		self:RuneBuffCheck()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RuneBuffOn()
+		-- 333 콤보를 달성하면 모든 아군이 입는 피해량이 30% 감소합니다.
+		----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local units = {}
+		local enemy = {}
+		-----------------------------------------------------------
+		if self.SetTeamType == "User" then
+			for _, unit in pairs(teamManager.OwnUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					_StatusChangeLogic:GetBuff(unit, "DamageDecrease_Per", self.SetPercent, -1)
+					table.insert(units, unit)
+				end
+			end
+		else
+			for _, unit in pairs(teamManager.EnemyUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					_StatusChangeLogic:GetBuff(unit, "DamageDecrease_Per", self.SetPercent, -1)
+					table.insert(enemy, unit)
+				end
+			end
+		end
+		units=_UtilLogic:TableToString(units)
+		enemy=_UtilLogic:TableToString(enemy)
+		self:PlayEffect(units, enemy, self.RuneStack, true, user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RuneBuffCheck()
+		local user = self.Entity.Parent.Parent
+		if self.RuneStack >= self.NeedCount then
+		--if self.RuneStack >= 10 then
+			self:RuneBuffOn()
+			
+			--업적: 룬카드 [아란]으로 333콤보 달성하기	
+			if  self.SetTeamType == "User" then 
+				_AchievementService:UpdateProgress_RuneCard("AC004015",self.NeedCount,user)
+			end
+			
+		else
+			local count=self.RuneStack
+			self:PlayEffect("", "", count, true, user.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(string units, string enemy, integer Stack, boolean InBattle)
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		units = _UtilLogic:StringToTable(units)
+		enemy = _UtilLogic:StringToTable(enemy)
+		------------------------------------------------------------
+		local stringValue = string.format("-%d%%", self.SetPercent)
+		
+		local cardindex = 0
+		--룬 카드 발동 및 특수 연출
+		if #units > 0 then
+			cardindex = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+			_RuneCardDirector:ShakingCard_Battle(cardindex, false)
+			_RuneCardDirector:IconToastDirector_Battle(cardindex, {_RuneCardDirectEnum.DamageDecrease}, {stringValue}, false)
+			
+			_RuneCardDirector.RuneCardManagingValue["RC40002"][self.Entity.Id] = Stack / _RuneCardDirector.RuneCardMaxStack["RC40002"]
+			_RuneCardDirector:CheckRuneCardManagingValue("RC40002", cardindex)
+			
+			if InBattle then
+				if Stack >= self.NeedCount then
+				--if Stack>=10 then
+					_RuneCardDirector:RC40002Director(true)
+				else
+					_RuneCardDirector:RC40002Director(false)
+				end
+			else
+				_RuneCardDirector:RC40002Director(false)
+			end
+		else
+			cardindex=_RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+			_RuneCardDirector.RuneCardManagingValue["RC40002"][self.Entity.Id] = Stack / _RuneCardDirector.RuneCardMaxStack["RC40002"]
+			_RuneCardDirector:CheckRuneCardManagingValue("RC40002", cardindex)
+		end
+		
+		if #enemy > 0 then
+			cardindex = _RuneCardDirector:GetRuneCardIndex(self.Entity, true)
+			_RuneCardDirector:ShakingCard_Battle(cardindex, true)
+			_RuneCardDirector:IconToastDirector_Battle(cardindex, {_RuneCardDirectEnum.DamageDecrease}, {stringValue}, true)
+		end
+		
+		--룬 카드 효과 연출
+		if InBattle then
+		
+		else
+			_RuneCardDirector:RC40002Director(false)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartRoundHandler(any event)
+		__base:StartRoundHandler(event)
+		local user = self.Entity.Parent.Parent
+		
+		self:PlayEffect("", "", self.RuneStack, false, user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InGameDataLoadHandler(any event)
+		__base:InGameDataLoadHandler(event)
+		----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		----------------------------------------------------------
+		self:SetDirectorValue(self.RuneStack, user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetDirectorValue(number stack)
+		--DB에서 값을 불러왔을 떄 연출용 값들을 세팅하는 함수입니다.
+		local runeindex = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+		_RuneCardDirector.RuneCardManagingValue["RC40002"][self.Entity.Id] = stack / _RuneCardDirector.RuneCardMaxStack["RC40002"]
+		_RuneCardDirector:CheckRuneCardManagingValue("RC40002", runeindex)
+	end
+
+end

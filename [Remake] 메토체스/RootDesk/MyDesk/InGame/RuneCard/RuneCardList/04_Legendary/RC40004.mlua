@@ -1,0 +1,173 @@
+@Component
+script RC40004 extends RuneCardComponent
+
+	property SyncTable<string, number> SetSynergyCount
+
+	@ExecSpace("ServerOnly")
+	method void SetBattleHandler(any event)
+		__base:SetBattleHandler(event)
+		
+		-- 전투가 시작될 때, 내 대기석이 가득 찬 상태라면 대기석 내 무작위 유닛 셋을 선택해 해당 유닛들이 보유한 시너지를 각각 +1 보유한 것으로 간주합니다. (최대 9)
+		-- 대기석이 빈 상태라면 무작위 아이템 상자를 얻습니다.
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		local Runevalue = {}
+		local TileValue = {}
+		local type = ""
+		------------------------------------------------------------
+		if self.SetTeamType == "User" then
+			local fullChecked = false
+			local emptyChecked = false
+			---@type table<Entity>
+			local roomTileUnits = {}
+			
+			for i = 1, userPControl.Tile_AvailableWaitingTile do
+				local checkTile = user.GameManager.RoomTile[math.floor(i) .. ",0"]
+				local roomTileUnit = teamManager.EntityOnTile[checkTile]
+				TileValue[i]="false"
+				if isvalid(roomTileUnit) and isvalid(roomTileUnit.UnitInfo) then
+					table.insert(roomTileUnits, roomTileUnit)
+					TileValue[i]="true"
+				end
+			end
+			
+			--log("#roomTileUnits : ", #roomTileUnits)
+			--log("userPControl.Tile_AvailableWaitingTile : ", userPControl.Tile_AvailableWaitingTile)
+			if #roomTileUnits >= userPControl.Tile_AvailableWaitingTile then
+				fullChecked = true
+				for i=1,#TileValue do
+					TileValue[i]="true"
+				end
+			elseif #roomTileUnits == 0 then
+				emptyChecked = true
+			end
+			
+			
+			
+			
+			if fullChecked then
+				--log("FullChecked")
+				-- 대기석 내 무작위 유닛 셋을 선택해 해당 유닛들이 보유한 시너지를 각각 +1 보유한 것으로 간주합니다. (최대 9)
+				-- 고유 시너지 제외
+				local synergyDataSet = _DataService:GetTable("SynergyInfo")
+				for i = 1, 3 do
+					local setUnitIdx = _UtilLogic:RandomIntegerRange(1, #roomTileUnits)
+					local checkUnit = roomTileUnits[setUnitIdx]
+					
+					--log("checkUnit: ", checkUnit.UnitInfo.charID)
+					for _, synergyID in pairs(checkUnit.UnitInfo.synergyList) do
+						local step3 = synergyDataSet:FindRow("SynergyID", synergyID):GetItem("NeedCount_step3")
+						
+						if step3 == "-" then
+							--log("synergyID: ", synergyID)
+							teamManager:GetOnFieldSynergyCount(synergyID, 1)
+							if isvalid(self.SetSynergyCount[synergyID]) then
+								self.SetSynergyCount[synergyID] += 1
+							else
+								self.SetSynergyCount[synergyID] = 1
+							end
+						end
+					end
+					
+					table.insert(Runevalue, checkUnit.Id)
+					table.remove(roomTileUnits, setUnitIdx)
+				end
+				type = "full"
+			elseif emptyChecked then
+				--log("EmptyChecked")
+				-- 무작위 아이템 상자를 얻습니다.
+				local getItemBoxPer = _UtilLogic:RandomDouble()
+				
+				if getItemBoxPer < 0.4 then
+					-- 재료 아이템 상자 중 1개
+					local boxNum = _UtilLogic:RandomIntegerRange(1,3)
+					_ItemSetLogic:GetItemBox(user.OwnerId, boxNum)
+				elseif getItemBoxPer < 0.8 then
+					-- 완성 아이템 상자 중 1개
+					local boxNum = _UtilLogic:RandomIntegerRange(4,12)
+					_ItemSetLogic:GetItemBox(user.OwnerId, boxNum)
+				elseif getItemBoxPer < 0.9 then
+					-- 소모품 아이템 상자
+					_ItemSetLogic:GetItemBox(user.OwnerId, 13)
+				else
+					-- 메달 아이템 상자
+					_ItemSetLogic:GetItemBox(user.OwnerId, 14)
+				end
+				local ItemID = user.TeamManager.OwnItems[#user.TeamManager.OwnItems]
+				table.insert(Runevalue, ItemID)
+				type = "empty"
+			end
+			Runevalue = _UtilLogic:TableToString(Runevalue)
+			TileValue = _UtilLogic:TableToString(TileValue)
+			self:PlayEffect(type, Runevalue, TileValue, false, user.PlayerComponent.UserId)
+		else
+			-- 적인 경우 무조건 가득찬 상태로 체크
+			local synergyDataSet = _DataService:GetTable("SynergyInfo")
+			local charInfoDataSet = _DataService:GetTable("CharacterSynergy")
+			
+			for i = 1, 3 do
+				local charCost = _UtilLogic:RandomIntegerRange(1, 5)
+				local charIdx = _UtilLogic:RandomIntegerRange(1, 13 - (math.floor(charCost/5) * 5))
+				
+				local charID = string.format("C%d", math.floor(charCost * 10000 + charIdx))
+				local synergyRow = charInfoDataSet:FindRow("CharID", charID)
+				
+				for j = 1, 3 do
+					local synergyID = synergyRow:GetItem(string.format("Synergy_%d", j))
+					if isvalid(synergyID) and synergyID ~= "" then
+						log("SynergyID = ", synergyID)
+						local step3 = synergyDataSet:FindRow("SynergyID", synergyID):GetItem("NeedCount_step3")
+						if step3 == "" then
+							teamManager:GetEnemyOwnedFieldSynergyCount(synergyID, 1)
+							if isvalid(self.SetSynergyCount[synergyID]) then
+								self.SetSynergyCount[synergyID] += 1
+							else
+								self.SetSynergyCount[synergyID] = 1
+							end
+						end
+					end
+				end
+			end
+			type = "full"
+			Runevalue = _UtilLogic:TableToString(Runevalue)
+			TileValue = _UtilLogic:TableToString(TileValue)
+			self:PlayEffect(type, Runevalue, TileValue, true, user.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartRoundHandler(any event)
+		__base:StartRoundHandler(event)
+		
+		-- 시너지를 초기화합니다.
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		------------------------------------------------------------
+		
+		if self.SetTeamType == "User" then
+			for synergyID, count in pairs(self.SetSynergyCount) do
+				teamManager:GetOnFieldSynergyCount(synergyID, -count)
+			end
+		else
+			for synergyID, count in pairs(self.SetSynergyCount) do
+				teamManager:GetEnemyOwnedFieldSynergyCount(synergyID, -count)
+			end
+		end
+		
+		table.clear(self.SetSynergyCount)
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(string Type, string Runevalue, string Tilevalue, boolean enemy)
+		Runevalue = _UtilLogic:StringToTable(Runevalue) -- 룬 카드 효과 정보
+		Tilevalue = _UtilLogic:StringToTable(Tilevalue) -- 빈 타일 여부
+		local runeindex = _RuneCardDirector:GetRuneCardIndex(self.Entity,enemy)
+		
+		_RuneCardDirector:RC40004Director_1(Tilevalue, enemy, runeindex, Runevalue, Type)
+	end
+
+end

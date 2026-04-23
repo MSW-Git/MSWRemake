@@ -1,0 +1,220 @@
+@Logic
+script EmployeeUpgradeUIServcie extends Logic
+
+	property UISkillOpenPopup UISkillOpenPopup = "320b1a44-4d3f-4ce8-98a8-1927448671dd"
+
+	property UIEmployeeUpgrade UIEmployeeUpgradeCompo = "8c7e2c2d-1a25-477f-868c-ca8ae3056130"
+
+	property Entity EmployeeUpgrade = "8c7e2c2d-1a25-477f-868c-ca8ae3056130"
+
+	property UIEmployeeUPgradeAuto UIUpgradeAuto = "4c9e041c-9d81-43b8-9893-a888a0c2bc18"
+
+	property UISkillOpenPopup OverlimitPopup = "ab75f2e0-b8ad-42e8-a478-7175539feec4"
+
+	@ExecSpace("ClientOnly")
+	method void UIOpen(string empId)
+		-- 직원 업그레이드 UI를 여는 함수
+		
+		local uiUpgrade = self.EmployeeUpgrade.UIEmployeeUpgrade
+		uiUpgrade.EmployeeID = empId
+		
+		local data = _EmployeeService:GetData(uiUpgrade.EmployeeID)
+		local type = data.Type
+		uiUpgrade.ChuChuLvBef = _EmployeeService:ReturnChuchuLevel(empId, _UserService.LocalPlayer)
+		self.UISkillOpenPopup:Close()
+		
+		uiUpgrade:SetUIDetail()
+		uiUpgrade:SetStatCategory()
+		
+		self.EmployeeUpgrade.Parent.Enable = true
+		self.EmployeeUpgrade.Enable = true
+		local lvUpIcon = _EntityService:GetEntityByPath("/ui/EmployeeUpgradeGroup/Main/ItemSlotGroup/StatCategory/LevelUp/Icon/UISprite")
+		local overlimitIcon =  _EntityService:GetEntityByPath("/ui/EmployeeUpgradeGroup/Main/ItemSlotGroup/StatCategory/OverLimit/Icon/UISprite")
+		lvUpIcon.SpriteGUIRendererComponent.ImageRUID =  _EmployeeRUID:ReturnIconRUIDByStatType(type)
+		overlimitIcon.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum:GetOverLimitJemIcon(type)
+		
+		_UIGroupManager:EnableBackToLobbyBtn(true)
+		
+		_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.EmployeeUpgradeEnter)
+		
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UIClose()
+		-- 직원 업그레이드 UI를 닫는 함수
+		self.EmployeeUpgrade.Parent.Enable = false
+		self.EmployeeUpgrade.Enable = false
+		
+		_UserService.LocalPlayer.TimeManager:RequestTimeFlowClient()
+		
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	method table ReturnStatOptionDescByStatLevel(string type, integer level)
+		-- 스탯 레벨에 따른 옵션 설명을 반환하는 함수
+		local dataSet 
+		local optionDesc = {}
+		
+		if type == _EmployeeStatEnumType.MoveSpeed then 
+			
+			dataSet = _DataService:GetTable("EmployeeMoveStatByLevelDataSet"):FindRow("Level",tostring(level))
+			local optionName = _GetLocalizationTextLogic:GetText(type.."EffectDesc")
+			local optionValue = dataSet:GetItem(type)
+			optionDesc = {optionName,optionValue}
+		else
+			
+			dataSet = _DataService:GetTable("EmployeeStatByLevelDataSet"):FindRow("Level",tostring(level))	
+		
+			local optionName = _GetLocalizationTextLogic:GetText(type.."SpeedEffectDesc").."\n".._GetLocalizationTextLogic:GetText(type.."CountEffectDesc")
+			local optionValue = dataSet:GetItem(type.."Speed").."\n"..dataSet:GetItem(type.."Count")
+			
+			optionDesc = {optionName,optionValue}
+		end 
+		
+		return optionDesc
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer ReturnItemCountByID(string itemID)
+		-- 아이템 ID로 플레이어가 보유한 아이템 개수를 반환하는 함수
+		local playerInven = _UserService.LocalPlayer.PlayerInventory
+		
+		local itemCount = playerInven:GetItemCount(itemID)
+		
+		if not isvalid(itemCount) then 
+			return 0
+		end
+		
+		return itemCount
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CanRemoveSelectItem(string itemID)
+		-- 선택된 아이템을 제거할 수 있는지 확인하는 함수
+		local uiEmployeeCompo = self.UIEmployeeUpgradeCompo
+		
+		if not isvalid(uiEmployeeCompo.selectItems[itemID]) then 
+			return false 
+		end
+		
+		
+		if uiEmployeeCompo.selectItems[itemID] < 1 then 
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer ReturnSelecteItemTotalExp()
+		-- 선택된 아이템들의 총 경험치를 반환하는 함수
+		local selectItems = self.UIEmployeeUpgradeCompo.selectItems
+		
+		local totalSelectedItemExp = 0 
+		
+		for itemId, count in pairs(selectItems) do 
+			
+			local itemLevel = string.sub(itemId,5,5)
+			
+			local potionExp = _EmployeeUpgradeService:ReturnExpFromPotionLevel(itemLevel)
+			
+			totalSelectedItemExp = totalSelectedItemExp + ( potionExp * count ) 
+			
+		end
+		
+		return totalSelectedItemExp
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer ReturnSelectedItemLv()
+		-- 선택된 아이템들로 달성할 수 있는 레벨을 반환하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local ItemexpSum = self:ReturnSelecteItemTotalExp()
+		local empID = self.UIEmployeeUpgradeCompo.EmployeeID
+		local statType = self.UIEmployeeUpgradeCompo.CurStatCategory
+		
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(empID):ConvertToTable()
+		local curStatLevel = detail[statType.."Level"]
+		
+		local curStatLevelExpSum = _EmployeeUpgradeService:GetExpData(curStatLevel):GetExpSum(player)
+		local curStatExp = detail[statType.."Exp"]
+		
+		local totalExp = ItemexpSum + curStatLevelExpSum + curStatExp 
+		
+		local level = _EmployeeUpgradeService:ReturnLevelExpOfExpSum(totalExp,self.UIEmployeeUpgradeCompo.CurStatCategory, player)
+		return level
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer ReturnSelectedCountByItemID(string itemID)
+		-- 특정 아이템 ID의 선택된 개수를 반환하는 함수
+		local itemCount = self.UIEmployeeUpgradeCompo.selectItems[itemID]
+		
+		if not isvalid(itemCount) then 
+			return 0
+		end
+		
+		return itemCount
+	end
+
+	@ExecSpace("Client")
+	method boolean CanSelectItem(string itemId)
+		-- 아이템을 선택할 수 있는지 확인하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local uiEmployeeCompo = self.UIEmployeeUpgradeCompo
+		local detail = _UserService.LocalPlayer.EmployeeManager:GetEmployeeDetail(uiEmployeeCompo.EmployeeID):ConvertToTable()
+		
+		local curLevel = detail[uiEmployeeCompo.CurStatCategory.."Level"]
+		local curExp = detail[uiEmployeeCompo.CurStatCategory.."Exp"]
+		local maxLevel = detail["MaxLevel"]
+		
+		
+		local maxlevelExpSum = _EmployeeUpgradeService:GetExpData(maxLevel):GetExpSum(player)
+		local curLevelExpSum = _EmployeeUpgradeService:GetExpData(curLevel):GetExpSum(player)
+		
+		
+		local selectPotionExp = _EmployeeUpgradeUIServcie:ReturnSelecteItemTotalExp()
+		
+		local itemLevel = string.sub(itemId,5,5)	
+		local itemExp = _EmployeeUpgradeService:ReturnExpFromPotionLevel(itemLevel)
+		
+		local curExpSum = selectPotionExp + itemExp + curExp + curLevelExpSum
+		
+		if curLevel == maxLevel then 
+			return false
+		elseif curExpSum < maxlevelExpSum + itemExp then
+			return true
+		else
+			return false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestSelectItems(table items)
+		-- 아이템 선택을 요청하고 레벨을 업데이트하는 함수
+		
+		self.UIEmployeeUpgradeCompo:SetSelcetItems(items)
+		local potionExp = _EmployeeUpgradeUIServcie:ReturnSelecteItemTotalExp()
+		
+		local changeLevel
+		if potionExp > 0 then
+			local expTable = _EmployeeUpgradeService:CalcNextUpgradeData(self.UIEmployeeUpgradeCompo.CurStatCategory,self.UIEmployeeUpgradeCompo.EmployeeID,potionExp,_UserService.LocalPlayer)
+			changeLevel = expTable[3]
+		else
+			changeLevel = nil 
+		end
+		
+		self.UIUpgradeAuto:RefreshLevel(changeLevel)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RequestClearAllSelectItems()
+		-- 모든 선택된 아이템을 초기화하는 함수
+		self.UIEmployeeUpgradeCompo:AllClearSelectItems()
+	end
+
+end

@@ -1,0 +1,131 @@
+@Component
+script PlayerTutorialEvent extends Component
+
+	@TargetUserSync
+	property SyncTable<string, boolean> TutorialEvents
+
+	@TargetUserSync
+	property boolean IsSkipTutorial = false
+
+	property integer Version = 1
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 튜토리얼 이벤트 데이터를 데이터베이스에 저장
+		local dbTable = {}
+		
+		dbTable["TutorialEvents"] = _StringUtilLogic:StringBoolToString(self.TutorialEvents)
+		dbTable["Version"] = self.Version
+		
+		saveData["TutorialEvent"] = dbTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 튜토리얼 이벤트 데이터를 로드하여 초기화
+		local dbTable = loadedData["TutorialEvent"]
+		if dbTable == nil then
+			dbTable = {}
+		end
+		
+		if #table.keys(dbTable) > 0 then
+			if dbTable["Version"] == self.Version then
+				if dbTable["TutorialEvents"] then
+					table.initialize(self.TutorialEvents, _StringUtilLogic:StringBoolToTable(dbTable["TutorialEvents"]))
+				end
+			else
+				if dbTable["TutorialEvents"] then
+					table.initialize(self.TutorialEvents, _UtilLogic:StringToTable(dbTable["TutorialEvents"]))
+				end
+			end
+		else
+			table.clear(self.TutorialEvents)
+		end
+		
+		if Environment:IsMakerPlay() == true then	
+			self:SetIsSkipTutorial(true)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetIsSkipTutorial(boolean bool)
+		-- 튜토리얼 스킵 설정을 변경하고 필요시 모든 튜토리얼 이벤트를 완료 처리
+		if self.IsSkipTutorial == bool then
+			return
+		end
+		
+		self.IsSkipTutorial = bool
+		
+		if bool == true then
+			self:ForceSetTutorialEventsOccured()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SetEventOccured(string eventGroupId)
+		-- 특정 튜토리얼 이벤트를 발생 상태로 설정하고 관련 보상을 처리
+		if string.sub(eventGroupId, 1, 1) ~= "T" then
+		    return false
+		end
+		
+		local eventGroupData = _EventDataSetLogic:GetEventGroupData(eventGroupId)
+		
+		self.TutorialEvents[eventGroupId] = true
+		self.Entity.PlayerEventFunction:CommandFunc(eventGroupId) 
+		
+		local reward = nil
+		for k, v in pairs(eventGroupData.funcRewardPairs) do
+			if k == "GetItem" then
+				local itemId = v[1]
+				local itemCount = v[2]
+				if reward == nil then
+					reward = {}
+				end
+				
+				if reward[itemId] == nil then
+					reward[itemId] = itemCount
+				else
+					reward[itemId] += itemCount
+				end
+			end
+		end
+		
+		self.Entity.PlayerEvent:TutorialStartLog(eventGroupId, reward)
+		
+		_EventManager:SetCallbackFunction(eventGroupId, self.Entity.PlayerComponent.UserId)
+		
+		return true
+	end
+
+	method boolean IsEventOccured(string eventGroupId)
+		-- 특정 튜토리얼 이벤트가 발생했는지 확인하여 상태를 반환
+		if self.TutorialEvents[eventGroupId] == nil then
+			return false
+		end
+		
+		return self.TutorialEvents[eventGroupId]
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ForceSetTutorialEventsOccured()
+		-- 모든 튜토리얼 이벤트를 강제로 발생 상태로 설정
+		for eGroupId, data in pairs(_EventDataSetLogic.EventGroupData) do
+			if string.sub(eGroupId, 1, 1) == "T" then
+				self.TutorialEvents[eGroupId] = true
+			end	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 튜토리얼 이벤트 동기화 시 UI 버튼 잠금 해제 및 관련 UI 새로고침
+		if name == "TutorialEvents" then
+			if _UtilLogic:Contains(self.Entity.CurrentMapName, "Lobby") == true then
+				_UIButtonUnlockLogic:SetButtonsUnlock()
+				_ToDoManager:RefreshToDoList()
+				_LobbyHUDService.ManagementUI.UIHUDManagement:Refresh()
+			end
+		end
+	end
+
+end

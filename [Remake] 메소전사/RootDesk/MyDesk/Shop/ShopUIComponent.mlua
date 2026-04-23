@@ -1,0 +1,216 @@
+@Component
+script ShopUIComponent extends UICommonPopup
+
+	property Entity background = "105bb77a-eb7b-4365-a2a3-309e7dc2c6a6"
+
+	property Entity content = "f33f6065-1e02-487b-97ad-2e5f4fd501b8"
+
+	property string shopId = ""
+
+	property Entity originalSlot = "459fcda5-637c-4c10-83d6-09a462546bbe"
+
+	property Entity productLayout = "82c27102-cea4-44ce-9303-a023814b20a6"
+
+	property Entity closeButton = "47b96065-df14-4a2c-afa6-f8bac2bb9b84"
+
+	property number requestedTime = 0
+
+	property Entity wealthPanel = "67308d44-9355-43ed-85ae-f26b6ced5472"
+
+	property integer timer = 0
+
+	property Entity dateText = "b9dae748-ac48-4b0a-8e27-6498b040e2a1"
+
+	property Entity infoPanel = "f8f475c4-64da-4a97-af77-778ae128068d"
+
+	property GridViewComponent GridViewComponent = "82c27102-cea4-44ce-9303-a023814b20a6"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 상점 UI 초기화 및 이벤트 연결
+		self.closeButton:ConnectEvent(ButtonClickEvent, self.Hide)
+		self.productLayout.GridViewComponent.ItemEntity = self.originalSlot
+		self.originalSlot.Enable = false
+		
+		local gridView = self.productLayout.GridViewComponent
+		
+		
+		
+		gridView.OnRefresh = function(index, entity)
+				self:OnRefreshGridView(index,entity)
+			end
+		
+		__base:OnBeginPlay()
+	end
+
+	method void Show()
+		-- 상점 UI 표시 및 퀴스트 조건 확인
+		if tonumber(_UserService.LocalPlayer.PlayerQuestComponent.currentQuestId) <= 4 then
+			local questData = _QuestLogic.questData["4"]
+			local str = string.format(_LocalizeLogic:GetText("toast331"), questData.id, _LocalizationService:GetText("quest_"..questData.id.."_name"))
+			_UIToast:ShowMessage(str)
+		
+			return
+		end
+		
+		if self.Entity.Enable then return end
+		
+		_TimerService:ClearTimer(self.timer)
+		
+		self.background.Enable = true
+		self.content.Enable = true
+		
+		__base:Show()
+		
+		self:StartTimer()
+	end
+
+	method void Hide()
+		-- 상점 UI 숨기기 및 타이머 정리
+		_TimerService:ClearTimer(self.timer)
+		
+		self.background.Enable = true
+		self.content.Enable = true
+		
+		__base:Hide()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 상점 UI 새로고침
+		if _UtilLogic:IsNilorEmptyString(self.shopId) then
+			return
+		end
+		
+		local gridView = self.productLayout.GridViewComponent
+		
+		gridView:Refresh(false, true)
+		self:SetWealthPanel()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init(string id)
+		-- 상점 ID로 상점 데이터 초기화
+		self.shopId = id
+		
+		local gridView = self.productLayout.GridViewComponent
+		
+		gridView.TotalCount = #table.keys(_ShopLogic.shopData[self.shopId])
+		
+		gridView:Refresh(true, true)
+		
+		self:SetWealthPanel()
+		self:SetLeftShopPanel()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetWealthPanel()
+		-- 상점 화폐 패널 설정
+		if _UtilLogic:IsNilorEmptyString(self.shopId) then
+			return
+		end
+		
+		local shopRow = _DataService:GetTable("ShopIdData"):GetRow(tonumber(self.shopId))
+		local wealthType = shopRow:GetItem("wealthType")
+		local wealthTitle = shopRow:GetItem("wealthTitle")
+		
+		local icon = self.wealthPanel:GetChildByName("Icon", true)
+		local wealthTitleText = self.wealthPanel:GetChildByName("WealthTitle", true)
+		local wealthText = self.wealthPanel:GetChildByName("WealthText")
+		
+		if _CheckLogic:IsWealthType(wealthType) then
+		else
+			local data = _ItemDataLogic.itemData[wealthType] 
+			
+			icon.SpriteGUIRendererComponent.ImageRUID = data.ruid
+			icon.SpriteGUIRendererComponent.LocalPosition = Vector2(data.offsetX, data.offsetY)
+			wealthText.TextComponent.Text = string.format("%d", _UserService.LocalPlayer.PlayerStorageComponent:GetItemCount(wealthType))
+		end
+		
+		wealthTitleText.TextComponent.Text = wealthTitle
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartTimer()
+		-- 상점 남은 시간 타이머 시작
+		self.timer = _TimerService:SetTimerRepeat(self.RefreshDateText, 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshDateText()
+		-- 상점 만료 시간 텍스트 새로고침
+		local shopData = _DataService:GetTable("ShopIdData"):GetRow(tonumber(self.shopId))
+		local expireDate = shopData:GetItem("expireDate")
+		
+		if isvalid(expireDate) and expireDate ~= "" then
+			if DateTime(expireDate).Elapsed - _LocalTimeLogic:GetKST().Elapsed < 0 then
+				self:Hide()
+				
+				return
+			end
+			
+			local remainTime = DateTime(expireDate) - _LocalTimeLogic:GetKST()
+			local str = string.format(_LocalizeLogic:GetText("etcStr165"), remainTime.TotalDays, remainTime:ToFormattedString("hh"), remainTime:ToFormattedString("mm"), remainTime:ToFormattedString("ss"))
+			
+			if remainTime.TotalHours < 24 then
+				str = string.format("%s:%s:%s", remainTime:ToFormattedString("hh"), remainTime:ToFormattedString("mm"), remainTime:ToFormattedString("ss"))
+			end
+			self.dateText.TextComponent.Text = str
+		else
+			_TimerService:ClearTimer(self.timer)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetLeftShopPanel()
+		-- 상점 좌측 정보 패널 설정
+		local shopData = _DataService:GetTable("ShopIdData"):GetRow(tonumber(self.shopId))
+		local shopTitle = shopData:GetItem("shopTitle")
+		local shopDescription = shopData:GetItem("shopDescription")
+		local panelRUID = shopData:GetItem("panelRUID")
+		local expireDate = shopData:GetItem("expireDate")
+		
+		local background = self.infoPanel:GetChildByName("ShopBackground")
+		local dsecriptionText = self.infoPanel:GetChildByName("ShopDescriptionText")
+		local durationPanel = self.infoPanel:GetChildByName("ShopDuration")
+		
+		if isvalid(background) then
+			if isvalid(panelRUID) and panelRUID ~= "-" then
+				background.SpriteGUIRendererComponent.ImageRUID = panelRUID
+			else
+				background.SpriteGUIRendererComponent.ImageRUID = "c0c177f1ff344930a9a6ca5ff011bb5b"
+			end
+		end
+		
+		if isvalid(shopTitle) and shopTitle ~= "-" then
+		else
+		end
+		
+		if isvalid(dsecriptionText) then
+			if isvalid(shopDescription) and shopDescription ~= "-" then
+				dsecriptionText.TextComponent.Text = shopDescription
+				dsecriptionText.Enable = true
+			else
+				dsecriptionText.Enable = false
+			end
+		end
+		
+		if isvalid(durationPanel) then
+			if isvalid(expireDate) and expireDate ~= "-" then
+				durationPanel.Enable = true
+			else
+				durationPanel.Enable = false
+			end
+		end
+	end
+
+	method void OnRefreshGridView(number index, Entity entity)
+		-- 그리드뷰 아이템 새로고침 콜백
+		---@type ProductSlotComponent
+			local productSlot = entity.ProductSlotComponent
+			local productData = _ShopLogic.shopData[self.shopId][tostring(index + 1)]
+			productSlot:SetSlot(productData, self.shopId, tostring(index + 1))
+		
+	end
+
+end

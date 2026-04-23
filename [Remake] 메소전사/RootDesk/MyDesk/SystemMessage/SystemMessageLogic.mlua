@@ -1,0 +1,144 @@
+@Logic
+script SystemMessageLogic extends Logic
+
+	property table tweener = {}
+
+	property integer index = 1
+
+	property integer maxMessageNum = 5
+
+	property number showDuration = 5
+
+	property table messageEntities = {}
+
+	property Entity systemMessageLayout = "f4a80083-4875-455c-957f-f079d2708f24"
+
+	property number lastPenaltyMessagedTime = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 시스템 메시지 UI 초기화 및 메시지 슬롯 설정
+			---@type LuaQueue
+		local queue = _DataStructLogic:GetQueue()
+		self._T.queue = queue
+		self._T.messageEntitiesTextCompo = {}
+		
+		local startIndexTable = {}
+		self._T.startIndex = startIndexTable
+		
+		for i = 1, self.maxMessageNum do
+			local messageEntity = self.systemMessageLayout:GetChildByName(string.format("SystemMessage%d", i))
+			local messageText = messageEntity.TextComponent
+			if messageEntity == nil then
+			end
+			self.messageEntities[i] = messageEntity
+			self._T.messageEntitiesTextCompo[i] = messageText
+			
+			local tweener = _TweenLogic:MakeTween(0, 1, self.showDuration, EaseType.QuintEaseIn,
+			function(degree)
+				messageText.FontColor.a = 1 - degree
+				messageText.OutlineColor.a = 1 - degree
+			end)
+			tweener.AutoDestroy = false
+			tweener:SetOnEndCallback(
+			function()
+				self:EndMessage(i)
+			end)
+			
+			messageText.Text = ""
+			messageText.Enable = false
+			self.tweener[i] = tweener
+			startIndexTable[i] = i - self.maxMessageNum
+			queue:Enqueue(i)
+		end
+		
+		self._T.voidSpace = self.systemMessageLayout:GetChildByName("VoidSpace")
+		
+		if self._T.voidSpace == nil then
+			return
+		end
+		
+		for i=1, self.maxMessageNum do
+			self:ShowMessage("_", "noDisplay")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowMessage(string str, string colorMode)
+		-- 시스템 메시지를 화면에 표시하고 페이드아웃 애니메이션 시작
+		---@type LuaQueue
+		local queue = self._T.queue
+		if queue:IsEmpty() then
+			self:ShiftMessages()
+		end
+		
+		local currentIndex = queue:Dequeue()
+		
+		---@type TextComponent
+		local currentTextComponent = self._T.messageEntitiesTextCompo[currentIndex]
+		
+		---@type Color
+		local fontColor = nil
+		if isvalid(colorMode) then
+			if colorMode == "pos" then 
+				fontColor = Color.FromHexCode("#B5FA4D")
+			elseif colorMode == "neg" then 
+				fontColor = Color.FromHexCode("#FF6868")
+			elseif colorMode == "tim" then 
+				fontColor = Color.FromHexCode("#FDF002")
+			elseif colorMode == "equ" then 
+				fontColor = Color.FromHexCode("#7DE9FC")
+			elseif colorMode == "noDisplay" then 
+				fontColor = Color(0,0,0,0)
+			else
+				fontColor = Color.white
+			end
+		else
+			fontColor = Color.white
+		end
+		currentTextComponent.FontColor = fontColor
+		currentTextComponent.OutlineColor.a = fontColor.a
+		currentTextComponent.Text = str
+		currentTextComponent.Enable = true
+		
+		self.tweener[currentIndex]:Restart()
+		self._T.startIndex[currentIndex] = self.index
+		self.index += 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShiftMessages()
+		-- 메시지 슬롯이 부족할 때 가장 오래된 메시지를 제거
+		local startIndexTable = self._T.startIndex
+		local indexMin = 987654321
+		local targetIndex = 0
+		
+		for i=1, #startIndexTable do
+			if indexMin > startIndexTable[i] then
+				indexMin = startIndexTable[i]
+				targetIndex = i
+			end
+		end
+		
+		self.tweener[targetIndex]:Stop()
+		self:EndMessage(targetIndex)
+	end
+
+	method void EndMessage(number targetIndex)
+		-- 메시지 표시를 종료하고 슬롯을 재사용 가능하도록 큐에 반환
+		---@type Entity
+		local targetEntity = self.messageEntities[targetIndex]
+		---@type TextComponent
+		local targetTextComponent = self._T.messageEntitiesTextCompo[targetIndex]
+		
+		targetTextComponent.Text = ""
+		targetTextComponent.Enable = false
+		targetEntity.Enable = false
+		targetEntity:AttachTo(self._T.voidSpace)
+		targetEntity:AttachTo(self.systemMessageLayout)
+		targetEntity.Enable = true
+		
+		self._T.queue:Enqueue(targetIndex)
+	end
+
+end

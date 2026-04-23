@@ -1,0 +1,756 @@
+@Component
+script UnitInfo extends Component
+
+	property boolean use = false
+
+	property string charID = "C10001"
+
+	property string unitName = ""
+
+	property Entity spriteRenderer = nil
+
+	property number level = 1
+
+	property number cost = 1
+
+	property Entity setTile = nil
+
+	property number setTileVerticalNum = 0
+
+	property number setTileHorizontalNum = 0
+
+	property Vector2 RectSize = Vector2(0,0)
+
+	property Vector2 CenterPivot = Vector2(0,0)
+
+	property Component AttackComponent = nil
+
+	property Component SkillComponent = nil
+
+	property SyncTable<string> synergyList
+
+	property number unitPhaseNumber = 1
+
+	property Entity saveTile = nil
+
+	property string OwnerId = ""
+
+	@Description("이 유닛의 소속 팀입니다. 유저 팀인 경우 \"User\", 적 팀인 경우 \"Enemy\"로 사용합니다.")
+	property string TeamType = ""
+
+	property boolean IsOnetimeUnit = false
+
+	@Description("이 유닛이 합성 대상에 포함되는지 여부입니다. 합성 가능 조건을 체크할 떄에는 TeamManger.OwnUnitsBySetID를 검사합니다.")
+	property boolean IsMergableUnit = true
+
+	@Description("이 유닛의 아이템 장착 가능 여부입니다. 시너지, 룬카드 효과 등으로 소환된 유닛인 경우 이 값이 false 여야 합니다.")
+	property boolean IsItemEquippable = true
+
+	@Description("이 유닛을 대기석으로 보낼 수 있는지 여부입니다. 시너지, 룬 카드 등으로 소환된 유닛인 경우 이 값이 false 여야 합니다.")
+	property boolean IsSettableOnWatingField = true
+
+	@Description("이 유닛을 플레이어 맘대로 배치할 수 있는 지 여부입니다. ")
+	property boolean IsMovableByPlayer = true
+
+	property boolean IsResellable = true
+
+	property boolean IsAppliableSynergy = true
+
+	property SyncTable<string, number> OnTileNum
+
+	method void OnBeginPlay()
+		-- 유닛 초기화 시 스프라이트 렌더러와 모션 컴포넌트를 설정
+		self.spriteRenderer = self.Entity:GetChildByName("SpriteRenderer")
+		---------------------------------------------------------------
+		if self:IsServer() then
+			self.spriteRenderer:AddComponent(MotionComponent)
+		else 
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetCharInfo(string setCharID, number level, number cost)
+		-- 캐릭터 정보를 설정하고 관련 컴포넌트들을 초기화
+		self:SetPropertyToServer("charID", setCharID, nil, true)
+		self:SetPropertyToServer("level", level, nil, true)
+		self:SetPropertyToServer("cost", cost, nil, true)
+		
+		local unitInfoDBrow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", self.charID)
+		if unitInfoDBrow == nil then
+			log("CharID = ", self.charID)
+		end
+		local spriteRUID = unitInfoDBrow:GetItem("IdleRUID")
+		self.spriteRenderer.SpriteRendererComponent.SpriteRUID = spriteRUID
+		
+		self:SetCenterPivot(spriteRUID)
+		
+		-- SpriteRenderer 세팅 (스케일, material 등)
+		--local sc = 1.2 ^ (level - 1) * tonumber(unitInfoDBrow:GetItem("Scale"))
+		self:SetTransformScale(1, self.OwnerId)
+		--self.spriteRenderer.TransformComponent.Scale = Vector3(sc, sc, sc)
+		-- self.spriteRenderer.TransformComponent.Scale = Vector3(1, 1, 1)
+		self:SetOutlineMaterial(false, "", self.OwnerId)
+		
+		-- Name
+		self:SetPropertyToServer("unitName", unitInfoDBrow:GetItem("Name"), nil, true)
+		
+		-- Attack, Skill 컴포 세팅
+		local atkCompo = self.Entity:AddComponent(unitInfoDBrow:GetItem("AttackComponent"))
+		local skillCompo = self.Entity:AddComponent(unitInfoDBrow:GetItem("SkillComponent"))
+		self:SetPropertyToServer("AttackComponent", atkCompo, nil, true)
+		self:SetPropertyToServer("SkillComponent", skillCompo, nil, true)
+		
+		-- Anim 세팅
+		self.Entity.UnitAnimationComponent:SetAnimRUID(setCharID, self.OwnerId)
+		
+		-- 시너지 세팅
+		if self.IsAppliableSynergy == true then
+			self:SetPropertyToServer("synergyList", 0, "clear", true)
+			local synergyDBRow = _CharacterSynergyLogic.CharacterSynergy
+			for i = 1, 3 do
+				local synergy = synergyDBRow[self.charID]["Synergy_" .. math.floor(i)]
+				if _UtilLogic:IsNilorEmptyString(synergy) == false then
+					self:SetPropertyToServer("synergyList", synergy, "insert", true)
+				end
+			end
+		end
+		
+		-- 기본 스탯을 세팅합니다.
+		self.Entity.UnitStatus:SetDefaultStatus()
+		self.Entity.UnitAIWanderComponent.Enable = false
+		self.Entity:SetEnable(true)
+		
+		
+		-- 체력바를 제거합니다. (일부 조건에 따라)
+		if self.charID == "C00003" then
+			self:SetUnitStatusUIEnable(false, self.OwnerId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangeCharInfo(string setCharID, number level, number cost)
+		-- 기존 캐릭터 정보를 새로운 캐릭터로 변경
+		local charDBRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", self.charID)
+		
+		---------------------------------------------------------------------------
+		-- 사용은 계속 하고, 기존 전투용 컴포넌트만 제거
+		-- 기타 초기화 할 것들만 초기화
+		local userEntity = _UserService:GetUserEntityByUserId(self.OwnerId)
+		local teamManager = userEntity.TeamManager
+		---------------------------------------------------------------------------
+		-- 온필드 체크해서 일단 내려놓고
+		if self:IsOnFieldUnit() then
+			_UnitSetLogic_New:OnFieldSet(teamManager, self.Entity, false, true, true)
+		end
+		---------------------------------------------------------------------------
+		local shopManager = userEntity.CharacterShopManager_New
+		local setId = self.charID .. string.format("%d", self.level)
+		
+		teamManager.OwnUnitsBySetID[setId] -= 1
+		shopManager.LeftUnitCount[self.charID] += 3^(self.level-1)
+		-- log(string.format("%s's Left Count is %d", self.charID, shopManager.LeftUnitCount[self.charID])) 
+		
+		if isvalid(self.AttackComponent) == true then
+			self.Entity:RemoveComponent(charDBRow:GetItem("AttackComponent"))
+		end
+		
+		if isvalid(self.SkillComponent) == true then
+			self.Entity:RemoveComponent(charDBRow:GetItem("SkillComponent"))
+		end
+		----------------------------------------------------------------------------
+		-- 이후 InfoSetting 및 가지고 있는 SetID 체크해서 추가
+		
+		self:SetCharInfo(setCharID, level, cost)
+		setId = setCharID .. string.format("%d", level)
+		
+		if isvalid(teamManager.OwnUnitsBySetID[setId]) then
+			teamManager.OwnUnitsBySetID[setId] += 1
+		else
+			teamManager.OwnUnitsBySetID[setId] = 1
+		end
+		---------------------------------------------------------------------------
+		-- 이후 다시 온필드 올려놓기
+		if self:IsOnFieldUnit() then
+			_UnitSetLogic_New:OnFieldSet(teamManager, self.Entity, true, true, true)
+		end
+		---------------------------------------------------------------------------
+		--그림자 세팅
+		_GeneralDirectorLogic:SetClientShadow(setCharID,level,self.Entity,self.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void CleanCharInfo()
+		-- 캐릭터 정보를 초기화하고 모든 상태를 리셋
+		local charDBRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", self.charID)
+		
+		-- 영구 스택 정보를 지웁니다.
+		for key, value in pairs(self.Entity.UnitStatus.StackProperty) do
+			self.Entity.UnitStatus.StackProperty[key] = 0
+		end
+		
+		-- 상태이상 정보를 지웁니다.
+		_StatusChangeLogic:RemoveStatusEffect(self.Entity, "All")
+		
+		-- 시너지로 획득한 스택 정보를 지웁니다.
+		self.Entity.UnitSynergy:InitAllProperties()
+		
+		-- 아이템 정보를 지웁니다.
+		self.Entity.UnitStatus:SetProperty("EquippedItemIDList", nil, "clear")
+		-- self.Entity.UnitStatus:SetProperty("state", "Idle", "")
+		self.Entity.UnitItem:RefreshItemStatus()
+		self.Entity.UnitStatus:CleanProperty()
+		
+		self.use = false
+		
+		--self.IsOnetimeUnit = false
+		--self.IsResellable = true
+		--self.IsMergableUnit = true
+		--self.IsItemEquippable = true
+		--self.IsMovableByPlayer = true
+		--self.IsAppliableSynergy = true
+		
+		self.spriteRenderer.SpriteRendererComponent.MaterialID = ""
+		
+		
+		
+		---@type Entity
+		local user = nil
+		user = _UserService:GetUserEntityByUserId(self.OwnerId)
+		self:CleanPosition(self.OwnerId)
+		self.Entity.UnitStatus.SetPos = Vector2(999, 999)
+		
+		
+		if isvalid(self.setTile) then
+			self:SetPropertyToServer("setTile", nil, "All", true)
+		end
+		
+		
+		if isvalid(self.AttackComponent) == true then
+			self.Entity:RemoveComponent(charDBRow:GetItem("AttackComponent"))
+		end
+		
+		if isvalid(self.SkillComponent) == true then
+			self.Entity:RemoveComponent(charDBRow:GetItem("SkillComponent"))
+		end
+		
+		self:SetPropertyToServer("synergyList", 0, "clear", true)
+		self:SetPropertyToServer("unitPhaseNumber", 1, nil, true)
+		
+		self.Entity.UnitAIWanderComponent.Enable = false
+		self.Entity.TriggerComponent.Enable = false
+		
+		--[[
+		self.Entity.TriggerComponent.Enable = false
+		self.Entity:SetEnable(false)
+		]]--
+	end
+
+	@ExecSpace("Client")
+	method void SetTransformScale(number multipliedScale)
+		-- 유닛의 크기와 콜라이더, UI 위치를 설정
+		--multipliedScale : 추가로 곱해지는 스케일 값입니다. (기본 1로 곱해야 변경 없음)
+		
+		local originalScale = tonumber(_DataService:GetTable("CharacterInfo"):FindRow("CharID", self.charID):GetItem("Scale"))
+		-- local originalScale = 1
+		
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", self.charID)
+		local hpBarUIPosY = 0
+		
+		local data={}
+		if isvalid(charRUIDRow) then
+			data=_LoadResourcesInfo:GetColliderOffsetScale(charRUIDRow:GetItem("IdleRUID"))
+			hpBarUIPosY = tonumber(charRUIDRow:GetItem(string.format("HPBarPosY_%d", self.level)))
+		else
+			log_error("ChatacterInfo테이블에 RUID가 없음 : "..self.charID)
+			return
+		end
+		
+		local ui_statInfo = self.Entity:GetChildByName("StatInfo")
+		local gradeScale = {1, 1.2, 1.44}
+		
+		self.spriteRenderer.TransformComponent.Scale = Vector3.one * originalScale * gradeScale[self.level] * multipliedScale
+		
+		self.Entity.TriggerComponent.ColliderOffset=Vector2(0-data["pos"].x,data["pos"].y)* originalScale * gradeScale[self.level] * multipliedScale
+		self.Entity.TriggerComponent.BoxSize=data["scale"]* originalScale * 1.2 * multipliedScale
+		ui_statInfo.UITransformComponent.Position.y = (data["scale"].y * originalScale * multipliedScale  + 0.15 + hpBarUIPosY) * gradeScale[self.level]
+		
+		-- 아이템 장착 여부에 따라 체력바(ui_statInfo)의 위치 조정
+		if ui_statInfo:GetChildByName("ItemList").Enable == true then
+			ui_statInfo.UITransformComponent.Position.y += 0.0045*56.25
+		end
+		
+		--그림자 세팅
+		self.Entity:GetChildByName("Shadow").UnitShadowComponent:Init(self.charID,self.level)
+	end
+
+	@ExecSpace("Server")
+	method void SetResourceInfo(string data)
+		-- 리소스 정보를 설정하여 RectSize와 CenterPivot을 업데이트
+		data=_UtilLogic:StringToTable(data)
+		
+		self.RectSize=data["scale"]
+		self.CenterPivot=data["pos"]
+	end
+
+	@ExecSpace("Client")
+	method void SetOutlineMaterial(boolean Enable, string outlineType)
+		-- 유닛의 외곽선 머테리얼을 설정하거나 레벨에 따른 색상 적용
+		if Enable == true then
+			if outlineType == "synergy" then
+				self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("material://143a997e-9bbe-4d8f-8795-80334f056bf5")
+			
+			elseif outlineType == "mouseHover" then
+				self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("material://69102440-3a31-47cd-affc-6eeb2aa8ddda")
+			
+			end
+						
+		else
+			if self.level==2 then
+				self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("material://0b96f23d-39c1-4a59-bbc0-00feb6199426")
+			elseif self.level==3 then
+				self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("material://6cb92d4f-2e22-420e-90a5-21fb0f2ed9c9")
+			else
+				self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("")
+			end
+		end
+		
+		--[[if Enable then
+			local synergyDBRow = _CharacterSynergyLogic.CharacterSynergy
+			for i = 1, 3 do
+				local synergy = synergyDBRow[self.charID]["Synergy_" .. math.floor(i)]
+				if not _UtilLogic:IsNilorEmptyString(synergy) then
+					if synergy==synergyID then
+						self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("material://143a997e-9bbe-4d8f-8795-80334f056bf5")
+						break
+					end
+				end
+			end
+		else
+			--유닛 레벨에 따른 셰이더 교체
+			if self.level==2 then
+				self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("material://0b96f23d-39c1-4a59-bbc0-00feb6199426")
+			elseif self.level==3 then
+				self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("material://6cb92d4f-2e22-420e-90a5-21fb0f2ed9c9")
+			else
+				self.spriteRenderer.SpriteRendererComponent:ChangeMaterial("")
+			end
+		end]]
+	end
+
+	@ExecSpace("Client")
+	method void SetPosition(number x, number y)
+		-- 유닛의 월드 좌표를 설정
+		self.Entity.TransformComponent.WorldPosition = Vector3(x,y,0)
+		
+	end
+
+	@ExecSpace("Client")
+	method void CleanPosition()
+		-- 유닛을 화면 밖으로 이동시켜 숨김 처리
+		self.Entity.TransformComponent.WorldPosition = Vector3(999, 999, 0)
+		self.Entity.Enable = true
+		
+		--_TimerService:SetTimerOnce(function()
+		--    self.Entity.Enable = false
+		--end, 0.01)
+	end
+
+	@ExecSpace("Server")
+	method void SetPropertyToServer(string name, any value, string key, boolean sync)
+		-- 서버에서 프로퍼티를 설정하고 클라이언트에 동기화
+		-- 이 컴포넌트의 Property들은 특정 유저의 클라이언트에만 sync 되어야 하고, sync 상태를 유지해야 합니다.
+		-- 따라서 이 컴포넌트의 Property들을 변경할 때에는 직접 변경하지 않고 이 함수를 거치도록 합니다.
+		-- ** name이 setTile인 경우 : key에 "change"를 넣으면 EntityOnTile 변경도 같이 체크
+		-- ** 프로퍼티 타입이 table인 경우 : key에 "clear"를 넣으면 해당 테이블을 clear, insert를 넣으면 해당 테이블에 value를 삽입
+		-------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(self.OwnerId)
+		
+		---@type TeamManager
+		local teamManager = nil
+		if isvalid(user) then
+			teamManager = user.TeamManager
+		end
+		-------------------------------------------------
+		local syncValue = tostring(value)
+		-- type이 Entity인 경우에는 해당 엔티티의 ID를 value로 전달합니다.
+		-------------------------------------------------
+		if name == "charID" then
+			self.charID = syncValue
+		elseif name == "unitName" then
+			self.unitName = syncValue
+		elseif name == "spriteRenderer" then
+			self.spriteRenderer = value
+			syncValue = value.Id
+		elseif name == "level" then
+			self.level = value
+		elseif name == "cost" then
+			self.cost = value
+		elseif name == "setTile" then
+			-- 일단 현재 유닛 부터 싹 세팅해야 함
+			local nowTile = self.setTile
+			if isvalid(value) == true then
+				local changeUnit = teamManager.EntityOnTile[value]
+				
+				-- ChangeUnit Setting
+				if isvalid(changeUnit) then
+					local changeUnitInfo = changeUnit.UnitInfo
+					local changeUnitStatus = changeUnit.UnitStatus
+					
+					if isvalid(nowTile) then
+						teamManager.EntityOnTile[nowTile] = changeUnit
+						changeUnitInfo.setTile = nowTile
+						changeUnitInfo.setTileVerticalNum = nowTile.TileComponent_New.verticalNum
+						changeUnitInfo.setTileHorizontalNum = nowTile.TileComponent_New.horizontalNum
+						
+						local tilePos = nowTile.TransformComponent.WorldPosition
+						changeUnitStatus.SetPos = tilePos:ToVector2()
+						changeUnitInfo:SetPosition(tilePos.x, tilePos.y, self.OwnerId)
+						changeUnitInfo:SyncPropertyToClient(name, nowTile.Id, nil, self.OwnerId)
+					else
+						changeUnitInfo.setTile = nowTile
+						changeUnitInfo.setTileVerticalNum = 0
+						changeUnitInfo.setTileHorizontalNum = 0
+						
+						changeUnitStatus.SetPos = Vector2(0, 0)
+						changeUnitInfo:CleanPosition(self.OwnerId)
+						changeUnitInfo:SyncPropertyToClient(name, nil, nil, self.OwnerId)
+					end
+					
+					
+				elseif isvalid(nowTile) then
+					teamManager.EntityOnTile[nowTile] = nil
+				end
+				
+				-- Unit Setting
+				teamManager.EntityOnTile[value] = self.Entity
+				self.setTile = value
+				self.setTileVerticalNum = self.setTile.TileComponent_New.verticalNum
+				self.setTileHorizontalNum = self.setTile.TileComponent_New.horizontalNum
+				
+				local tilePos = value.TransformComponent.WorldPosition
+				if key == "All" then
+					self.Entity.UnitStatus.SetPos = tilePos:ToVector2()
+					self:SetPosition(tilePos.x, tilePos.y, self.OwnerId)
+				end
+				
+				
+				syncValue = value.Id
+			else
+				if isvalid(nowTile) then
+					teamManager.EntityOnTile[nowTile] = nil
+				end
+				self.setTile = value
+				
+				syncValue = nil
+				self.setTileVerticalNum = 0
+				self.setTileHorizontalNum = 0
+			end
+		elseif name == "OwnerId" then
+			self.OwnerId = value
+		elseif name == "TeamType" then
+			self.TeamType = value
+		elseif name == "RectSize" then
+			self.RectSize = value
+			syncValue = string.format("%f,%f", value.x, value.y)
+		elseif name == "CenterPivot" then
+			self.CenterPivot = value
+			syncValue = string.format("%f,%f", value.x, value.y)
+		elseif name == "AttackComponent" then
+			self.AttackComponent = value
+		elseif name == "SkillComponent" then
+			self.SkillComponent = value
+		elseif name == "synergyList" then
+			if key == "clear" then
+				table.clear(self.synergyList)
+			elseif key == "insert" then
+				table.insert(self.synergyList, value)
+			end
+		elseif name == "unitPhaseNumber" then
+			self.unitPhaseNumber = value
+		elseif name == "IsItemEquippable" then
+			self.IsItemEquippable = value
+		elseif name == "IsSettableOnWatingField" then
+			self.IsSettableOnWatingField = value
+		end
+		
+		if sync then
+			self:SyncPropertyToClient(name, syncValue, key, self.OwnerId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncPropertyToClient(string name, string value, string key)
+		-- 클라이언트에서 서버로부터 받은 프로퍼티 값을 적용
+		-- Client에 적용
+		-------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(self.OwnerId)
+		local teamManager = nil
+		if isvalid(user) then
+			teamManager = user.TeamManager
+		end
+		-------------------------------------------------
+		if name == "charID" then
+			self.charID = value
+		elseif name == "unitName" then
+			self.unitName = value
+		elseif name == "spriteRenderer" then
+			self.spriteRenderer = _EntityService:GetEntity(value)
+		elseif name == "level" then
+			local prevlevel = self.level
+			self.level = tonumber(value)
+			self.Entity.UnitStatus:SetUniInfoPopup("Level")
+			_UnitInfoUILogic:SetLevelMaterial(self.Entity)
+			self:SetTransformScale(1)
+			
+			for i = 1, #self.synergyList do
+				if self.synergyList[i] == "S10032" and prevlevel < self.level then
+					--마가티아 시너지 이펙트
+					_SynergyBattleDirectorLogic:S10032Status()
+					break
+				end
+			end
+			
+		elseif name == "cost" then
+			self.cost = tonumber(value)
+		elseif name == "setTile" then
+			if isvalid(value) == false then
+				self.setTile = nil
+				self.setTileVerticalNum = 0
+				self.setTileHorizontalNum = 0
+				self.Entity.UnitAnimationComponent:PlayAnimation(1, "Idle", self.Entity.Parent)
+			else
+				self.setTile = _EntityService:GetEntity(value)
+				self.setTileVerticalNum = self.setTile.TileComponent_New.verticalNum
+				self.setTileHorizontalNum = self.setTile.TileComponent_New.horizontalNum
+				
+				--성역칸에 있는지 검사
+				if self.TeamType=="User" and self.Entity.UnitAIWanderComponent.Enable==false then
+					local pos=_UserService.LocalPlayer.SynergyManager_New.SynergyStack["S10025_Pos"]
+					if self.setTileVerticalNum==math.floor(pos/1000) and self.setTileHorizontalNum==pos%1000 then
+						_SynergyReadyDirectorLogic:S10025TileBuff(true)
+					end
+				else
+					--_SynergyDirectorLogic:S10025TileBuff(false)
+				end
+			end
+		elseif name == "OwnerId" then
+			self.OwnerId = value
+		elseif name == "TeamType" then
+			self.TeamType = value
+			
+			local ui_hpBar = self.Entity:GetChildByName("StatInfo"):GetChildByName("HPBar")
+			if self.TeamType == "Enemy" then
+				ui_hpBar.SpriteGUIRendererComponent.Color = Color.FromHexCode("#ff7800")
+			else
+				ui_hpBar.SpriteGUIRendererComponent.Color = Color.FromHexCode("#5eff00")
+			end
+		elseif name == "RectSize" then
+			local split = _UtilLogic:Split(value, ",")
+			self.RectSize = Vector2(tonumber(split[1]), tonumber(split[2]))
+		elseif name == "CenterPivot" then
+			local split = _UtilLogic:Split(value, ",")
+			self.CenterPivot = Vector2(tonumber(split[1]), tonumber(split[2]))
+		elseif name == "synergyList" then
+			if key == "clear" then
+				table.clear(self.synergyList)
+			elseif key == "insert" then
+				table.insert(self.synergyList, value)
+				
+		
+			end
+		elseif name == "unitPhaseNumber" then
+			self.unitPhaseNumber = tonumber(value)
+		
+		elseif name == "IsItemEquippable" then
+			if value == "true" then
+				self.IsItemEquippable = true
+			elseif value == "false" then
+				self.IsItemEquippable = false
+			end
+		elseif name == "IsSettableOnWatingField" then
+			if value == "true" then
+				self.IsSettableOnWatingField = true
+			elseif value == "false" then
+				self.IsSettableOnWatingField = false
+			end	 
+		end
+	end
+
+	method boolean IsOnFieldUnit()
+		-- 유닛이 전장에 있는지 대기석에 있는지 확인
+		-- 이 유닛이 전장에 있는지, 대기석에 있는지를 반환합니다. 
+		-- 전장에 있다면 true를, 대기석에 있다면 false를 반환합니다.
+		--------------------------------------------------------------------------
+		if self.setTileVerticalNum == 0 then
+			return false
+		else
+			return true
+		end
+	end
+
+	method boolean DoesHaveSynergy(string synergyID)
+		-- 유닛이 특정 시너지를 보유하고 있는지 확인
+		-- 시너지 검사
+		for i=1, #self.synergyList do
+			if self.synergyList[i] == synergyID then
+				return true
+			end
+		end
+		
+		-- 상징 보유 검사
+		local equippedItems = self.Entity.UnitStatus.EquippedItemIDList
+		for i=1, #equippedItems do
+			local itemID = _UtilLogic:Split(equippedItems[i], "_")[1]
+			local keyHead = string.sub(itemID, 1, 2)
+			local keyTail = string.sub(itemID, 3, -1)
+			
+			if keyHead == "EI" then
+				if synergyID == "S"..keyTail then
+					return true
+				end
+			end
+		end
+		
+		return false
+	end
+
+	method SyncTable<string> GetOwnSynergies()
+		-- 유닛이 보유한 모든 시너지를 반환 (기본 + 상징 아이템)
+		---@type table<string>
+		local ownSynergies = {}
+		
+		-- 유닛 기초 시너지
+		local unitStatus = self.Entity.UnitStatus
+		local synergies = self.Entity.UnitInfo.synergyList 
+		for i=1, #synergies do
+			table.insert(ownSynergies, synergies[i])
+		end
+		
+		-- 상징을 통해 얻는 시너지
+		local equippedItems = self.Entity.UnitStatus.EquippedItemIDList
+		for i=1, #equippedItems do
+			local itemID = _UtilLogic:Split(equippedItems[i], "_")[1]
+			local keyHead = string.sub(itemID, 1, 2)
+			local keyTail = string.sub(itemID, 3, -1)
+			if keyHead == "EI" then
+				table.insert(ownSynergies, "S"..keyTail)
+			end
+		end
+		
+		return ownSynergies
+	end
+
+	@ExecSpace("Client")
+	method void SetCenterPivot(string spriteRUID)
+		-- 스프라이트 RUID를 기반으로 중심점을 설정
+		local centerPivot = _LoadResourcesInfo:GetColliderOffsetScale(spriteRUID)
+		self.CenterPivot = 1 * centerPivot["pos"]
+	end
+
+	@ExecSpace("Client")
+	method void SetUnitStatusUIEnable(boolean enable)
+		-- 유닛 상태 UI(체력바 등)의 표시 여부를 설정
+		self.Entity:GetChildByName("StatInfo").Enable = enable
+	end
+
+	@ExecSpace("Server")
+	method void SetDefaultInfo()
+		-- 유닛의 기본 정보를 설정 (주석 처리된 코드)
+		--self.IsOnetimeUnit = false
+		--self.IsResellable = true
+		--self.IsMergableUnit = true
+		--self.IsItemEquippable = true
+		--self.IsMovableByPlayer = true
+		--self.IsAppliableSynergy = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchEvent(TouchEvent event)
+		-- 유닛 클릭 이벤트 처리 (드래그 시작)
+		if _InputService:IsPointerOverUI() then
+			log("마우스가 UI 위에 있음")
+			return
+		end
+		---------------------------------------------------------
+		-- Parameters
+		local TouchId = event.TouchId
+		--log("touchID = ", TouchId)
+		--local TouchPoint = event.TouchPoint
+		local user = _UserService.LocalPlayer
+		---------------------------------------------------------
+		-- self:TouchCheck(user)
+		
+		-- 좌클릭
+		if TouchId == 1 then
+			-- 준비 단계가 아니면 실행하지 못하게 합니다.
+			if user.GameManager.PhaseType ~= "Ready" then
+				return
+			end
+			
+			-- 튜토리얼 모드 예외 처리
+			if user.GameManager.ModeType == "Tutorial" then
+				if user.TutorialManager_New.AllowDragAllChar == false then
+				--현재 모든 캐릭터를 옮길 수 있는지?
+					if self.charID == user.TutorialManager_New.CurrentDraggableCharID then
+						--유일하게 옮길 수 있는 캐릭터인지?
+					else
+						_UIToast:ShowMessageByLocalizingKey("Toast_TargetCharError")
+						--못 옮기면 리턴
+						return
+					end
+				else
+					
+				end
+			end
+			
+			if (self.TeamType == "User") and (self.Entity.UnitAIWanderComponent.Enable == false) then
+				-----------------------------------
+				-- 예외 처리
+				if self.charID == "C00002" then
+					-- 도도는 잡을 수 없음
+					return
+				end
+				-----------------------------------
+				_UnitSetLogic_New:DragUnit(self.Entity, self.charID)
+				
+				local resellCost = self.cost * 3 ^ (self.level - 1)
+				if self.level > 1 and self.cost > 1 then
+					resellCost -= 1
+				end
+				_UserService.LocalPlayer.CharacterShopManager_New:UI_ShowSellUI(true, resellCost)
+				--_CharacterShopManager:SellInfoToClient(self.Entity, userId)
+			
+				--타일 표시
+				_GeneralDirectorLogic:SetTileDirection_Main("OnDragging",true)
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchReleaseEvent(TouchReleaseEvent event)
+		-- 유닛 터치 릴리즈 이벤트 처리 (드래그 종료)
+		--[[--------------- Native Event Sender Info ----------------
+		-- Sender: TouchReceiveComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		local user = _UserService.LocalPlayer
+		local userId = user.OwnerId
+		---------------------------------------------------------
+		if (userId == self.unitOwnerID) then
+			log("Unit TouchRelease Check")
+			if not self.Entity.UnitAIWanderComponent.Enable then
+				_UnitSetLogic_New.SelectTile = self.setTile
+			end
+			_ItemSetLogic:SetSelectUnit(self.unitOwnerID, self.Entity)
+		end]]
+	end
+
+end

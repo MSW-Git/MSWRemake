@@ -1,0 +1,804 @@
+@Component
+script UIIngreBunCollection extends Component
+
+	property SyncTable<integer, Entity> Tabs
+
+	property SyncTable<integer, Entity> Slots
+
+	property Entity List = "8adcc019-7b96-48c7-91d9-5348eb340074"
+
+	property Entity Detail = "d8eb453a-b622-42ed-b2ab-054f25b80d03"
+
+	property Entity FilterSelectArea = "406e51eb-fac8-4eba-bb03-4b64b5189681"
+
+	property Entity SortSelectArea = "8808ac03-2c62-46f4-88c8-50c586311cca"
+
+	property Entity NowFilterInfo = "83deb99d-502a-44d8-8b93-9bf14fa6508d"
+
+	property integer SelectTab = 0
+
+	property string NowFilter = ""
+
+	property string NowSort = ""
+
+	property integer NowSelected = 0
+
+	property SyncTable<integer, Entity> DetailPages
+
+	property Entity GetAllRewardBtnDim = "0f603a0c-38e5-4925-a2ee-a8e22c7e8f52"
+
+	property Entity GetAllRewardBtn = "c7179c8b-65b0-41f2-9ec0-2541be4625f6"
+
+	property Entity SubBar_FilterBtn = "c3f68c1d-3bf1-4750-aee8-4123cc0bccb3"
+
+	property Entity SubBar_SortBtn = "3d22191c-ebf5-49ef-8beb-4e80f9b66336"
+
+	property Entity SubBar_BunSkinCollectInfo = "e0e20f93-f1ec-41d2-ac7d-db4f59f698f6"
+
+	property Entity ProgressSlider = "2ae361cd-23a0-44f2-9ecc-490c55e95c40"
+
+	property Entity ProgressPercentText = "4cbabff2-342c-4e79-9f4c-11f68d4b9f25"
+
+	property Entity ProgressCountText = "3b64f6ed-4043-4660-8983-9321e26167f9"
+
+	property SpriteGUIRendererComponent ProgressIcon = "75ede0d4-c3e7-4876-a13a-60be5490b3e8"
+
+	property TextComponent ProgressText = "9dc39161-87d7-4848-a6b5-6ea239ef6521"
+
+	property Entity GetAllRewardIcon = "374aa95f-f4eb-46c2-b62a-b86768f4b3a6"
+
+	property SyncTable<integer, Entity> Lists
+
+	property SyncTable<string, Entity> FilterOptions
+
+	property SyncTable<string, Entity> SortOptions
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 탭, 필터, 정렬 옵션들을 설정하는 함수
+		local tabRoot = self.Entity:GetChildByName("MenuBar")
+		
+		table.clear(self.Tabs)
+		for i, entity in pairs(tabRoot.Children) do
+			if isvalid(entity.UIToggleTypeA) then
+				entity.UIToggleTypeA:SetIndex(i)
+				entity.UIToggleTypeA.OnClickedButton = function(event, index) self:SetSelectTab(index) end
+				entity:GetChildByName("UISpriteIcon").SpriteGUIRendererComponent.ImageRUID = self:GetTabIcon(i)
+				entity.UIToggleTypeA:SetText(self:GetTabName(i))
+				table.insert(self.Tabs, entity)
+				entity:GetChildByName("RedDot").Enable = false
+			end
+			
+			local list = self.Entity:GetChildByName("List"..i)
+			self.Lists[i] = list
+		end
+		
+		for i = 1, #self.FilterSelectArea:GetChildByName("Buttons").Children do
+			local child = self.FilterSelectArea:GetChildByName("Buttons").Children[i]
+			
+			if isvalid(child.ButtonComponent) == false then
+				continue
+			end
+			
+			local split = _UtilLogic:Split(child.Name, "_")
+			local key = split[1]
+			local value = split[2]
+			
+			self.FilterOptions[child.Name] = child
+			
+			if key == "Type" then
+				local typeData = _RecipeTagDataSetLogic:GetRecipeTagData(value)
+				if isvalid(typeData) then
+					local icon = child:GetChildByName("Icon")
+					if isvalid(icon) then
+						icon.SpriteGUIRendererComponent.ImageRUID = typeData.IconRUID
+					end
+				end		
+				
+			elseif key == "Stage" then
+				local stageData = _StageDataSetLogic:GetStageData(tonumber(value))
+				if isvalid(stageData) then
+					local icon = child:GetChildByName("Icon")
+					if isvalid(icon) then
+						icon.SpriteGUIRendererComponent.ImageRUID = stageData.BadgeIconRUID
+					end
+					
+					local text = child:GetChildByName("Text")
+					if isvalid(text) then
+						text.TextComponent.Text = _GetLocalizationTextLogic:GetText(stageData.NameKey)
+					end
+				else
+					local icon = child:GetChildByName("Icon")
+					if isvalid(icon) then
+						icon.SpriteGUIRendererComponent.ImageRUID = _IconRuidEnum.Stage0Icon
+					end
+					
+					local text = child:GetChildByName("Text")
+					if isvalid(text) then
+						text.TextComponent.Text = _GetLocalizationTextLogic:GetText("StageName0")
+					end
+				end
+			end
+			
+			child:ConnectEvent(ButtonClickEvent, function()
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+				self:SetFilter(child.Name, true)
+			end)
+		end
+		
+		for i = 1, #self.SortSelectArea.Children do
+			local child = self.SortSelectArea.Children[i]
+			self.SortOptions[child.Name] = child
+			
+			if isvalid(child.ButtonComponent) == false then
+				continue
+			end
+			
+			child:ConnectEvent(ButtonClickEvent, function()
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+				self:SetSort(child.Name, true)
+			end)
+		end
+		
+		for i, child in pairs(self.Detail.Children) do
+			self.DetailPages[i] = child
+		end
+		
+		self.GetAllRewardIcon.SpriteGUIRendererComponent.ImageRUID = _ItemDataSetLogic:GetItemData("G1001").IconRUID
+	end
+
+	method void Open(integer tab)
+		-- 재료/번 컬렉션 UI를 열고 지정된 탭으로 설정하는 함수
+		_UIGroupManager:EnableIngreBunCollectionGroup(true)
+		self.Entity.Enable = true
+		
+		self:SetEnableFilterArea(false)
+		self:SetEnableSortArea(false)
+		
+		
+		self:SetFilter(nil, false)
+		self:SetSort(nil, false)
+		self:SetSelectTab(tab)
+	end
+
+	method void Close()
+		-- 재료/번 컬렉션 UI를 닫는 함수
+		_UIGroupManager:EnableIngreBunCollectionGroup(false)
+		self.Entity.Enable = false
+	end
+
+	method void SetSelectTab(integer selectTab)
+		-- 선택된 탭을 변경하고 관련 UI를 갱신하는 함수
+		self.SelectTab = selectTab
+		self.NowSelected = 0
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		
+		self.Tabs[selectTab]:GetChildByName("RedDot").Enable = false
+		self:OnSelectTab(selectTab)
+		self:Apply(selectTab)
+	end
+
+	method void OnSelectTab(integer selectTab)
+		-- 탭 선택 시 탭 UI의 시각적 상태를 업데이트하는 함수
+		for i, entity in ipairs(self.Tabs) do
+			---@type Entity
+			local tab = entity
+			local tabIndex = tab.UIToggleTypeA.index
+			local isSelect = tabIndex == selectTab
+			local textColor = isSelect and _ColorCodeEnum:GetColor("#FFFFFF") or _ColorCodeEnum:GetColor("#BB9A59")
+			
+			tab.UIToggleTypeA:SetSelect(isSelect)
+			tab.UIToggleTypeA:SetTextColor(textColor)
+			tab.UIToggleTypeA:SetTextOutLine(isSelect, _ColorCodeEnum:GetColor("#985F05"))
+			
+			tab:GetChildByName("UISpriteIcon").SpriteGUIRendererComponent.Color.a = isSelect and 1 or 0.5
+		end
+	end
+
+	method void Apply(integer selectTab)
+		-- 선택된 탭에 맞는 데이터를 적용하고 UI를 갱신하는 함수
+		self:RefreshList(selectTab, nil)
+		
+		self.Lists[selectTab].ScrollLayoutGroupComponent:ResetScrollPosition(UITransformAxis.Vertical)
+		self.Lists[selectTab].ScrollLayoutGroupComponent:SetScrollPositionByItemIndex(1)
+		
+		self:RefreshSubBar(selectTab)
+		self:RefreshCollectionProgress(selectTab)
+		
+		self:SetEnableSortArea(false)
+		self:SetEnableFilterArea(false)
+	end
+
+	method void RefreshList(integer selectTab, integer selectId)
+		-- 선택된 탭에 맞는 아이템 리스트를 생성하고 정렬하여 화면에 표시하는 함수
+		for i, list in pairs(self.Lists) do
+			for j, child in pairs(list.Children) do
+				child.Enable = false
+			end
+			
+			list.Enable = i == selectTab
+		end
+		table.clear(self.Slots)
+		local drawList = self:GetDrawList(selectTab)
+		
+		if selectTab == 1 then
+			local split = _UtilLogic:Split(self.NowSort, "_")
+			local key = split[1]
+			local value = tonumber(split[2])
+			
+			table.sort(drawList, function(a, b)
+				if key == "Grade" then
+					local aGrade = _IngredientDataSetLogic:GetIngredientData(a).Grade
+					local bGrade = _IngredientDataSetLogic:GetIngredientData(b).Grade
+					if value == 0 then
+						return aGrade < bGrade
+					else
+						return aGrade > bGrade
+					end			
+				elseif key == "TasteScore" then
+					local aScore = _IngredientDataSetLogic:GetIngredientData(a).TastePoint
+					local bScore = _IngredientDataSetLogic:GetIngredientData(b).TastePoint
+					if value == 0 then
+						return aScore < bScore
+					else
+						return aScore > bScore
+					end		
+					
+				elseif key == "Cost" then
+					local aCost = _IngredientDataSetLogic:GetIngredientData(a).BaseCost
+					local bCost = _IngredientDataSetLogic:GetIngredientData(b).BaseCost
+					if value == 0 then
+						return aCost < bCost
+					else
+						return aCost > bCost
+					end
+					
+				end
+			end)
+			
+		elseif selectTab == 2 then
+			table.sort(drawList, function(a, b)
+				local aGrade = _IngredientDataSetLogic:GetBunData(a).Grade
+				local bGrade = _IngredientDataSetLogic:GetBunData(b).Grade
+				return aGrade < bGrade
+			end)
+			
+		elseif selectTab == 3 then
+			
+		end
+		
+		self.NowSelected = drawList[1]
+		if isvalid(selectId) then
+			self.NowSelected = selectId
+		end
+		
+		local idx = 1
+		for _, id in pairs(drawList) do
+			local slot = _UIEntityService:GetOrCreateEntityOfModel("Model_IngreBunCollectionSlot", idx, self.Lists[selectTab])
+				
+			if selectTab == 1 then
+				slot.UIIngreBunCollectionSlot:RefreshIngre(id)
+			elseif selectTab == 2 then
+				slot.UIIngreBunCollectionSlot:RefreshBun(id)
+			elseif selectTab == 3 then
+				slot.UIIngreBunCollectionSlot:RefreshBunSkin(id)
+			end
+			
+			slot.UIIngreBunCollectionSlot:EnableSelected(id == self.NowSelected)
+			
+			self.Slots[id] = slot
+			
+			idx += 1
+		end
+		
+		self:RefreshDetail(self.NowSelected)
+		self:CheckCanGetReward()
+	end
+
+	method void SetFilter(string filterKey, boolean refreshList)
+		-- 필터 조건을 설정하고 필요시 리스트를 갱신하는 함수
+		if _UtilLogic:IsNilorEmptyString(filterKey) then
+			filterKey = "All"
+		end
+		
+		if self.NowFilter == filterKey then
+			return
+		end
+		
+		self.NowFilter = filterKey
+		_SelectDropDownLogic:RefreshSelected(self.FilterOptions, self.NowFilter)
+		
+		local split = _UtilLogic:Split(self.NowFilter, "_")
+		local key = split[1]
+		local value = split[2]
+		
+		local icon = self.NowFilterInfo:GetChildByName("Icon")
+		if key == "All" then
+			self.NowFilterInfo.TextComponent.Text = _GetLocalizationTextLogic:GetText("IngreCardFilterAllText")
+			icon.Enable = false
+			
+		elseif key == "Stage" then
+			value = math.floor(tonumber(value))
+			if value == 0 then
+				self.NowFilterInfo.TextComponent.Text = _GetLocalizationTextLogic:GetText("StageName0")
+				icon.Enable = false
+			else
+				local stageData = _StageDataSetLogic:GetStageData(value)
+				self.NowFilterInfo.TextComponent.Text = _GetLocalizationTextLogic:GetText(stageData.NameKey)
+				icon.Enable = true
+				icon.SpriteGUIRendererComponent.ImageRUID = stageData.BadgeIconRUID
+			end
+			
+		elseif key == "Type" then
+			if value == "Etc" then
+				self.NowFilterInfo.TextComponent.Text = _GetLocalizationTextLogic:GetText("IngreCatdFilterEtcText")
+				icon.Enable = false
+			else
+				local tagData = _RecipeTagDataSetLogic:GetRecipeTagData(value)
+				self.NowFilterInfo.TextComponent.Text = _GetLocalizationTextLogic:GetText(tagData.TagNameKey)
+				icon.Enable = true
+				icon.SpriteGUIRendererComponent.ImageRUID = tagData.IconRUID
+			end	
+		end
+		
+		if refreshList then
+			self:RefreshList(self.SelectTab, nil)
+			self.Lists[self.SelectTab].ScrollLayoutGroupComponent:SetScrollPositionByItemIndex(0)
+		end
+		
+		self:SetEnableSortArea(false)
+		self:SetEnableFilterArea(false)
+		
+		
+	end
+
+	method void SetSort(string sortKey, boolean refreshList)
+		-- 정렬 조건을 설정하고 필요시 리스트를 갱신하는 함수
+		if _UtilLogic:IsNilorEmptyString(sortKey) then
+			sortKey = "Grade_0"
+		end
+		
+		if self.NowSort == sortKey then
+			return
+		end
+		
+		self.NowSort = sortKey
+		_SelectDropDownLogic:RefreshSelected(self.SortOptions, self.NowSort)
+		
+		if refreshList then
+			self:RefreshList(self.SelectTab, nil)
+			self.Lists[self.SelectTab].ScrollLayoutGroupComponent:SetScrollPositionByItemIndex(0)
+		end
+		
+		self:SetEnableSortArea(false)
+		self:SetEnableFilterArea(false)
+		
+		
+	end
+
+	method void SetEnableFilterArea(boolean enable)
+		-- 필터 선택 영역의 활성화 상태를 설정하는 함수
+		self.FilterSelectArea.Enable = enable
+		
+		if enable == true then
+			self:SetEnableSortArea(false)
+		end
+	end
+
+	method void SetEnableSortArea(boolean enable)
+		-- 정렬 선택 영역의 활성화 상태를 설정하는 함수
+		self.SortSelectArea.Enable = enable
+		
+		if enable == true then
+			self:SetEnableFilterArea(false)
+		end
+	end
+
+	method table GetDrawList(integer selectTab)
+		-- 선택된 탭에 따라 필터링된 아이템 리스트를 반환하는 함수
+		local drawList = {}
+		
+		if selectTab == 1 then 
+			local isFiltered = function(filterKey, ingreId)
+				local split = _UtilLogic:Split(filterKey, "_")
+				local key = split[1]
+				local value = split[2]
+				
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(ingreId)
+				if ingreData.RelatedStage > _StageDataSetLogic:GetLastStageId() then
+					return false
+				end
+						
+				if _UtilLogic:IsNilorEmptyString(filterKey) then
+					return true
+				end
+				
+				if filterKey == "All" then
+					return true
+				end
+				
+				if key == "Stage" then
+					if ingreData.RelatedStage == tonumber(value) then
+						return true
+					end
+					
+				elseif key == "Type" then
+					if ingreData.Type == value then
+						return true
+					end
+					
+					if value == _RecipeTagEnum.Spicy then
+						if isvalid(ingreData.SpicyPoint) == true then
+							if ingreData.SpicyPoint > 0 then
+								return true
+							end
+						end
+						
+					end
+				end
+				
+				return false
+			end
+			
+			for id, data in pairs(_IngredientDataSetLogic.IngredientData) do
+				if isFiltered(self.NowFilter, id) then
+					table.insert(drawList, id)
+				end
+			end
+			
+			
+		elseif selectTab == 2 then 
+			for id, data in pairs(_IngredientDataSetLogic.BunData) do
+				table.insert(drawList, id)
+			end
+			
+			
+		elseif selectTab == 3 then 
+			for id, data in pairs(_IngredientDataSetLogic.BunSkinData) do
+				table.insert(drawList, id)
+			end
+			
+		end
+		
+		return drawList
+	end
+
+	method void OnClickSlot(integer slotId)
+		-- 컬렉션 슬롯 클릭 시 보상 수령 처리 및 선택 상태 업데이트 함수
+		local player = _UserService.LocalPlayer
+		if self.SelectTab == 1 then
+			local canGetReward = function()
+				local getReward = player.PlayerCollection.IngredientCollectionGetReward[slotId]
+				if getReward == nil then getReward = false end
+				
+				local collected = player.PlayerCollection.IngredientCollection[slotId]
+				if collected == nil then collected = false end
+				
+				return collected and not getReward
+			end
+			
+			if canGetReward() then
+				player.PlayerCollection:RequestGetIngredientCollectionReward({slotId}, true, "")
+			end
+			
+		elseif self.SelectTab == 2 then
+			local canGetReward = function()
+				local getReward = player.PlayerCollection.BunCollectionGetReward[slotId]
+				if getReward == nil then getReward = false end
+				
+				local collected = player.PlayerCollection.BunCollection[slotId]
+				if collected == nil then collected = false end
+				
+				return collected and not getReward
+			end
+			
+			if canGetReward() then
+				player.PlayerCollection:RequestGetBunCollectionReward({slotId}, true, "")
+			end
+			
+		elseif self.SelectTab == 3 then
+			
+			
+		end
+		
+		for id, slot in pairs(self.Slots) do
+			slot.UIIngreBunCollectionSlot.Selected.Enable = id == slotId
+		end
+		
+		self:RefreshDetail(slotId)
+		
+		self:SetEnableSortArea(false)
+		self:SetEnableFilterArea(false)
+	end
+
+	method void RefreshDetail(integer id)
+		-- 선택된 아이템의 상세 정보를 표시하는 함수
+		local page = self.DetailPages[self.SelectTab]
+		
+		for i, p in pairs(self.DetailPages) do
+			p.Enable = i == self.SelectTab
+		end
+		
+		self.NowSelected = id
+		
+		if self.SelectTab == 1 then
+			page.UIIngreBunCollectionDetailIngre:Refresh(id)
+		elseif self.SelectTab == 2 then
+			page.UIIngreBunCollectionDetailBun:Refresh(id)
+		elseif self.SelectTab == 3 then
+			page.UIIngreBunCollectionDetailBunSkin:Refresh(id)
+		end
+	end
+
+	method void CheckCanGetReward()
+		-- 보상 받기 버튼 상태와 탭별 빨간 점 표시를 확인하고 설정하는 함수
+		self.GetAllRewardBtn.Enable = self.SelectTab == 1 or self.SelectTab == 2
+		
+		local canGetReward = self:ReturnCanGetReward(self.SelectTab)
+		self.GetAllRewardBtnDim.Enable = not canGetReward
+		self.GetAllRewardBtn.ButtonComponent.Enable = canGetReward
+		
+		for i, tab in pairs(self.Tabs) do
+			local redDot = tab:GetChildByName("RedDot")
+			if isvalid(redDot) then
+				redDot.Enable = self:ReturnCanGetReward(i)
+			end
+		end
+	end
+
+	method void OnGetAllRewardButtonClicked()
+		-- 모든 보상 받기 버튼 클릭 시 해당 탭의 모든 수령 가능한 보상을 처리하는 함수
+		if self.SelectTab == 1 then
+			local player = _UserService.LocalPlayer
+			
+			local isRedDotEnable = function(ingreId)	
+				local collected = player.PlayerCollection.IngredientCollection[ingreId]
+				if collected == nil then collected = false end
+					
+				local getReward = player.PlayerCollection.IngredientCollectionGetReward[ingreId]
+				if getReward == nil then getReward = false end
+				
+				return collected and not getReward	
+			end
+			
+			local getRewardList = {}
+			for id, data in pairs(_IngredientDataSetLogic.IngredientData) do
+				local canGet = isRedDotEnable(id)
+				if canGet then
+					table.insert(getRewardList, id)
+				end
+			end
+			
+			if #getRewardList > 0 then
+				player.PlayerCollection:RequestGetIngredientCollectionReward(getRewardList, false, "GetAllRewardButton")
+			end
+				
+		elseif self.SelectTab == 2 then
+			local player = _UserService.LocalPlayer
+			local isRedDotEnable = function(bunId)	
+				local collected = player.PlayerCollection.BunCollection[bunId]
+				if collected == nil then collected = false end
+					
+				local getReward = player.PlayerCollection.BunCollectionGetReward[bunId]
+				if getReward == nil then getReward = false end
+				
+				return collected and not getReward	
+			end
+			
+			local getRewardList = {}
+			for id, data in pairs(_IngredientDataSetLogic.BunData) do
+				local canGet = isRedDotEnable(id)
+				if canGet then
+					table.insert(getRewardList, id)
+				end
+			end
+			
+			if #getRewardList > 0 then
+				player.PlayerCollection:RequestGetBunCollectionReward(getRewardList, false, "GetAllRewardButton")
+			end
+		end
+	end
+
+	method boolean ReturnCanGetReward(integer tabId)
+		-- 지정된 탭에서 수령 가능한 보상이 있는지 확인하여 반환하는 함수
+		if tabId == 1 then
+			local isRedDotEnable = function(ingreId)	
+				local player = _UserService.LocalPlayer
+				local collected = player.PlayerCollection.IngredientCollection[ingreId]
+				if collected == nil then collected = false end
+					
+				local getReward = player.PlayerCollection.IngredientCollectionGetReward[ingreId]
+				if getReward == nil then getReward = false end
+				
+				return collected and not getReward	
+			end
+			
+			for id, data in pairs(_IngredientDataSetLogic.IngredientData) do
+				local canGet = isRedDotEnable(id)
+				if canGet then
+					return true
+				end
+			end	
+			
+		elseif tabId == 2 then
+			local isRedDotEnable = function(bunId)	
+				local player = _UserService.LocalPlayer
+				local collected = player.PlayerCollection.BunCollection[bunId]
+				if collected == nil then collected = false end
+					
+				local getReward = player.PlayerCollection.BunCollectionGetReward[bunId]
+				if getReward == nil then getReward = false end
+				
+				return collected and not getReward	
+			end
+			
+			for id, data in pairs(_IngredientDataSetLogic.BunData) do
+				local canGet = isRedDotEnable(id)
+				if canGet then
+					return true
+				end
+			end	
+		end
+		
+		return false
+	end
+
+	method void RefreshSubBar(integer selectTab)
+		-- 선택된 탭에 맞는 서브 바 UI를 갱신하는 함수
+		self.SubBar_BunSkinCollectInfo.Enable = selectTab == 3
+		self.SubBar_FilterBtn.Enable = selectTab == 1
+		self.SubBar_SortBtn.Enable = selectTab == 1
+		
+		if selectTab == 3 then
+			local bunCount = 0
+			local player = _UserService.LocalPlayer
+			for id, data in pairs(_IngredientDataSetLogic.BunSkinData) do
+				if player.PlayerCollection.BunSkinCollection[id] == true then
+					bunCount += 1
+				end
+			end
+			
+			local percent = math.floor(_GetConfigDataLogic:GetConfigNumDataByKey("BunSkinCollectBonusAmountPerCount") * bunCount * 100)
+			self.SubBar_BunSkinCollectInfo:GetChildByName("Contents").TextComponent.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("IngreBunCollectionBunSkinBonusText", percent)
+		end
+	end
+
+	method void RefreshCollectionProgress(integer selectTab)
+		-- 선택된 탭의 컬렉션 진행률을 계산하고 표시하는 함수
+		local userCount = 0
+		local totalCount = 0
+		
+		self.ProgressIcon.ImageRUID = self:GetTabIcon(selectTab)
+		self.ProgressText.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("IngreBunCollectionCollectRateText", self:GetTabName(selectTab))
+		
+		local player = _UserService.LocalPlayer
+		if selectTab == 1 then
+			
+			for i, data in pairs(_IngredientDataSetLogic.IngredientData) do
+				local ingreData = _IngredientDataSetLogic:GetIngredientData(i)
+				if ingreData.RelatedStage > _StageDataSetLogic:GetLastStageId() then
+					continue
+				end
+				
+				totalCount += 1
+				
+				if player.PlayerCollection.IngredientCollection[i] == true then
+					userCount += 1
+				end
+			end
+			
+		elseif selectTab == 2 then
+			totalCount = #table.keys(_IngredientDataSetLogic.BunData)
+			for i, data in pairs(_IngredientDataSetLogic.BunData) do
+				if player.PlayerCollection.BunCollection[i] == true then
+					userCount += 1
+				end
+			end
+			
+		elseif selectTab == 3 then
+			totalCount = #table.keys(_IngredientDataSetLogic.BunSkinData)
+			for i, data in pairs(_IngredientDataSetLogic.BunSkinData) do
+				if player.PlayerCollection.BunSkinCollection[i] == true then
+					userCount += 1
+				end
+			end
+		end
+		
+		if totalCount == 0 then
+			return
+		end
+		
+		self.ProgressSlider.SliderComponent.Value = userCount/totalCount
+		self.ProgressPercentText.TextComponent.Text = math.floor(userCount/totalCount * 100).."%"
+		self.ProgressCountText.TextComponent.Text = string.format("%d/%d", userCount, totalCount)
+		
+	end
+
+	method string GetTabIcon(integer selectTab)
+		-- 선택된 탭에 맞는 아이콘 RUID를 반환하는 함수
+		if selectTab == 1 then
+			return _IngredientDataSetLogic:GetIngredientData(43).IconRUID
+		elseif selectTab == 2 then
+			return _IngredientDataSetLogic:GetBunDetailData(4, "Top").IconRUID
+		elseif selectTab == 3 then
+			return _IngredientDataSetLogic:GetBunSkinDetailData(1, "Top").IconRUID
+		end
+		
+		return ""
+	end
+
+	method string GetTabName(integer selectTab)
+		-- 선택된 탭에 맞는 탭 이름을 반환하는 함수
+		return _GetLocalizationTextLogic:GetText("IngreBunCollectionTabTitle"..selectTab)
+	end
+
+	@EventSender("Entity", "5f5b7952-0e5e-4e67-9b2d-6489078df95c")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 컬렉션 열기 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Open_Collection"], 1)
+		self:Open(1)
+	end
+
+	@EventSender("Entity", "64118625-62af-4f61-9462-4e6a620ab486")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 컬렉션 닫기 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+	@EventSender("Entity", "c7179c8b-65b0-41f2-9ec0-2541be4625f6")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 모든 보상 받기 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnGetAllRewardButtonClicked()
+	end
+
+	@EventSender("Entity", "c3f68c1d-3bf1-4750-aee8-4123cc0bccb3")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 필터 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:SetEnableFilterArea(not self.FilterSelectArea.Enable)
+	end
+
+	@EventSender("Entity", "3d22191c-ebf5-49ef-8beb-4e80f9b66336")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 정렬 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:SetEnableSortArea(not self.SortSelectArea.Enable)
+	end
+
+end

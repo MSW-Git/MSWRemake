@@ -1,0 +1,787 @@
+@Component
+script PlayerDailyMissionComponent extends Component
+
+	property table missionInfo = {}
+
+	property string userId = ""
+
+	property PlayerDBComponent playerDB = nil
+
+	property number requestedTime = 0
+
+	property boolean dbLoaded = false
+
+	property integer needDiamond = 5
+
+	method void OnBeginPlay()
+		-- 플레이어 일일 미션 컴포넌트 초기화
+		self.userId = self.Entity.PlayerComponent.UserId
+		self.playerDB = self.Entity.PlayerDBComponent
+	end
+
+	method void InitData()
+		-- 일일 미션 데이터 초기화 및 기본 미션 설정
+		local info = {}
+		
+		info.dailyInittedDate = tostring(_LocalTimeLogic:GetKST())
+		info.weeklyInittedDate = tostring(_LocalTimeLogic:GetKST())
+		
+		for i = 1, 5 do
+			local newKey = string.format("dm_%d", i) 
+			local newKey2 = string.format("wm_%d", i) 
+			local detailInfo = {["id"] = "", ["prg"] = 0, ["status"] = 0, ["obj"] = ""} 
+			
+			info[newKey] = _GameUtil:DeepCopyTable(detailInfo)
+			info[newKey2] = _GameUtil:DeepCopyTable(detailInfo)
+		end
+		
+		info.dmRewarded = 0 
+		info.wmRewarded = 0 
+		
+		info.migration = "2402"
+		
+		self.missionInfo = info
+		
+		if self:IsServer() then
+			self:SetMissionData()
+			self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		
+		end
+		
+		self.dbLoaded = true
+		self:SetPlayerMissionInfo()
+	end
+
+	@ExecSpace("Client")
+	method void SyncDataInClient(string data)
+		-- 서버에서 클라이언트로 미션 데이터 동기화
+		self.missionInfo = _HttpService:JSONDecode(data)
+		
+		if self.dbLoaded then
+			if _DailyMissionLogic.dailyMissionUI.Entity.Enable then
+				_DailyMissionLogic.dailyMissionUI:Refresh()
+			end
+		end
+		
+		self.dbLoaded = true
+	end
+
+	@ExecSpace("Server")
+	method void CheckEnteredDate()
+		-- 일일/주간 미션 리셋 시간 확인 및 자동 리셋
+		local dailyInittedDate = DateTime(self.missionInfo.dailyInittedDate)
+		local weeklyInittedDate = DateTime(self.missionInfo.weeklyInittedDate)
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		local dailyInit = false
+		local weeklyInit = false
+		
+		if dailyInittedDate.Day ~= currentDate.Day then
+			dailyInit = true
+		end
+		
+		if dailyInit then
+			if self.missionInfo["dm_1"] ~= "" then
+				_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_DAILY, _DailyMissionLogic.FLOW_INITMISSION, "ALLCOMPLETE", "")
+			end
+			
+			for i = 1, 5 do
+				self:SetDailyMission(i, false)
+			end
+			
+			self.missionInfo.dailyInittedDate = tostring(_LocalTimeLogic:GetKST())
+			self.missionInfo.dmRewarded = 0
+		end
+		
+		
+		if _LocalTimeLogic:GetCurrentSeasonWeek() > _LocalTimeLogic:GetSeasonWeek(weeklyInittedDate) then
+			weeklyInit = true
+		end
+		
+		if weeklyInit then
+			if self.missionInfo["wm_1"] ~= "" then
+				_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_WEEKLY, _DailyMissionLogic.FLOW_INITMISSION, "ALLCOMPLETE", "")
+			end
+			
+			for i = 1, 5 do
+				self:SetWeeklyMission(i, false)
+		
+			end
+			
+			self.missionInfo.weeklyInittedDate = tostring(_LocalTimeLogic:GetKST())
+			self.missionInfo.wmRewarded = 0
+		end
+		
+		if dailyInit or weeklyInit then
+			self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void SetPlayerMissionInfo()
+		-- 플레이어 DB에 미션 정보 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["playerDailyMission"] = _HttpService:JSONEncode(self.missionInfo)
+	end
+
+	@ExecSpace("Server")
+	method void RequestCompleteMission(boolean isDailyMission, integer missionNum)
+		-- 미션 완료 요청 및 유효성 검증
+		if self.Entity.PlayerComponent.UserId ~= senderUserId then
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		if self:IsCanCompleteMission(isDailyMission, missionNum) then
+			self:CompleteMission(isDailyMission, missionNum)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CompleteMission(boolean isDailyMission, integer missionNum)
+		-- 미션 완료 처리 및 보상 지급
+		local key = string.format("dm_%d", missionNum)
+		
+		if not isDailyMission then
+			key = string.format("wm_%d", missionNum)
+		end
+		
+		local missionInfo = self.missionInfo[key]
+		local missionData = _DailyMissionLogic.missionData[missionInfo.id]
+		
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		
+		local difficulty = ""
+		
+		if missionNum <= 2 then
+			difficulty = "low"
+		elseif missionNum <= 4 then
+			difficulty = "medium"
+		elseif missionNum <= 5 then
+			difficulty = "high"
+		end
+		
+		local rewardData = nil
+		local source = ""
+		local category = ""
+		
+		if isDailyMission then
+			rewardData = _DailyMissionLogic.rewardData[string.format("day_%s", difficulty)]
+			source = "COMPLETE_DAILYMISSION"
+			category = _DailyMissionLogic.CATEGORY_DAILY
+		else
+			rewardData = _DailyMissionLogic.rewardData[string.format("week_%s", difficulty)]
+			source = "COMPLETE_WEEKLYMISSION"
+			category = _DailyMissionLogic.CATEGORY_WEEKLY
+		end
+		
+		_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, rewardData.rewardNum, self.userId, source, string.format("%d", missionNum))
+		missionInfo.status = 1
+		self:NoticeSuccessMission(rewardData.rewardNum, self.userId)
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		_WorldLog:LogDailyMissionFlow(self.userId, category, _DailyMissionLogic.FLOW_COMPLETEMISSION, missionInfo.id, "")
+	end
+
+	method boolean IsCanCompleteMission(boolean isDailyMission, integer missionNum)
+		-- 미션 완료 가능 여부 확인
+		local key = string.format("dm_%d", missionNum)
+		
+		if not isDailyMission then
+			key = string.format("wm_%d", missionNum)
+		end
+		
+		local missionInfo = self.missionInfo[key]
+		local missionData = _DailyMissionLogic.missionData[missionInfo.id]
+		
+		if missionInfo.status > 0 then return false end
+		
+		local objectiveNum = missionData.objectiveNum
+		
+		if not isDailyMission then
+			objectiveNum *= 10
+		end
+		
+		if missionInfo.prg >= objectiveNum then
+			return true
+		else
+			return false
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetReward(boolean isDailyMission)
+		-- 전체 완료 보상 수령 요청 및 유효성 검증
+		if self.Entity.PlayerComponent.UserId ~= senderUserId then
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		if self:IsCanGetReward(isDailyMission) then
+			self:GetReward(isDailyMission)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetReward(boolean isDailyMission)
+		-- 전체 완료 보상 지급 및 상태 업데이트
+		local rewardData = nil
+		local source = ""
+		local category = ""
+		
+		if isDailyMission then
+			rewardData = _DailyMissionLogic.rewardData["day_complete"]
+			source = "DAILYMISSION_COMPLETE_DAY"
+			category = _DailyMissionLogic.CATEGORY_DAILY
+		else
+			rewardData = _DailyMissionLogic.rewardData["week_complete"]
+			source = "DAILYMISSION_COMPLETE_WEEK"
+		
+			category = _DailyMissionLogic.CATEGORY_WEEKLY
+		end
+		
+		_RewardLogic:GetReward(rewardData.rewardType, rewardData.rewardId, rewardData.rewardNum, self.userId, true, source)
+		
+		if isDailyMission then
+			self.missionInfo.dmRewarded = 1
+		else
+			self.missionInfo.wmRewarded = 1
+		end
+		
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		_WorldLog:LogDailyMissionFlow(self.userId, category, _DailyMissionLogic.FLOW_ALLCOMPLETE, "ALLCOMPLETE", "")
+	end
+
+	method boolean IsCanGetReward(boolean isDailyMission)
+		-- 전체 완료 보상 수령 가능 여부 확인
+		local allCompleted = true
+		local keyName = "dm_"
+		
+		if isDailyMission then
+			if self.missionInfo.dmRewarded > 0 then return false end
+		else
+			if self.missionInfo.wmRewarded > 0 then return false end
+			keyName = "wm_"
+		end
+		
+		for i = 1, 5 do
+			local key = string.format("%s%d", keyName, i)
+			
+			if self.missionInfo[key].status ~= 1 then
+				allCompleted = false
+				
+				break
+			end
+		end
+		
+		if allCompleted then
+			return true
+		else
+			return false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void NoticeWaitAMoment()
+		-- 잠시 대기 알림 메시지 표시
+		_UIToast:ShowMessage(_LocalizeLogic:GetText("toast23"))
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetDailyMission(integer missionNum, boolean isRefreshCauseDiamond)
+		-- 일일 미션 설정 요청 및 다이아몬드 비용 검증
+		if isRefreshCauseDiamond then
+			if not _CheckLogic:IsEnoughWealth(self.userId, "DIAMOND", self.needDiamond) then
+				_LocalizeLogic:ShowToast("toast103", senderUserId)
+				
+				return
+			end
+		end
+		
+		if isRefreshCauseDiamond and self.missionInfo[string.format("dm_%d", missionNum)].status > 0 then
+		
+			return
+		end
+		
+		self:SetDailyMission(missionNum, isRefreshCauseDiamond)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetDailyMission(integer missionNum, boolean isRefreshCauseDiamond)
+		-- 일일 미션 랜덤 설정 및 조건 검증
+		local missionKey = string.format("dm_%d", missionNum)
+		local missionInfo = self.missionInfo[missionKey]
+		self.missionInfo[missionKey] = {["id"] = "", ["prg"] = 0, ["status"] = 0, ["obj"] = ""}
+		local temp = {}
+		local i = 1
+		local previousMissionId = missionInfo.id
+		
+		if isRefreshCauseDiamond then
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, 5, self.userId, "RESET DAILY MISSION")
+		end
+		
+		for key, value in pairs(_DailyMissionLogic.missionData) do
+		
+			if value.missionSlotNum == missionNum then
+		
+				local canAccept = true
+				local objectiveType = value.objectiveType
+				
+				if objectiveType == "useSoulBoom" and self.Entity.PlayerCharacteristicData.charStorage["LaboratoryType"].level < 2 then 
+					canAccept = false
+				elseif objectiveType == "levelUpSoul" and not self.Entity.PlayerCharacterData:IsAnySoulCanLevelUp() then 
+					canAccept = false
+				elseif objectiveType == "tryLimitLand" and tonumber(self.Entity.PlayerQuestComponent.currentQuestId) < 24 then 
+					canAccept = false
+				elseif objectiveType == "registerCollection" and (tonumber(self.Entity.PlayerQuestComponent.currentQuestId) < 27 or not self.Entity.PlayerCollectionComponent:IsAnyCollectionCanRegister(3)) then 
+					canAccept = false
+				elseif objectiveType == "tryRandomBoss" and tonumber(self.Entity.PlayerQuestComponent.currentQuestId) < 43 then 
+					canAccept = false
+				elseif isRefreshCauseDiamond and previousMissionId == value.id then
+					canAccept = false
+				end
+				
+				if canAccept then
+					temp[i] = key
+					
+					i += 1
+				end
+			end
+		end
+		
+		self.missionInfo[missionKey].id = tostring(temp[_UtilLogic:RandomIntegerRange(1, #temp)])
+		local currentMission = self.missionInfo[missionKey]
+		
+		local missionData = _DailyMissionLogic.missionData[currentMission.id]
+		local objectiveType = missionData.objectiveType
+		
+		if objectiveType == "randomStageClear" then
+			currentMission.obj = tostring(self:GetObjectiveStage())
+		elseif objectiveType == "equipSoulAndClear" or objectiveType == "equipSoulAndRecommendClear" then
+			currentMission.obj = self:GetObjectiveSoul()
+		elseif objectiveType == "equipWeaponAndClear" then
+			currentMission.obj = self:GetObjectiveWeaponType()
+		elseif objectiveType == "killSelectedMonster" then
+			currentMission.obj = self:GetObjectiveMonster()
+			if currentMission.obj == "" then
+				self:SetDailyMission(missionNum, isRefreshCauseDiamond)
+				
+				return
+			end
+		end
+		
+		if isRefreshCauseDiamond then
+			pcall(function()
+				_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_DAILY, _DailyMissionLogic.FLOW_REFRESHMISSION, self.missionInfo[missionKey].id, "")
+			end)
+		else
+			pcall(function()
+				_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_DAILY, _DailyMissionLogic.FLOW_INITMISSION, self.missionInfo[missionKey].id, "")
+			end)
+		end
+		
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSetWeeklyMission(integer missionNum, boolean isRefreshCauseDiamond)
+		-- 주간 미션 설정 요청 및 다이아몬드 비용 검증
+		if isRefreshCauseDiamond then
+			if not _CheckLogic:IsEnoughWealth(self.userId, "DIAMOND", 10) then
+				_LocalizeLogic:ShowToast("toast103", senderUserId)
+				
+				return
+			end
+		end
+		
+		if isRefreshCauseDiamond and self.missionInfo[string.format("wm_%d", missionNum)].status > 0 then
+		
+			return
+		end
+		
+		self:SetWeeklyMission(missionNum, isRefreshCauseDiamond)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetWeeklyMission(integer missionNum, boolean isRefreshCauseDiamond)
+		-- 주간 미션 랜덤 설정 및 조건 검증
+		local missionKey = string.format("wm_%d", missionNum)
+		local missionInfo = self.missionInfo[missionKey]
+		self.missionInfo[missionKey] = {["id"] = "", ["prg"] = 0, ["status"] = 0, ["obj"] = ""}
+		local temp = {}
+		local i = 1
+		local previousMissionId = missionInfo.id
+		
+		if isRefreshCauseDiamond then
+			_WealthLogic:RequestReduceWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, 10, self.userId, "RESET WEEKLY MISSION")
+		end
+		
+		for key, value in pairs(_DailyMissionLogic.missionData) do
+			local objectiveType = value.objectiveType
+			
+			if objectiveType == "randomStageClear" or objectiveType == "killSelectedMonster" or
+				 objectiveType == "registerCollection" or objectiveType == "levelUpSoul" then
+				
+				continue
+			end
+			
+			if value.missionSlotNum == missionNum then
+				local canAccept = true
+				
+				if objectiveType == "useSoulBoom" and self.Entity.PlayerCharacteristicData.charStorage["LaboratoryType"].level < 2 then 
+					canAccept = false
+				elseif objectiveType == "levelUpSoul" and not self.Entity.PlayerCharacterData:IsAnySoulCanLevelUp() then 
+					canAccept = false
+				elseif objectiveType == "tryLimitLand" and tonumber(self.Entity.PlayerQuestComponent.currentQuestId) < 24 then 
+					canAccept = false
+				elseif objectiveType == "registerCollection" and (tonumber(self.Entity.PlayerQuestComponent.currentQuestId) < 27 or not self.Entity.PlayerCollectionComponent:IsAnyCollectionCanRegister(3 * 10)) then 
+					canAccept = false
+				elseif objectiveType == "tryRandomBoss" and tonumber(self.Entity.PlayerQuestComponent.currentQuestId) < 43 then 
+					canAccept = false
+				elseif isRefreshCauseDiamond and previousMissionId == value.id then
+					canAccept = false
+				end
+				
+				if canAccept then
+					temp[i] = key
+					
+					i += 1
+				end
+			end
+		end
+		
+		self.missionInfo[missionKey].id = tostring(temp[_UtilLogic:RandomIntegerRange(1, #temp)])
+		
+		local currentMission = self.missionInfo[missionKey]
+		
+		local missionData = _DailyMissionLogic.missionData[currentMission.id]
+		local objectiveType = missionData.objectiveType
+		
+		if objectiveType == "randomStageClear" then
+			currentMission.obj = tostring(self:GetObjectiveStage())
+		elseif objectiveType == "equipSoulAndClear" or objectiveType == "equipSoulAndRecommendClear" then
+			currentMission.obj = self:GetObjectiveSoul()
+		elseif objectiveType == "equipWeaponAndClear" then
+			currentMission.obj = self:GetObjectiveWeaponType()
+		elseif objectiveType == "killSelectedMonster" then
+			currentMission.obj = self:GetObjectiveMonster()
+			if currentMission.obj == "" then
+				self:SetDailyMission(missionNum, isRefreshCauseDiamond)
+				
+				return
+			end
+		end
+		
+		
+		if isRefreshCauseDiamond then
+			pcall(function()
+				_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_WEEKLY, _DailyMissionLogic.FLOW_REFRESHMISSION, self.missionInfo[missionKey].id, "")
+			end)
+		else
+			pcall(function()
+				_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_WEEKLY, _DailyMissionLogic.FLOW_INITMISSION, self.missionInfo[missionKey].id
+		, "")
+			end)
+		end
+		
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GetObjectiveStage()
+		-- 미션 목표 스테이지 랜덤 선택
+		local minStage = self.Entity.PlayerInfoComponent.minRecommendStage
+		local max = self.Entity.PlayerInfoComponent.playerInfo.stageStep
+		
+		if max > 80 then
+			max = 80
+		end
+		
+		return _UtilLogic:RandomIntegerRange(minStage, max)
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetObjectiveSoul()
+		-- 미션 목표 영혼 랜덤 선택
+		local playerCharacterData = self.Entity.PlayerCharacterData
+		local temp = {}
+		local i = 0
+		
+		for key, value in pairs(playerCharacterData.charDeckStorage) do
+			if value.unlock then
+				i += 1
+				
+				temp[i] = key
+			end
+		end
+		
+		
+		return tostring(temp[_UtilLogic:RandomIntegerRange(1, i)])
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetObjectiveWeaponType()
+		-- 미션 목표 무기 타입 랜덤 선택
+		local rand = _UtilLogic:RandomIntegerRange(1, #table.keys(_WeaponSpecLogic.weaponData))
+		local row = _DataService:GetTable("WeaponSpec"):GetRow(rand)
+		
+		return row:GetItem("type")
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetObjectiveMonster()
+		-- 미션 목표 몬스터 랜덤 선택
+		local minStage = self.Entity.PlayerInfoComponent.minRecommendStage
+		local chapter = math.floor(minStage / 10)
+		local stage = minStage % 10
+		local id = ""
+		local monsterId = ""
+		
+		if chapter > 0 then
+			if stage == 0 then
+				id = string.format("%d0010", chapter)
+			else
+				id = string.format("%d000%d", chapter, stage)
+			end
+		else
+			if stage == 0 then
+				id = "10010"
+			else
+				id = string.format("%d000%d", 1, stage)
+			end
+		end
+		
+		local monsters = {}
+		
+		
+		for key, row in pairs(_DataService:GetTable("WaveData"):GetAllRow()) do
+			if string.len(row:GetItem("chapter")) <= 1 then continue end
+			
+			local waveChapter = _UtilLogic:Split(row:GetItem("chapter"), "00")
+			local waveStageStep = (tonumber(waveChapter[1]) - 1) * 10 + (tonumber(waveChapter[2]))
+			
+			if _CheckLogic:IsRecommendStage(self.userId, waveStageStep) and tonumber(id) <= tonumber(row:GetItem("chapter")) then
+				local monster = row:GetItem("monster")
+				
+				if not isvalid(monsters[monster]) and not _UtilLogic:Contains(monster, "WAVE") and not _UtilLogic:Contains(monster, "Boss") then
+					monsters[monster] = monster
+				end
+			end
+		end
+		
+		local rand = _UtilLogic:RandomIntegerRange(1, #table.keys(monsters))
+		_GameUtil:ShuffleTable(monsters)
+		
+		for key, value in pairs(monsters) do
+			rand -= 1
+			
+			if rand <= 0 then
+				monsterId = value
+				
+				break
+			end
+		end
+		
+		return monsterId
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestAddMissionInfo(string missionId, string objectiveId, integer value)
+		-- 미션 진행도 업데이트 요청 및 완료 상태 확인
+		local isChangedValue = false
+		
+		for i = 1, 5 do
+			local newKey = string.format("dm_%d", i) 
+			local newKey2 = string.format("wm_%d", i) 
+			
+			local dailyMission = self.missionInfo[newKey]
+			local weeklyMission = self.missionInfo[newKey2]
+			if dailyMission.status == 0 and dailyMission.id == missionId then
+				local canAdd = false
+				
+				if dailyMission.obj == objectiveId then
+					canAdd = true
+				elseif _UtilLogic:Contains(objectiveId, "/") then
+					local splits = _UtilLogic:Split(objectiveId, "/")
+					
+					for key, value in pairs(splits) do
+						if value == dailyMission.obj then
+							canAdd = true
+							
+							break
+						end
+					end
+				end
+				
+				if canAdd then
+					dailyMission.prg += value
+					
+					isChangedValue = true
+					pcall(function()
+						if value ~= 0 then
+							_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_DAILY, _DailyMissionLogic.FLOW_CHANGEPROGRESS, missionId, tostring(value)) 
+						end
+					end)
+				end
+			end
+			
+			if weeklyMission.status == 0 and weeklyMission.id == missionId then
+				local canAdd = false
+				
+				if weeklyMission.obj == objectiveId then
+					canAdd = true
+				elseif _UtilLogic:Contains(objectiveId, "/") then
+					local splits = _UtilLogic:Split(objectiveId, "/")
+					
+					for key, value in pairs(splits) do
+						if value == weeklyMission.obj then
+							canAdd = true
+							
+							break
+						end
+					end
+				end
+				
+				if canAdd then
+					weeklyMission.prg += value
+					
+					isChangedValue = true
+					pcall(function()
+						if value ~= 0 then
+							_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_WEEKLY, _DailyMissionLogic.FLOW_CHANGEPROGRESS, missionId, tostring(value)) 
+						end
+					end)
+				end
+			end
+		end
+		
+		if isChangedValue then
+			self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SendMissionUpdateEventInServer(string objectiveType, string objectiveId, integer objectiveNum)
+		-- 서버에서 미션 업데이트 이벤트 전송
+		if self.userId ~= senderUserId then
+			
+			return
+		end
+		
+		self.Entity:SendEvent(DailyMissionUpdateEvent(objectiveType, objectiveId, objectiveNum))
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetMissionData()
+		-- 일일/주간 미션 데이터 전체 설정 및 초기화
+		local dailyInittedDate = DateTime(self.missionInfo.dailyInittedDate)
+		local weeklyInittedDate = DateTime(self.missionInfo.weeklyInittedDate)
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		if self.missionInfo["dm_1"] ~= "" then
+			_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_DAILY, _DailyMissionLogic.FLOW_INITMISSION, "ALLCOMPLETE", "")
+		end
+		
+		for i = 1, 5 do
+			self:SetDailyMission(i, false)
+		end
+		
+		self.missionInfo.dailyInittedDate = tostring(_LocalTimeLogic:GetKST())
+		self.missionInfo.dmRewarded = 0
+			
+		if self.missionInfo["wm_1"] ~= "" then
+			_WorldLog:LogDailyMissionFlow(self.userId, _DailyMissionLogic.CATEGORY_WEEKLY, _DailyMissionLogic.FLOW_INITMISSION, "ALLCOMPLETE", "")
+		end
+		
+		for i = 1, 5 do
+			self:SetWeeklyMission(i, false)
+		end
+		self.missionInfo.weeklyInittedDate = tostring(_LocalTimeLogic:GetKST())
+		self.missionInfo.wmRewarded = 0
+		
+		self:SyncDataInClient(_HttpService:JSONEncode(self.missionInfo), self.userId)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeSuccessMission(integer diaNum)
+		-- 미션 완료 성공 알림 토스트 표시
+		_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast112"), diaNum))
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleDailyMissionUpdateEvent(DailyMissionUpdateEvent event)
+		-- 일일 미션 업데이트 이벤트 처리 및 목표별 진행도 업데이트
+		local objectiveType = event.objectiveType
+		local objectiveId = event.objectiveId
+		local objectiveNum = event.objectiveNum
+		local recommendStage = self.Entity.PlayerInfoComponent.minRecommendStage
+		
+		if objectiveType == "stageClear" then 
+			local stageStep = tonumber(objectiveId)
+			
+			if recommendStage <= stageStep then
+				self:RequestAddMissionInfo("1", "", objectiveNum) 
+				self:RequestAddMissionInfo("18", tostring(math.floor(self.Entity.PlayerCharacterData.charIndex)), objectiveNum) 
+				
+				local weapons = self.Entity.PlayerStorageComponent:GetAllEquippedWeapon()
+				local weaponStr = ""
+				
+				for key, value in pairs(weapons) do
+					local id = value.originalId
+					local data = _WeaponSpecLogic.weaponData[id]
+					
+					if weaponStr == "" then
+						weaponStr = data.type 
+					else
+						weaponStr = weaponStr .."/" .. data.type 
+					end
+				end
+				self:RequestAddMissionInfo("10", weaponStr, objectiveNum) 
+			end
+			self:RequestAddMissionInfo("5", objectiveId, objectiveNum) 
+			self:RequestAddMissionInfo("9", tostring(math.floor(self.Entity.PlayerCharacterData.charIndex)), objectiveNum) 
+		elseif objectiveType == "hatchSoulEgg" then
+			self:RequestAddMissionInfo("2", "", objectiveNum) 
+		elseif objectiveType == "useDash" then
+			self:RequestAddMissionInfo("3", "", objectiveNum) 
+		elseif objectiveType == "selectBuff" then
+			self:RequestAddMissionInfo("4", "", objectiveNum) 
+		elseif objectiveType == "mergeWeapon" then
+			self:RequestAddMissionInfo("6", "", objectiveNum) 
+		elseif objectiveType == "attackMonster" then
+			self:RequestAddMissionInfo("7", "", objectiveNum) 
+		elseif objectiveType == "useSoulBoom" then
+			self:RequestAddMissionInfo("8", "", objectiveNum) 
+		elseif objectiveType == "killMonster" then
+			self:RequestAddMissionInfo("11", "", objectiveNum) 
+		elseif objectiveType == "killSelectedMonster" then
+			self:RequestAddMissionInfo("20", objectiveId, objectiveNum) 
+		elseif objectiveType == "levelUpSoul" then
+			self:RequestAddMissionInfo("12", "", objectiveNum) 
+		elseif objectiveType == "tryLimitLand" then
+			self:RequestAddMissionInfo("13", "", objectiveNum) 
+		elseif objectiveType == "killFlyingMonster" then
+			self:RequestAddMissionInfo("14", "", objectiveNum) 
+			if tonumber(objectiveId) >= recommendStage then
+				self:RequestAddMissionInfo("19", "", objectiveNum) 
+			end
+		elseif objectiveType == "lootPotion" then
+			self:RequestAddMissionInfo("15", "", objectiveNum) 
+		elseif objectiveType == "destroyOrb" then
+			self:RequestAddMissionInfo("16", "", objectiveNum) 
+		elseif objectiveType == "registerCollection" then
+			self:RequestAddMissionInfo("17", "", objectiveNum) 
+		elseif objectiveType == "gradeUpArmor" then
+		elseif objectiveType == "tryRandomBoss" then
+			self:RequestAddMissionInfo("21", "", objectiveNum) 
+		end
+	end
+
+end

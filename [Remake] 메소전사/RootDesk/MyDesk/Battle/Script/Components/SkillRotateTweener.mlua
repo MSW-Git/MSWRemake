@@ -1,0 +1,143 @@
+@Component
+script SkillRotateTweener extends Component
+
+	property number from = 0
+
+	property number to = 0
+
+	property number duration = 1
+
+	property string ease = "Linear"
+
+	property boolean pingpong = false
+
+	property number pingpongCount = 1
+
+	property boolean loop = false
+
+	property boolean isPlaying = false
+
+	property boolean useRelativeAngle = false
+
+	property number angleOffset = 0
+
+	property string afterEffect = ""
+
+	property number afterEffectSize = 1
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 스킬 회전 트위너 초기화 및 스킬 이팩트 이벤트 연결
+		local transform = self.Entity.TransformComponent
+		
+		if self.useRelativeAngle then
+			self.angleOffset = transform.ZRotation
+		end
+		
+		transform.ZRotation = self.from + self.angleOffset
+		
+		local loopType = TweenLoopType.Restart
+		local loopCount = -1
+		local easeType = EaseType.CastFrom(self.ease)
+		
+		if self.loop then
+			
+		elseif self.pingpong then
+			loopType = TweenLoopType.PingPong
+			if self.pingpongCount > 0 then
+				loopCount = self.pingpongCount
+			end
+		else
+			loopCount = 1
+		end
+		
+		local tweener = _TweenLogic:RotateTo(self.Entity, self.to + self.angleOffset, self.duration, easeType)
+		
+		tweener.LoopType = loopType
+		tweener.LoopCount = loopCount
+		tweener.AutoDestroy = false
+		tweener:Rewind()
+		self._T.tweener = tweener
+		
+		local parent = self:GetParentEntity(self.Entity.Parent)
+		if isvalid(parent) == false then
+			return
+		end
+		
+		parent:ConnectEvent(SkillEffectStart,
+			function(e)
+				self:Play()
+			end)
+		
+		local effectEndHandler = nil
+		if _UtilLogic:IsNilorEmptyString(self.afterEffect) then
+			effectEndHandler = function(e)
+				self:Stop()
+			end
+		else
+			effectEndHandler = function(e) 
+				self:Stop()
+				_EffectService:PlayEffect(self.afterEffect,self.Entity,self.Entity.TransformComponent.WorldPosition,0,Vector3.one * self.afterEffectSize)
+			end
+		end
+		parent:ConnectEvent(SkillEffectEnd, effectEndHandler)
+		
+		parent:ConnectEvent(SkillEffectEnableChanged,
+			function(e)
+				if e.enable then
+					self._T.tweener:Resume()
+				else
+					self._T.tweener:Pause()
+				end
+			end
+		)
+		
+		if self.isPlaying == false then
+			self:Play()
+		end
+	end
+
+	method void Play()
+		-- 회전 트위닝 시작
+		self._T.tweener:Restart()
+		self.isPlaying = true
+	end
+
+	method void Stop()
+		-- 회전 트위닝 정지
+		self._T.tweener:Stop()
+		self.isPlaying = false
+	end
+
+	method Entity GetParentEntity(Entity parent)
+		-- 스킬 이팩트 부모 엔티티 찾기 (재귀적 탐색)
+		if parent.MapComponent ~= nil then
+			return nil
+		end
+		if parent.SkillEffectObject ~= nil then
+			return parent
+		end
+		return self:GetParentEntity(parent.Parent)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 컴포넌트 파괴 시 트위너 정리
+		---@type Tweener
+		local tweener = self._T.tweener
+		tweener:Destroy()
+	end
+
+	@EventSender("Logic", "TimerLogic")
+	handler HandleTimerChange(TimerChange event)
+		-- 타이머 일시정지/재개 시 트위너 동기화
+		if not self.isPlaying then return end
+		
+		if event.pause then
+			self._T.tweener:Pause()
+		else
+			self._T.tweener:Resume()
+		end
+	end
+
+end

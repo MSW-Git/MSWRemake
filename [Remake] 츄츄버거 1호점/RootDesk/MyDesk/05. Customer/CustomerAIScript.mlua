@@ -1,0 +1,605 @@
+@Component
+script CustomerAIScript extends Component
+
+	property string PrevState = "NONE"
+
+	property string State = "BEFOREENTER"
+
+	@TargetUserSync
+	property integer Id = 0
+
+	property integer UniqueRecipeId = 0
+
+	property integer OrderNum = 0
+
+	property string Prefer = ""
+
+	property table WaitSpotId = {}
+
+	property boolean HasOrderd = false
+
+	property boolean HasArrived = true
+
+	property boolean HasPurchased = false
+
+	property boolean CanEnterAttractive = false
+
+	property boolean CanEnterOrderMenu = true
+
+	property boolean CanUseWaitSpot = true
+
+	property string PeedbackType = "discontent"
+
+	property Entity PeedbackUI = nil
+
+	property number WaitTime = 0
+
+	property boolean IsWaiting = false
+
+	property table DebugInfos = {}
+
+	property BurgerComponent burgerComponent = nil
+
+	property boolean HasCostume = false
+
+	property integer defaultOrderinLayer = 800
+
+	@ExecSpace("ClientOnly")
+	method void Create(integer id, boolean canEnter, string tag, integer orderMenu, integer orderNum, table debugInfos)
+		-- 고객 AI를 초기화하고 이동 스크립트를 설정하는 함수
+		if not isvalid(self.Entity.EmployeeMoveScript) then 
+			self.Entity:AddComponent("EmployeeMoveScript")		
+		end
+		
+		self.Id = id
+		self.UniqueRecipeId = orderMenu
+		self.State = "BEFOREENTER"
+		self.PrevState = "" 
+		self.HasOrderd = false
+		self.HasPurchased = false
+		self.WaitTime = 0
+		self.IsWaiting = false
+		table.clear(self.DebugInfos)
+		self.DebugInfos = debugInfos
+		
+		self._T.timer = _TimerService:SetTimerRepeat(function() self:StateManager() end, _CustomerService.CustomerStatTick)
+		
+		if self.HasCostume == false then
+			self.HasCostume = true
+			_CustomerAvatarService:SetRandomCostume(self.Entity.CostumeManagerComponent)
+		end
+		
+		_CustomerService:SetEmotion("default", self.Entity.Path)
+		
+		self.Prefer = tag 
+		self.OrderNum = orderNum 
+		
+		if self.UniqueRecipeId == -1 then 
+			self.CanEnterOrderMenu = false
+			self.PeedbackType = self.Prefer
+		end
+		
+		self.CanEnterAttractive = canEnter
+		
+		if (not self.CanEnterAttractive) then 
+			self.PeedbackType = "discontent"
+		end
+		
+		local moveSpeed = ( 0.7 + ( 0.2 * _UtilLogic:RandomIntegerRange(2,6)) + (id%5)*0.05 )
+		local player = _UserService.LocalPlayer
+		local managementLevel = player.PlayerManagement.ManagementLevel 
+		local stageData = _StageDataSetLogic:GetStageData(player.PlayerStage.NowStage)
+		
+		local speedUpSpawnCustomerCount = stageData:GetReputationManagementData(managementLevel).SpeedUpSpawnCustomerCount
+		local customerManager = player.CustomerManager
+		
+		if customerManager.CustomerCount <= speedUpSpawnCustomerCount then
+			moveSpeed = ( 0.7 + ( 0.2 * _UtilLogic:RandomIntegerRange(5,7)) + (id%5)*0.05 ) 
+			
+			local expansion = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.ExpansionStep)
+			self.Entity.TransformComponent.Position.x = _LobbySpawnPositionLogic.CustomerBeforeEnterGroup[expansion].x + 4
+			self.Entity.AvatarRendererComponent:SetAlpha(0)
+			
+			local avatar = self.Entity.AvatarRendererComponent
+		    local tween 
+		    local tweenAlpha = function(tweenValue)
+		        if isvalid(avatar) == false then
+		            tween:Destroy()
+		        end
+		        avatar:SetAlpha(tweenValue) 
+		    end
+		
+		    tween = _TweenLogic:MakeTween(0, 1, 0.5, EaseType.Linear, tweenAlpha)
+		    tween.LoopCount = 1
+		    tween.LoopType = TweenLoopType.Restart
+		    tween.AutoDestroy = true
+		    tween:Play()
+		end
+		
+		moveSpeed = math.floor(moveSpeed * 1000) 
+		self.Entity.MovementComponent.InputSpeed = tonumber(moveSpeed)/1000
+		
+		self.PeedbackUI = _CustomerUIService:CreatePreferUI(self.Entity,self.Prefer)
+		_CustomerService:EnableAngryMark(false, self.Entity)
+		
+		self.Entity.AvatarRendererComponent.OrderInLayer = self.defaultOrderinLayer +10
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StateManager()
+		-- 고객의 상태를 관리하고 각 상태에 따른 행동을 처리하는 함수
+		if not self.HasArrived and self.State ~= "DESTROY" then return end 
+		
+		if ( not _UserService.LocalPlayer.TimeManager:CheckCanTimeFlows()) and self.State ~= "DESTROY" then return end 
+		if _UserService.LocalPlayer.MenuManager.ResetInProgress and self.State ~= "DESTROY" then return end 
+		
+		if self.State == "BEFOREENTER" then self:BEFOREENTER()
+		elseif self.State == "ENTER" then self:ENTER()
+		elseif self.State == "ORDER" then self:ORDER()
+		elseif self.State == "CHECKOUT" then self:CHECKOUT()
+		elseif self.State == "EXITTEMP" then self:EXITTEMP()
+		elseif self.State == "EXIT" then self:EXIT()
+		elseif self.State == "DESTROY" then self:DESTROY()
+		end
+		
+		if self.IsWaiting then
+			self.WaitTime += _CustomerService.CustomerStatTick
+			
+			if _UserService.LocalPlayer.PlayerCheatComponent:HasAuthority() and isvalid(_UserService.LocalPlayer.PlayerDebugMonitor.CustomerInfoMonitor) then
+				local debugMonitorUICustomer = _UserService.LocalPlayer.PlayerDebugMonitor.CustomerInfoMonitor:GetChildByName("InfoLayout").DebugMonitorUICustomer
+				if isvalid(debugMonitorUICustomer) and  self.Id == debugMonitorUICustomer.Id then
+					debugMonitorUICustomer:UpdateWaitingTime(self.WaitTime)
+				end
+			end
+			if self.WaitTime > _ReputationDataSetLogic.ReputationDownServingTimeMin and not self.HasPurchased then
+				_CustomerService:EnableAngryMark(true, self.Entity)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BEFOREENTER()
+		-- 고객이 매장 입장 전 대기 상태를 처리하는 함수
+		
+		if self.PrevState ~="BEFOREENTER" then 
+		
+			local expansion = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.ExpansionStep)
+			local targetPosition = _LobbySpawnPositionLogic.CustomerBeforeEnterGroup[expansion]
+			
+			if targetPosition == nil then
+				return
+			end
+			
+			local moveChangedEvent = EmployeeMoveChangedEvent()
+			moveChangedEvent:InitExcpetType(false, targetPosition)
+			self.Entity:SendEvent(moveChangedEvent)
+		
+			self.PrevState ="BEFOREENTER"
+			return
+			
+		end 
+		
+		
+		
+		if isvalid(self.PeedbackUI) then 
+			if not self.PeedbackUI.Enable then 
+				self.PeedbackUI.Enable = true
+				_CustomerUIService:UpdatePeedbackUI(self.PeedbackUI,self.Prefer)
+			end
+		end
+		
+		
+		
+		local isEntering = true
+		self.WaitSpotId = _UserService.LocalPlayer.CustomerManager:ReturnWaitSeat()
+		
+		if not isvalid(self.WaitSpotId) then 
+			isEntering = false	
+			self.CanUseWaitSpot = false 
+			self.PeedbackType = "discontent"
+			_UserService.LocalPlayer.PlayerSettlement:RequestAddValueForSettlement(_SettlementPropertyEnum.NoneWaitingCustomer, 1)
+		else 
+		
+			_UserService.LocalPlayer.CustomerManager:AddWaitCustomer(self.WaitSpotId[1],self.WaitSpotId[2],self.Entity)
+			isEntering = self.CanEnterAttractive
+			self.CanUseWaitSpot = true
+		
+		end
+		
+		local player = _UserService.LocalPlayer
+		local setMenu = player.PlayerRecipe.SetRecipes
+		local playerRecipe = player.PlayerRecipe.Recipes
+		
+		for slotIdx,recipeId in pairs(setMenu) do
+			 
+			local uniqueId = _UserService.LocalPlayer.MenuManager:ReturnRecipeUniqueID(recipeId)
+			
+			if uniqueId == self.UniqueRecipeId then
+				self.CanEnterOrderMenu = true
+				break
+			else
+				self.CanEnterOrderMenu = false
+			end
+		end
+		
+		if self.CanEnterOrderMenu == false then
+			for i , recipeId  in pairs(setMenu) do
+				---@type RecipeData
+				local recipeData = playerRecipe[recipeId]
+				if recipeData.Tag == self.Prefer then
+					self.UniqueRecipeId = recipeData.UniqueId
+					self.CanEnterOrderMenu = true
+					player.CustomerManager:CustomerOrderChange(self.Id,self.UniqueRecipeId)
+					break
+				end
+			end
+		end
+		
+		
+		if ( not isEntering ) or (not self.CanEnterOrderMenu)then 
+		
+			self.State = "EXIT"	
+		
+			if self.CanUseWaitSpot then
+				_CustomerService:SetEmotion("notEnter",self.Entity.Path)
+		
+				_CustomerUIService:UpdatePeedbackUI(self.PeedbackUI,self.PeedbackType)
+				
+				local isUIOff = true
+						
+				local callback = function()
+					_CustomerUIService:PreferUIOfff(self.Entity)
+				end
+				
+				local isPeedbackUIEnable = isvalid(self.PeedbackUI) and self.PeedbackUI.Enable or false
+				
+				if self.Prefer == "Chicken" and self.PeedbackType ~= "discontent" and isPeedbackUIEnable then
+					local isEvent = _TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.ChickenTagFeedback)
+					
+					if isEvent then
+						isUIOff = false
+						_TutorialManager:SetCallbackHideMask(callback)
+					end
+					
+				end
+				
+				if self.PeedbackType == "discontent" and isPeedbackUIEnable then
+					local isEvent = _TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.CustomerFeedback)
+					if isEvent then
+						isUIOff = false
+						_TutorialManager:SetCallbackHideMask(callback)
+					end
+				end	
+				
+				if isUIOff then
+					_TimerService:SetTimerOnce(function() _CustomerUIService:PreferUIOfff(self.Entity) end, 3)
+				end
+				
+			else
+		
+				_CustomerUIService:PreferUIOfff(self.Entity)
+				
+			end
+			
+			
+		
+			if isvalid(self.WaitSpotId) then
+				_UserService.LocalPlayer.CustomerManager:RemoveWaitCustomer(self.WaitSpotId[1],self.WaitSpotId[2],self.Entity) 
+			end
+			
+			self:Report()
+		
+			return 
+			
+		end 
+		
+		
+		self.State = "ENTER"	
+			
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ENTER()
+		-- 고객이 매장에 입장하여 대기 좌석으로 이동하는 상태를 처리하는 함수
+		
+		if self.PrevState ~="ENTER" then 
+			local expansion = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.ExpansionStep)
+			---@type FastVector3
+			local targetPosition = _LobbySpawnPositionLogic.CustomerEnterGroup[expansion]
+			local moveChangedEvent = EmployeeMoveChangedEvent()
+			moveChangedEvent:InitExcpetType(false, targetPosition)
+			self.Entity:SendEvent(moveChangedEvent)
+			
+			self.PrevState ="ENTER"
+			return
+			
+		end
+		
+		local counterIdx = tonumber(self.WaitSpotId[1])
+		local waitingIdx = tonumber(self.WaitSpotId[2])
+		local moveChangedEvent = EmployeeMoveChangedEvent()
+		moveChangedEvent:InitExcpetType(false, _LobbySpawnPositionLogic.CustomerWaitSeatGroup[counterIdx][waitingIdx])
+		self.Entity:SendEvent(moveChangedEvent)
+		self.Entity.AvatarRendererComponent.OrderInLayer = self.defaultOrderinLayer + waitingIdx 
+		self.State = "ORDER"	
+		
+		_TimerService:SetTimerOnce(function() _CustomerUIService:PreferUIOfff(self.Entity) end, 1.5)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ORDER()
+		-- 고객이 주문을 대기하고 주문 UI를 생성하는 상태를 처리하는 함수
+		
+		if self.PrevState ~="ORDER" then 
+			self.PrevState ="ORDER"
+		end
+		
+		
+		
+		if not self.HasOrderd then
+			return 
+		end 
+		
+		
+		
+		local data = _UserService.LocalPlayer.MenuManager:ReturnRecipeDataByUniqueID(self.UniqueRecipeId)
+		
+		if not isvalid(data) then 
+			self.State = "DESTROY"
+			return 
+		end
+		
+		if not isvalid(data.Tag) then 
+			self.State = "DESTROY"
+			return 
+		end
+		
+		
+		_CustomerUIService:CreateOrderUI(self.Entity,tostring(self.OrderNum),data.Tag)
+		self.State = "CHECKOUT"	
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CHECKOUT()
+		-- 고객이 결제를 완료하고 매장을 나가기 전 처리하는 상태 함수
+		if not self.HasPurchased then return end 
+		local recipeData = _UserService.LocalPlayer.MenuManager:ReturnRecipeDataByUniqueID(self.UniqueRecipeId)
+		if isvalid(recipeData) == false then
+			self.State = "DESTROY"
+			return
+		end
+		
+		local tag = recipeData.Tag
+		self.burgerComponent:OnBurgerEntity(self.OrderNum, tag, nil)
+		
+		local customerPath = self.Entity.Path
+		_CustomerService:SetEmotion("checkout",customerPath)
+		
+		
+		local customerPos = self.Entity.TransformComponent.WorldPosition
+		_UserService.LocalPlayer.CustomerManager:RequestPayPurchase(self.Id,customerPos,customerPath)
+		
+		_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.CustomerPurchase)
+		
+		self.Entity.AvatarRendererComponent.OrderInLayer = self.defaultOrderinLayer + 10
+		
+		
+		_UserService.LocalPlayer.MenuManager:AddSaleBurgerCount(self.UniqueRecipeId,self.OrderNum)
+		
+		
+		_CustomerUIService:OrderUIOff(self.Entity)
+		
+		
+		
+		
+		self.State = "EXITTEMP"
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EXITTEMP()
+		-- 고객이 임시 출구 지점으로 이동하는 상태를 처리하는 함수
+		if self.PrevState ~="EXITTEMP" then 
+			local expansion = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.ExpansionStep)	
+			---@type Vector3
+			local startPos = _LobbySpawnPositionLogic.CustomerExitTempGroup[expansion][1]
+			---@type Vector3
+			local endPos = _LobbySpawnPositionLogic.CustomerExitTempGroup[expansion][2]
+			local targetPosition = startPos
+			
+			local selfPosition = self.Entity.TransformComponent.Position
+			if selfPosition.x > endPos.x then
+				targetPosition = endPos
+			end
+			
+			local moveChangedEvent = EmployeeMoveChangedEvent()
+			moveChangedEvent:InitExcpetType(false, targetPosition)
+			self.Entity:SendEvent(moveChangedEvent)
+			
+			self.PrevState ="EXITTEMP"
+			
+			_CustomerUIService:OrderUIOff(self.Entity)
+		end 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EXIT()
+		-- 고객이 최종 출구로 이동하여 매장을 완전히 나가는 상태를 처리하는 함수
+		if self.PrevState ~="EXIT" then 
+		
+			local moveChangedEvent = EmployeeMoveChangedEvent()
+			moveChangedEvent:InitExcpetType(false, _LobbyEntityLogic.CustomerExitPos.TransformComponent.Position)
+			self.Entity:SendEvent(moveChangedEvent)
+			
+			self.PrevState ="EXIT"
+			return
+			
+		end 
+		_CustomerUIService:OrderUIOff(self.Entity)
+		
+		if self.HasArrived then 
+			
+			self:ResetEntity()
+		end	
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DESTROY()
+		-- 고객 엔티티를 정리하고 제거하는 상태를 처리하는 함수
+		if isvalid(self.WaitSpotId[1]) then 
+			_UserService.LocalPlayer.CustomerManager:RemoveWaitCustomer(self.WaitSpotId[1],self.WaitSpotId[2],self.Entity) 
+		end
+		
+		if self.PrevState ~="DESTROY" then 
+		
+		
+		
+			_CustomerUIService:OrderUIOff(self.Entity)
+			self.PrevState ="DESTROY"
+		
+		else
+		
+			self:ResetEntity()
+		
+		end 
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetOrder()
+		-- 고객이 주문을 완료했음을 설정하는 함수
+		self.HasOrderd = true 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPurchase()
+		-- 고객이 결제를 완료했음을 설정하고 대기열에서 제거하는 함수
+		self.HasPurchased = true 
+		self.IsWaiting = false
+		_CustomerService:EnableAngryMark(false, self.Entity)
+		_UserService.LocalPlayer.CustomerManager:MoveCustomerForwardByCounterID(self.WaitSpotId[1])
+		_UserService.LocalPlayer.CustomerManager:RemoveWaitCustomer(self.WaitSpotId[1],self.WaitSpotId[2],self.Entity) 
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Report()
+		-- 고객이 매장을 떠나는 이유를 분석하고 보고서를 생성하는 함수
+		local type 
+		local tag = nil 
+		if not self.CanUseWaitSpot then 
+			type = "seat" 
+		elseif not self.CanEnterAttractive then 
+			type = "attractive" 
+		elseif not self.CanEnterOrderMenu then 
+			type = "prefer" 
+			tag = self.PeedbackType	
+		end
+		
+		if type == "attractive" then  
+					
+			_UserService.LocalPlayer.PlayerSettlement.LeaveCustomerAttractive = _UserService.LocalPlayer.PlayerSettlement.LeaveCustomerAttractive + 1
+			local customerNum = _UserService.LocalPlayer.PlayerSettlement.LeaveCustomerAttractive 
+			_ReportMessageMaker:RequestAddToReportQueue(3006,string.format("%d",customerNum),"","")
+		
+		elseif type == "prefer" then 
+		
+			local reportId = {}  
+			reportId["Veggie"] = 3001
+			reportId["Meat"] = 3002
+			reportId["Seafood"] = 3003
+			reportId["Chicken"] = 3004
+			reportId["Spicy"] = 3005
+			reportId["Mixed"] = 3006
+			
+			local leaveNum = _UserService.LocalPlayer.PlayerSettlement.LeaveCustomerTag[type]
+			if not isvalid(leaveNum) then
+		 
+				_UserService.LocalPlayer.PlayerSettlement.LeaveCustomerTag[type] = 1
+				leaveNum = 1 
+			else
+				_UserService.LocalPlayer.PlayerSettlement.LeaveCustomerTag[type] = _UserService.LocalPlayer.PlayerSettlement.LeaveCustomerTag[type] + 1
+			end
+		
+			_ReportMessageMaker:RequestAddToReportQueue(reportId[tag],string.format("%d",leaveNum),"","")
+		
+		elseif type == "seat" then 
+			
+			local leaveNum = 0 
+			
+			
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetEntity()
+		-- 고객 엔티티를 초기화하고 오브젝트 풀로 반환하는 함수
+		if self.Entity.Enable == false then
+			return
+		end
+		
+		_TimerService:ClearTimer(self._T.timer)
+		
+		_CustomerUIService:OrderUIOff(self.Entity)
+		self.Entity.Enable = false
+		self.Entity:RemoveComponent("EmployeeMoveScript")
+		local spawnPosNum = #_LobbyEntityLogic.CustomerSpawnGroup.Children
+		local spawnPosEntity = _LobbyEntityLogic.CustomerSpawnGroup.Children[_UtilLogic:RandomIntegerRange(1,spawnPosNum)]
+		self.Entity.TransformComponent.WorldPosition = spawnPosEntity.TransformComponent.WorldPosition
+		table.insert(_UserService.LocalPlayer.CustomerManager.AvatarPool, 1, self.Entity)
+		
+		self.burgerComponent:OffBurgerEntity(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 고객 엔티티가 생성될 때 버거 컴포넌트를 초기화하는 함수
+		local burgerEntity = self.Entity:GetChildByName("Model_SpawnBurger")
+		
+		if burgerEntity ~= nil then
+			self.burgerComponent = burgerEntity.BurgerComponent
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateWaitSpotId(string col, number row)
+		-- 고객의 대기 좌석 위치 정보를 업데이트하는 함수
+		if isvalid(self.WaitSpotId) then
+			self.WaitSpotId[1] = col
+			self.WaitSpotId[2] = row
+		else
+			self.WaitSpotId = {col, row}
+		end
+		self.Entity.AvatarRendererComponent.OrderInLayer = self.defaultOrderinLayer + tonumber(self.WaitSpotId[2]) 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeStateToORDERByEmployeeDestroyed()
+		-- 직원이 파괴되었을 때 고객 상태를 주문 대기로 변경하는 함수
+		self.HasOrderd = false
+		self.State = "ORDER"
+	end
+
+	@EventSender("Self")
+	handler HandleEmployeeMoveChangedEvent(EmployeeMoveChangedEvent event)
+		-- 직원 이동 상태 변경 이벤트를 처리하는 핸들러
+		self.HasArrived = event.IsArrive
+		
+		if self.State == "EXITTEMP" then
+			self.State = "EXIT"
+		elseif self.State == "BEFOREENTER" then
+			self.State = "BEFOREENTER"
+		end
+		
+		if self.HasArrived then 
+			_CustomerService:SetBodyAction("Idle",self.Entity)
+		else
+			_CustomerService:SetBodyAction("Walk",self.Entity)
+		end
+	end
+
+end

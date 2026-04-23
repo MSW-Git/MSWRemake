@@ -1,0 +1,147 @@
+@Logic
+script ResourceLoadLogic extends Logic
+
+	property table MobileResourceTable = {}
+
+	property integer stage = 0
+
+	@ExecSpace("ClientOnly")
+	method void PreLoadResources(table ruids, any onLoadCallback)
+		-- 리소스 ID 배열을 받아 비동기로 사전 로드 수행
+		if #ruids > 0 then
+			_ResourceService:PreloadAsync(ruids, onLoadCallback)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UnloadResources(table ruids)
+		-- 지정된 리소스들의 캐시를 제거하고 미사용 리소스 언로드
+		_ResourceService:RemoveCaches(ruids)
+		_ResourceService:UnloadUnusedResources(0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AvatarResourcesLoad(string dataSetName, any onLoadCallback)
+		-- 현재 스테이지의 아바타 리소스들을 로드
+		self.stage = _UserService.LocalPlayer.PlayerStage.NowStage
+		local totalRuids = self:DialogAvatarRuids(self.stage, dataSetName)
+		
+		self:PreLoadResources(totalRuids, onLoadCallback)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AvatarResourcesUnload(string dataSetName)
+		-- 현재 스테이지의 아바타 리소스들을 언로드
+		if self.stage == 0 then 
+			return
+		end
+		
+		local totalRuids = self:DialogAvatarRuids(self.stage, dataSetName)
+		
+		
+		self:UnloadResources(totalRuids)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 모바일 리소스 테이블 초기화 및 기본 리소스 로드
+		self:AvatarResourcesUnload("CustomAvatarDataSet")
+		
+		local data = _DataService:GetTable("MobileResourceDataSet")
+		
+		for i = 1,data:GetRowCount() do
+			local row = data:GetRow(i)
+			local pc = row:GetItem("PCRUID")
+			local mobile = row:GetItem("MobileRUID")
+			
+			self.MobileResourceTable[pc] = mobile
+		end
+		
+		local ruids
+		if Environment:IsMobilePlatform() then
+			ruids = {"75e532e60091464eae250f0d147cdf98",
+			"4c4c9c74023b49c2af65c6554cbffa9f",
+			"3b922eb76eed4643aaf21ba29b5ae13e",
+			"4130bb9850fe415a9f8d0856ab2821b4",
+			"ab6bc6186b594ebbb207ba7a1cdfd876",
+			}
+			
+		else
+			ruids = {"ce1622084bb14a31b82cb5b2bd624352",
+			"c83a3db27864449d98d7213dc31c8b85",
+			"cc7c004fe08f487fbe53f542932ea54e",
+			"946d6bf93b09446d99e4de1681ec02f3",
+			"87c7259db24d4e22974822e9d0279bdb"
+			}
+		end
+		
+		_ResourceService:PreloadAsync(ruids, nil)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method string OptimizeMobileResource(string ruid)
+		-- 모바일 플랫폼에서 최적화된 리소스 ID로 변환
+		if not Environment:IsMobilePlatform() then
+			return ruid
+		end
+		
+		if self.MobileResourceTable[ruid] == nil then
+			return ruid
+		else 
+			return self.MobileResourceTable[ruid]
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer OptimizeMobileSize(integer multiplication)
+		-- 모바일 플랫폼에서 크기 배수값을 반환, PC에서는 1 반환
+		if not Environment:IsMobilePlatform() then
+			return 1
+		else
+			return multiplication
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method table DialogAvatarRuids(number stage, string dataSetName)
+		-- 지정된 스테이지의 아바타 리소스 ID들을 수집하여 반환
+		local avatarDataSet = _DataService:GetTable("AvatarStageDataSet")
+		local stageKey = "Stage"..tostring(stage)
+		local selectIds = {}
+		
+		for _ , row in pairs(avatarDataSet:GetAllRow()) do
+			local idValue = row:GetItem(stageKey)
+			if idValue and idValue ~= "" then
+				table.insert(selectIds, tonumber(idValue))
+			end
+		end
+		
+		local dataSet = _DataService:GetTable(dataSetName)
+		local totalRuids = {}
+		local columns = dataSet.Columns
+		local rowCount = dataSet:GetRowCount()
+		local idStr = "Id"
+		
+		for i=1, rowCount do
+			local index = dataSet:GetCell(i, idStr)
+			for _, id in pairs(selectIds) do
+				if index == tostring(id) then
+					for _,columnName in pairs(columns) do
+		        		if columnName == idStr then
+		            		continue
+		        		end
+						
+						local ruid = dataSet:GetCell(i, columnName)
+						if not _UtilLogic:IsNilorEmptyString(ruid) then
+							table.insert(totalRuids, ruid)
+						end
+					end
+				end
+		    end
+		end
+		
+		return totalRuids
+	end
+
+end

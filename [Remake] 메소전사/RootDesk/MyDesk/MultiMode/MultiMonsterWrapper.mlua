@@ -1,0 +1,857 @@
+@Component
+script MultiMonsterWrapper extends Component
+
+	@Sync
+	property string monsterId = "Toxiblossom"
+
+	property boolean update = false
+
+	property Vector2 position = Vector2(0,0)
+
+	property number elapsedSeconds = 0
+
+	property boolean inited = false
+
+	property MultiBattleMap battleMap = nil
+
+	property string key = ""
+
+	property Vector3 originPos = Vector3(0,0,0)
+
+	property Entity monsterObject = nil
+
+	property Entity target = nil
+
+	property table option = {}
+
+	property Vector2 delta = Vector2(0,0)
+
+	property number hp = 100
+
+	property Vector2 leftBottom = Vector2(0,0)
+
+	property Vector2 rightTop = Vector2(0,0)
+
+	property number angle = 0
+
+	property table returnPosition = {}
+
+	property boolean needToReturn = false
+
+	property Vector2 preReturnCellPos = Vector2(0,0)
+
+	property boolean usedGizmo = false
+
+	property Entity host = nil
+
+	property table hostPath = {}
+
+	property PathFinderMapComponent pathFinder = nil
+
+	property number moveClientCoolTime = 0
+
+	property number skillEnableTime = 0
+
+	property Vector2 prePosition = Vector2(0,0)
+
+	property string dropMapEssenceId = ""
+
+	property number stateStun = 0
+
+	property number stateIgnited = 0
+
+	property number stateAttract = 0
+
+	property number stateStorm = 0
+
+	property number state = 0
+
+	property table contribution = {}
+
+	property number maxHp = 0
+
+	property number speedBySkill = 1
+
+	property number roomNumber = -1
+
+	property number returnTime = 0
+
+	property boolean isDead = false
+
+	@Sync
+	property boolean isBoss = false
+
+	method void OnBeginPlay()
+		-- 멀티 몬스터 래퍼 컴포넌트 초기화 및 서버/클라이언트별 설정
+		self.battleMap = self.Entity.CurrentMap.MultiBattleMap
+		self.pathFinder = self.Entity.CurrentMap.PathFinderMapComponent
+		
+		
+		if self:IsServer() then
+			
+			
+		
+			
+			self.position = self.Entity.TransformComponent.Position:ToVector2()
+		
+		
+			if self.usedGizmo then
+				local line = _SpawnService:SpawnByModelId("model://95bc8ca1-5118-4c28-b078-d1b4d4999f80","gizmo",Vector3.zero,self.Entity.CurrentMap)
+				self._T.lineRenderer = line.LineRendererComponent
+			end
+			
+		else
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncPosition(Vector2 prePos, Vector2 pos, number elapsedSeconds, number hp, table option)
+		-- 서버에서 전송된 몬스터 위치 정보를 클라이언트에서 동기화하고 애니메이션 처리
+		self.prePosition = prePos
+		self.position = pos
+		self.elapsedSeconds = elapsedSeconds
+		self.update = true
+		self.option = option
+		self.hp = hp
+		
+		if self.roomNumber < 0 then
+			self.roomNumber = self.Entity.CurrentMap.MultiBattleMap:GetRoomNumber(pos:ToVector3())
+		end
+		
+		local flipX = (prePos.x - pos.x) < 0
+		if option.target ~= nil then
+			self.target =  _EntityService:GetEntity(option.target)
+		else
+			self.target = nil
+		end
+		if option.state == nil then
+			self.state = 0
+		else
+			self.state = self.option.state
+		end
+		self:UpdateMaxHP()
+		if self._T.aliveCheckTimer  ~= nil then
+			_TimerService:ClearTimer(self._T.aliveCheckTimer)
+			self._T.aliveCheckTimer  = nil
+		end
+		self._T.aliveCheckTimer = _TimerService:SetTimerOnce(function() 
+			self._T.aliveCheckTimer  = nil
+			if isvalid(self.monsterObject) == false then		
+				return
+			end
+			self.monsterObject.SpriteRendererComponent.Color.a = 0
+			_PoolingLogic:DestroyEntity(self.monsterObject)
+			self.monsterObject = nil
+		end,_GameConfig:GetConfig().FIELD_MONSTER_ALIVE_TIME)
+		
+		if self.hp <= 0 then	
+			return
+		end
+		
+		
+		
+		if isvalid(self.monsterObject) == false then
+			self.inited = true
+				
+			local monsterData = _MonsterLogic:GetMonsterData(self.monsterId)
+			
+			local entity = _PoolingLogic:SpawnModel(monsterData.model,Vector3.zero,self.Entity)
+			
+			entity:AttachTo(self.Entity)
+			entity.TransformComponent.Position = Vector3.zero
+			---@type MultiMonsterObject
+			local monster = entity.MultiMonsterObject
+			if monster == nil then
+				entity:RemoveComponent("MonsterObject")
+				entity:RemoveComponent("BossObject")
+				entity:AddComponent("MultiMonsterObject")	
+				entity:AddComponent(NameTagComponent)
+				
+				entity:RemoveComponent("PhysicsRigidbodyComponent")
+				entity:RemoveComponent("PhysicsColliderComponent")
+				monster = entity.MultiMonsterObject		
+			end
+			monster.usedBaseModel = true
+			monster:Init(self.monsterId,false,false,1)
+			monster.monsterWrapper = self
+			monster.hp = hp
+			self.monsterObject = entity		
+			
+			
+		end
+		
+		if isvalid(self.monsterObject) then
+			local multiMonster = self.monsterObject.MultiMonsterObject
+			self.monsterObject:AttachTo(self.Entity)
+			self.monsterObject.TransformComponent.Position = Vector3.zero
+			multiMonster:SetFlipX(flipX)
+			multiMonster:OnChangedSpriteFlipX(flipX)
+			if self.option.atk ~= nil then
+				if isvalid(self.target) then
+					local delay = math.max(0, self.option.atkTime - _UtilLogic.ServerElapsedSeconds)
+					_TimerService:SetTimerOnce(function() 
+					
+						multiMonster.target = self.target
+						local skillData = _MonsterSkillLogic:GetSkill(self.option.atk)
+						if skillData ~= nil then
+							multiMonster:OnUseSkill(self.option.atk,nil,self.target,option.rnd)
+							multiMonster:ChangeAttackAnim(skillData)
+							if skillData.multiShot ~= nil and skillData.multiShot > 1 then
+								for i = 2, skillData.multiShot do
+									_TimerLogic:SetTimerOnce(function()
+											multiMonster:OnUseSkill(self.option.atk,nil,self.target,option.rnd)
+								
+									end,i * skillData.multiShotDelay, "BossObject.UpdateMove_multishot")
+								end
+							end
+						end
+							
+					end,delay)			
+				end
+			end
+			self.monsterObject.MultiMonsterObject.aliveCoolTime = _GameConfig:GetConfig().FIELD_MONSTER_ALIVE_TIME
+		end
+		
+		if self._T.tween ~= nil then
+			self._T.tween:Destroy()
+			self._T.tween = nil
+		end
+		
+		local duration = math.max(0.1, elapsedSeconds - _UtilLogic.ServerElapsedSeconds)
+		 
+		
+		local transform = self.Entity.TransformComponent
+		local currentPos = transform.Position:ToVector2()
+		
+		local diff = currentPos - prePos
+		if diff:Magnitude() < 2 then
+			prePos = currentPos
+		end
+		transform.Position  = prePos:ToVector3()
+		
+		local tween = _TweenLogic:PlayTween(prePos,pos,duration,EaseType.Linear,function(value) 
+			transform.Position = value:ToVector3()
+		end)
+		self._T.tween = tween
+		tween:SetOnEndCallback(function() 
+			self._T.tween = nil
+		end)
+	end
+
+	method void Dead(Vector3 pos)
+		-- 몬스터 사망 처리를 위한 클라이언트 요청 함수
+		
+		self.hp = 0
+		self.inited = false
+		self:ReqeustDead(pos,_UserService.LocalPlayer.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void ReqeustDead(Vector3 pos, string ppsn)
+		-- 서버에서 몬스터 사망 처리 및 리스폰 스케줄링
+		if self.isDead then
+			return
+		end
+		self.isDead = true
+		
+		self:DropItemAndGetEXP(pos, self.monsterId)
+		local result,error = pcall(function() 
+		end)
+		
+		if not result then
+		end
+		self.stateStun = 0
+		self.stateIgnited = 0
+		self.stateAttract = 0
+		self.stateStorm = 0
+		self.target = nil
+		self.hp = 0
+		local users = self:GetTargetUsers()
+		for k,v in pairs(users) do
+			self:SyncPosition(self.position,self.position,_UtilLogic.ServerElapsedSeconds,0,{},k)
+		end
+		
+		if self._T.resetSpeedEventId ~= nil then
+			_TimerService:ClearTimer(self._T.resetSpeedEventId)
+			self._T.resetSpeedEventId = nil
+		end
+		
+		local period = 5
+		if self.isBoss == true then
+			period = 60
+		end
+		
+		_TimerService:SetTimerOnce(function()
+			self:Init(self.monsterId,self.originPos)
+		 end,period)
+		
+	end
+
+	method void Init(string monsterId, Vector3 originPos)
+		-- 몬스터 초기화 및 기본 스탯 설정
+		table.clear(self.contribution)
+		self._T.monsterData = _MonsterLogic:GetMonsterData(monsterId)
+		self.monsterId = monsterId
+		self.target = nil
+		self.originPos = originPos
+		self.position = originPos:ToVector2()
+		self.angle = _UtilLogic:RandomDouble() * math.pi * 2
+		self.maxHp = self._T.monsterData.fieldData.hp
+		self.hp = self.maxHp
+		self.isDead = false
+		self:Move()
+		self:InitSkill()
+		self.roomNumber = self.battleMap:GetRoomNumber(originPos)
+	end
+
+	method table GetTargetUsers()
+		-- 몬스터 주변 영역에 있는 타겟 유저들을 찾아서 반환
+		
+		local users = {}
+		local battleMap = self.Entity.CurrentMap.MultiBattleMap
+		local width = _GameConfig:GetConfig().FIELD_AREA_WIDTH
+		local height =_GameConfig:GetConfig().FIELD_AREA_HEIGHT
+		local x = math.tointeger(self.position.x / width)
+		local y = math.tointeger(self.position.y / height)
+		
+		
+		for i = x -1, x + 1 do
+			for j = y -1, y + 1 do
+				local key = string.format("%d,%d",i,j)
+				
+				if battleMap.usersGridTable[key] ~= nil then
+					for k,v in pairs(battleMap.usersGridTable[key]) do
+						users[k] = v
+					end
+				end
+			end
+		end
+		
+		return users
+		
+		
+	end
+
+	method void Move()
+		-- 몬스터의 AI 이동 로직 및 타겟 추적 처리
+		
+		if self.roomNumber < 0 then
+			_TimerService:SetTimerOnce(function() 
+				self.roomNumber = self.battleMap:GetRoomNumber(self.originPos)
+				self:Move()
+			end,_UtilLogic:RandomDouble() + 1)
+			return
+		end
+		if self.battleMap.USER_COUNT == 0 then
+			_TimerService:SetTimerOnce(function() 
+				self:Move()
+			end,_UtilLogic:RandomDouble() + 1)
+			return
+		end
+		 
+		local pathFinder = self.Entity.CurrentMap.PathFinderMapComponent
+			
+		local option = {}
+		
+		local users = self:GetTargetUsers()
+			
+			
+			local prePosition = self.position:Clone()
+			local usedPath = false
+			local duration =  _UtilLogic:RandomDouble() + 1
+			local delay = _UtilLogic:RandomDouble() + 0.5
+			local speed = self._T.monsterData.fieldData.fieldSpeedRatio  
+		
+		
+			
+			local currentRoomNumber = self.battleMap:GetRoomNumber(prePosition:ToVector3())
+			local delta = Vector2.zero
+		
+			if currentRoomNumber < 0 or currentRoomNumber ~= self.roomNumber then
+				self.target = nil
+				delta = (self.originPos:ToVector2() - self.position):Normalize() * duration * speed
+			else
+				local isClockWise = (_UtilLogic:RandomIntegerRange(0,100) > 50) and 1 or -1
+				
+				for i = 1, 10 do	
+					self.angle += (_UtilLogic:RandomDouble()*0.9 + 0.1)  * math.pi * 0.3 * isClockWise
+					delta = Vector2(math.cos(self.angle),math.sin(self.angle)) * duration * speed
+					local roomNumber = self.battleMap:GetRoomNumber((self.position + delta):ToVector3())
+					if roomNumber == self.roomNumber then			
+						break
+					end	
+				end
+			end
+		
+			
+			
+			
+		
+		
+			
+			local lineRenderer = self._T.lineRenderer
+			if self.usedGizmo then
+				lineRenderer.Points:Clear()
+			end
+		
+			local goHome = false
+		
+		
+		
+			if isvalid(self.target) then
+				speed = speed * 2
+				local start = self.battleMap.pathTile:ToCellPosition(self.position:ToVector3())
+				local to = self.target.TransformComponent.Position
+				local goal = (to:ToVector2() - self.position):Normalize() + self.position	
+			
+				local toRoomNumber = self.battleMap:GetRoomNumber(to)
+				if  toRoomNumber == self.roomNumber then
+					if self._T.skill ~=nil and #self._T.skill > 0 then
+						local monsterData = _MonsterLogic:GetMonsterData(self.monsterId)
+						local skillDiffTime = self.skillEnableTime - _UtilLogic.ServerElapsedSeconds
+					
+						if _UtilLogic:RandomIntegerRange(0,100) < 30 then
+							local skillIndex = _UtilLogic:RandomIntegerRange(1,#self._T.skill)
+							local skillId = self._T.skill[skillIndex]
+						
+							local skillData = _MonsterSkillLogic:GetSkill(skillId)
+							if skillData ~= nil then
+								for k,v in pairs(skillData.spec) do
+									if v[1] == "speed" then
+										self.speedBySkill = math.min(3, math.max(0.25, v[2]))
+										if self._T.resetSpeedEventId ~= nil then
+											_TimerService:ClearTimer(self._T.resetSpeedEventId)
+											self._T.resetSpeedEventId = nil
+										end
+									   	self._T.resetSpeedEventId = _TimerService:SetTimerOnce(function() 
+											self.speedBySkill = 1
+											self._T.resetSpeedEventId = nil
+										
+										end,v[3])
+									end
+								end
+							end
+							if skillDiffTime < 0  then
+								option.atk = skillId
+								option.atkTime = _UtilLogic.ServerElapsedSeconds + (_UtilLogic:RandomDouble() * 0.25 + 0.25)
+								option.rnd = _UtilLogic:RandomIntegerRange(0,10000)				
+								self.skillEnableTime = monsterData.attackCoolTime +  _UtilLogic.ServerElapsedSeconds 
+							end
+						end
+					end
+				
+					delta = goal - self.position
+					delta = delta * self.speedBySkill
+					self.position = self.position + delta
+					duration = delta:Magnitude() / (speed*self.speedBySkill)
+					delay = 0
+				
+				else
+					self.target = nil		
+					self.position = self.position + delta
+				end
+				
+				
+			
+			else
+				self.position = self.position + delta
+			end
+				
+		
+		
+		local state = 0
+		if self.stateStun > _UtilLogic.ServerElapsedSeconds then
+			state += math.pow(2,0)
+			self.position = prePosition
+		end
+		if self.stateIgnited > _UtilLogic.ServerElapsedSeconds then
+			state += math.pow(2,1)
+		end
+		if self.stateAttract > _UtilLogic.ServerElapsedSeconds then
+			state += math.pow(2,2)
+			if self:IsInBound(prePosition - delta) then	
+				self.position = prePosition - delta
+			else
+				self.position = prePosition
+			end
+		end
+		if self.stateStorm > _UtilLogic.ServerElapsedSeconds then
+			state += math.pow(2,3)
+		end
+		if self.battleMap:GetRoomNumber(self.position:ToVector3()) < 0 then
+			self.position = prePosition
+		end
+		if state > 0 then
+			option.state = state
+		end
+		
+		if isvalid(self.target) then
+			option.target = self.target.Id
+		end
+		
+		for k,v in pairs(users) do
+				self:SyncPosition(prePosition,self.position,_UtilLogic.ServerElapsedSeconds + duration,self.hp,option,k)
+		end
+		
+		if self.usedGizmo then
+			if usedPath == false then
+				lineRenderer.Points:Add(LinePoint(prePosition,Color(0,0,1,0.5),0.3))		
+				lineRenderer.Points:Add(LinePoint(self.position,Color(0,0,1,0.5),0.3))					
+			end
+		end
+		
+		
+		_TimerService:SetTimerOnce(function()
+			if self.hp > 0 then
+				self:Move()
+			end
+		end,math.max(0.1, duration + delay))
+		if  (duration + delay) > 5  then
+		end
+	end
+
+	method void SetBound(Vector2 leftBottom, Vector2 rightTop)
+		-- 몬스터 이동 범위 경계 설정
+		self.leftBottom = leftBottom
+		
+		self.rightTop = rightTop
+	end
+
+	method boolean IsInBound(Vector2 pos)
+		-- 주어진 위치가 몬스터 이동 가능 영역 내에 있는지 확인
+		
+		return self.battleMap:IsRoomTile(pos:ToVector3())
+	end
+
+	method void SetTarget(Entity target)
+		-- 몬스터의 공격 타겟 설정
+		self.target = target
+		self.host = target
+	end
+
+	method void MoveInHostClient(number delta)
+		-- 호스트 클라이언트에서 몬스터 이동 처리
+		if _UserService.LocalPlayer ~= self.host then
+			return
+		end
+		
+		self.moveClientCoolTime  = self.moveClientCoolTime - delta
+		if self.moveClientCoolTime > 0 then
+			return
+		end
+		
+		if isvalid(self.target) then	
+			local start = self.pathFinder:GetCellPosition(self.Entity.TransformComponent.Position)
+			local to = self.target.TransformComponent.Position
+			local toCellPos = self.pathFinder:GetCellPosition(to)		
+			self.moveClientCoolTime = 10
+			local time = _UtilLogic.ElapsedSeconds
+			self.pathFinder:FindPathAync(start,toCellPos,function(path) 
+				if #path > 1 then
+					
+					if #path > 2 then
+						self:RequestHostGoal({Vector2(path[2].x,path[2].y),Vector2(path[3].x,path[3].y)})
+					else
+						self:RequestHostGoal({Vector2(path[2].x,path[2].y)})
+					end
+					self:RequestHostGoal({path[2]})
+					local diff = self.Entity.TransformComponent.Position - self.pathFinder:ToWorldPosition(Vector2(path[2].x,path[2].y))
+					diff.z = 0
+				
+					self.moveClientCoolTime = 0.1
+				end
+			end)			
+			
+		else
+			self.moveClientCoolTime = 1
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestHostGoal(table path)
+		-- 호스트 클라이언트에서 요청한 몬스터 이동 경로 설정
+		if isvalid(self.host) == false then
+			return
+		end
+		if self.host.OwnerId ~= senderUserId then
+			return
+		end
+		self.hostPath = path
+	end
+
+	method void InitSkill()
+		-- 몬스터 스킬 데이터 초기화
+		local monsterData = _MonsterLogic:GetMonsterData(self.monsterId)
+		self._T.skill = monsterData.skill[1]
+	end
+
+	method void UpdateAttack()
+		-- 몬스터 공격 업데이트 (현재 비어있음)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DropItemAndGetEXP(Vector3 pos, string monsterId)
+		-- 몬스터 사망 시 아이템 드롭 및 경험치 지급 처리
+		local items = _FieldDropItemLogic:DropFieldItemByMonsterDead(self._T.monsterData.fieldData, self.dropMapEssenceId, self.contribution, false) 
+		local itemDistribute = _FieldDropItemLogic:DistributeItems(items,self.contribution) 
+		local dropGem = self._T.monsterData.fieldData.getFieldGem() 
+		local exp = self._T.monsterData.fieldData.exp  
+		
+		for userId, damagedHp in pairs(self.contribution) do 
+			local user = _UserService:GetUserEntityByUserId(userId)
+			
+			if isvalid(user) then
+				local multiBattlePlayer = user.MultiBattlePlayer
+				local abilityCompo = user.PlayerAbilityComponent
+				
+				local playerFieldLevel = abilityCompo.ability["lvData"].lv
+				local monsterFieldLevel = _MonsterLogic.monsterData[self.monsterId].fieldData.level
+				
+				if isvalid(multiBattlePlayer) == false then
+					continue
+				end
+				
+				local partyBonusRate = _PartyLogic:GetPartyBonusRate(userId) 
+				local individualPenalty = _FieldDropItemLogic:GetPenalties(_MonsterLogic.monsterData[self.monsterId].fieldData.level, userId) 
+				
+				local ratio = 0
+				
+				if damagedHp > 0 then
+					damagedHp /= self.maxHp 
+					ratio = damagedHp
+				end
+				
+				if ratio >= 1 then 
+					ratio = 1
+				end
+				
+			
+				local buffExp = multiBattlePlayer:GetBuffValue("EXP") 
+				local eachExp = math.ceil(exp * ratio) * (buffExp + abilityCompo.expBonus) * individualPenalty.expRate 
+				local levelup = abilityCompo:ExcuteAbilityLevelExpUp(eachExp, userId, "FieldExp", monsterId) 
+				
+				if levelup then
+					user.MultiBattlePlayer:FieldLevelUp()
+				end
+				
+				
+				local wealthBonus = _AccessoryLogic:GetStatusTable(userId)["wealthBonus"] 
+				local eachGem = math.ceil(dropGem * ratio)
+				
+				if wealthBonus > 0 then
+					eachGem = eachGem * ((wealthBonus / 100) + partyBonusRate) * individualPenalty.dropRate 
+				else
+					eachGem = eachGem * (partyBonusRate) * individualPenalty.dropRate 
+				end
+				
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_FIELDGEM,eachGem,userId,"FieldDrop",self.monsterId)
+				
+			
+				
+				
+				local itemDistributeValidNum = false 
+				
+				if itemDistribute[userId] ~= nil then
+					for distKey, distValue in pairs(itemDistribute[userId]) do
+						if type(distValue) == "number" then
+							itemDistributeValidNum = true
+							break
+						end
+					end
+				end
+				
+				
+				local realDistribute= {}
+				
+				if itemDistribute[userId] ~= nil and itemDistributeValidNum == true then
+					realDistribute[userId] = {}
+					for dropId,dropCnt in pairs(itemDistribute[userId]) do
+						if individualPenalty.dropRate < 1 and _FieldDropItemLogic:CheckApplyLevelDiffPenaltyByItemId(dropId) then 
+							if individualPenalty.dropRate >= _UtilLogic:RandomDouble() then 
+								realDistribute[userId][dropId] = dropCnt
+								user.PlayerStorageComponent:RequestAddItemFromServer(_GameUtil:CreateGUID(), dropCnt, dropId, 1, userId, "FieldDrop", "")
+							end
+						else 
+							realDistribute[userId][dropId] = dropCnt
+							user.PlayerStorageComponent:RequestAddItemFromServer(_GameUtil:CreateGUID(), dropCnt, dropId, 1, userId, "FieldDrop", "")
+						end
+					end
+				end
+		
+				local data = {
+					dropGem = eachGem,
+					items = realDistribute[userId],
+					exp = eachExp,
+					pos = pos,
+					pen = monsterFieldLevel <= 50 and monsterFieldLevel <= playerFieldLevel and playerFieldLevel - monsterFieldLevel >= 10
+				}
+				
+				
+				_FieldDropItemLogic:NotiDropItemAndEXP(data, partyBonusRate, userId)
+			end	
+		end
+		table.clear(self.contribution)
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void OnDropItemAndEXP(table data, number partyBonusRate)
+		-- 클라이언트에서 드롭 아이템과 경험치 획득 메시지 표시
+		local convertPartyBonus = math.floor((partyBonusRate - 1) * 100 + 0.5)
+		
+		if data.dropGem >= 1 then
+			if partyBonusRate > 1 then
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage149"), data.dropGem, convertPartyBonus), "pos")
+			else
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage153"), data.dropGem), "pos")
+			end
+		end
+		
+		if data.exp >= 1 then
+			if partyBonusRate > 1 then
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage152"), data.exp, convertPartyBonus), "pos")
+			else
+				_SystemMessageLogic:ShowMessage(string.format(_LocalizeLogic:GetText("systemMessage151"), data.exp), "pos")
+			end
+		end
+		
+		
+		local drop = data.items
+		if drop ~= nil then
+			for k,v in pairs(drop) do
+				if v >= 1 then
+					local itemId = k
+					local itemName = _ItemDataLogic.itemData[k].name
+					local ruid = _ItemDataLogic.itemData[k].ruid
+					local str = _LocalizationService:GetTextFormat("systemMessage150", _LocalizeLogic:GetItemName(itemId), tostring(v))
+					_SystemMessageLogic:ShowMessage(str, "pos")
+					self:StartTweenDropItem(data.pos,ruid)
+				end
+			end
+		
+		end
+		if data.dropGem > 0 then
+			self:StartTweenDropItem(data.pos,"c65ac390fbfd4e97963c711c05ebaac5")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartTweenDropItem(Vector3 from, string ruid)
+		-- 드롭 아이템이 플레이어에게 날아가는 애니메이션 시작
+		
+		
+		_PoolingLogic:SpawnModelAsync("model://13cce5ea-3670-4a15-8a53-404874bb41ad",from,self.Entity.CurrentMap,function(e) 
+		
+			---@type Entity
+			local entity = e	
+			local playerTransform = _UserService.LocalPlayer.TransformComponent
+			
+			local duration = _UtilLogic:RandomDouble() * 0.5 + 1
+			local transform = entity.TransformComponent
+			local color = entity.SpriteRendererComponent.Color
+			local dir = playerTransform.Position - from
+			local rand = (_UtilLogic:RandomDouble() * 2 - 1) * 1.5
+			local normal = Vector3(-dir.y,dir.x,0):Normalize() * rand
+			
+			entity.SpriteRendererComponent.SpriteRUID = ruid
+			
+			local tween = _TweenLogic:PlayTween(0,1, duration,EaseType.SineEaseIn,function(value) 
+				local to = playerTransform.Position	
+				local pos = from * (1-value) + to * value
+				pos = pos +  math.sin(value*math.pi) * normal
+				transform.Position = pos
+				color.a = math.min(1, 4 - value * 4)
+			end)
+			
+			tween:SetOnEndCallback(
+				function() 		
+					_SoundService:PlaySound("0cae201e10d5468ead5e6ecd1cd747e9", 1)
+					_PoolingLogic:DestroyEntity(entity)
+				end
+			)	
+		end)
+	end
+
+	method number SetDamage(number damage, Vector3 pos, string ppsn, string uniqueKey, boolean isCritical)
+		-- 몬스터에게 데미지를 주고 HP 감소 및 사망 처리
+		if self:IsServer() then
+			if self.contribution[ppsn] == nil then
+				self.contribution[ppsn] = 0
+			end
+			
+			
+			self.contribution[ppsn]+= math.min(damage,self.hp)
+			
+		
+			local penalty = _FieldDropItemLogic:GetPenalties(_MonsterLogic.monsterData[self.monsterId].fieldData.level, ppsn) 
+			damage = damage * penalty.damageRate
+			
+			if damage >  0 then
+				self.hp = self.hp - damage
+				if self.hp <= 0 then
+					 self.hp = 0
+					self:ReqeustDead(pos,ppsn)
+				else
+					
+				end
+			end
+		else 
+			local penalty = _FieldDropItemLogic:GetPenalties(_MonsterLogic.monsterData[self.monsterId].fieldData.level, _UserService.LocalPlayer.PlayerComponent.UserId)
+			damage = damage * penalty.damageRate
+			
+			if damage > 0 then
+				_MultiFieldBattleLogic:AddAttackInfo(self.Entity,uniqueKey,isCritical)
+				self.hp = self.hp - damage
+				
+				if self.hp < 0 then
+					self.hp = 0
+					_MultiFieldBattleLogic:SyncDamage()
+				end
+			else
+				if (penalty.damageRate <= 0.5 or penalty.expRate <= 0.5 or penalty.dropRate <= 0.5) and _SystemMessageLogic.lastPenaltyMessagedTime + 5 < _UtilLogic.ServerElapsedSeconds then
+					_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage173"), "neg", ppsn)
+					_SystemMessageLogic.lastPenaltyMessagedTime = _UtilLogic.ServerElapsedSeconds
+				end
+			end
+			
+		end
+		return damage
+	end
+
+	@ExecSpace("Server")
+	method void SetStun(number duration)
+		-- 몬스터에게 스턴 상태 이팩트 적용
+		self.stateStun = _UtilLogic.ServerElapsedSeconds + duration
+	end
+
+	@ExecSpace("Server")
+	method void SetAttract(number duration)
+		-- 몬스터에게 끌어당기기 상태 이팩트 적용
+		self.stateAttract = _UtilLogic.ServerElapsedSeconds + duration
+	end
+
+	@ExecSpace("Server")
+	method void SetStorm(number duration)
+		-- 몬스터에게 폭풍 상태 이팩트 적용
+		self.stateStorm = _UtilLogic.ServerElapsedSeconds + duration
+	end
+
+	@ExecSpace("Server")
+	method void SetIgnited(number duration)
+		-- 몬스터에게 화상 상태 이팩트 적용
+		self.stateIgnited = _UtilLogic.ServerElapsedSeconds + duration
+	end
+
+	method void UpdateMaxHP()
+		-- 몬스터의 최대 HP 업데이트
+		if self.maxHp > 0 then
+			return
+		end
+		self._T.monsterData = _MonsterLogic:GetMonsterData(self.monsterId)
+		self.maxHp = self._T.monsterData.fieldData.hp
+	end
+
+end

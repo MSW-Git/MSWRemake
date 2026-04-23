@@ -1,0 +1,193 @@
+@Component
+script Kariaine_Attack1SkillEffect extends SkillEffectObject
+
+	property boolean isEvade = false
+
+	@ExecSpace("ClientOnly")
+	method void StartAttack()
+		-- 카리아인 공격1 스킬 시작 (지연 후 트리거 활성화)
+		self.Entity.TriggerComponent.Enable = false
+		
+		_TimerLogic:SetTimerOnce(function()
+				self.Entity.TriggerComponent.Enable = true
+			end, 3.7, "Kariaine_Attack1SkillEffect.StartAttack")
+	end
+
+	method void Init(number damage, boolean isPlayerSkill, string weaponUniqueKey, string skillId)
+		-- 카리아인 공격1 스킬 이펙트 초기화
+		local _T = self._T
+		
+		_T.weaponUniqueKey = weaponUniqueKey
+		
+		if isvalid( _UserService.LocalPlayer.PlayerStorageComponent.storage[weaponUniqueKey]) then
+			_T.weaponID = _UserService.LocalPlayer.PlayerStorageComponent.storage[weaponUniqueKey].originalId
+			_T.weaponSpec = _WeaponSpecLogic:GetWeaponSpec(_T.weaponID)
+		end
+		self.damage = damage
+		
+		if isvalid(_MonsterSkillLogic.skillData[skillId]) and _MonsterSkillLogic.skillData[skillId].hpRatioDamage ~= 0 then
+			self.damage = _UserService.LocalPlayer.BattlePlayer.maxHp * _MonsterSkillLogic.skillData[skillId].hpRatioDamage
+		end
+		
+		_T.velopcity.x = 0
+		_T.velopcity.y = 0
+		
+		_T.time = _TimerLogic.ElapsedSeconds + self.life
+		_T.speed = self.speed
+		_T.accleration = self.ac
+		_T.isPlayerSkill = isPlayerSkill
+		
+		if self.randomDir == true then
+			self.dir.x = _UtilLogic:RandomIntegerRange(-100,100)
+			self.dir.y = _UtilLogic:RandomIntegerRange(-100,100)
+			self:SetAngle(0,true)
+		end
+		
+		self.dir = self.dir:Normalize()
+		
+		if self.fixedSpawnPosition then
+			_T.transform.Position = self.fixedSpawnPositionOffset
+		end
+		if _T.triggers == nil then	
+			local triggers = _T.selfEntity:GetChildComponentsByTypeName("TriggerComponent",true)
+			local triggerCount = #triggers
+			---@type function(e:TriggerEnterEvent)
+			local triggerFunction = function(e)
+				self:OnCollision(e.TriggerBodyEntity,false,nil)
+			end
+			
+			for i=1, triggerCount do
+				triggers[i].Entity:ConnectEvent(TriggerEnterEvent,triggerFunction)
+			end
+			
+			local myTrigger = _T.selfEntity.TriggerComponent
+		
+			if myTrigger ~= nil then
+				table.insert(triggers,myTrigger)
+			end
+			
+			local innerT = self._T
+			_T.setTriggerEnable = function(enable)
+				if innerT.currentEnable and innerT.currentEnable == enable then
+					return
+				end
+				
+				innerT.currentEnable = enable
+				
+				local t = innerT.triggers
+				
+				for i=1, #t do
+					t[i].Enable = enable
+				end
+			end
+			
+			_T.setTriggerGroup = function(group)
+				if innerT.currentGroup and innerT.currentGroup == group then
+					return
+				end
+				
+				innerT.currentGroup = group
+				
+				local t = innerT.triggers
+				
+				for i=1, #t do
+					t[i].CollisionGroup = group
+				end
+			end
+			
+			_T.triggers = triggers
+		end
+		
+		_T.setTriggerEnable(not _T.triggerOff)
+		
+		if self.attractMonster and self.isDestroyOnTrigger then
+			_T.sprite.Color.a = 1
+			local children = _T.selfEntity.Children
+			for i = 1, #children do
+				local childSprite = children[i].SpriteRendererComponent
+				if childSprite ~= nil then
+					childSprite.Color.a = 1
+				end
+			end
+		end
+		
+		if _T.triggerOff == false then
+			if isPlayerSkill then
+				_T.setTriggerGroup(CollisionGroups.PlayerSkill)
+			else
+				_T.setTriggerGroup(CollisionGroups.MonsterSkill)
+			end
+		end
+		
+		_T.selfEntity:SendEvent(SkillEffectStart())
+		self:SetEntityEnable(true)
+		
+		self.jumpForce = _T.originJumpForce
+		
+		if _T.isRandomPosition then
+			_T.transform:Translate(_UtilLogic:RandomDouble() * self.randomPosition.x,_UtilLogic:RandomDouble() * self.randomPosition.y)
+		end 
+		
+		if self.randomRadiusMin > 0 then
+			
+			local randomAngle = _UtilLogic:RandomDouble() * math.pi * 2
+			local randomRadius = _UtilLogic:RandomDouble() * (self.randomRadiusMax - self.randomRadiusMin) +  self.randomRadiusMin
+			
+			local randomX = _UtilLogic:RandomDouble() * math.cos(randomAngle) * randomRadius
+			local randomY = _UtilLogic:RandomDouble() * math.sin(randomAngle) * randomRadius
+				
+			_T.transform:Translate(randomX,randomY)
+		end
+		
+		self:RebuildUpdateVelocityFunc()
+		
+		self.delayEff.Enable = true
+		local delayEffSprite = self.delayEff.SpriteRendererComponent
+		delayEffSprite.Color.a = 0
+		
+		_Tweener:PlayTween(0, 4, 4, 0, EaseType.Linear, function(value)
+				delayEffSprite.Color.a = (value / 4)
+			end, function()
+				self.delayEff.Enable = false
+			end, "Kariaine_Attack1SkillEffect_Init")
+		self.Entity.TransformComponent.Position = Vector3(1, 1, 0)
+		
+		self:StartAttack()
+		self.Entity.TransformComponent.ZRotation = 55
+		self.isEvade = false
+	end
+
+	method void DestroyEffect()
+		-- 스킬 이펙트 파괴 시 회피 메시지 표시
+		__base:DestroyEffect()
+		
+		if self.isEvade then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast156"))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 트리거 진입 시 실드 방어 여부 확인 후 데미지 처리
+		
+		local defense = false
+		
+		for _, component in pairs(self.Entity.CurrentMap:GetChildComponentsByTypeName("KariaineShieldComponent")) do
+			---@type KariaineShieldComponent
+			local shield = component
+			
+			if shield.isPlayerIn then
+				defense = true
+				self.isEvade = true
+				
+				break
+			end
+		end
+		
+		if defense then return end
+		
+		__base:HandleTriggerEnterEvent(event)
+	end
+
+end

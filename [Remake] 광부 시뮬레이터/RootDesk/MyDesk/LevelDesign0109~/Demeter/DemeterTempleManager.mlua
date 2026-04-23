@@ -1,0 +1,135 @@
+@Component
+script DemeterTempleManager extends Component
+
+	property string winterTileMapRUID = ""
+
+	property string springTileMapRUID = ""
+
+	property string springBackgroundRUID = ""
+
+	property string springBgmRUID = ""
+
+	property boolean inSpring = false
+
+	property Entity maskingUI = "d42ee7d2-b038-44c4-8141-e9e5f08c441b"
+
+	@ExecSpace("Client")
+	method void Rebirth(Entity target)
+		-- 플레이어를 봄 테마로 다시 태어나게 하여 맵 환경을 변경하고 함정을 해제함
+		if target.PlayerComponent.UserId ~= _UserService.LocalPlayer.PlayerComponent.UserId then
+			return
+		end
+		
+		local tileMap = _EntityService:GetEntityByPath("/maps/Temple_Demeter_7/TileMap")
+		local background = _EntityService:GetEntityByPath("/maps/Temple_Demeter_7/Background")
+		local traps = _EntityService:GetEntityByPath("/maps/Temple_Demeter_7/Traps")
+		
+		target.RigidbodyComponent.WalkDrag = 1
+		
+		tileMap.TileMapComponent.TileSetRUID = self.springTileMapRUID
+		
+		background.BackgroundComponent:ChangeBackgroundByTemplateRUID(self.springBackgroundRUID)
+		_SoundService:PlaySound("ed06da3fa5cb4458aa5a311cf7b80926", 1.25)
+		
+		self.Entity.SoundComponent:Stop()
+		self.Entity.SoundComponent.AudioClipRUID = self.springBgmRUID
+		self.Entity.SoundComponent:Play()
+		
+		target.PlayerStateAtStage:StartExitedMode()
+		
+		for i = 1 , #self.Entity:GetChildByName("Traps").Children do
+			self.Entity:GetChildByName("Traps").Children[i].Enable = false
+		end
+		
+		for i = 1 , #traps.Children do
+			traps.Children[i].Enable = false
+		end
+		
+		self.Entity:GetChildByName("MiningTargets").MiningTargetManager:SpawnRandomMiningTarget(target)
+	end
+
+	@ExecSpace("Client")
+	method void SetColorAlpha(Entity target)
+		-- 화면 전환 효과를 위해 마스킹 UI의 알파값을 조절하여 페이드 인/아웃 에니메이션을 실행함
+		if target.PlayerComponent.UserId ~= _UserService.LocalPlayer.PlayerComponent.UserId then
+			return
+		end
+		
+		self.maskingUI.Enable = true
+		target.MovementComponent.Enable = false
+		
+		local num = 0
+		
+		local alphaDown = function()
+			num = num - 1
+			self.maskingUI.SpriteGUIRendererComponent.Color.a = num/100
+			if num == 0 then
+				target.MovementComponent.Enable = true
+				self.maskingUI.Enable = false
+			end
+		end
+		
+		local alphaUp = function()
+			num = num + 1
+			self.maskingUI.SpriteGUIRendererComponent.Color.a = num/100
+			if num == 100 then
+				self:Rebirth(target)
+				for i = 1, 100 do
+					_TimerService:SetTimerOnce(alphaDown, (i * 4)/100)
+				end
+			end
+		end
+		
+		for i = 1, 100 do
+			_TimerService:SetTimerOnce(alphaUp, (i * 4)/100)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 데메테르 신전 입장 시 플레이어의 이동 드래그를 설정
+		_UserService.LocalPlayer.RigidbodyComponent.WalkDrag = 0.9
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "a881b70f-5d38-4b27-93f6-aa9f0b2f1add")
+	handler HandleInteractionEvent(InteractionEvent event)
+		-- 제단과 상호작용 시 봄 매직 효과를 실행하여 신전을 변화시킴
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		local miningGamne = _EntityService:GetEntity("cf7e8298-08f2-4352-b1bc-6a21d7d3992f")
+		--------------------------------------------------------
+		if isvalid(InteractionEntity.PlayerControllerComponent) and not self.inSpring and not miningGamne.MiningGame.onMining then
+			self.inSpring = true
+			self:SetColorAlpha(InteractionEntity)
+			self.Entity:GetChildByName("Altar"):GetChildByName("Guide_Key").Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "a881b70f-5d38-4b27-93f6-aa9f0b2f1add")
+	handler HandleInteractionEnterEvent(InteractionEnterEvent event)
+		-- 제단 근처에 들어올 때 가이드 키 UI를 표시함
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		if isvalid(InteractionEntity.PlayerControllerComponent) and not self.inSpring then	
+			self.Entity:GetChildByName("Altar"):GetChildByName("Guide_Key").Enable = true
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "a881b70f-5d38-4b27-93f6-aa9f0b2f1add")
+	handler HandleInteractionLeaveEvent(InteractionLeaveEvent event)
+		-- 제단에서 벗어날 때 가이드 키 UI를 숨김
+		-- Parameters
+		local InteractionEntity = event.InteractionEntity
+		--------------------------------------------------------
+		if isvalid(InteractionEntity.PlayerControllerComponent) then	
+			self.Entity:GetChildByName("Altar"):GetChildByName("Guide_Key").Enable = false
+		end
+		
+	end
+
+end

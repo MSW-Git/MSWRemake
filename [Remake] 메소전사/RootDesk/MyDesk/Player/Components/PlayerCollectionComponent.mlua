@@ -1,0 +1,350 @@
+@Component
+script PlayerCollectionComponent extends Component
+
+	property table eCollectionTable = {}
+
+	property table categoryCollectionTable = {}
+
+	property table collectionStatusTable = {}
+
+	property string userId = ""
+
+	property table collectionMaterialTypeCount = {}
+
+	property boolean canRequestRegistCollection = true
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID 설정 및 컬렉션 스탯 테이블 초기화
+		self.userId = self.Entity.PlayerComponent.UserId
+		self.collectionStatusTable["maxHp"] = 0
+		self.collectionStatusTable["hpRecovery"] = 0 
+		self.collectionStatusTable["speed"] = 0
+		self.collectionStatusTable["attackSpeed"] = 0
+		self.collectionStatusTable["range"] = 0
+		self.collectionStatusTable["evade"] = 0
+		self.collectionStatusTable["hitDamage"] = 0
+		
+		
+		self.collectionStatusTable["totalDamage"] = 0
+		self.collectionStatusTable["bossDamage"] = 0
+		self.collectionStatusTable["physicalDamage"] = 0
+		self.collectionStatusTable["magicalDamage"] = 0
+		self.collectionStatusTable["criticalDamage"] = 0
+		self.collectionStatusTable["criticalPercent"] = 0
+		
+		
+		if self:IsServer() then
+			self:SyncCilentStatusTable(self.collectionStatusTable, self.userId)
+		end
+		
+		
+		local data = _DataService:GetTable("EquipCollectionSetList")
+		for i = 1, data:GetRowCount() do
+			local id = data:GetCell(i, "id")
+			self.collectionMaterialTypeCount[id] = tonumber(data:GetCell(i, "materialTypeCount")) 
+		end
+	end
+
+	method void InitEquipCollectionTable()
+		-- 장비 컬렉션 테이블을 초기화하고 클라이언트에 동기화
+		self:SynClient(self.eCollectionTable,"")
+		self:TransferToPlayerData()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RegisterToCollectionTable(string listId, string materialId, number materialNum, string uniqueKey, string etc, integer remainCount)
+		-- 컬렉션에 아이템을 등록하고 재료 조건 검증 후 컬렉션 완성 처리
+		
+		local playerEntity = nil
+		local targetId = ""
+		local listCategory = _CollectionLogic.statusTable[listId].category 
+		
+		local RefreshCollectionUI = function()
+			if remainCount == 0 then
+				self:RefreshCollectionUI(self.userId)
+				self:SetStatusTable(false)
+				self:TransferToPlayerData()
+			end
+		end
+		
+		if etc ~= "Cheat" then
+			playerEntity = self.Entity 
+			targetId = self.userId 
+			if not isvalid(playerEntity.PlayerStorageComponent.storage[uniqueKey]) then
+				RefreshCollectionUI()
+				return
+			end
+			
+		else 
+			playerEntity = self.Entity
+			targetId = self.userId
+		end
+		
+		if playerEntity.PlayerStorageComponent.storage[uniqueKey].lock == true then
+			_LocalizeLogic:ShowToast("toast242", targetId)
+			RefreshCollectionUI()
+			return
+		end
+		
+		local collection = _CollectionLogic.statusTable[listId]
+		local storage = playerEntity.PlayerStorageComponent.storage[uniqueKey]
+		
+		local maxMaterialCount = 0
+		
+		if materialNum == 1 then
+			maxMaterialCount = collection.material1_count
+			if collection.material1_id ~= storage.originalId then 
+				RefreshCollectionUI()
+				return
+			end
+			
+		elseif materialNum == 2 then
+			maxMaterialCount = collection.material2_count
+			if collection.material2_id ~= storage.originalId then 
+				RefreshCollectionUI()
+				return
+			end
+			
+		elseif materialNum == 3 then	
+			maxMaterialCount = collection.material3_count	
+			if collection.material3_id ~= storage.originalId then 
+				RefreshCollectionUI()
+				return
+			end
+			
+		elseif materialNum == 4 then		
+			maxMaterialCount = collection.material4_count		
+			if collection.material4_id ~= storage.originalId then 
+				RefreshCollectionUI()
+				return
+			end
+			
+		elseif materialNum == 5 then	
+			maxMaterialCount = collection.material5_count	
+			if collection.material5_id ~= storage.originalId then 
+				RefreshCollectionUI()
+				return
+			end
+			
+		else
+			RefreshCollectionUI()
+			return
+		end
+		
+		
+		local currentCount = 0
+		
+		if listCategory == "weapon" then 
+			local weaponCnt = self.Entity.PlayerStorageComponent:GetAllWeaponCnt()
+			if weaponCnt == 1 then
+				_LocalizeLogic:ShowToast("toast241", targetId)
+				RefreshCollectionUI()
+				return
+			end
+			currentCount = _GameUtil:GetWeaponCollectionNumber(self.eCollectionTable[listId], materialNum) 
+			
+		elseif listCategory == "armor" then 
+			if _GameUtil:GetBoolValue(self.eCollectionTable[listId], materialNum) then
+				currentCount = 1
+			else
+				currentCount = 0 
+			end
+		
+		elseif listCategory == "accessory" then
+			currentCount = _GameUtil:GetWeaponCollectionNumber(self.eCollectionTable[listId], materialNum) 
+		else
+			RefreshCollectionUI()
+			return
+		end
+		
+		if currentCount >= maxMaterialCount then 
+			_LocalizeLogic:ShowToast("toast240", targetId)
+			RefreshCollectionUI()
+			return
+		end
+		
+		
+		if listCategory == "weapon" then
+			if self.eCollectionTable[listId] == nil then
+				self.eCollectionTable[listId] = ""
+			end
+		elseif listCategory == "armor" then
+			if self.Entity.PlayerStorageComponent.storage[uniqueKey].level > 1 then
+				_LocalizeLogic:ShowToast("toast239", targetId)
+				RefreshCollectionUI()
+				return
+			end
+			
+			if self.eCollectionTable[listId] == nil then
+				self.eCollectionTable[listId] = 0 
+			end
+		elseif listCategory == "accessory" then
+			if self.eCollectionTable[listId] == nil then
+				self.eCollectionTable[listId] = ""
+			end
+		end
+		
+		if listCategory == "weapon" then
+			self.eCollectionTable[listId] = _GameUtil:SetNumValueTen(self.eCollectionTable[listId], materialNum) 
+		elseif listCategory == "armor" then
+			self.eCollectionTable[listId] = _GameUtil:SetBoolValue(self.eCollectionTable[listId], materialNum, 1)
+		elseif listCategory == "accessory" then
+			self.eCollectionTable[listId] = _GameUtil:SetNumValueTen(self.eCollectionTable[listId], materialNum) 
+		end
+		
+		self.Entity.PlayerStorageComponent:RequestRemoveItemFromServer(self.Entity.PlayerStorageComponent.storage[uniqueKey].originalId, uniqueKey, targetId, true, "Collection") 
+		self:SynClient(self.eCollectionTable, uniqueKey, targetId)
+		
+		
+		self.Entity:SendEvent(NewbieMissionUpdateEvent("registerCollection", "0", 1))
+		self.Entity:SendEvent(DailyMissionUpdateEvent("registerCollection", "", 1))
+		
+		RefreshCollectionUI()
+		
+		if listCategory == "weapon" then
+			_WorldLog:LogCollection(_WorldLog.FlowType_Collection_Weapon, self.userId, listId, materialId, self:CheckCollectionCompleted(listId, targetId))
+		elseif listCategory == "armor" then
+			_WorldLog:LogCollection(_WorldLog.FlowType_Collection_Armor, self.userId, listId, materialId, self:CheckCollectionCompleted(listId, targetId))
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SynClient(table eTable, string uniqueKey)
+		-- 클라이언트에서 컬렉션 테이블 동기화
+		self.eCollectionTable = eTable
+	end
+
+	@ExecSpace("Server")
+	method void TransferToPlayerData()
+		-- 컬렉션 데이터를 플레이어 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["collection"] = _HttpService:JSONEncode(self.eCollectionTable)
+	end
+
+	@ExecSpace("Server")
+	method void SetStatusTable(boolean load)
+		-- 컬렉션 스탯 테이블을 갱신하고 플레이어 스탯 재계산
+		local beforeCollectionStatusTable = self.collectionStatusTable
+		self.collectionStatusTable = _CollectionLogic:GetCollectionStatusTable(self.eCollectionTable, self.Entity)
+		self:SyncCilentStatusTable(self.collectionStatusTable, self.userId)
+		
+		if load then 
+			self.Entity.PlayerCharacterData:CalculateStatus()
+		else 
+			for key, value in pairs(beforeCollectionStatusTable) do
+				if value ~= self.collectionStatusTable[key] then
+					self.Entity.PlayerCharacterData:CalculateStatus() 
+					break
+				end
+			end	
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncCilentStatusTable(table sTable)
+		-- 클라이언트에서 컬렉션 스탯 테이블 동기화 및 UI 갱신
+		self.collectionStatusTable = sTable
+		_CollectionLogic.EquipCollectionPopup:RefreshAbilityText(sTable)
+	end
+
+	method number GetMaterialTypeCount(string id)
+		-- 컬렉션 ID로 필요한 재료 타입 개수를 반환
+		return self.collectionMaterialTypeCount[id]
+	end
+
+	method boolean CheckCollectionCompleted(string listId, string userId)
+		-- 지정된 컬렉션이 완성되었는지 확인
+		local count = self:GetMaterialTypeCount(listId)
+		local targetTable = self.eCollectionTable[listId]
+		local listCategory = _CollectionLogic.statusTable[listId].category
+		local player = _UserService:GetUserEntityByUserId(userId)
+		
+		if listCategory == "armor" then
+			for i = 1 , count do		
+				if _GameUtil:GetBoolValue(targetTable,i) == false then
+					return false
+				end
+			end		
+		elseif listCategory == "weapon" then
+			for i = 1 , count do		
+				if _GameUtil:GetNumberValueTen(listId,i,player) == false then
+					return false
+				end
+			end		
+		end
+		
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void RefreshCollectionUI()
+		-- 클라이언트에서 컬렉션 UI를 갱신
+		_CollectionLogic.EquipCollectionPopup:SetPage(0)
+		_CollectionLogic.EquipCollectionPopup:OpenMaterialInventory()
+	end
+
+	method boolean IsAnyCollectionCanRegister(integer needCount)
+		-- 등록 가능한 컬렉션이 있는지 확인하여 필요 개수를 만족하는지 검사
+		local publicCollectionTable = _CollectionLogic.equipCollectionSet
+		local userCollectionTable = self.eCollectionTable
+		
+		local userStorage = self.Entity.PlayerStorageComponent.storage
+		local itemData = _ItemDataLogic.equipmentData
+		
+		
+		
+		local findCount = 0
+		
+		for k, value in pairs (publicCollectionTable) do
+			
+			local goalCount = {value.material1_count, value.material2_count, value.material3_count, value.material4_count, value.material5_count}
+			local count = value.materialTypeCount 
+			local listCategory = value.category 
+			if listCategory ~= "armor" and listCategory == "weapon" then	
+			if _UtilLogic:IsNilorEmptyString(userCollectionTable[value.id]) then 
+		
+				for j = 1 , count do
+					if _UtilLogic:IsNilorEmptyString(goalCount[j]) then
+						goalCount[j] = 0
+					end
+					findCount = findCount + goalCount[j]
+					
+					if findCount >= needCount then
+						return true
+					end
+				end
+		
+		
+		 	else 
+				
+				for j = 1 , count do 
+						if j == 1 then
+							findCount = findCount + (goalCount[j] - tonumber(userCollectionTable[value.id]:sub(1,3)))
+						elseif j == 2 then
+							findCount = findCount + (goalCount[j] - tonumber(userCollectionTable[value.id]:sub(4,6)))	
+						elseif j == 3 then
+							findCount = findCount + (goalCount[j] - tonumber(userCollectionTable[value.id]:sub(7,9)))	
+						elseif j == 4 then
+							findCount = findCount + (goalCount[j] - tonumber(userCollectionTable[value.id]:sub(10,12)))	
+						elseif j == 5 then
+							findCount = findCount + (goalCount[j] - tonumber(userCollectionTable[value.id]:sub(13,15)))	
+						end
+						
+						if findCount >= needCount then
+							return true
+						end
+			
+				end
+			end
+			end
+		end
+		
+		
+		return false
+	end
+
+end

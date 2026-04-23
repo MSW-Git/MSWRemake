@@ -1,0 +1,194 @@
+@Logic
+script PlayerLevelLogic extends Logic
+
+	property integer Level_Min = 1
+
+	property integer Level_Max = 500
+
+	property Entity UI_LvUp_Reward1 = "f9bab33d-0afc-483d-a941-2d2332521f78"
+
+	property Entity UI_LvUp_Reward2 = "5aa9dd51-1ebd-4f81-a7c1-2912f2ed2d8e"
+
+	property SyncTable<string> LevelUpRewardList
+
+	@ExecSpace("ServerOnly")
+	method integer GetRewardEXPAmount(string mode, integer level)
+		-- 게임 모드와 난이도에 따라 획득하는 경험치 량을 return 하는 함수 (클리어 기준)
+		---------------------------------------------------------
+		-- mode : 플레이 한 게임 모드
+		-- level : 플레이 한 난이도
+		mode = _UtilLogic:Split(mode, "_")[1]
+		---------------------------------------------------------
+		local expTable = _DataService:GetTable("EXPRewardByModeNLevel")
+		local row = expTable:FindRow("Level", string.format("%d", level))
+		local exp = tonumber(row:GetItem(mode))
+		---------------------------------------------------------
+		return exp
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer IsLevelUpCondition(integer currentLevel, integer currentEXP)
+		-- 현재 레벨과 경험치 보유량을 입력하면, 레벨 업 가능한 지 여부를 return합니다. 
+		-- 가능한 경우 남은 경험치량을, 불가능한 경우 -1을 return 합니다.
+		---------------------------------------------------------------------
+		local targetLevel = currentLevel + 1
+		if targetLevel > 500 then
+			targetLevel = 500
+		end
+		
+		local requiredEXP = self:GetRequiredEXP(targetLevel)
+		if requiredEXP == -1 then
+			--log("데이터셋 내에 존재하지 않는 범위입니다!")
+			return -2
+		end
+		
+		if currentEXP >= requiredEXP then
+			--log("보유한 경험치가 필요 경험치보다 많아요! = 레벨업")
+			return (currentEXP - requiredEXP)
+		else
+			return -1
+		end
+	end
+
+	method integer GetRequiredEXP(integer targetLevel)
+		-- targetLevel로 레벨업 하기 위해 필요한 경험치량을 return 합니다. 잘못된 값을 입력받은 경우 -1을 return 합니다.
+		----------------------------------------------------
+		if targetLevel > 500 then
+			targetLevel = 500
+		end
+		
+		local requiredEXP = _DataService:GetTable("RequiredEXP")
+		
+		for i=1, requiredEXP:GetRowCount() do
+			local row = requiredEXP:GetRow(i)
+			
+			local minLevel = tonumber(row:GetItem("Level_min"))
+			local maxLevel = tonumber(row:GetItem("Level_max"))
+			
+			-- 범위 내
+			if targetLevel >= minLevel and targetLevel <= maxLevel then
+				return tonumber(row:GetItem("EXP"))
+			end 
+		end
+		
+		-- 범위에 들지 못한 경우
+		return -1
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_LevelUpPopup(integer beforeLevel, integer afterLevel, integer rewardSyrup, string rewardList_str)
+		-- 레벨업 팝업의 내용을 변경합니다. ui를 enable시키진 않습니다. (별도 처리 필요)
+		local rewardList = _UtilLogic:StringToTable(rewardList_str)
+		--------------------------------------------------------------------------------------------
+		local ui_lvupGroup = _EntityService:GetEntityByPath("/ui/Lobby_LevelUP")
+		
+		-- before level
+		ui_lvupGroup:GetChildByName("t_beforeLevel").TextComponent.Text = string.format("%d", beforeLevel)
+		
+		-- after level
+		if afterLevel > 500 then
+			afterLevel = 500
+			ui_lvupGroup:GetChildByName("Text_MaxLevelGuide").Enable = true
+		else
+			ui_lvupGroup:GetChildByName("Text_MaxLevelGuide").Enable = false
+		end
+		ui_lvupGroup:GetChildByName("t_UpLevel").TextComponent.Text = string.format("%d", afterLevel)
+		
+		-- rewards
+		if rewardSyrup > 0 then
+			self.UI_LvUp_Reward1.Enable = true
+			self.UI_LvUp_Reward1:GetChildByName("t_amount").TextComponent.Text = string.format("%d", rewardSyrup)
+		else
+			self.UI_LvUp_Reward1.Enable = false
+		end
+		
+		
+		if #rewardList > 0 then
+			local rewardInfo = _UtilLogic:Split(rewardList[1], "/")	-- rewardType.."/"..rewardID.."/"..rewardAmount
+			local ui_reward2_amount = self.UI_LvUp_Reward2:GetChildByName("t_amount")
+			local ui_reward2_icon = self.UI_LvUp_Reward2:GetChildByName("sp_Reward")
+			if rewardInfo[1] == "Coach" then	-- 보상이 코치인 경우
+				ui_reward2_amount.Enable = false
+				
+				---@type CoachInfo
+				local coachData = _CoachService.CoachData[rewardInfo[2]]
+				local coachRUID = coachData.ProfileRUID
+				ui_reward2_icon.SpriteGUIRendererComponent.ImageRUID = coachRUID
+				ui_reward2_icon.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(coachRUID)["scale"]
+				ui_reward2_icon.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(coachRUID)["pos"]
+				
+				self.UI_LvUp_Reward2.UI_LevelUpPopup_RewardButton.RewardTitle = coachData.Name
+				self.UI_LvUp_Reward2.UI_LevelUpPopup_RewardButton.RewardDesc = coachData.Desc
+				
+			elseif rewardInfo[1] == "Repechage" then	-- 보상이 패자부활권 인 경우
+				ui_reward2_amount.Enable = true
+				
+				ui_reward2_icon.SpriteGUIRendererComponent.ImageRUID = "97829a9ba8a2434bb76e5cba56bd5913"
+				ui_reward2_icon.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale("97829a9ba8a2434bb76e5cba56bd5913")["scale"]
+				ui_reward2_icon.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale("97829a9ba8a2434bb76e5cba56bd5913")["pos"]
+				
+				self.UI_LvUp_Reward2.UI_LevelUpPopup_RewardButton.RewardTitle = "Repechage"
+				self.UI_LvUp_Reward2.UI_LevelUpPopup_RewardButton.RewardDesc = "Repechage_Tooltip"
+				
+			elseif rewardInfo[1] == "ModeOpen" then	-- 보상이 '모드 해금'인 경우
+				ui_reward2_amount.Enable = false
+				local modeText = ""
+				if rewardInfo[2] == "RankMode" then
+					ui_reward2_icon.SpriteGUIRendererComponent.ImageRUID = "ea216e4763e14908aa4f115fdf356a43"
+					ui_reward2_icon.SpriteGUIRendererComponent.LocalScale = Vector2.one
+					ui_reward2_icon.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+					
+					modeText = _LocalizationService:GetText("GameMode_Rank")
+				else -- Challenge 1 ~ 10
+					ui_reward2_icon.SpriteGUIRendererComponent.ImageRUID = "39d166064d7945929c3800cd00423c72"
+					ui_reward2_icon.SpriteGUIRendererComponent.LocalScale = Vector2.one
+					ui_reward2_icon.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+					
+					modeText = _LocalizationService:GetText("GameMode_Challenge")..string.sub(rewardInfo[2], 10, -1)
+				end
+				
+				
+				self.UI_LvUp_Reward2.UI_LevelUpPopup_RewardButton.RewardTitle = _LocalizationService:GetTextFormat("Reward_ModeOpen_Title", modeText)
+				self.UI_LvUp_Reward2.UI_LevelUpPopup_RewardButton.RewardDesc = _LocalizationService:GetTextFormat("Reward_ModeOpen_Desc", modeText)
+				
+			end
+			self.UI_LvUp_Reward2.Enable = true
+		else
+			self.UI_LvUp_Reward2.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void EnableUI_LevelUpPopup()
+		-- 레벨 업 팝업을 활성화시킵니다. 활성화할 때, 1초에 걸쳐 서서히 등장하게 만듭니다.
+		-------------------------------------------------------------------------
+		local ui_levelUpPopup = _EntityService:GetEntityByPath("/ui/Lobby_LevelUP")
+		ui_levelUpPopup.CanvasGroupComponent.GroupAlpha = 0
+		ui_levelUpPopup.Enable = true
+		
+		local alpha = 0
+		local setPopupAlpha = function()
+			alpha += 0.02
+			ui_levelUpPopup.CanvasGroupComponent.GroupAlpha = alpha
+		end
+		for i=1, 50 do
+			_TimerService:SetTimerOnce(setPopupAlpha, 0.02*i)
+		end
+	end
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 레벨업 보상 리스트를 로드
+		self:LoadRewardList()
+	end
+
+	method void LoadRewardList()
+		-- 데이터 테이블에서 레벨업 보상 리스트를 로드하고 저장
+		local levelupRewardTable = _DataService:GetTable("Reward_LevelUP")
+		
+		for i=1, levelupRewardTable:GetRowCount() do
+			local row = levelupRewardTable:GetRow(i)
+			self.LevelUpRewardList[i] = string.format("%s/%s/%s/%s", row:GetItem("Level"), row:GetItem("Reward_Type"), row:GetItem("Reward_ID"), row:GetItem("Reward_amount") )
+		end
+	end
+
+end

@@ -1,0 +1,153 @@
+@Component
+script C30006_BlazeWizard_SkillprojectileInfo extends Component
+
+	property string onwerId = ""
+
+	property Entity onwerUnit = nil
+
+	property SyncTable<Entity, boolean> AttackedEnemy
+
+	property number projectile_speed = 1
+
+	property boolean shot = false
+
+	property Vector2 moveVec = Vector2(0,0)
+
+	property number zRotation = 0
+
+	property number firstDistanceX = 0
+
+	property number destroyTime = 0
+
+	property SyncTable<Entity> TargetTiles
+
+	property Vector2 setPos = Vector2(0,0)
+
+	property table Enemies = {}
+
+	property number targetY = 0
+
+	property number MoveVecAmount = 1
+
+	property boolean Turned = false
+
+	property number VecY = 0
+
+	property number AttackCount = 0
+
+	@ExecSpace("Server")
+	method void SetProjectile(Entity onwerUnit, Entity targetUnit, number speed, number scale, number vecY, number targetY)
+		local shotCompo = self.Entity.SkillShotCheckComponent
+		
+		self.Entity:SetEnable(true)
+		shotCompo.Shots = true
+		
+		self.onwerUnit = onwerUnit
+		self.projectile_speed = speed * _BTLogic_New.SSpeedValue
+		self.Entity.TransformComponent.Scale = Vector3(scale/3,scale/3,scale/3)
+		self.setPos = self.onwerUnit.UnitStatus.SetPos + Vector2(0, vecY)
+		self.VecY = vecY
+		local targetVec = targetUnit.UnitStatus.SetPos + Vector2(0, targetY)
+		self.targetY = targetY
+		
+		self.moveVec = Vector2.Normalize(targetVec - self.setPos)
+		
+		
+		local unitInfo = onwerUnit.UnitInfo
+		local user = _UserService:GetUserEntityByUserId(shotCompo.ProjOwnerID)
+		if unitInfo.TeamType == "Enemy" then
+			self.Enemies = user.TeamManager.OwnUnits
+		elseif unitInfo.TeamType == "User" then
+			self.Enemies = user.TeamManager.EnemyUnits
+		end
+		
+		self:SetFlipX(onwerUnit, shotCompo.ProjOwnerID)
+		
+		local interval = 0.01
+		local function ShotsFnc()
+			self.destroyTime += interval
+			if self.destroyTime >= 10 then
+				_TimerService:ClearTimer(shotCompo.ShotTimer)
+				self:Destroy()
+				return
+			end
+			
+			if self.onwerUnit.Enable then
+				-- 배틀 종료 여부
+				if not self.onwerUnit.UnitAIWanderComponent.setBattle then
+					_TimerService:ClearTimer(shotCompo.ShotTimer)
+					self:Destroy()
+				else
+					-- 모든 상대 체크
+					local checkEnemy = _BTLogic_New:getEntities(self.Enemies, "AttackAble")
+					for _, enemy in pairs(checkEnemy) do
+						local selfVec2 = self.setPos
+						local enemyVec2 = enemy.UnitStatus.SetPos + Vector2(0, self.targetY)
+						
+						local dis = Vector2.Distance(enemyVec2, selfVec2)
+						
+						if dis <= 0.5 and not isvalid(self.AttackedEnemy[enemy]) then
+							self.AttackedEnemy[enemy] = true
+							self.onwerUnit.UnitInfo.SkillComponent:SetSkillDamage(enemy, self.AttackCount, (self.MoveVecAmount < 0))
+						end
+					end
+					
+					if self.MoveVecAmount < 0 then
+						if not self.Turned then
+							self.Turned = true
+							table.clear(self.AttackedEnemy)
+						end
+						-- 궤도 재설정
+						self.moveVec = Vector2.Normalize(self.onwerUnit.UnitStatus.SetPos + Vector2(0, self.VecY) - self.setPos)
+					end
+					
+					if self.moveVec.y >= 0 then
+						self.zRotation = Vector2.Angle(Vector2(1,0), self.moveVec)
+					else
+						self.zRotation = - Vector2.Angle(Vector2(1,0), self.moveVec)
+					end
+					
+					
+					local posX = self.setPos.x + (self.moveVec.x * self.projectile_speed * interval * 20 * math.abs(self.MoveVecAmount))
+					local posY = self.setPos.y + (self.moveVec.y * self.projectile_speed * interval * 20 * math.abs(self.MoveVecAmount))
+					self.setPos = Vector2(posX, posY)
+					self:SetPosition(posX, posY, self.zRotation, shotCompo.ProjOwnerID)
+					
+					self.MoveVecAmount -= 0.02
+					
+					local ownerDis = Vector2.Distance(self.onwerUnit.UnitStatus.SetPos + Vector2(0, self.VecY), self.setPos)
+					if self.MoveVecAmount < 0 and ownerDis <= 0.5 then
+						_TimerService:ClearTimer(shotCompo.ShotTimer)
+						self:Destroy()
+					end
+				end
+			else
+				_TimerService:ClearTimer(shotCompo.ShotTimer)
+				self:Destroy()
+			end
+		end
+		
+		shotCompo.ShotTimer = _TimerService:SetTimerRepeat(ShotsFnc, interval, 0)
+	end
+
+	@ExecSpace("Server")
+	method void Destroy()
+		self.destroyTime = 0
+		self:SetPosition(999, 999, 0)
+		self.Entity.SkillShotCheckComponent.Shots = false
+		self.Entity:SetEnable(false)
+		self.Entity:RemoveComponent(C30006_BlazeWizard_SkillprojectileInfo)
+	end
+
+	@ExecSpace("Client")
+	method void SetPosition(number x, number y, number zR)
+		self.Entity.TransformComponent.WorldPosition = Vector3(x,y,0)
+		self.Entity.TransformComponent.WorldZRotation = zR
+	end
+
+	@ExecSpace("Client")
+	method void SetFlipX(Entity onwerUnit)
+		self.Entity.SpriteRendererComponent.FlipX = true
+	end
+
+end

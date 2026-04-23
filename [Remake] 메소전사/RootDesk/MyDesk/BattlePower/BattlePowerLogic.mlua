@@ -1,0 +1,421 @@
+@Logic
+script BattlePowerLogic extends Logic
+
+	property table weaponPowerWeightData = {}
+
+	property table petLevelWeightData = {}
+
+	property table petGradePowerData = {}
+
+	property integer characteristicPointValue = 50
+
+	property integer characterLevelWeight = 150
+
+	property integer characterLevel10Weight = 0
+
+	@HideFromInspector
+	property integer armorLevelWeight = 35
+
+	@HideFromInspector
+	property integer weaponLevelWeight = 30
+
+	property integer accLevelWeight = 30
+
+	method void OnBeginPlay()
+		-- 전투력 계산에 필요한 펫, 무기 가중치 데이터 초기화
+		local data = _DataService:GetTable("PetLevelWeightData")
+		
+		for i = 1, data:GetRowCount() do
+			local row = data:GetRow(i)
+			local value = {}
+			
+			value.level = tonumber(row:GetItem("level"))
+			value.weight = tonumber(row:GetItem("weight"))
+			
+			self.petLevelWeightData[value.level] = value
+		end
+		
+		data = _DataService:GetTable("PetGradePowerData")
+		
+		for i = 1, data:GetRowCount() do
+			local row = data:GetRow(i)
+			local value = {}
+			
+			value.grade = row:GetItem("grade")
+			value.power = tonumber(row:GetItem("power"))
+			
+			self.petGradePowerData[value.grade] = value
+		end
+		
+		data = _DataService:GetTable("WeaponPowerWeightData")
+		
+		for i = 1, data:GetRowCount() do
+			local row = data:GetRow(i)
+			local value = {}
+			
+			value.equippedCount = tonumber(row:GetItem("equippedCount"))
+			value.weight = tonumber(row:GetItem("weight"))
+			
+			self.weaponPowerWeightData[value.equippedCount] = value
+		end
+	end
+
+	method number CalcDPS(string uniqueKey)
+		-- 무기의 DPS(초당 데미지)를 계산하여 반환
+		local player = _UserService.LocalPlayer
+		local storage = player.PlayerStorageComponent
+		local id = storage.storage[uniqueKey].originalId
+		local weaponData = _WeaponSpecLogic.weaponData[id]
+		local isPhysicalWeapon = false
+		
+		local attack = _CalcLogic:GetWeaponAttackDamageByKey(uniqueKey, player)
+		local attackSpeed = weaponData.coolTime
+		local pierceCount = weaponData.pierceCount + 1
+		local bulletCount = weaponData.bulletCount
+		if bulletCount == 0 then
+			bulletCount = 1
+			isPhysicalWeapon = true
+		end
+		
+		local weaponType = weaponData.type
+		local weaponTypeBouns = 1
+		local grade = _ItemDataLogic.equipmentData[id].grade
+		
+		if weaponType == "pistol" then
+			weaponTypeBouns = 1
+		elseif weaponType == "dagger" then
+			weaponTypeBouns = 1
+		elseif weaponType == "staff" then
+			if grade == "normal" or grade == "rare" or grade == "epic" then
+				weaponTypeBouns = 5 * 2 
+			elseif grade == "unique" then
+				weaponTypeBouns = 5 * 2.15 
+			else
+				weaponTypeBouns = 10 * 2.15 
+			end
+		elseif weaponType == "axe" then
+			weaponTypeBouns = 3
+		elseif weaponType == "bow" then
+			weaponTypeBouns = 1
+		elseif weaponType == "fan" then
+			if grade == "normal" then 
+				weaponTypeBouns = 5
+			else
+				weaponTypeBouns = 10
+			end
+		elseif weaponType == "sword" then
+			if grade == "unique" then
+				weaponTypeBouns = 100 
+			elseif grade == "legendary" then
+				weaponTypeBouns = 150 
+			else
+				weaponTypeBouns = 50 
+			end
+		elseif weaponType == "cannon" then
+			if grade == "normal" or grade == "rare" or grade == "epic" then
+				weaponTypeBouns = 6
+			else
+				weaponTypeBouns = 13  
+			end
+		elseif weaponType == "breathShooter" then
+			if grade == "normal" then
+				weaponTypeBouns = 4 * 2
+			else
+				weaponTypeBouns = 4 * 3
+			end
+		elseif weaponType == "lightning" then 
+			if grade == "normal" then 
+				weaponTypeBouns = 8
+			else
+				weaponTypeBouns = 10
+			end
+		elseif weaponType == "soundWaveGun" then
+			if grade == "normal" then 
+				weaponTypeBouns = 10
+			else
+				weaponTypeBouns = 15
+			end
+		elseif weaponType == "blackholeWand" then
+			if grade == "normal" then
+				weaponTypeBouns = 5 * 0.3 
+			elseif grade == "rare" and grade == "epic" then
+				weaponTypeBouns = 7 * 0.5 
+			else
+				weaponTypeBouns = 24 * 0.8 
+			end
+		elseif weaponType == "hammer" then
+			weaponTypeBouns = 3 
+		elseif weaponType == "birdBow" then
+			if grade == "normal" or grade == "rare" then
+				weaponTypeBouns = 10 * 3 
+			else
+				weaponTypeBouns = 20 * 3 
+			end
+		elseif weaponType == "knife" then
+			weaponTypeBouns = 3 
+		end
+		
+		
+		
+		local dps = (attack * (pierceCount * 0.7) * bulletCount * weaponTypeBouns) / attackSpeed 
+		if pierceCount == 1 then
+			dps = (attack * bulletCount * weaponTypeBouns) / attackSpeed
+		end
+		
+		if isPhysicalWeapon then
+			dps = (attack * weaponTypeBouns / attackSpeed) / 1.5 
+		end
+		
+		
+		return dps
+		
+	end
+
+	method number CalcWeaponValue(string uniqueKey)
+		-- 무기의 전체 가치를 계산하여 반환 (크리티컬, 사거리, 넉백 등 포함)
+		local player = _UserService.LocalPlayer
+		local storage = player.PlayerStorageComponent
+		local id = storage.storage[uniqueKey].originalId
+		local weaponData = _WeaponSpecLogic.weaponData[id]
+		
+		local criticalRate = weaponData.criticalRate * 10
+		local criticalDamage = weaponData.criticalDamage * 7.5
+		local range = weaponData.range * 2.5
+		local knockback = weaponData.knockback * 5
+		
+		local total = criticalRate + criticalDamage + range + knockback + (self:CalcDPS(uniqueKey) * 0.2)
+		
+		local stun = weaponData.stunDuration
+		if not _UtilLogic:IsNilorEmptyString(stun) then
+			stun = stun * 25
+			total = total + stun
+		end
+		
+		
+		local weaponType = weaponData.type 
+		local weaponTypeBouns = 1
+		local grade = _ItemDataLogic.equipmentData[id].grade
+		
+		if weaponType == "pistol" then
+			weaponTypeBouns = 1
+		elseif weaponType == "dagger" then
+			weaponTypeBouns = 1
+		elseif weaponType == "staff" then
+			weaponTypeBouns = 1
+		elseif weaponType == "axe" then
+			weaponTypeBouns = 1
+		elseif weaponType == "bow" then
+			weaponTypeBouns = 1
+		elseif weaponType == "fan" then
+			weaponTypeBouns = 1
+		elseif weaponType == "sword" then
+			if grade ~= "normal" then
+				weaponTypeBouns = 1.35 
+			end
+		elseif weaponType == "cannon" then
+			weaponTypeBouns = 1
+		elseif weaponType == "breathShooter" then
+			weaponTypeBouns = 1
+		elseif weaponType == "lightning" then 
+			weaponTypeBouns = 1
+		elseif weaponType == "soundWaveGun" then
+			weaponTypeBouns = 1.25
+		elseif weaponType == "blackholeWand" then
+			if grade == "legendary" then 
+				weaponTypeBouns = 1.15
+			end
+		elseif weaponType == "hammer" then
+			weaponTypeBouns = 1
+		elseif weaponType == "birdBow" then
+			weaponTypeBouns = 1
+		elseif weaponType == "knife" then
+			weaponTypeBouns = 1 
+		else
+			weaponTypeBouns = 1
+		end
+		
+		local weaponValue = (total * weaponTypeBouns)
+		
+		return total
+	end
+
+	method void CalcTotalWeaponValue()
+		-- 전체 무기 가치 계산 (현재 구현 없음)
+		
+	end
+
+	method number CalcPetPower(string uniqueKey, Entity player)
+		-- 펫의 전투력을 등급과 레벨에 따라 계산
+		local petStorage = player.PlayerPetStorageComponent
+		local id = petStorage.petInventory[uniqueKey].originalId
+		local level = petStorage.petInventory[uniqueKey].level
+		local grade = _PetLogic.petData[id].grade
+		local power = self.petGradePowerData[grade].power
+		power = power * self.petLevelWeightData[level].weight
+		
+		return power
+	end
+
+	method number CalcCharacteristicPower(Entity player)
+		-- 캐릭터 특성 포인트에 따른 전투력 계산
+		local charData = player.PlayerCharacteristicData
+		
+		return charData:GetConsumedPoint() * self.characteristicPointValue
+	end
+
+	method number CalcCharacterPower(Entity player)
+		-- 캐릭터 레벨에 따른 전투력 계산
+		local charData = player.PlayerCharacterData
+		local level = charData.charLevel
+		
+		local power = level * self.characterLevelWeight
+		
+		return power
+	end
+
+	method number CalcArmorPower(Entity player)
+		-- 장착된 방어구와 액세서리의 전투력 계산
+		local storage = player.PlayerStorageComponent
+		local power = 0
+		
+		for key, value in pairs(storage.storage) do
+			if value.equippedSlotNum > 0 then
+				local id = value.originalId
+				local data = _ItemDataLogic.equipmentData[id]
+				if isvalid(data) then
+					local category = _ItemDataLogic.equipmentData[id].category
+					if category == "armor" and _UtilLogic:Contains(category, "armor") then
+						power = power + value.level * self.armorLevelWeight
+					end
+				elseif isvalid(_ItemDataLogic.itemData[id]) and _ItemDataLogic.itemData[id].category == "accessory" then
+					local detailCategory = _ItemDataLogic:GetAccessoryDetailCategory(id)
+					local reinforcePower = 0
+					local gradePower = _AccessoryLogic.accBattlePower_Grade[value.grade].battlePower
+					local accStepPower = 0
+					
+					if detailCategory == "earring" then
+					else
+						reinforcePower = value.level * self.accLevelWeight
+						accStepPower = _AccessoryLogic.accBattlePower_AccStep[_ItemDataLogic.itemData[id].fixedItem].battlePower
+					end
+					
+					power = power + reinforcePower + gradePower + accStepPower
+				else
+					if isvalid(_ItemDataLogic.itemData[id]) and _ItemDataLogic.itemData[id].category ~= "decoration" then
+					end
+				end
+			end
+		end
+		
+		return power
+	end
+
+	method number CalcWeaponPower(Entity player)
+		-- 장착된 무기의 전투력을 레벨과 장착 개수에 따라 계산
+		local storage = player.PlayerStorageComponent
+		local power = 0
+		local equippedNum = 0
+		
+		for key, value in pairs(storage.storage) do
+			if value.equippedSlotNum > 0 then
+				local id = value.originalId
+				
+				if isvalid(_ItemDataLogic.equipmentData[id]) then
+					local category = _ItemDataLogic.equipmentData[id].category
+					
+					if category == "weapon" and _UtilLogic:Contains(category, "weapon") then
+						power = power + value.level * self.weaponLevelWeight
+						equippedNum = equippedNum + 1
+					end
+				end
+			end
+		end
+		
+		if equippedNum > 0 and isvalid(self.weaponPowerWeightData[equippedNum]) then
+			if not isvalid(self.weaponPowerWeightData[equippedNum]) or not isvalid(self.weaponPowerWeightData[equippedNum].weight) then
+			end
+			return power * self.weaponPowerWeightData[equippedNum].weight
+		else
+			return 0
+		end
+	end
+
+	method number CalcBattlePower(Entity player)
+		-- 전체 전투력을 계산 (펫, 캐릭터, 장비 전투력 합산)
+		local petStorage = player.PlayerPetStorageComponent
+		local power = 0
+		
+		for key, value in pairs(petStorage.petInventory) do
+			if value.equippedSlotNum > 0 then
+				power = power + self:CalcPetPower(key, player)
+			end
+		end
+		
+		power = power + self:CalcCharacterPower(player) + self:CalcCharacteristicPower(player) + self:CalcArmorPower(player) + self:CalcWeaponPower(player)
+		
+		return power
+	end
+
+	method number CalcStatPower(Entity player)
+		-- 플레이어의 각종 스탯에 따른 전투력 계산
+		local power = 0
+		
+		
+		
+		local recovery = 1
+		power = power + _MySpecLogic.mySpec.hpRecovery * recovery
+		
+		
+		local absorption = 5
+		power = power + _MySpecLogic.mySpec.absorption * absorption
+		
+		
+		local totalDamage = 10
+		power = power + _MySpecLogic.mySpec.totalDamage * totalDamage
+		
+		
+		local physicalAttack = 5
+		power = power + _MySpecLogic.mySpec.physicalDamage * physicalAttack
+		
+		
+		local magicalAttack = 5
+		power = power + _MySpecLogic.mySpec.magicalDamage * magicalAttack
+		
+		
+		local criticalPercent = 10
+		power = power + _MySpecLogic.mySpec.criticalPercent * criticalPercent
+		
+		
+		local criticalDamage = 3.5
+		power = power + _MySpecLogic.mySpec.criticalDamage * criticalDamage
+		
+		
+		local attackSpeed = 2
+		power = power + _MySpecLogic.mySpec.attackSpeed * attackSpeed
+		
+		
+		local evade = 3
+		power = power + _MySpecLogic.mySpec.evade * evade
+		
+		
+		local range = 1
+		power = power + _MySpecLogic.mySpec.range * range
+		
+		
+		local moveSpeed = 5
+		power = power + _MySpecLogic.mySpec.speed * moveSpeed
+		
+		
+		local hitRatio = 100
+		power = power + _MySpecLogic.mySpec.hitDamage * hitRatio
+		
+		
+		local bossAttack = 3
+		power = power + _MySpecLogic.mySpec.bossDamage * bossAttack
+		
+		
+		
+		return power
+	end
+
+end

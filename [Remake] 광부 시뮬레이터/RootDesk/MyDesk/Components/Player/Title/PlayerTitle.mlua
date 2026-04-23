@@ -1,0 +1,237 @@
+@Component
+script PlayerTitle extends Component
+
+	@Sync
+	property number equipedIdx = 0
+
+	property SyncTable<boolean> haveItem
+
+	method void OnBeginPlay()
+		-- 플레이어 칭호 시스템 초기화 및 칭호 엔티티 생성
+		self._T.tableList = { haveItem = self.haveItem }
+		self._T.tableType = { haveItem = "boolean" }
+		
+		
+		local titleTable = _DataService:GetTable("Title")
+		for i=1, titleTable:GetRowCount() do
+			self.haveItem[i] = false
+		end
+		
+		if self:IsServer() then
+			self:SpawnTitleEntity()
+		end
+		
+		if self:IsClient() then	
+			self:SetTitleEntityOnClient()
+		end
+		
+		
+		
+		self:SetTitleEntity()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 장착된 칭호 인덱스 동기화 시 칭호 엔티티 설정 및 UI 업데이트
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if name == "equipedIdx" then
+			self:SetTitleEntity()
+			_EntityService:GetEntity("0040e4bf-eaeb-465d-8521-237b5a363e0e").TitleStorageUI:RefreshUI()
+			self.Entity.PlayerData:ApplyPlayerStatus()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangeEquipedItem(number idx)
+		-- 지정된 인덱스의 칭호를 장착하고 보유 여부 확인
+		if self.haveItem[idx] == nil or self.haveItem[idx] == false then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_HaveNoTheItem", self.Entity.OwnerId)
+		end
+		
+		self.equipedIdx = idx
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetNewItem(number idx)
+		-- 새로운 칭호를 획듵하고 이미 보유 중인지 확인 후 추가
+		if self.haveItem[idx] ~= nil and self.haveItem[idx] == true then
+			_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_AlreadyHaveTheItem", self.Entity.OwnerId)
+		end
+		
+		self.haveItem[idx] = true
+		self:SetTableElementClient("haveItem", idx, "true", self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SpawnTitleEntity()
+		-- 칭호 표시용 엔티티를 생성하고 정렬 및 이어 설정
+		local title = _SpawnService:SpawnByModelId(
+			"model://3708bbab-f6ee-441d-92e4-3f85cfd0ae31",
+			"Title",
+			Vector3(0, 0, 0),
+			self.Entity)
+		
+		title.SpriteRendererComponent.SortingLayer = "Player"
+	end
+
+	@ExecSpace("Server")
+	method void SetTitleEntity()
+		-- 장착된 칭호에 따라 칭호 엔티티의 외관과 색상 설정
+		local titleTable = _DataService:GetTable("Title")
+		local titleEntity = self.Entity:GetChildByName("Title")
+		
+		if titleEntity == nil then
+			return
+		end
+		
+		if self.equipedIdx ~= nil and self.equipedIdx > 0 then
+			titleEntity.NameTagComponent.Enable = true
+			--titleEntity.NameTagComponent.Name = titleTable:GetCell(self.equipedIdx, 1)
+			titleEntity.NameTagComponent.NameTagRUID = titleTable:GetCell(self.equipedIdx, 2)
+			
+			if titleTable:GetCell(self.equipedIdx, 3) == "black" then
+				titleEntity.NameTagComponent.FontColor = Color.black
+			elseif titleTable:GetCell(self.equipedIdx, 3) == "white" then
+				titleEntity.NameTagComponent.FontColor = Color.white
+			end
+			
+			self:SetTitleEntityOnClient()
+			
+		else
+			titleEntity.NameTagComponent.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetTitleEntityOnClient()
+		-- 클라이언트에서 칭호 엔티티의 로커라이욨된 텍스트와 RUID 설정
+		local titleTable = _DataService:GetTable("Title")
+		local titleEntity = self.Entity:GetChildByName("Title")
+		
+		if titleEntity ~= nil and self.equipedIdx > 0 then
+			local titleName = titleTable:GetCell(self.equipedIdx, 1)
+			titleEntity.NameTagComponent.Name = _LocalizationService:GetText(titleName)
+			
+			local titleRUID = titleTable:GetCell(self.equipedIdx, 2)
+			
+			local setTitleRUID = function()
+				titleEntity.NameTagComponent.NameTagRUID = titleRUID
+			end
+			_TimerService:SetTimerOnce(setTitleRUID, 0.5)
+		end
+	end
+
+	method void OnMapEnter(any enteredMap)
+		-- 맵 진입 시 클라이언트에서의 칭호 엔티티 설정 (현재 비활성화됨)
+		if self:IsClient() then
+			--self:SetTitleEntityOnClient()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 클라이언트로 테이블 전체 데이터 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 클라이언트로 테이블의 특정 요소만 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트에서 테이블을 초기값으로 모두 초기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 테이블 변경 시 관련 UI들을 업데이트하고 능력치 적용
+		if name == "haveItem" then
+			_EntityService:GetEntity("0040e4bf-eaeb-465d-8521-237b5a363e0e").TitleStorageUI:RefreshUI()
+			self.Entity.PlayerData:ApplyPlayerStatus()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllProperty()
+		-- 모든 칭호 관련 속성을 초기값으로 리셋
+		self.equipedIdx = 0
+			
+		local titleTable = _DataService:GetTable("Title")
+		local count = titleTable:GetRowCount()
+		for i=1, count do
+			self.haveItem[i] = false
+		end
+		
+		self:ClearTableClient("storageList", "false", count, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LoadedUserData(string haveTitleStr, string equipedTitleStr)
+		-- 사용자 데이터에서 칭호 관련 정보를 로드하여 속성에 적용
+		local titleKindNum = _DataService:GetRowCount("Title")
+		
+		-- 칭호 보유 정보 갱신
+		if isvalid(haveTitleStr) == false then
+			for i=1, titleKindNum do
+				self.haveItem[i] = false
+			end
+		else 
+			local haveTitleData = _UtilLogic:StringToTable(haveTitleStr)
+			for i=1, titleKindNum do
+				if haveTitleData[i] == nil or haveTitleData[i] == false then
+					self.haveItem[i] = false
+				elseif haveTitleData[i] == true then
+					self.haveItem[i] = true
+				end
+			end
+		end
+		
+		
+		
+		-- 장착한 칭호 정보 갱신
+		if equipedTitleStr == nil or equipedTitleStr == "" then
+			self.equipedIdx = 0
+		else 
+			self.equipedIdx = tonumber(equipedTitleStr)
+		end
+		
+		-----------------------------
+		
+		self:SetTableClient("haveItem", _UtilLogic:TableToString(self.haveItem), self.Entity.OwnerId)
+	end
+
+end

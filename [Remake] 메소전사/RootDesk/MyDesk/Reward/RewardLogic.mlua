@@ -1,0 +1,1219 @@
+@Logic
+script RewardLogic extends Logic
+
+	property table stageRewardData = {}
+
+	property table chapterRewardData = {}
+
+	@HideFromInspector
+	property number lossRatio = 1
+
+	property table bundleDatas = {}
+
+	property table weeklyLimitLandRewardData = {}
+
+	property table userAccountLevelUpRewardData = {}
+
+	property table gatheringRewardData = {}
+
+	property string POST_ITEM_TYPE_BUNDLE = "BD"
+
+	property string POST_ITEM_TYPE_CUSTOM_BUNDLE = "CBD"
+
+	property table limitLandWaveRewardData = {}
+
+	property table requestedTimeTable = {}
+
+	method void OnBeginPlay()
+		-- 보상 시스템 초기화 및 모든 보상 데이터 로드
+		local data = _DataService:GetTable("StageRewardData")
+		
+		for i = 1, data:GetRowCount() do
+			local reward = {}
+			reward.stageStep = tonumber(data:GetCell(i,"stageStep"))
+		
+			reward.itemCategory = data:GetCell(i,"itemCategory")
+			reward.amount = tonumber(data:GetCell(i, "amount"))
+			reward.accountExp = tonumber(data:GetCell(i, "accountExp"))
+			reward.itemCategory2 = data:GetCell(i,"itemCategory2")
+			reward.amount2 = tonumber(data:GetCell(i, "amount2"))
+			self.stageRewardData[reward.stageStep] = reward
+		end
+		
+		data = _DataService:GetTable("ChapterRewardData")
+		
+		for i = 1, data:GetRowCount() do
+			local chapter = {}
+			chapter.chapterStep = tonumber(data:GetCell(i, "chapterStep"))
+			chapter.itemCategory = data:GetCell(i,"itemCategory")
+			chapter.amount = data:GetCell(i, "amount")
+			
+			self.chapterRewardData[chapter.chapterStep] = chapter
+		end
+		
+		self:SendEvent(StageDataLoadEvent())
+		
+		self:InitializeBundleDatas()
+		
+		data = _DataService:GetTable("WeeklyLimitLandRewardData")
+		
+		for i = 1, data:GetRowCount() do
+			local limitLandRewardData = {}
+			
+			limitLandRewardData.id = data:GetCell(i, "id")
+			limitLandRewardData.rank = tonumber(data:GetCell(i, "rank"))
+			limitLandRewardData.minRankRatio = tonumber(data:GetCell(i, "minRankRatio"))
+			limitLandRewardData.maxRankRatio = tonumber(data:GetCell(i, "maxRankRatio"))
+			limitLandRewardData.rewardBundleId = data:GetCell(i, "rewardBundleId")
+			
+			self.weeklyLimitLandRewardData[limitLandRewardData.id] = limitLandRewardData
+		
+		end
+		
+		
+		data = _DataService:GetTable("PlayerAccountLevelUpRewardData")
+		
+		for i = 1, data:GetRowCount() do
+			local accountRewardData = {}
+			accountRewardData.level = tonumber(data:GetCell(i, "level"))
+			self.userAccountLevelUpRewardData[accountRewardData.level] = accountRewardData
+		end
+		
+		data = _DataService:GetTable("AutoGatheringReward")
+		
+		for i = 1, data:GetRowCount() do
+			local gatheringRewardData = {}
+			gatheringRewardData.level = tonumber(data:GetCell(i, "userLevel"))
+			gatheringRewardData.gold = tonumber(data:GetCell(i, "gold"))
+			gatheringRewardData.scroll = tonumber(data:GetCell(i, "scroll"))
+			gatheringRewardData.essence = tonumber(data:GetCell(i, "essence"))
+			gatheringRewardData.diamond = tonumber(data:GetCell(i, "diamond"))
+			self.gatheringRewardData[gatheringRewardData.level] = gatheringRewardData
+		end
+		
+		
+		data = _DataService:GetTable("LimitLandWaveRewardData")
+		
+		for i = 1, data:GetRowCount() do
+			local limitLandWaveRewardData = {}
+			
+			limitLandWaveRewardData.id = data:GetCell(i, "id")
+			limitLandWaveRewardData.needWave = tonumber(data:GetCell(i, "needWave"))
+			limitLandWaveRewardData.rewardId = data:GetCell(i, "rewardId")
+			
+			self.limitLandWaveRewardData[limitLandWaveRewardData.id] = limitLandWaveRewardData
+		end
+	end
+
+	method void InitializeBundleDatas()
+		-- 번들 데이터 초기화 및 필요한 슬롯 수 계산
+		local data = _DataService:GetTable("BundleData")
+		
+		for i = 1, data:GetRowCount() do
+			local bundleId = data:GetCell(i, "bundleId")
+			local bundleData = self.bundleDatas[bundleId]
+			
+			if bundleData == nil then
+				bundleData = {}
+				bundleData.bundleItemDatas = {}
+				bundleData.needSlotCounts = {} 
+				self.bundleDatas[bundleId] = bundleData
+			end
+			
+			local bundleItemData = {}
+			bundleItemData.itemType = data:GetCell(i, "itemType")
+			bundleItemData.itemId = data:GetCell(i, "itemId")
+			bundleItemData.itemNum = tonumber(data:GetCell(i, "itemNum"))
+			table.insert(bundleData.bundleItemDatas, bundleItemData)
+			
+			if bundleItemData.itemType == "item" then
+				local itemType = _GameUtil:ParseItemType(bundleItemData.itemId)
+				local itemData = _ItemDataLogic.itemData[bundleItemData.itemId]
+				
+				if itemType == _GameConfig:GetConfig().ITEMTYPE_WEAPON or itemType == _GameConfig:GetConfig().ITEMTYPE_ARMOR then
+					if bundleData.needSlotCounts[itemType] == nil then
+						bundleData.needSlotCounts[itemType] = 1
+					else
+						bundleData.needSlotCounts[itemType] = bundleData.needSlotCounts[itemType] + 1
+					end
+				elseif isvalid(itemData) and itemData.category == "etc" then
+					if bundleData.needSlotCounts[itemData.category] == nil then
+						bundleData.needSlotCounts[itemData.category] = 1
+					else
+						bundleData.needSlotCounts[itemData.category] = bundleData.needSlotCounts[itemData.category] + 1
+					end
+				elseif isvalid(itemData) and itemData.category == "consume"  then
+					if bundleData.needSlotCounts["consume"] == nil then
+						bundleData.needSlotCounts["consume"] = 1
+					else
+						bundleData.needSlotCounts["consume"] = bundleData.needSlotCounts["consume"] + 1
+					end
+				elseif isvalid(itemData) and itemData.category == "decoration" then
+					if bundleData.needSlotCounts["decoration"] == nil then
+						bundleData.needSlotCounts["decoration"] = 1
+					else
+						bundleData.needSlotCounts["decoration"] = bundleData.needSlotCounts["decoration"] + 1
+					end
+				end
+			elseif bundleItemData.itemType == "pet" then
+				if bundleData.needSlotCounts["pet"] == nil then
+					bundleData.needSlotCounts["pet"] = 1
+				else
+					bundleData.needSlotCounts["pet"] = bundleData.needSlotCounts["pet"] + 1
+				end
+			end
+		end
+	end
+
+	method table FindBundleData(string bundleId)
+		-- 지정된 ID의 번들 데이터 반환
+		return self.bundleDatas[bundleId]
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetStageReward(integer stageNum)
+		-- 스테이지 클리어 보상 요청 처리
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local playerInfo = player.PlayerInfoComponent
+		
+		if playerInfo.playerInfo.stageStep < stageNum then
+			return
+		end
+		
+		if isvalid(playerInfo.stageRewardData[stageNum]) and playerInfo.stageRewardData[stageNum].rewarded then
+			return
+		end
+		
+		self:GetStageReward(senderUserId, stageNum)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean GetStageReward(string userId, integer stageNum)
+		-- 스테이지 보상을 플레이어에게 지급
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local playerInfo = player.PlayerInfoComponent
+		local playerCurrency = player.PlayerCurrencyData
+		local playerStorage = player.PlayerStorageComponent
+		local data = _RewardLogic.stageRewardData[stageNum]
+		
+		if data.itemCategory == "gold" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, data.amount, userId,"FirstStageClear",string.format("%d",stageNum))
+		elseif data.itemCategory == "essence" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, data.amount, userId,"FirstStageClear",string.format("%d",stageNum))
+		elseif data.itemCategory == "weaponScroll" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, data.amount, userId,"FirstStageClear",string.format("%d",stageNum))
+		elseif data.itemCategory == "diamond" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.amount, userId,"FirstStageClear",string.format("%d",stageNum))
+		else
+			local id = data.itemCategory
+			local itemData = _ItemDataLogic.itemData[id]
+			local isEgg = true
+			
+			if not isvalid(itemData) then
+				itemData = _ItemDataLogic.equipmentData[id]
+				isEgg = false
+			end
+			
+			if isEgg then
+				for i = 1, data.amount do
+					playerStorage:RequestAddEgg(itemData.id, 1, itemData.id, 1, "" ,0,"FirstStageClear")
+				end
+			else
+				for i = 1, data.amount do
+					playerStorage:RequestAddItemFromServer(_GameUtil:CreateGUID(), 1, itemData.id, 1, userId,"FirstStageClear","")
+				end
+			end
+		end
+		
+		if data.itemCategory2 == "gold" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, data.amount2, userId,"FirstStageClear",string.format("%d",stageNum))
+		elseif data.itemCategory2 == "essence" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, data.amount2, userId,"FirstStageClear",string.format("%d",stageNum))
+		elseif data.itemCategory2 == "weaponScroll" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, data.amount2, userId,"FirstStageClear",string.format("%d",stageNum))
+		elseif data.itemCategory2 == "diamond" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, data.amount2, userId,"FirstStageClear",string.format("%d",stageNum))
+		else
+			local id = data.itemCategory2
+			local itemData = _ItemDataLogic.itemData[id]
+			local isEgg = true
+			
+			if not isvalid(itemData) then
+				itemData = _ItemDataLogic.equipmentData[id]
+				isEgg = false
+			end
+			
+			if isEgg then
+				for i = 1, data.amount2 do
+					playerStorage:RequestAddEgg(itemData.id, 1, itemData.id, 1, "" ,0,"FirstStageClear")
+				end
+			else
+				for i = 1, data.amount2 do
+					playerStorage:RequestAddItemFromServer(_GameUtil:CreateGUID(), 1, itemData.id, 1, userId,"FirstStageClear",id)
+				end
+			end
+		end
+		
+		player.PlayerAccount:PlayerAccountExpUp(data.accountExp, false, "FirstStageClear", userId) 
+		
+		playerInfo.stageRewardData[stageNum] = playerInfo:SetStageRewardData(stageNum, true)
+		playerInfo:SetStageRewardStatus()
+		playerInfo:SyncStageRewardStatusInClient(stageNum, playerInfo.stageRewardData[stageNum], userId)
+		self:NoticeGetStageRewards(_UtilLogic:TableToString(data), userId)
+		
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void NoticeGetStageRewards(string tableStr)
+		-- 스테이지 보상 획득 알림 표시
+		local data = _UtilLogic:StringToTable(tableStr)
+		local str = ""
+		
+		local itemInfos = {}
+		
+		itemInfos[1] = {["itemType"] = data.itemCategory, ["id"] = "", ["count"] = data.amount}
+		itemInfos[2] = {["itemType"] = data.itemCategory2, ["id"] = "", ["count"] = data.amount2}
+		
+		_ItemListPopUp:Open(itemInfos, nil, _LocalizeLogic:GetText("etcStr218"))
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetChapterReward(integer chapterNum)
+		-- 챕터 보상 요청 처리
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local playerInfo = player.PlayerInfoComponent
+		
+		if playerInfo.playerInfo.stageStep / 10 < chapterNum then
+			return
+		end
+		
+		if isvalid(playerInfo.chapterRewardData[chapterNum]) and playerInfo.chapterRewardData[chapterNum].rewarded then
+			return
+		end
+		
+		self:GetChapterReward(senderUserId, chapterNum)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean GetChapterReward(string userId, integer chapterNum)
+		-- 챕터 보상을 플레이어에게 지급
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local playerInfo = player.PlayerInfoComponent
+		local playerCurrency = player.PlayerCurrencyData
+		local playerStorage = player.PlayerStorageComponent
+		local data = _RewardLogic.chapterRewardData[chapterNum]
+		local item = _UtilLogic:Split(data.itemCategory, ",")
+		local amount = _UtilLogic:Split(data.amount, ",")
+		
+		for i = 1, #item do
+			local convertedAmount = tonumber(amount[i])
+			
+			if item[i] == "gold" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, convertedAmount, userId,"Chapter",string.format("%d",chapterNum))
+			elseif item[i] == "essence" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, convertedAmount, userId,"Chapter",string.format("%d",chapterNum))
+			elseif item[i] == "weaponScroll" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, convertedAmount, userId,"Chapter",string.format("%d",chapterNum))
+			elseif item[i] == "diamond" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, convertedAmount, userId,"Chapter",string.format("%d",chapterNum))
+			else
+				local id = item[i]
+				local itemData = _ItemDataLogic.itemData[id]
+				local isEgg = true
+				
+				if not isvalid(itemData) then
+					itemData = _ItemDataLogic.equipmentData[id]
+					isEgg = false
+				end
+				
+				if isEgg then
+					for i = 1, amount[i] do
+						playerStorage:RequestAddEgg(itemData.id, 1, itemData.id, 1, "", 0,"Chapter")
+					end
+				else
+					for i = 1, amount[i] do
+						playerStorage:RequestAddItemFromServer(_GameUtil:CreateGUID(), 1, itemData.id, 1, userId,"Chapter",tostring(chapterNum))
+					end
+				end
+			end
+		end
+		
+		
+		playerInfo.chapterRewardData[chapterNum] = playerInfo:SetChapterRewardData(chapterNum, true)
+		playerInfo:SetChapterRewardStatus()
+		playerInfo:SyncChapterRewardStatusInClient(chapterNum, playerInfo.chapterRewardData[chapterNum], userId)
+		self:NoticeGetChapterRewards(_UtilLogic:TableToString(data), userId)
+		
+		return true
+	end
+
+	@ExecSpace("Client")
+	method void NoticeGetChapterRewards(string tableStr)
+		-- 챕터 보상 획득 알림 표시
+		local data = _UtilLogic:StringToTable(tableStr)
+		local item = _UtilLogic:Split(data.itemCategory, ",")
+		local amount = _UtilLogic:Split(data.amount, ",")
+		local str = ""
+		
+		local itemInfos = {}
+		
+		itemInfos[1] = {["itemType"] = data.itemCategory, ["id"] = "", ["count"] = data.amount}
+		
+		for i = 1, #item do
+			local convertedAmount = tonumber(amount[i])
+			
+			itemInfos[i] = {["itemType"] = "diamond", ["id"] = item[i], ["count"] = convertedAmount}
+			
+			local id = item[i]
+			local itemData = _ItemDataLogic.itemData[id]
+			
+			if not isvalid(itemData) then
+				itemData = _ItemDataLogic.equipmentData[id]
+			end
+			
+			if isvalid(itemData) then
+				itemInfos[i].itemType = "item"
+			end
+		end
+		
+		_ItemListPopUp:Open(itemInfos, nil, _LocalizeLogic:GetText("etcStr215"))
+	end
+
+	method string GetStageRewardEggId(integer currentStageId, string userId)
+		-- 스테이지에서 드롭되는 최고 등급 알 ID 반환
+		local player = _UserService:GetUserEntityByUserId(userId)
+		
+		local monsterType = "boss"
+		local currentStage = _StageLogic.stageData[tostring(currentStageId)]
+		local stageStep = currentStage.step
+		local selectedDrops = {}
+		
+		for key, value in pairs(_StageLogic.stageDropData) do
+			if value.stageStep == stageStep then
+				if value.monsterType == monsterType then
+					selectedDrops = value
+					break
+				end
+			end
+		end
+		
+		local dropItems = _UtilLogic:Split(selectedDrops.reward, "/")
+		local eggId = 0
+		local egg = ""
+		
+		for key, value in pairs(dropItems) do
+			local split = _UtilLogic:Split(value, "_")
+			local itemType = split[1]
+			local id = tonumber(split[2])
+			
+			if itemType == _GameConfig:GetConfig().ITEMTYPE_EGG then
+				if eggId < id then
+					eggId = id
+					egg = value
+				end
+			end
+		end
+		
+		return egg
+	end
+
+	method integer GetStageRewardGold(integer currentStageId)
+		-- 스테이지에서 획득할 수 있는 골드 보상량 반환
+		return _StageLogic.stageData[tostring(currentStageId)].goldReward
+	end
+
+	method integer GetStageRewardScroll(integer currentStageId)
+		-- 스테이지에서 획득할 수 있는 스크롤 보상량 반환
+		return _StageLogic.stageData[tostring(currentStageId)].scrollReward
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetStageClearReward(integer stageId, boolean isClear, integer clearedWave, integer totalWave)
+		-- 스테이지 클리어 보상 요청 처리 및 유효성 검증
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(player) then
+			_WorldLog:LogAbnormalFlow(senderUserId, "Invalid Request.", 0, 0, 0, 0)
+			
+			return
+		end
+		
+		if isClear and not player.PlayerDropsComponent:IsValidClearTime() then
+			
+			return
+		end
+		
+		if player.PlayerDropsComponent.lastRequestedTime + 10 > _UtilLogic.ServerElapsedSeconds then 
+			
+			return 
+		end
+		
+		player.PlayerDropsComponent.lastRequestedTime = _UtilLogic.ServerElapsedSeconds
+		local step = tonumber(_StageLogic.stageData[tostring(stageId)].step)
+		
+		if _CheckLogic:IsCanEnterStage(senderUserId, step) then
+			self:GetStageClearReward(stageId, isClear, clearedWave, totalWave, senderUserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetStageClearReward(integer stageId, boolean isClear, integer clearedWave, integer totalWave, string userId)
+		-- 스테이지 클리어 보상을 계산하여 플레이어에게 지급
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local playerCurrency = player.PlayerCurrencyData
+		local playerAccount = player.PlayerAccount
+		local id = tostring(stageId)
+		local stageData = _StageLogic.stageData[id]
+		local ratio = clearedWave / totalWave
+		
+		if clearedWave == 1 then 
+			ratio = 0.1
+		end
+		
+		local accTable = _AccessoryLogic:GetStatusTable(userId)
+		local accessoryBonus = (accTable["wealthBonus"] / 100) + (accTable["28"] / 100)
+		local petRatio = 1
+		
+		if _PetLogic:GetTotalGoodsBonus(userId) ~= 0 then
+			petRatio = 1 + _PetLogic:GetTotalGoodsBonus(userId) / 100
+		end
+		if isvalid(player.PlayerCharacteristicData.charStorage["RelicType"]) and player.PlayerCharacteristicData.charStorage["RelicType"].level >= 2 then
+			petRatio = petRatio + 0.05
+		end
+		
+		local totalRatio = petRatio + accessoryBonus
+		
+		local extraScroll = 0
+		
+		for key, value in pairs(player.PlayerTempStorageComponent.tempItemRewards) do
+			local splitedId = _UtilLogic:Split(value, "_")
+			if splitedId[1] == _GameConfig:GetConfig().ITEMTYPE_CURRENCY then 
+				if splitedId[2] == "000001" then
+					extraScroll = extraScroll + 1
+				end
+			end
+		end
+		
+		local tempGold = _StageLogic.stageData[id].goldReward
+		local tempEssence = _StageLogic.stageData[id].essenceReward
+		local tempScroll = _StageLogic.stageData[id].scrollReward
+		
+		if isClear then
+			
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, tempGold * totalRatio, userId,"StageClear",string.format("%d",stageId))
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, tempEssence * totalRatio, userId,"StageClear",string.format("%d",stageId))
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, tempScroll * totalRatio + extraScroll, userId,"StageClear",string.format("%d",stageId))
+			
+			playerAccount:PlayerAccountExpUp(_StageLogic.stageData[id].accountExp, true, "StageClear", userId)
+			
+			player.PlayerInfoComponent:SetPlayerStep(_StageLogic.stageData[id].step)
+		elseif ratio > 0 then
+			tempGold = ((_StageLogic.stageData[id].goldReward * ratio) * self.lossRatio)
+			tempEssence = ((_StageLogic.stageData[id].essenceReward * ratio) * self.lossRatio)
+			tempScroll = ((_StageLogic.stageData[id].scrollReward * ratio) * self.lossRatio) 
+			
+			if clearedWave > 0 then 
+				if tempEssence < 1 then
+					local rand = _UtilLogic:RandomDouble() * 100
+					
+					if ratio >= 0.5 then 
+						if rand >= 60 then
+							tempEssence = 1
+						end
+					elseif ratio >= 0.3 then 
+						if rand >= 80 then
+							tempEssence = 1
+						end
+					else
+						if rand >= 95 then
+							tempEssence = 1
+						end
+					end
+				end
+				
+				if tempScroll < 1 then
+					local rand = _UtilLogic:RandomDouble() * 100
+					
+					if ratio >= 0.5 then 
+						if rand >= 10 then
+							tempScroll = 1
+						end
+					elseif ratio >= 0.3 then 
+						if rand >= 40 then
+							tempScroll = 1
+						end
+					else
+						if rand >= 80 then
+							tempScroll = 1
+						end
+					end
+				end
+			end
+			
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, tempGold * totalRatio, userId,"StageTry",string.format("%d",stageId))
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE,tempEssence * totalRatio, userId,"StageTry",string.format("%d",stageId))
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, tempScroll * totalRatio + extraScroll, userId,"StageTry",string.format("%d",stageId))
+			
+		end
+		
+		if isClear then
+			if player.PlayerInfoComponent.minRecommendStage <= stageData.step then 
+				player.PlayerInfoComponent:AddClearCount()
+		
+			end
+			player:SendEvent(DailyMissionUpdateEvent("stageClear", tostring(stageData.step), 1))
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GiveQuestReward(string questId, string userId)
+		-- 퀘스트 완료 보상을 플레이어에게 지급
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local questData = _QuestLogic.questData[questId]
+		
+		local rewardTypes = _UtilLogic:Split(questData.rewardType, "/")
+		local rewardIds = _UtilLogic:Split(questData.rewardId, "/")
+		local rewardNums = _UtilLogic:Split(questData.rewardNum, "/")
+		
+		for i = 1, #rewardIds do
+			local playerStorage = player.PlayerStorageComponent
+			local playerCurrency = player.PlayerCurrencyData
+		
+			local rewardType = rewardTypes[i]
+			local rewardId = rewardIds[i]
+			local rewardNum = tonumber(rewardNums[i])
+			
+			if rewardType == "meso" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, rewardNum, userId,"Quest",questId)
+			elseif rewardType == "essence" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, rewardNum, userId,"Quest",questId)
+			elseif rewardType == "weaponScroll" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, rewardNum, userId,"Quest",questId)
+			elseif rewardType == "diamond" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, rewardNum, userId,"Quest",questId)
+			elseif rewardType == "item" then
+				local itemData = _ItemDataLogic.itemData[rewardId]
+				local minLevel = 1
+				
+				if not isvalid(itemData) or itemData == "" then
+					itemData = _ItemDataLogic.equipmentData[rewardId]
+					minLevel = itemData.minLevel
+				end
+				
+				if itemData.category == "egg" then
+					playerStorage:RequestAddEgg(rewardId, rewardNum, rewardId, 1, "", 0,"Quest")
+				else
+					playerStorage:RequestAddItemFromServer(_GameUtil:CreateGUID(), rewardNum, rewardId, minLevel, userId, "Quest", questId)
+				end
+				
+				local itemName = itemData.name
+			elseif rewardType == "soulPiece" then
+				player.PlayerCharacterData:AddCharPieceCount(tonumber(rewardId),rewardNum, "Quest")
+			elseif rewardType == "pet" then
+				player.PlayerPetStorageComponent:RequestAddPet(_GameUtil:CreateGUID(), 1, rewardId, 1, player.PlayerPetStorageComponent.userId, "Quest", "")
+			elseif rewardType == "characteristic" then
+				player.PlayerCharacteristicData:AddCharacteristicPoint("QuestReward")
+			end
+		end
+		
+		self:ShowQuestRewardMessage(questId, userId)
+	end
+
+	@ExecSpace("Client")
+	method void ShowQuestRewardMessage(string questId)
+		-- 퀘스트 보상 획득 메시지를 화면에 표시
+		local questCompo = _UserService.LocalPlayer.PlayerQuestComponent
+		local questData = _QuestLogic.questData[questId]
+		local rewardStr = ""
+		
+		local rewardTypes = _UtilLogic:Split(questData.rewardType, "/")
+		local rewardIds = _UtilLogic:Split(questData.rewardId, "/")
+		local rewardNums = _UtilLogic:Split(questData.rewardNum, "/")
+		
+		local itemInfo = {}
+		
+		for i = 1, #rewardIds do
+			local playerCurrency = _UserService.LocalPlayer.PlayerCurrencyData
+		
+			local rewardType = rewardTypes[i]
+			local rewardId = rewardIds[i]
+			local rewardNum = tonumber(rewardNums[i])
+			
+			itemInfo[i] = {["id"] = rewardId, ["itemType"] = rewardType, ["count"] = rewardNum}
+		end
+		
+		local callback = function()
+			local id = tonumber(questId)
+			local min = math.maxinteger
+			for key, value in pairs(_QuestLogic.questData) do
+				if id < tonumber(value.id) and value.category == "main" then
+					if tonumber(value.id) < min and tonumber(value.id) ~= math.maxinteger then
+						min = tonumber(value.id)
+					end
+				end
+			end
+			if min == math.maxinteger then
+				min = id
+			end
+			if isvalid(_QuestLogic.questData[tostring(min)]) then
+				if isvalid(questData.dialogId) and not _UtilLogic:IsNilorEmptyString(questData.dialogId) then
+					questCompo:PlayTutorial(questData.dialogId,tostring(min))
+				else
+					questCompo:PlayTutorial("",tostring(min))
+				end
+			end
+		end
+		
+		_ItemListPopUp:Open(itemInfo, callback, _LocalizeLogic:GetText("etcStr216"))
+	end
+
+	method boolean CheckCanGetBundleReward(string bundleId, string userId, table outFailInfo)
+		-- 번들 보상을 받을 수 있는지 인벤토리 슬롯 확인
+		local bundleData = self:FindBundleData(bundleId)
+		
+		local needWeaponSlotCount = bundleData.needSlotCounts[_GameConfig:GetConfig().ITEMTYPE_WEAPON] or 0
+		if needWeaponSlotCount > 0 and not _CheckLogic:IsEnoughWeaponSlot(userId, needWeaponSlotCount) then
+			_LocalizeLogic:ShowToast("toast248", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Weapon slot is not enough to get bundle reward. bundleId: " .. tostring(bundleId) .. ", needWeaponSlotCount: " .. tostring(needWeaponSlotCount)
+			end	
+			
+			return false
+		end
+		
+		local needArmorSlotCount = bundleData.needSlotCounts[_GameConfig:GetConfig().ITEMTYPE_ARMOR] or 0
+		if needArmorSlotCount > 0 and not _CheckLogic:IsEnoughArmorSlot(userId, needArmorSlotCount) then
+			_LocalizeLogic:ShowToast("toast24", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Armor slot is not enough to get bundle reward. bundleId: " .. tostring(bundleId) .. ", needArmorSlotCount: " .. tostring(needArmorSlotCount)
+			end
+			
+		
+			return false
+		end
+		
+		local needConsumeSlot = bundleData.needSlotCounts["consume"] or 0
+		if needConsumeSlot > 0 and not _CheckLogic:IsEnoughConsumeSlot(userId, needConsumeSlot) then
+			_LocalizeLogic:ShowToast("toast118", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Consume slot is not enough to get bundle reward. bundleId: " .. tostring(bundleId) .. ", needConsumeSlotCount: " .. tostring(needConsumeSlot)
+			end
+			
+			return false
+		end
+		
+		local needEtcSlotCount = bundleData.needSlotCounts["etc"] or 0
+		if needEtcSlotCount > 0 and not _CheckLogic:IsEnoughETCSlot(userId, needEtcSlotCount) then
+			_LocalizeLogic:ShowToast("toast235", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Etc slot is not enough to get bundle reward. bundleId: " .. tostring(bundleId) .. ", needEtcSlotCount: " .. tostring(needEtcSlotCount)
+			end
+			
+			return false
+		end
+		
+		local needDecorationSlot = bundleData.needSlotCounts["decoration"] or 0
+		if needDecorationSlot > 0 and not _CheckLogic:IsEnoughDecorationSlot(userId, needDecorationSlot) then
+			_LocalizeLogic:ShowToast("toast233", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Etc slot is not enough to get bundle reward. bundleId: " .. tostring(bundleId) .. ", needEtcSlotCount: " .. tostring(needDecorationSlot)
+			end
+			
+			return false
+		end
+		
+		local needPetSlot = bundleData.needSlotCounts["pet"] or 0
+		
+		if needPetSlot > 0 and not _CheckLogic:IsEnoughPetSlot(userId, needPetSlot) then
+			_LocalizeLogic:ShowToast("toast223", userId)
+			
+			if outFailInfo ~= nil then
+				outFailInfo.message = "Pet slot is not enough to get bundle reward. bundleId: " .. tostring(bundleId) .. ", needPetSlot: " .. tostring(needPetSlot)
+			end
+			
+			return false
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestGetBundleReward(string bundleId, string userId, boolean showDefaultPopUp)
+		-- 번들 보상 지급 요청 처리
+		self:GetBundleReward(bundleId, userId, showDefaultPopUp)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetBundleReward(string bundleId, string userId, boolean showDefaultPopUp)
+		-- 번들 보상을 플레이어에게 지급하고 팝업 표시
+		local player = _UserService:GetUserEntityByUserId(userId)
+		if isvalid(player) == false then
+			return
+		end
+		local bundleData = self:FindBundleData(bundleId)
+		local playerStorage = player.PlayerStorageComponent
+		local playerCurrency = player.PlayerCurrencyData
+		
+		for _, bundleItemData in pairs(bundleData.bundleItemDatas) do
+			local itemType = bundleItemData.itemType
+			local rewardId = bundleItemData.itemId
+			local rewardNum = bundleItemData.itemNum
+			
+			if itemType == "meso" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, rewardNum, userId, "BundleReward",bundleId)
+			elseif itemType == "weaponScroll" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, rewardNum, userId, "BundleReward",bundleId)
+			elseif itemType == "essence" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, rewardNum, userId, "BundleReward",bundleId)
+			elseif itemType == "diamond" then
+				_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, rewardNum, userId, "BundleReward",bundleId)
+			elseif itemType == "item" then
+				local itemData = _ItemDataLogic.itemData[rewardId]
+				local minLevel = 1
+				
+				if not isvalid(itemData) or itemData == "" then
+					itemData = _ItemDataLogic.equipmentData[rewardId]
+					
+					if itemData.category == "weapon" then
+						minLevel = itemData.minLevel
+					end
+				end
+				
+				if itemData.category == "egg" then
+					playerStorage:RequestAddEgg(rewardId, rewardNum, rewardId, 1, "", 0,"BundleReward")
+				else
+					playerStorage:RequestAddItemFromServer(_GameUtil:CreateGUID(), rewardNum, rewardId, minLevel, userId,"BundleReward",bundleId)
+				end
+			elseif itemType == "pet" then
+				local petData = _PetLogic.petData[rewardId]
+				
+				if not isvalid(petData) then return end
+				
+				for i = 1, rewardNum do
+					player.PlayerPetStorageComponent:RequestAddPet(_GameUtil:CreateGUID(), 1, rewardId, 1, userId, "BundleReward", bundleId)
+				end
+			end
+		end
+		
+		if showDefaultPopUp then
+			self:ShowBundleResultPopUp(bundleId, userId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method string ShowBundleRewardPopup(string bundleId)
+		-- 번들 보상 팝업을 표시하고 보상 내용 문자열 반환
+		local str = ""
+		local bundleData = self:FindBundleData(bundleId)
+		local index = 1
+		local itemInfos = {}
+		self:ShowBundlePopup(bundleData.bundleItemDatas)
+		
+		return str
+	end
+
+	@ExecSpace("Client")
+	method void ShowBundleResultPopUp(string bundleId)
+		-- 번들 보상 결과 팝업 표시
+		local str = string.format(_LocalizeLogic:GetText("etcStr150"), self:ShowBundleRewardPopup(bundleId))
+		
+	end
+
+	method boolean CheckCanGetReward(string itemType, string rewardId, integer rewardNum, string userId, table outFailInfo)
+		-- 개별 보상을 받을 수 있는지 인벤토리 슬롯 확인
+		if itemType == "item" then
+			if isvalid(_ItemDataLogic.itemData[rewardId]) then
+				local data = _ItemDataLogic.itemData[rewardId]
+				local category = data.category
+				
+				if category == "egg" then
+					return true
+				elseif category == "decoration" then
+					if not _CheckLogic:IsEnoughDecorationSlot(userId, rewardNum) then
+						_LocalizeLogic:ShowToast("toast233", userId)
+					
+						if outFailInfo ~= nil then
+							outFailInfo.message = "Decoration slot is not enough to get reward. rewardId: " .. tostring(rewardId) .. ", rewardNum: " .. tostring(rewardNum)
+						end	
+						
+						return false
+					end
+				elseif category == "consume" then
+					if not _CheckLogic:IsEnoughConsumeSlot(userId, rewardNum) then
+						_LocalizeLogic:ShowToast("toast118", userId)
+					
+						if outFailInfo ~= nil then
+							outFailInfo.message = "Consume slot is not enough to get reward. rewardId: " .. tostring(rewardId) .. ", rewardNum: " .. tostring(rewardNum)
+						end	
+						
+						return false
+					end
+				elseif category == "etc" then
+					if not _CheckLogic:IsEnoughETCSlot(userId, rewardNum) then
+						_LocalizeLogic:ShowToast("toast235", userId)
+					
+						if outFailInfo ~= nil then
+							outFailInfo.message = "ETC slot is not enough to get reward. rewardId: " .. tostring(rewardId) .. ", rewardNum: " .. tostring(rewardNum)
+						end	
+						
+						return false
+					end
+				end
+			else
+				local equipmentData = _ItemDataLogic.equipmentData[rewardId]
+				local equipmentCategory = (equipmentData ~= nil) and equipmentData.category or nil
+					
+				if equipmentCategory == "weapon" and not _CheckLogic:IsEnoughWeaponSlot(userId, rewardNum) then
+					_LocalizeLogic:ShowToast("toast231", userId)
+				
+					if outFailInfo ~= nil then
+						outFailInfo.message = "Weapon slot is not enough to get reward. rewardId: " .. tostring(rewardId) .. ", rewardNum: " .. tostring(rewardNum)
+					end	
+					
+					return false
+				elseif equipmentCategory == "armor" and not _CheckLogic:IsEnoughArmorSlot(userId, rewardNum) then
+					_LocalizeLogic:ShowToast("toast24", userId)
+				
+					if outFailInfo ~= nil then
+						outFailInfo.message = "Armor slot is not enough to get reward. rewardId: " .. tostring(rewardId) .. ", rewardNum: " .. tostring(rewardNum)
+					end
+					
+					return false
+				end
+			end
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetReward(string itemType, string rewardId, integer rewardNum, string userId, boolean showDefaultPopUp, string source)
+		-- 지정된 타입의 보상을 플레이어에게 지급
+		local player = _UserService:GetUserEntityByUserId(userId)
+		local playerStorage = player.PlayerStorageComponent
+		local playerCurrency = player.PlayerCurrencyData
+		local playerCharacter = player.PlayerCharacterData
+		
+		if itemType == "meso" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_MESO, rewardNum, userId, source, rewardId)
+		elseif itemType == "weaponScroll" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_SCROLL, rewardNum, userId, source, rewardId)
+		elseif itemType == "essence" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_ESSENCE, rewardNum, userId, source, rewardId)
+		elseif itemType == "diamond" then
+			_WealthLogic:RequestAddWealthFromServer(_GameConfig:GetConfig().WEALTHTYPE_DIAMOND, rewardNum, userId, source, rewardId)
+		elseif itemType == "item" or itemType == "egg" or itemType == "armor" or itemType == "weapon" then
+			local itemData = _ItemDataLogic.itemData[rewardId]
+			local minLevel = 1
+			
+			if not isvalid(itemData) or itemData == "" then
+				itemData = _ItemDataLogic.equipmentData[rewardId]
+				if isvalid(itemData) and itemType == "weapon" then
+					minLevel = itemData.minLevel
+				end
+			end
+		
+			if itemData.category == "egg" then
+				playerStorage:RequestAddEgg(rewardId, rewardNum, rewardId, 1, "", 0, source)
+			else
+				playerStorage:RequestAddItemFromServer(_GameUtil:CreateGUID(), rewardNum, rewardId, minLevel, userId, source,"")
+			end
+		elseif itemType == "character" then
+			playerCharacter:AddCharPieceCount(tonumber(rewardId), rewardNum, source)
+		elseif itemType == "bundle" then
+			self:GetBundleReward(rewardId, userId, showDefaultPopUp)
+			showDefaultPopUp = false
+		end
+		
+		if showDefaultPopUp then
+			self:ShowRewardResultPopUp(itemType, rewardId, rewardNum, source, userId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ShowRewardResultPopUp(string itemType, string rewardId, integer rewardNum, string source)
+		-- 보상 획득 결과 팝업 표시
+		local str = string.format(_LocalizeLogic:GetText("confirmPopup16"), self:GetRewardText(itemType, rewardId, rewardNum))
+		local title = _LocalizeLogic:GetText("confirmPopup15")
+		
+		if source == "PurchaseReward" or source == "WorldShopStorageReward" then
+			str =  string.format(_LocalizeLogic:GetText("confirmPopup17"), self:GetRewardText(itemType, rewardId, rewardNum))
+			title = _LocalizeLogic:GetText("etcStr158")
+		elseif source == "DailyGift" then
+			str =  string.format(_LocalizeLogic:GetText("confirmPopup18"), self:GetRewardText(itemType, rewardId, rewardNum))
+		elseif source == "PlayMissionPointReward" then
+			str =  string.format(_LocalizeLogic:GetText("confirmPopup19"), self:GetRewardText(itemType, rewardId, rewardNum))
+		end
+		
+		_UIOnlyConfirmPopUp:Open(str, title, nil)
+	end
+
+	@ExecSpace("Client")
+	method string GetRewardText(string itemType, string rewardId, integer rewardNum)
+		-- 보상 아이템의 표시용 텍스트 생성
+		local str = ""
+		
+		if itemType == "meso" then
+			str = string.format(_LocalizeLogic:GetText("confirmPopup20"), rewardNum)
+		elseif itemType == "weaponScroll" then
+			str = string.format(_LocalizeLogic:GetText("confirmPopup21"), rewardNum)
+		elseif itemType == "essence" then
+			str = string.format(_LocalizeLogic:GetText("confirmPopup22"), rewardNum)
+		elseif itemType == "diamond" then
+			str = string.format(_LocalizeLogic:GetText("confirmPopup23"), rewardNum)
+		elseif itemType == "item" or itemType == "egg" or itemType == "armor" or itemType == "weapon" then
+			local itemData = _ItemDataLogic.itemData[rewardId]
+			local itemName = ""
+			
+			if not isvalid(itemData) or itemData == "" then
+				itemData = _ItemDataLogic.equipmentData[rewardId]
+				itemName = _LocalizationService.LocalTranslator:GetText(itemData.name)
+			else
+				itemName = _LocalizeLogic:GetItemName(rewardId)
+			end
+			
+			
+			str = _LocalizationService:GetTextFormat("confirmPopup24", itemName, tostring(rewardNum))
+			
+		elseif itemType == "character" then
+			local characterName = _LocalizationService:GetText("soul_name_"..rewardId)
+			str = _LocalizationService:GetTextFormat("confirmPopup25", characterName, tostring(rewardNum))
+		end
+		
+		return str
+	end
+
+	@ExecSpace("Server")
+	method void GetWeeklyLimitLandReward()
+		-- 주간 리미트랜드 랭킹 보상 지급 처리
+		local currentDate = _LocalTimeLogic:GetKST()
+		
+		local dayOfWeek = currentDate:ToFormattedString("dddd")
+		
+		if (dayOfWeek == "Sunday" and currentDate.Hour >= 23 and currentDate.Minute >= 30) or
+			(dayOfWeek == "Monday" and currentDate.Hour <= 00 and currentDate.Minute <= 30) then
+			
+			return
+		end
+		
+		local playerEntity = _UserService:GetUserEntityByUserId(senderUserId)
+		local playerInfo = playerEntity.PlayerInfoComponent
+		local rewardedDate = playerInfo.playerInfo.rewardedWeeklyBestLimitLandDate
+		
+		if rewardedDate ~= "" then
+			rewardedDate = DateTime(rewardedDate)
+		
+			if _LocalTimeLogic:GetSeasonWeek(rewardedDate) == _LocalTimeLogic:GetCurrentSeasonWeek() then
+				
+				return
+			end
+		end
+		
+		local rankTable = _RankingLogic.previousWeekLimitLandRecord
+		local rank = 0
+		local totalCount = #table.keys(rankTable)
+		
+		for key, value in pairs(rankTable) do
+			if value.key == senderUserId then
+				rank = tonumber(key)
+			end
+		end
+		
+		if rank ~= 0 then
+			local bundleId = ""
+			
+			if rank <= 3 then 
+				for key, value in pairs(self.weeklyLimitLandRewardData) do
+					if isvalid(value.rank) and tonumber(value.rank) == rank then
+						bundleId = value.rewardBundleId
+						
+						break
+					end
+				end
+			elseif rank <= 1000 then
+				bundleId = "57"
+			else 
+				_LocalizeLogic:ShowToast("toast323", senderUserId)
+			end
+			
+			if bundleId ~= "" and self:CheckCanGetBundleReward(bundleId, senderUserId, nil) then
+				self:RequestGetBundleReward(bundleId, senderUserId, true)
+			else
+				
+				return
+			end
+			
+			playerInfo:SetRewardedWeeklyBestLimitLandDate(_LocalTimeLogic:GetKST())
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void NoticeCantGetWeeklyLimitLandReward()
+		-- 주간 리미트랜드 보상을 받을 수 없음을 알림
+		_UIPopup:Open("", _LocalizeLogic:GetText("popup32"), nil, nil)
+	end
+
+	@ExecSpace("Client")
+	method void ShowBundlePopup(table bundleItemDatas)
+		-- 번들 아이템 목록을 팝업으로 표시
+		local str = ""
+		
+		local index = 1
+		local itemInfos = {}
+		
+		for _, bundleItemData in pairs(bundleItemDatas) do
+			local itemType = bundleItemData.itemType
+			
+			if str ~= "" then
+				str = str .. "\n"
+			end
+			
+			if itemType == "meso" then
+				str = string.format(_LocalizeLogic:GetText("etcStr33"), str, bundleItemData.itemNum)
+			elseif itemType == "weaponScroll" then
+				str = string.format(_LocalizeLogic:GetText("etcStr34"), str, bundleItemData.itemNum)
+			elseif itemType == "essence" then
+				str = string.format(_LocalizeLogic:GetText("etcStr35"), str, bundleItemData.itemNum)
+			elseif itemType == "diamond" then
+				str = string.format(_LocalizeLogic:GetText("etcStr36"), str, bundleItemData.itemNum)
+			elseif itemType == "item" then
+				local itemData = _ItemDataLogic.itemData[bundleItemData.itemId]
+				local itemName = ""
+				
+				if not isvalid(itemData) or itemData == "" then
+					itemData = _ItemDataLogic.equipmentData[bundleItemData.itemId]
+					itemName = _LocalizeLogic:GetText(itemData.name)
+				else
+					itemName = _LocalizeLogic:GetItemName(bundleItemData.itemId)
+				end
+				
+				str = _LocalizationService:GetTextFormat("etcStr37", str, itemName, tostring(bundleItemData.itemNum))
+			end
+			
+			itemInfos[index] = {["id"] = bundleItemData.itemId, ["itemType"] = itemType, ["count"] = bundleItemData.itemNum}
+			
+			index += 1
+		end
+		_ItemListPopUp:Open(itemInfos, nil, _LocalizeLogic:GetText("etcStr219"))
+	end
+
+	@ExecSpace("Server")
+	method void RequestExchangeSoulDust()
+		-- 영혼 가루를 영혼 조각으로 교환 요청 처리
+		local player = _UserService:GetUserEntityByUserId(senderUserId)
+		local playerStorage = player.PlayerStorageComponent
+		local idAndCount = {}
+		local willExchangeId = {}
+		local result = "false"
+		
+		for key, value in pairs(playerStorage.storage) do
+			local id = value.originalId
+			
+			if _CheckLogic:IsSoulDust(id) then
+				local count = value.count
+				
+				if isvalid(idAndCount[id]) then
+					idAndCount[id] = idAndCount[id] + count
+				else
+					idAndCount[id] = count
+				end
+			end
+		
+		end
+		
+		for id, count in pairs(idAndCount) do
+			if count >= 1000 then
+				 willExchangeId[id] = math.floor(count / 1000)
+				
+				result = "success"
+			end
+		end
+		
+		if result == "success" then
+			if _CheckLogic:IsEnoughConsumeSlot(senderUserId, #table.keys(willExchangeId)) then
+				for id, count in pairs(willExchangeId) do
+					playerStorage:RemoveItemById(id, count * 1000, "ExchangeSoulDust")
+					playerStorage:RequestAddItemFromServer(_GameUtil:CreateGUID(), count, _ItemDataLogic.itemData[id].fixedItem, 1, senderUserId, "ExchangeSoulDust", id)
+				end
+			else
+				result = "needSlot"
+			end
+		end
+		
+		self:NoticeExchangeSoulDustResult(result, senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeExchangeSoulDustResult(string result)
+		-- 영혼 가루 교환 결과에 따른 대화 표시
+		if result == "success" then
+			_DialogDataLogic:StartScene("soulDust_Success", "normal", nil)
+		elseif result == "needSlot" then
+			_DialogDataLogic:StartScene("soulDust_NeedSlot", "normal", nil)
+		else
+			_DialogDataLogic:StartScene("soulDust_Fail", "normal", nil)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ReuqestGetLimitLandWaveReward(integer reachWave, string clearedTime)
+		-- 리미트랜드 웨이브 보상 요청 및 중복 요청 방지
+		if not isvalid(self.requestedTimeTable[senderUserId]) then
+			self.requestedTimeTable[senderUserId] = _UtilLogic.ServerElapsedSeconds
+		else
+			if self.requestedTimeTable[senderUserId] + 5 > _UtilLogic.ServerElapsedSeconds or _UserService:GetUserEntityByUserId(senderUserId).PlayerInfoComponent.isInvalidRecord then 
+				_WorldLog:LogAbnormalFlow(senderUserId, "Duplicated Reward Request. (Limit Land)", _UserService:GetUserEntityByUserId(senderUserId).PlayerDropsComponent.enteredTime, _UtilLogic.ServerElapsedSeconds, tonumber(clearedTime), reachWave - 1)
+				_UserService:GetUserEntityByUserId(senderUserId).PlayerInfoComponent.isInvalidRecord = true
+				_UserService:KickUser(senderUserId, KickReason.WorldError)
+				return
+			end
+		end
+		
+		local currentRecord = TimeSpan(clearedTime)
+		if currentRecord.TotalSeconds < (reachWave - 1) * 5 or _UserService:GetUserEntityByUserId(senderUserId).PlayerInfoComponent.isInvalidRecord then
+		
+			_WorldLog:LogAbnormalFlow(senderUserId, "Duplicated Reward Request. (Limit Land)", _UserService:GetUserEntityByUserId(senderUserId).PlayerDropsComponent.enteredTime, _UtilLogic.ServerElapsedSeconds, tonumber(clearedTime), reachWave - 1)
+			_UserService:GetUserEntityByUserId(senderUserId).PlayerInfoComponent.isInvalidRecord = true
+			_UserService:KickUser(senderUserId, KickReason.WorldError)
+			
+			return
+		end
+		
+		if _CheckLogic:IsCanGetLimitLandWaveReward(senderUserId, reachWave) then
+			self:GetLimitLandWaveReward(reachWave, clearedTime, senderUserId)
+		end
+		
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetLimitLandWaveReward(integer reachWave, string clearedTime, string userId)
+		-- 리미트랜드 웨이브 보상을 지급하고 기록 업데이트
+		local playerEntity = _UserService:GetUserEntityByUserId(userId)
+		local playerInfo = playerEntity.PlayerInfoComponent
+		local rewardNum = math.floor(reachWave / 5)
+		local rewardId = self.limitLandWaveRewardData[tostring(rewardNum)].rewardId
+		
+		
+		self:GetReward("item", rewardId, 1, userId, false, "LimitLandWaveReward")
+		self:AlertLimitLandWaveReward(reachWave, userId)
+		playerInfo:RecordLimitLandRecord(reachWave - 1, clearedTime, userId)
+		playerInfo:SetLimitLandRewardedNum(rewardNum)
+	end
+
+	@ExecSpace("Client")
+	method void AlertLimitLandWaveReward(integer reachWave)
+		-- 리미트랜드 웨이브 보상 획득 알림 표시
+		_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast324"), reachWave))
+	end
+
+end

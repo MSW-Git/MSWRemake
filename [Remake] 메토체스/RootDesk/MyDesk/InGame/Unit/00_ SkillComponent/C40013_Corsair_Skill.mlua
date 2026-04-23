@@ -1,0 +1,162 @@
+@Component
+script C40013_Corsair_Skill extends Component
+
+	property number skillAnimLength = 1.42
+
+	property string attackMotionRUID = "3a4e45d06ec94851893737003b82322c"
+
+	property string attackEffectRUID = "ed779976a54f408bb835552d2e67da6e"
+
+	property string hitEffectRUID = "083be775f36845c7b4b61e274e8e76d1"
+
+	property string hitEffect2RUID = "03317f9a676c4d4b9460f15a8a12da97"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		
+		local userId = unitInfo.OwnerId
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local teamManager = user.TeamManager
+		
+		local enemies = {}
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+		checkEnemies = _BTLogic_New:getTargets(unitInfo.setTile, checkEnemies, "Random_3")
+		
+		self:SetAttackMotion(userId)
+		
+		
+		for _, enemy in pairs(checkEnemies) do
+			self:SetAttackEffect(enemy, userId)
+		end
+		
+		
+		local function HitSkill()
+			for _, enemy in pairs(checkEnemies) do
+				if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+					self:SetSkillDamage(enemy)
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(HitSkill, 1.5 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0127",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackMotion()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- attackeffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		local vec3 = Vector3(0, 0.3, 0)
+		if filpX then
+			vec3.x = 2
+		else
+			vec3.x = -2
+		end
+		
+		_EffectService:PlayEffectAttached(self.attackMotionRUID, myUnit, vec3, 0, Vector3(1.5, 1.5, 1.5), false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+		
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+		
+			-- attackeffect
+			local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+			local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+			_EffectService:PlayEffectAttached(self.attackEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3(1.5, 1.5, 1.5), false, options)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)	
+			
+			
+			local skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C40013_Active_SDamage_Physic[unitInfo.level]
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Physical")
+			
+			local executionHPPer = ( _S01_SkillDescLogic.C40013_Active_ExecutionHP_Per[unitInfo.level] * 0.01 + (_S01_SkillDescLogic.C40013_Active_ExecutionHP_Magic[unitInfo.level] * unitStatus.MagicalAttack) ) * 0.01
+			
+			if targetStatus.HP - damageInfo[1] < targetStatus.MaxHP * executionHPPer then
+				self:HitEffect(targetUnit, 2, unitInfo.OwnerId)
+				
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, 0, targetStatus.HP, "skill")
+				
+				-- 캡틴 도전과제 
+				_AchievementService:UpdateProgress_Char(unitInfo,1,user)
+				
+			else
+				self:HitEffect(targetUnit, 1, unitInfo.OwnerId)
+				
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+			end
+			
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit, number type)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		local hitRUID = ""
+		
+		if type == 1 then
+			hitRUID = self.hitEffectRUID
+			_EffectService:PlayEffectAttached(hitRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+		elseif type == 2 then
+			hitRUID = self.hitEffect2RUID
+			_EffectService:PlayEffectAttached(hitRUID, targetUnit, Vector3(0, 0, 0), 0, Vector3.one, false, options)
+		end
+	end
+
+end

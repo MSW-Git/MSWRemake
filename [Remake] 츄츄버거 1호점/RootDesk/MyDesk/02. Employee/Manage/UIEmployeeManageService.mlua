@@ -1,0 +1,461 @@
+@Logic
+script UIEmployeeManageService extends Logic
+
+	property Entity TotalSalary = "6f8e9555-fc42-42dc-8427-b721d87a4758"
+
+	property Entity EmployeeDetail = "e3efab0d-5f34-441e-b12d-25098a92afc3"
+
+	property Entity DeployBtn = "53b41baf-9a0a-4c5f-abb8-83ee0bddf82b"
+
+	property Entity ServingDeployBtn = "0aa05878-1e3d-494c-980e-3f2ba17c7067"
+
+	property Entity FilterPanel = "daaea565-0fea-4d9a-834e-eab2173bc355"
+
+	property UIEmployeeManageScript UIManageCompo = "25b39f1d-2ba9-44dc-b6ba-3e74c2df03bb"
+
+	property UIEmployeeManageList UIEmployeeListCompo = "b78f5b6b-342a-415d-a942-11cbb9d16156"
+
+	property UIEmployeeManageDeployList UIDeployListCompo = "11b0eb47-9777-4fc0-984c-142b9fcbf5d4"
+
+	property Entity SortPanel = "7387af8b-6308-4d16-9389-72172d506800"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 직원 관리 UI 서비스를 초기화하는 함수
+		local toolTip = self.TotalSalary:GetChildByName("ToolTip")
+		toolTip.TextComponent.Text = _LocalizationService:GetText("DepositToolTipText")
+		
+		if isvalid(toolTip) then
+			self.TotalSalary:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			_TooltipService:OpenTooltip(toolTip, nil)	
+			 end )
+		end
+		
+		self.EmployeeDetail:GetChildByName("Deposit").Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UIOpen()
+		-- 직원 관리 UI를 여는 함수
+		
+		_UIGroupManager.EmployeeManageGroup.Enable = true 
+		
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)
+		
+		self.UIManageCompo:Init()
+		
+		self.UIEmployeeListCompo:Init() 
+		
+		self.UIDeployListCompo:Init() 
+		
+		self:UIRefresh()
+		
+		
+		_MainMenuRedDotManager:EnableEmployeeManageRedDot(false)
+		
+		_UIGroupManager:EnableMoneyBarGroup(nil)
+		_UIGroupManager:EnableBackToLobbyBtn(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UIClose()
+		-- 직원 관리 UI를 닫는 함수
+		_UIGroupManager.EmployeeManageGroup.Enable = false
+		
+		self.UIManageCompo:ChangeLocationToServer(_UserService.LocalPlayer)
+		
+		_UserService.LocalPlayer.TimeManager:RequestTimeFlowClient()
+		
+		_UIEmployeeManageService:RequestStoreMangeRedDot()
+		
+		_UIGroupManager:EnableMoneyBarGroup(nil)
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+	end
+
+	@ExecSpace("Client")
+	method void UIRefresh()
+		-- 직원 관리 UI를 새로고침하는 함수
+		if not _UIGroupManager.EmployeeManageGroup.Enable then 
+			return
+		end
+		
+		self.UIEmployeeListCompo:RefreshList(true) 
+		
+		self.UIDeployListCompo:RefreshList() 
+		
+		self:RefreshTotalSalary() 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshTotalSalary()
+		-- 총 급여를 새로고침하는 함수
+		
+		local totalSalary = _UserService.LocalPlayer.EmployeeManager:ReturnTotalSalary()
+		
+		self.TotalSalary:GetChildByName("Salary").TextComponent.Text =  _StringUtilLogic:ReturnThousandsSeparatedString(math.floor(totalSalary))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshLocation(Entity player, string empId)
+		-- 직원의 위치 정보를 새로고침하는 함수
+		if player ~= _UserService.LocalPlayer then 
+			return
+		end
+		self.UIEmployeeListCompo:UpdateEmpSlotFromEmpId(empId)
+		self.UIDeployListCompo:RefreshList()
+	end
+
+	@ExecSpace("Client")
+	method void SelectEmp(string empId, Entity player)
+		-- 직원을 선택하는 함수
+		if _UserService.LocalPlayer ~=player then 
+			return
+		end
+		
+		self.UIManageCompo.SelectEmployeeID = empId
+		
+		if (self.UIDeployListCompo.Entity.Enable) then
+			self.UIDeployListCompo:UpdateSlotOutline(empId)
+		end
+		
+		self.UIEmployeeListCompo:UpdateSlotOutline(empId)
+			
+		self.EmployeeDetail.UIEmployeeManageDetailRenderer:Set(empId)
+		
+		self:UpdateDeployBtn(empId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method table StatSort(table t, string filterType, string sortType)
+		-- 직원 목록을 필터와 정렬 기준에 따라 정렬하는 함수
+		local player = _UserService.LocalPlayer
+		local statType1 = "CookLevel"
+		local statType2 = "ServingLevel"
+		
+		local copyTable = {} 
+		for i, d in pairs(t) do
+			---@type EmployeeLocationData
+			local locationData = d
+			local detailData = player.EmployeeManager:GetEmployeeDetail(locationData.Id)
+			local data = _EmployeeService:GetData(locationData.Id)
+			
+			if not isvalid(detailData) then 
+				continue 
+			end
+			if filterType ~= "All" and filterType ~= data.Type then
+				continue
+			end
+			table.insert(copyTable, detailData:ConvertToTable() )
+			
+		end
+		
+		if filterType == "All" then
+			if sortType == "Down" then 
+				table.sort(copyTable, function(a,b) 
+					
+					local statLevelA
+					if a[statType1] > a[statType2] then
+						statLevelA = a[statType1]
+					else
+						statLevelA = a[statType2]
+					end
+					local statLevelB
+					if b[statType1] > b[statType2] then
+						statLevelB = b[statType1]
+					else
+						statLevelB = b[statType2]
+					end
+					
+					return statLevelA < statLevelB 
+					
+				end ) 
+			
+			elseif sortType == "Up" then  
+				table.sort(copyTable, function(a,b) 
+					
+					local statLevelA
+					if a[statType1] > a[statType2] then
+						statLevelA = a[statType1]
+					else
+						statLevelA = a[statType2]
+					end
+					local statLevelB
+					if b[statType1] > b[statType2] then
+						statLevelB = b[statType1]
+					else
+						statLevelB = b[statType2]
+					end
+					
+					return statLevelA > statLevelB 
+					
+				end ) 
+			end
+			
+		else
+			local statType = "CookLevel"
+			if filterType == _EmployeeTypeEnum.Serving then
+				statType = "ServingLevel"
+			end
+			
+			if sortType == "Down" then 
+				table.sort(copyTable, function(a,b) return a[statType] < b[statType] end ) 
+		
+			elseif sortType == "Up" then
+				table.sort(copyTable, function(a,b) return a[statType] > b[statType] end ) 
+			end
+		end
+		
+		return copyTable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickFilterBtn()
+		-- 필터 버튼 클릭 시 처리하는 함수
+		self.FilterPanel.Enable = not self.FilterPanel.Enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickTransferBtn()
+		-- 전송 버튼 클릭 시 처리하는 함수
+		local empID = self.UIManageCompo.SelectEmployeeID
+		_UserService.LocalPlayer.EmployeeManager:OnButtonClickTransfer(empID)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateDeployBtn(string employeeId)
+		-- 배치 버튼을 업데이트하는 함수
+		local canGrillArrange
+		local canCounterArrage
+		local grillCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.GrillCount)
+		local counterCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(_UserService.LocalPlayer,_UpgradeTypeEnum.CounterCount)
+		
+		local locationData = _UserService.LocalPlayer.EmployeeManager:GetEmployeeLocation(employeeId)
+		local data = _EmployeeService:GetData(employeeId)
+		
+		local btnText = ""
+		local cookBtnText = _LocalizationService:GetText("DeployBtnCook")
+		local servingBtnText = _LocalizationService:GetText("DeployBtnServing")
+		
+		local btnRUID = ""
+		
+		local cancel = "1496dcb920b1445bbb06b64b3dc7e16f"
+		local locationRuid = "7c014c28f4284370b09fb493f8194202"
+		
+		local disablePanel = self.DeployBtn:GetChildByName("Disable")
+		disablePanel.Enable = false
+		
+		if isvalid(locationData) then
+			if locationData.Location == _EmployeeTypeEnum.Waiting then 
+				if data.Type == _EmployeeTypeEnum.Cook then
+					btnText = cookBtnText
+					if  grillCount <= self.UIDeployListCompo.CookEmployeeCount then 
+						disablePanel.Enable = true
+					end
+				else
+					btnText = servingBtnText
+					if  counterCount <= self.UIDeployListCompo.ServingEmployeeCount then 
+						disablePanel.Enable = true
+					end
+				end
+				btnRUID = locationRuid
+				
+			else
+				btnText =  _LocalizationService:GetText("DeployBtnCancel")
+				btnRUID = cancel
+				disablePanel.Enable = false
+				
+			end
+				
+			self.DeployBtn.TextComponent.Text = btnText
+			self.DeployBtn.SpriteGUIRendererComponent.ImageRUID = btnRUID
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickUpgradeBtn()
+		-- 업그레이드 버튼 클릭 시 처리하는 함수
+		local empID = self.UIManageCompo.SelectEmployeeID
+		_EmployeeUpgradeUIServcie:UIOpen(empID) 
+	end
+
+	@ExecSpace("Client")
+	method void RequestStoreMangeRedDot()
+		-- 상점 관리 빨간 점 표시를 요청하는 함수
+		self.UIDeployListCompo:RefreshDeployeCount()
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickSortBtn()
+		-- 정렬 버튼 클릭 시 처리하는 함수
+		self.SortPanel.Enable = not self.SortPanel.Enable
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "003a8352-53bf-4103-9a6e-2c0096eacfcf")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if _TutorialManager.target == self.DeployBtn then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		
+		self:UIClose()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "781fd0f0-bd29-4771-b797-c37be8b4cf0e")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 필터 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self:OnClickFilterBtn()
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "1197823a-20c4-49ad-a1d1-821af94f2609")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 전체 필터 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		self.UIEmployeeListCompo:OnClickFilterCategoryBtn("All")
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "f6a00220-3687-42e2-b0cd-155fbd1e35c2")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 요리 필터 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self.UIEmployeeListCompo:OnClickFilterCategoryBtn(_EmployeeTypeEnum.Cook)
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "4f577a6a-ca2f-42f2-a7de-712beef5af15")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 서빙 필터 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self.UIEmployeeListCompo:OnClickFilterCategoryBtn(_EmployeeTypeEnum.Serving)
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "c988e139-bb94-4136-a2a6-0b1c5412e527")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 정렬 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self:OnClickSortBtn()
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "d587e582-ffcc-445f-9d82-4eca65f56841")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 업그레이드 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if _TutorialManager.target == self.DeployBtn then
+			return
+		end
+			
+		self:OnClickUpgradeBtn()
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "3fbb1c0e-ef1b-45d8-b829-d62690843caf")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- 전송 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if _TutorialManager.target == self.DeployBtn then
+			return
+		end
+		
+		self:OnClickTransferBtn() 
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "3a2c1224-b5c8-406a-803e-381007532b36")
+	handler HandleButtonClickEvent9(ButtonClickEvent event)
+		-- 오름차순 정렬 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self.UIEmployeeListCompo:OnClickSortTypeBtn("Up")
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "ebc26a91-c020-4d37-bf3d-d1d463b69737")
+	handler HandleButtonClickEvent10(ButtonClickEvent event)
+		-- 내림차순 정렬 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		self.UIEmployeeListCompo:OnClickSortTypeBtn("Down")
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+end

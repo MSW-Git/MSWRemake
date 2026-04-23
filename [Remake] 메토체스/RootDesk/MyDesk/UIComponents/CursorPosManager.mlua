@@ -1,0 +1,246 @@
+@Logic
+script CursorPosManager extends Logic
+
+	property table ppsnCursorPosTable = {}
+
+	property number RefreshInterval = 0
+
+	property boolean DraftCursor = false
+
+	property Entity HoverEntity = nil
+
+	@ExecSpace("ClientOnly")
+	method void CheckHoverEntity(boolean tileOnly)
+		-- 마우스 커서 위치의 엔터티를 확인하고 하이라이트 효과를 적용
+		local simulator = _CollisionService:GetSimulator(_UserService.LocalPlayer.CurrentMapName)
+		local worldpoint = _InputService:GetCursorPosition()
+		worldpoint = _UILogic:ScreenToWorldPosition(worldpoint)
+		local components = simulator:OverlapPointAll(CollisionGroups.TriggerBox,worldpoint)
+		
+		---@type Entity
+		local hoverEntity = nil
+		for i = 1, #components do
+			local selectEntity = components[i].Entity
+			
+			if tileOnly == true then
+				if isvalid(selectEntity.TileComponent_New) then
+					if isvalid(hoverEntity) == true and isvalid(hoverEntity.TileComponent_New) == true then
+						
+					else
+						hoverEntity = selectEntity
+					end
+				end
+			else
+				if isvalid(selectEntity.UnitInfo) or isvalid(selectEntity.TileComponent_New) then
+					if isvalid(hoverEntity) then
+						--우선순위 : 1. 유닛 > 타일 /  2. layerorder
+						if isvalid(hoverEntity.TileComponent_New) and isvalid(selectEntity.UnitInfo) then
+							hoverEntity = selectEntity
+						elseif isvalid(selectEntity.TileComponent_New) and isvalid(hoverEntity.UnitInfo) then
+							
+						else
+							if hoverEntity.SpriteRendererComponent.OrderInLayer < selectEntity.SpriteRendererComponent.OrderInLayer then
+								hoverEntity = selectEntity
+							end
+						end
+					else
+						hoverEntity = selectEntity
+					end
+				end
+			end
+		end
+		
+		
+		--타일이 오버될 때 중립 or 적전장 타일이면 nil로
+		if isvalid(hoverEntity) then
+			if not isvalid(hoverEntity.UnitInfo) then
+				
+				local length=string.len(hoverEntity.Name)
+				if tonumber(_UtilLogic:SubString(hoverEntity.Name,length,1)) >= 5 and _UtilLogic:Contains(hoverEntity.Parent.Name,"Line_") then
+					hoverEntity = nil
+				end
+				
+				--타일이 오버되면 유닛 드래그 중인지 체크
+				if not isvalid(_UnitSetLogic_New.SelectUnit) then
+					hoverEntity = nil
+				end
+			end
+		end
+		
+		if isvalid(self.HoverEntity) then
+			
+			--이미 오버 중인 엔터티와 같은 경우
+			if self.HoverEntity == hoverEntity then
+				return
+			end
+			--이미 오버 중인 엔터티와 다른 경우, 셰이더 삭제
+			if isvalid(self.HoverEntity.UnitInfo) == true then	-- 유닛인 경우
+				self.HoverEntity.UnitInfo:SetOutlineMaterial(false, "mouseHover")
+				
+			elseif isvalid(self.HoverEntity.TileComponent_New) == true and not _UtilLogic:Contains(self.HoverEntity.Name, "DoDoTile") then
+				if isvalid(_UnitSetLogic_New.SelectUnit) == false then
+					local dragofftile = self.HoverEntity:GetChildByName("CanDragOffTile")
+		 			self.HoverEntity:GetChildByName("CanDragOffTile").Enable = false
+					self.HoverEntity:GetChildByName("OnDraggingTile").Enable = false
+		
+				else
+					self.HoverEntity:GetChildByName("CanDragOffTile").Enable = true
+					self.HoverEntity:GetChildByName("OnDraggingTile").Enable = false
+				end
+				if self.HoverEntity ~= _UserService.LocalPlayer.TutorialManager_New.CurrentTargetTile and _UserService.LocalPlayer.TutorialManager_New.AlwaysShowFieldTile == true then
+					--튜토리얼에서 모든 타일 보기가 켜져있을 경우
+					self.HoverEntity:GetChildByName("CanDragOffTile").Enable = true
+					self.HoverEntity:GetChildByName("OnDraggingTile").Enable = false
+				end
+			else
+				-- 이상한 게 잡혀 있음
+				log("self.HoverEntity.Name = " , self.HoverEntity.Name)
+			end
+			
+			_UI_Tooltip:SetItemEquipInfo(false, "", "", 0)
+		end
+		
+		-- 새로 마우스가 올라간 엔티티에 셰이더 적용
+		self.HoverEntity = hoverEntity
+		
+		if isvalid(self.HoverEntity) then
+			if isvalid(self.HoverEntity.UnitInfo) then
+				self.HoverEntity.UnitInfo:SetOutlineMaterial(true, "mouseHover")
+				
+				-- 아이템을 드래그중인 경우, 아이템 정보를 활성화
+				if isvalid(_ItemSetLogic.DraggingEntity) == true then
+					local itemID = _ItemSetLogic.DraggingEntity.UI_InventoryItemSlot.ItemID
+					
+					-- 합성 가능한 경우
+					local equippedMaterialItemID = _ItemCombineService:GetMateiralIDinUnitEquippedItems(self.HoverEntity.UnitStatus.EquippedItemIDList)
+					if string.sub(itemID, 1, 2) == "MI" and equippedMaterialItemID ~= nil then
+						local normalItemID = _ItemCombineService:GetNormalItemIDByMaterialItemIDs(itemID, equippedMaterialItemID, nil)
+						_UI_Tooltip:SetItemEquipInfo(true, normalItemID, self.HoverEntity.UnitInfo.charID, self.HoverEntity.UnitInfo.level)
+						
+					-- 합성이 불가한 경우
+					else
+						_UI_Tooltip:SetItemEquipInfo(true, itemID, self.HoverEntity.UnitInfo.charID, self.HoverEntity.UnitInfo.level)
+					end
+				end 
+			else
+				self.HoverEntity:GetChildByName("CanDragOffTile").Enable = false
+				self.HoverEntity:GetChildByName("OnDraggingTile").Enable = true
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleMouseMoveEvent(MouseMoveEvent event)
+		-- 마우스 이동 시 커서 위치의 엔터티를 확인하고 하이라이트 처리
+		----------------- Native Event Sender Info ----------------
+		---- Sender: InputService
+		---- Space: Client
+		-----------------------------------------------------------
+		---- Parameters
+		--local MouseDelta = event.MouseDelta
+		-----------------------------------------------------------
+		if isvalid(_UserService.LocalPlayer) == false then
+		    return
+		else
+			if _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == false then
+		--    if _UserService.LocalPlayer.CurrentMapName ~= "Arena" then
+		        return
+		    end
+		end
+		
+		if Environment:IsPCPlatform() == false then
+		    return
+		end
+		
+		--커서 위치에 엔터티있는지 확인 후 하이라이트 처리
+		if isvalid(_UnitSetLogic_New.SelectUnit) == true then
+			self:CheckHoverEntity(true)
+		else
+			self:CheckHoverEntity(false)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 키 입력 시 마우스 클릭에 따른 유닛 정보 표시 및 플레이어 터치 이벤트 처리
+		-- Parameters
+		local key = event.key
+		---------------------------------------------------------
+		-- PC 우클릭 / 모바일 터치
+		if (key == KeyboardKey.Mouse0 and Environment:IsMobilePlatform())
+		or (key == KeyboardKey.Mouse1 and Environment:IsPCPlatform()) then
+		
+			local currentMapName = _UserService.LocalPlayer.CurrentMapName
+			-------------------------------------------
+			-- 인게임
+		--	if currentMapName == "Arena" then
+			if _UserService.LocalPlayer.CurrentMap.MapComponent.IsDynamicMap == true then
+				if _InputService:IsPointerOverUI() then
+					return
+				end
+				
+				local simulator = _CollisionService:GetSimulator(_UserService.LocalPlayer.CurrentMapName)
+			    local worldpoint = _InputService:GetCursorPosition()
+			    worldpoint = _UILogic:ScreenToWorldPosition(worldpoint)
+			    local components = simulator:OverlapPointAll(CollisionGroups.TriggerBox,worldpoint)
+			    
+			    local isConnected = false
+			    for i=1, #components do
+			        local entity = components[i].Entity
+			        
+			        if isvalid(entity) and isvalid(entity.UnitInfo) and entity.Visible and entity.Enable then
+						_UI_UnitInfoPopup:ConnectToSelectedUnit(entity)
+			            _UI_UnitInfoPopup.ConnectedEntity.UnitStatus:SetUniInfoPopup("All")
+			            isConnected = true
+			            
+			            break
+			        elseif isvalid(entity) and isvalid(entity.CoachIngameComponent) and entity.Visible then
+			            local coachID = entity.CoachIngameComponent.CoachID
+			            if _UtilLogic:IsNilorEmptyString(coachID) == false then
+			                _UI_UnitInfoPopup:UI_ShowCoachInfoTooltip(coachID)
+			            end
+			            break
+			        end
+			    end
+			    
+			    --if isConnected == false then
+			    --    self:UI_Close()
+			    --end
+			-------------------------------------------
+			-- 로비
+			else 
+				local simulator = _CollisionService:GetSimulator(_UserService.LocalPlayer.CurrentMapName)
+			    local worldpoint=_InputService:GetCursorPosition()
+			    worldpoint=_UILogic:ScreenToWorldPosition(worldpoint)
+			    local components=simulator:OverlapPointAll(CollisionGroups.TriggerBox,worldpoint)
+			    
+			    local isConnected = false
+			    for i=1, #components do
+			        local entity = components[i].Entity
+			        
+					-- 플레이어 우클릭 이벤트
+			        if isvalid(entity) and isvalid(entity.PlayerDataComponent) and entity.Visible then
+						entity:SendEvent(PlayerTouchEvent(entity))	-- 에러 아님
+			            break
+			        end
+			    end
+			end
+		 
+		end
+		---------------------------------------------------------
+		-- (PC) 좌클릭
+		if key == KeyboardKey.Mouse0 then
+			if _InputService:IsPointerOverUI() == false then
+				if _UI_TutorialLogic.keepUnitInfo == true then
+					
+				else
+					_UI_UnitInfoPopup:UI_Close()
+				end
+				
+			end
+		end
+	end
+
+end

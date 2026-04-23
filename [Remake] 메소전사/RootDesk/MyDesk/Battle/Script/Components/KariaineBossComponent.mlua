@@ -1,0 +1,323 @@
+@Component
+script KariaineBossComponent extends ScriptingBossObjectComponent
+
+	@ExecSpace("ClientOnly")
+	method void Teleport()
+		-- 카리아인 보스 텔레포트 스킬 (사라지고 플레이어 근처에 나타나기)
+		if self.isUsingSkill then
+			return
+		end
+		
+		self.isUsingSkill = true
+		self:Stop()
+		
+		self._T.spriteRenderer.SpriteRUID = self.skill2
+		
+		_TimerLogic:SetTimerOnce(function()
+				self.Entity.TriggerComponent.Enable = false
+				self:Appear()
+				
+		
+				_TimerLogic:SetTimerOnce(function()
+					self.Entity.TriggerComponent.Enable = true
+					end, 0.3, "KariaineBossComponent.Teleport_triggerTrue")
+			end, 1.89, "KariaineBossComponent.Teleport_appear")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Appear()
+		-- 텔레포트 후 나타나기 애니메이션 및 위치 설정
+		local _T = self._T
+		
+		local addPos = Vector2(_UtilLogic:RandomIntegerRange(-1, 1), _UtilLogic:RandomIntegerRange(-1, 1))
+		local newPos = _UserService.LocalPlayer.TransformComponent.Position:ToVector2() + addPos
+		self:SetPosition(newPos)
+		_T.spriteRenderer.SpriteRUID = self.skillAfter2
+		
+		_TimerLogic:SetTimerOnce(function()
+				self.isUsingSkill = false
+				self:Move()
+			end, 0.99, "KariaineBossComponent.Appear")
+	end
+
+	method void UpdateMove()
+		-- 카리아인 보스의 이동 업데이트 (랜덤 딱레이로 고유 스킬 사용)
+		if self.isDead then
+			return
+		end
+		
+		if self.isUsingSkill then
+			return
+		end
+		
+		if self.isKnockDown then
+			return
+		end
+		
+		if not isvalid(self.target) then return end
+		
+		local _T = self._T
+		local rand = _UtilLogic:RandomIntegerRange(1, 2)
+		
+		if rand == 1 then
+			rand = _UtilLogic:RandomDouble() * (-10)
+		else
+			rand = _UtilLogic:RandomDouble() * 10
+		end
+		
+		if _UtilLogic.ServerElapsedSeconds - self.attackedTime + rand > self.attackCoolTime then
+			self:UseUniqueSkill()
+		else
+			_T.moveTimer = _TimerLogic:SetTimerOnce(function()
+				self:Move()
+			end, self.interval, "KariaineBossComponent.UpdateMove")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 업데이트 (부모 클래스 호출)
+		__base:OnUpdate(delta)
+	end
+
+	method void Init(string monsterId, boolean isAfterMonster, boolean respawn, number life)
+		-- 카리아인 보스 초기화 (부모 클래스 초기화 후 타이머 설정)
+		__base:Init(monsterId,isAfterMonster,respawn,life)
+		self._T.moveTimer = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Attack1()
+		-- 첫 번째 공격 패턴 (총알 발사 및 가드 소환)
+		__base:Attack1()
+		
+		self.isUsingSkill = true
+		self:Stop()
+		
+		local rightTop = self.Entity.CurrentMap.MapComponent.RightTop
+		self._T.spriteRenderer.SpriteRUID = self.attack
+		self:UseSkill(self.attack1BulletId, Vector3.zero, self.target)
+		
+		_TimerLogic:SetTimerOnce(function()
+				self:SpawnGuard()
+			end, 0.85, "KariaineBossComponent.Attack1_spawnGuard")
+		
+		_TimerLogic:SetTimerOnce(function()
+				self.isUsingSkill = false
+				self:Move()
+			end, 3.54, "KariaineBossComponent.Attack1_move")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Attack2()
+		-- 두 번째 공격 패턴 (동심원 형태의 다단계 공격)
+		__base:Attack2()
+		
+		self.isUsingSkill = true
+		self:Stop()
+		
+		self._T.spriteRenderer.SpriteRUID = self.attack2
+		local leftBottom = self.Entity.CurrentMap.MapComponent.LeftBottom
+		local rightTop = self.Entity.CurrentMap.MapComponent.RightTop
+		local skillData = _MonsterSkillLogic.skillData[self.attack2BulletId]
+		local skillData2 = _MonsterSkillLogic.skillData["1003"] 
+		
+		_TimerLogic:SetTimerOnce(function()
+				local skill = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Bullet_Kariaine_Attack2_Base"), self.Entity.TransformComponent.Position, self.Entity.CurrentMap)
+				skill.SkillEffectObject:Init(self._T.player.BattlePlayer.maxHp * skillData.hpRatioDamage, false, nil, self.attack2BulletId)
+				skill.SkillEffectObject.ownerId = "Boss_Kariaine"
+			
+				for i = 1, 5 do
+					local spawnFunc = function()
+						for j = 1, 8 do
+							local pos = self:GetPosition():Clone() 
+							local angle = math.rad(45 * j)
+							pos.x = pos.x + i * math.cos(angle)
+							pos.y = pos.y + i * math.sin(angle)
+							
+							local extraSkill = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Bullet_Kariaine_Attack2_Extra"), pos, self.Entity.CurrentMap)
+							extraSkill.SkillEffectObject:Init(self._T.player.BattlePlayer.maxHp * skillData2.hpRatioDamage, false, nil, "203")
+							extraSkill.TriggerComponent.Enable = false
+							extraSkill.SkillEffectObject.ownerId = "Boss_Kariaine"
+						
+							_TimerLogic:SetTimerOnce(function()
+									extraSkill.TriggerComponent.Enable = true
+								end, 0.5, "KariaineBossComponent.Attack2_triggerTrue")
+						end
+					end
+					
+					_TimerLogic:SetTimerOnce(spawnFunc, (i - 1) * 0.25, "KariaineBossComponent.Attack2_spawnFunc")
+				end
+			end, 2.6, "KariaineBossComponent.Attack2_spawnAttack2")
+		
+		_TimerLogic:SetTimerOnce(function()
+				self.isUsingSkill = false
+				self:Move()
+			end, 3.63, "KariaineBossComponent.Attack2_move")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Attack3()
+		-- 세 번째 공격 패턴 (랜덤 위치에 다수의 공격 스킬 생성)
+		__base:Attack3()
+		
+		self.isUsingSkill = true
+		self:Stop()
+		
+		self._T.spriteRenderer.SpriteRUID = self.attack3
+		local leftBottom = self.Entity.CurrentMap.MapComponent.LeftBottom
+		local rightTop = self.Entity.CurrentMap.MapComponent.RightTop
+		local skillData = _MonsterSkillLogic.skillData[self.attack3BulletId]
+		
+		_TimerLogic:SetTimerOnce(function()
+				for i = 1, _UtilLogic:RandomIntegerRange(15, 30) do
+					local spawnFunc = function()
+						local randPos = Vector3(_UtilLogic:RandomIntegerRange(leftBottom.x + 1, rightTop.x - 1), _UtilLogic:RandomIntegerRange(leftBottom.y + 1, rightTop.y - 1), 0)
+						local addPos = Vector2(_UtilLogic:RandomDouble(), _UtilLogic:RandomDouble())
+						local getMinus = function()
+							local rand =  _UtilLogic:RandomIntegerRange(1, 2)
+							
+							if rand == 1 then
+								return 1
+							else
+								return -1
+							end
+						end
+						
+						randPos.x = randPos.x + addPos.x * getMinus()
+						randPos.y = randPos.y + addPos.y * getMinus()
+						
+						local skill = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Bullet_Kariaine_Attack3"), randPos, self.Entity.CurrentMap)
+						
+						skill.SkillEffectObject:Init(self._T.player.BattlePlayer.maxHp * skillData.hpRatioDamage, false, nil, self.attack3BulletId)
+						skill.SkillEffectObject.ownerId = "Boss_Kariaine"
+						skill.Kariaine_Attack3SkillEffect:StartAttack()
+					end
+					
+					local randInterval = _UtilLogic:RandomDouble() / 10
+					
+					if _UtilLogic:RandomIntegerRange(0, 1) == 0 then
+						randInterval *= -1
+					end
+					
+					_TimerLogic:SetTimerOnce(spawnFunc, i * 0.07 + randInterval, "KariaineBossComponent.Attack3_spawnFunc")
+				end
+			end, 2.7, "KariaineBossComponent.Attack3_spawnAttack3")
+		
+		_TimerLogic:SetTimerOnce(function()
+				self.isUsingSkill = false
+				self:Move()
+			end, 3.63, "KariaineBossComponent.Attack3_move")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Attack4()
+		-- 네 번째 공격 패턴 (연속 다중 발사 공격)
+		__base:Attack4()
+		
+		if self.isUsingSkill then
+			return
+		end
+		
+		self.isUsingSkill = true
+		self:Stop()
+		
+		self._T.spriteRenderer.SpriteRUID = self.attack4
+		
+		_TimerLogic:SetTimerOnce(function()
+				local skillData = _MonsterSkillLogic.skillData[self.attack4BulletId]
+				self:UseSkill(self.attack4BulletId, nil, self.target)
+				
+				for i = 2, skillData.multiShot do
+					_TimerLogic:SetTimerOnce(function()
+						self:UseSkill(self.attack4BulletId,nil,self.target)
+					end, i * skillData.multiShotDelay, "KariaineBossComponent.Attack4_multiShot")
+				end
+				
+				self.isUsingSkill = false
+				self:Move()
+			end, 2.79, "KariaineBossComponent.Attack4")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnGuard()
+		-- 방어막 소환 (랜덤 위치에 방어막 생성 후 자동 삭제)
+		local currentMap = self.Entity.CurrentMap.MapComponent
+		
+		for i = 1, _UtilLogic:RandomIntegerRange(2, 5) do
+			local spawnFunc = function()
+				local pos = Vector3.zero
+				pos.x = _UtilLogic:RandomIntegerRange(currentMap.LeftBottom.x + 1.5, currentMap.RightTop.x - 1.5)
+				pos.y = _UtilLogic:RandomIntegerRange(currentMap.LeftBottom.y + 1.5, currentMap.RightTop.y - 1.5)
+				
+				local addPos = Vector2(_UtilLogic:RandomDouble(), _UtilLogic:RandomDouble())
+				local getMinus = function()
+					local rand =  _UtilLogic:RandomIntegerRange(1, 2)
+					
+					if rand == 1 then
+						return 1
+					else
+						return -1
+					end
+				end
+				
+				pos.x = pos.x + addPos.x * getMinus()
+				pos.y = pos.y + addPos.y * getMinus()
+				
+				local entity = _PoolingLogic:SpawnModel(_EntryService:GetModelIdByName("Kariaine_Shield"), pos, currentMap.Entity)
+				
+				_TimerLogic:SetTimerOnce(function()
+						_PoolingLogic:DestroyEntity(entity)
+					end, 4.5, "KariaineBossComponent.SpawnGuard_destory")
+			end
+			
+			_TimerLogic:SetTimerOnce(spawnFunc, _UtilLogic:RandomIntegerRange(1, 100) / 100, "KariaineBossComponent.SpawnGuard_spawn")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 트리거 진입 이벤트 처리 (몬스터 충돌 시 넘어짐, 플레이어 충돌 시 데미지)
+		
+		
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		local monster = TriggerBodyEntity.MonsterObject
+		
+		if monster ~= nil and not (self._T.isStunned or self._T.isFlated or self._T.inStorm or self._T.knockbacked) then
+			local pos = self:GetPositionVec2()
+			local vPos = monster:GetPositionVec2()
+			local dir = Vector2.Normalize(pos - vPos)
+			
+			self:SetKnockback(dir,0.11,false)
+			self._T.knockbacked = true
+			
+			return
+		end
+		
+		local player = TriggerBodyEntity.BattlePlayer
+		local damage = self._T.player.BattlePlayer.maxHp * 0.2
+		
+		if player ~= nil and not player.isInvincible and player.isDead == false then
+			if self._T.isFlated then return end
+			if TriggerBodyEntity == _UserService.LocalPlayer then
+				local diff = player:GetPositionVec2() - self:GetPositionVec2()
+				
+				if _UserService.LocalPlayer.BattlePlayer.shieldCount < 1 then
+					TriggerBodyEntity:SendEvent(BattlePlayerHitEvent())
+				end
+		
+				if _BuffLogic.appliedBuff.metalBody and _UserService.LocalPlayer.KinematicbodyComponent.MoveVelocity == Vector2.zero then
+					player:SetDamage(damage * 0.5, diff:Normalize(), self.criticalRate, self.criticalRatio, "melee", self.Entity)
+				else
+					player:SetDamage(damage,diff:Normalize(), self.criticalRate, self.criticalRatio, "melee", self.Entity)
+				end
+				
+			end
+			return
+		end
+	end
+
+end

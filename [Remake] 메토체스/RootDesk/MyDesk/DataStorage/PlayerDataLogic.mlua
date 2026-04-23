@@ -1,0 +1,1964 @@
+@Logic
+script PlayerDataLogic extends Logic
+
+	property string SetVer = "OpenBeta"
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerData(string userID)
+		-- 유저가 게임에 접속하면 필요한 데이터를 불러오기 위해 호출하는 함수입니다.
+		------------------------------------------------------------------------
+		self:GetLastLoginDateData(userID)
+		self:GetAchievementData(userID)
+		self:GetCoachesData(userID)
+		self:GetTitleData(userID)
+		self:GetPlayerRecordData(userID)
+		self:GetPlayerSyrupsData(userID, true)
+		self:GetPlayerFavoriteDicData(userID)
+		self:GetCollectionData(userID)
+		self:GetPlayerCumulativeBoxPurchasesAmountData(userID)
+		self:GetPlayerLevelData(userID)
+		self:GetPlayerProfileIsPublicData(userID)
+		self:GetPlayerTutorialData(userID)
+		self:GetPlayerChallengeInfoData(userID)
+		self:GetPlayerDailyMissionData(userID)
+		------------------------------------------------------------------------
+		self:SetPlayerInfoData(userID)
+		
+		
+		------------------------------------------------------------------------
+		-- 업적: 로그인 횟수 
+		local userEntity = _UserService:GetUserEntityByUserId(userID)
+		_AchievementService:UpdateProgress_Graduate("AC001001", 1, userEntity)
+		
+		------------------------------------------------------------------------
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetAchievementData(string userID)
+		-- 업적과 관련된 프로퍼티를 불러오는 함수입니다.
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local achievementManager = user.AchievementManager
+		------------------------------------------------------------------------
+		-- PlayerAchievementData
+		
+		-- 1. 데이터 불러오기
+		local p_err, pachieve_Data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PlayerAchievementData_%s", self.SetVer))
+		for i = 1, 10 do
+			if p_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				p_err, pachieve_Data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PlayerAchievementData_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 확인 및 값이 필요한 지 체크
+		-- (ID)_(state-state-state)_(count)_(date-date-date)
+		if isvalid(pachieve_Data) then
+			--log("pachieve_Data = ", pachieve_Data)
+		
+			local pAchievementData = _UtilLogic:Split(pachieve_Data, ",")
+			
+			for _, data in pairs(pAchievementData) do
+				--log("Data = ", data)
+				local aData = _UtilLogic:Split(data, "_")
+				
+				local aID = aData[1]
+				local aStateTable = _UtilLogic:Split(aData[2], "-")
+				local aCount = tonumber(aData[3])
+				local aDateTable = _UtilLogic:Split(aData[4], "-")
+				
+				-- NIL 체크해서 데이터 값 바꾸기
+				for i, state in pairs(aStateTable) do
+					if state == "NIL" then
+						aStateTable[i] = ""
+					end
+				end
+				
+				for i, date in pairs(aDateTable) do
+					if date == "NIL" then
+						aDateTable[i] = ""
+					end
+				end
+				
+				achievementManager.PlayerAchievementData[aID] = {["state"] = aStateTable, ["count"] = aCount, ["date"] = aDateTable }
+			end
+			
+		else
+			-- 데이터 초기 값 등록 함수 호출
+			achievementManager:Init_AchieveData()
+		end
+		------------------------------------------------------------------------
+		-- PlayerAchieveCategoryData
+		-- 1. 데이터 불러오기
+		local pc_err, pAchC_Data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PlayerAchieveCategoryData_%s", self.SetVer))
+		for i = 1, 10 do
+			if pc_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				pc_err, pAchC_Data = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PlayerAchieveCategoryData_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 확인 및 값이 필요한 지 체크
+		-- (ID)_(Count)_(State)_(Date)
+		if isvalid(pAchC_Data) then
+			local pAchCData = _UtilLogic:Split(pAchC_Data, ",")
+			
+			for _, data in pairs(pAchCData) do
+				local acData = _UtilLogic:Split(data, "_")
+				
+				local acID = acData[1]
+				local acCount = tonumber(acData[2])
+				local acState = acData[3]
+				local acDate = acData[4]
+				
+				-- NIL 체크해서 데이터 값 바꾸기
+				if acDate == "NIL" then
+					acDate = ""
+				end
+				
+				achievementManager.PlayerAchieveCategoryData[acID] = {["count"] = acCount, ["state"] = acState, ["date"] = acDate}
+			end
+			-- 업적 db 로드 이후 필요한 처리 
+			achievementManager:OnDataLoadComplete()
+		else
+			
+			-- 데이터 초기 값 등록 함수 호출
+			achievementManager:Init_AchieveCategoryData()
+			return 
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerAchievementData(Entity user)
+		-- PlayerAchievementData 프로퍼티를 저장하는 함수입니다.
+		------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local achievementManager = user.AchievementManager
+		------------------------------------------------------------------------
+		-- (ID)_(state-state-state)_(count)_(date-date-date)
+		-- 1. 데이터 가공
+		local aStringValue = ""
+		local achievementCount = 0
+		for id, valueTable in pairs(achievementManager.PlayerAchievementData) do
+			achievementCount += 1
+			local stateTable = valueTable["state"]
+			local count = valueTable["count"]
+			local dateTable = valueTable["date"]
+			
+			-- id 입력
+			aStringValue = string.format("%s%s_", aStringValue, id)
+			
+			-- state 입력
+			local stateValue = ""
+			for _, state in pairs(stateTable) do
+				if state == "" then
+					state = "NIL"
+				end
+				stateValue = string.format("%s%s-", stateValue, state)
+			end
+			stateValue = string.sub(stateValue, 1, -2)
+			
+			aStringValue = string.format("%s%s_", aStringValue, stateValue)
+			
+			-- count 입력
+			aStringValue = string.format("%s%d_", aStringValue, count)
+			
+			-- date 입력
+			local dateValue = ""
+			for _, date in pairs(dateTable) do
+				if date == "" then
+					date = "NIL"
+				end
+				dateValue = string.format("%s%s-", dateValue, date)
+			end
+			dateValue = string.sub(dateValue, 1, -2)
+			
+			aStringValue = string.format("%s%s", aStringValue, dateValue)
+			
+			aStringValue = aStringValue .. ","
+		end
+		
+		aStringValue = string.sub(aStringValue, 1, -2)
+		
+		--log("aStringValue.len = ", utf8.len(aStringValue))
+		--log("achievementCount = ", achievementCount)
+		--log("aStringValue = ", aStringValue)
+		
+		--log("aStringValue = ", aStringValue)
+		-- 2. 데이터 저장하기
+		local a_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PlayerAchievementData_%s", self.SetVer), aStringValue)
+		for i = 1, 10 do
+			if a_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				a_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PlayerAchievementData_%s", self.SetVer), aStringValue)
+			end
+		end
+		------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerAchievementCategoryData(Entity user)
+		-- PlayerAchieveCategoryData 프로퍼티를 저장하는 함수입니다.
+		------------------------------------------------------------------------
+		local userID = user.OwnerId
+		local achievementManager = user.AchievementManager
+		------------------------------------------------------------------------
+		-- 1. 데이터 가공
+		-- (ID)_(Count)_(State)_(Date)
+		local acStringValue = ""
+		for id, valueTable in pairs(achievementManager.PlayerAchieveCategoryData) do
+			local count = valueTable["count"]
+			local state = valueTable["state"]
+		
+			local date = valueTable["date"]
+			
+			-- id 입력
+			acStringValue = string.format("%s%s_", acStringValue, id)
+			
+			-- count 입력
+			acStringValue = string.format("%s%d_", acStringValue, count)
+			
+			-- state 입력
+			acStringValue = string.format("%s%s_", acStringValue, state)
+			
+			-- date 입력
+			if date == "" then
+				date = "NIL"
+			end
+			acStringValue = string.format("%s%s", acStringValue, date)
+			
+			acStringValue = acStringValue .. ","
+		end
+		
+		acStringValue = string.sub(acStringValue, 1, -2) 
+		-- 2. 데이터 저장하기
+		local ac_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PlayerAchieveCategoryData_%s", self.SetVer), acStringValue)
+		for i = 1, 10 do
+			if ac_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				ac_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PlayerAchieveCategoryData_%s", self.SetVer), acStringValue)
+			end
+		end
+		------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetCoachesData(string userID)
+		-- 코치 관련 프로퍼티를 불러오는 함수입니다.
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local coachManager = user.CoachManager
+		local coachShopManager = user.CoachShopManager
+		------------------------------------------------------------------------
+		-- PlayerOwnedCoachesID
+		-- 1. 데이터 불러오기
+		local c_err, cValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PlayerOwnedCoachesID_%s", self.SetVer))
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				c_err, cValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PlayerOwnedCoachesID_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 저장
+		if isvalid(cValue) then
+			local cValueTable = _UtilLogic:Split(cValue, ",")
+			for _, value in pairs(cValueTable) do
+				local cInfo = _UtilLogic:Split(value, "_")
+				local cID = cInfo[1]
+				local c_Value = tonumber(cInfo[2])
+				
+				coachManager.PlayerOwnedCoachesID[cID] = c_Value
+			end
+		end
+		------------------------------------------------------------------------
+		-- SetCoachPresetInfo
+		-- 1. 데이터 불러오기
+		local cp_err, cpValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("SetCoachPresetInfo_%s", self.SetVer))
+		for i = 1, 10 do
+			if cp_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				cp_err, cpValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("SetCoachPresetInfo_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 저장
+		if isvalid(cpValue) then
+			local cValueTable = _UtilLogic:Split(cpValue, "/")
+			for _, value in pairs(cValueTable) do
+				local cInfo = _UtilLogic:Split(value, "_")
+				local cpNum = tonumber(cInfo[1])
+				local cp_Value = cInfo[2]
+				
+				coachManager.SetCoachPresetInfo[cpNum] = cp_Value
+			end
+		end
+		coachManager:SetCoachPreset(1, "load")
+		------------------------------------------------------------------------
+		-- FollowingCoachID
+		-- 1. 데이터 불러오기
+		local fc_err, fcValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("FollowingCoachID_%s", self.SetVer))
+		for i = 1, 10 do
+			if fc_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				fc_err, fcValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("FollowingCoachID_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 저장
+		if isvalid(fcValue) then
+			coachManager.FollowingCoachID = fcValue
+			_CoachService:DBLoacdComplete_FollowingCoach(userID)
+		end
+		------------------------------------------------------------------------
+		-- PickAdjustmentCount
+		-- 1. 데이터 불러오기
+		local pa_err, paValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PickAdjustmentCount_%s", self.SetVer))
+		for i = 1, 10 do
+			if pa_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				pa_err, paValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("PickAdjustmentCount_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 저장
+		if isvalid(paValue) then
+			coachShopManager.PickAdjustmentCount = tonumber(paValue)
+		else 
+			coachShopManager.PickAdjustmentCount = coachShopManager.PickAdjustmentMax
+		end
+		------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerOwnedCoachesData(string userID)
+		-- PlayerOwnedCoachesID 프로퍼티를 저장하는 함수입니다.
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local coachManager = user.CoachManager
+		------------------------------------------------------------------------
+		-- 1. 데이터 가공
+		local cValue = ""
+		for coachID, cNum in pairs(coachManager.PlayerOwnedCoachesID) do
+			cValue = string.format("%s%s_%s,", cValue, coachID, tostring(math.floor(cNum)))
+		end
+		cValue = string.sub(cValue, 1, -2)
+		
+		-- 2. 데이터 저장하기
+		local c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PlayerOwnedCoachesID_%s", self.SetVer), cValue)
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PlayerOwnedCoachesID_%s", self.SetVer), cValue)
+			end
+		end
+		------------------------------------------------------------------------
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerCoachPresetsData(string userID)
+		-- SetCoachPresetInfo 프로퍼티를 저장하는 함수입니다.
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local coachManager = user.CoachManager
+		------------------------------------------------------------------------
+		-- 1. 데이터 가공
+		local cValue = ""
+		for presetNum, coachList in pairs(coachManager.SetCoachPresetInfo) do
+			cValue = string.format("%s%s_%s/", cValue, tostring(math.floor(presetNum)), coachList)
+		end
+		cValue = string.sub(cValue, 1, -2)
+		
+		-- 2. 데이터 저장하기
+		local c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SetCoachPresetInfo_%s", self.SetVer), cValue)
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SetCoachPresetInfo_%s", self.SetVer), cValue)
+			end
+		end
+		------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerFollowingCoachIDData(string userID)
+		-- FollowingCoachID 프로퍼티를 저장하는 함수입니다.
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local coachManager = user.CoachManager
+		------------------------------------------------------------------------
+		-- 1. 데이터 가공
+		local fcValue = coachManager.FollowingCoachID
+		
+		-- 2. 데이터 저장하기
+		local fc_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("FollowingCoachID_%s", self.SetVer), fcValue)
+		for i = 1, 10 do
+			if fc_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				fc_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("FollowingCoachID_%s", self.SetVer), fcValue)
+			end
+		end
+		------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerPickAdjustmentCountData(string userID)
+		-- PickAdjustmentCount 프로퍼티를 저장하는 함수입니다.
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local coachShopManager = user.CoachShopManager
+		------------------------------------------------------------------------
+		-- 1. 데이터 가공
+		local pValue = tostring(math.floor(coachShopManager.PickAdjustmentCount))
+		
+		-- 2. 데이터 저장하기
+		local p_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PickAdjustmentCount_%s", self.SetVer), pValue)
+		for i = 1, 10 do
+			if p_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				p_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("PickAdjustmentCount_%s", self.SetVer), pValue)
+			end
+		end
+		------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetCollectionData(string userID)
+		-- Collection 관련 프로퍼티를 저장하는 함수입니다.
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local collectionComponent = user.PlayerCollectionDataComponent
+		------------------------------------------------------------------------
+		-- CharacterCollection
+		-- 1. 데이터 불러오기
+		local c_err, cValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("CharacterCollection_%s", self.SetVer))
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				c_err, cValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("CharacterCollection_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 적용
+		if isvalid(cValue) then
+			-- (ID)-(Grade)_..._(ID)-(Grade)
+			local cTableToSeason = _UtilLogic:Split(cValue, "_")
+			
+			for _, v in pairs(cTableToSeason) do
+				local cInfo = _UtilLogic:Split(v, "-")
+				local cID = cInfo[1]
+				local grade = tonumber(cInfo[2])
+				collectionComponent.CharacterCollection[cID] = grade
+			end	
+		
+		else
+			-- 초기 값 넣는 함수 호출
+			collectionComponent:InitializeCharacterCollectionData()
+		end
+		------------------------------------------------------------------------
+		-- SynergyCollection
+		-- 1. 데이터 불러오기
+		local s_err, sValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("SynergyCollection_%s", self.SetVer))
+		for i = 1, 10 do
+			if s_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				s_err, sValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("SynergyCollection_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 적용
+		if isvalid(sValue) then
+			-- (ID)-(Grade)_..._(ID)-(Grade)
+			local sTableToSeason = _UtilLogic:Split(sValue, "_")
+			
+			for _, v in pairs(sTableToSeason) do
+				local sInfo = _UtilLogic:Split(v, "-")
+				local sID = sInfo[1]
+				local grade = tonumber(sInfo[2])
+				
+				collectionComponent.SynergyCollection[sID] = grade
+			end
+		
+		else
+			-- 초기 값 넣는 함수 호출
+			collectionComponent:InitializeSynergyCollectionData()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetCharCollectionData(string userID)
+		-- CharacterCollection 프로퍼티를 저장하는 함수입니다.
+		
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local collectionComponent = user.PlayerCollectionDataComponent
+		------------------------------------------------------------------------
+		-- (ID)-(Grade)_..._(ID)-(Grade)
+		-- 1. 데이터 가공
+		
+		local cValue = ""
+		
+		for cID, grade in pairs(collectionComponent.CharacterCollection) do
+			cValue = string.format("%s%s-%d_", cValue, cID, grade)
+		end
+		
+		cValue = string.sub(cValue, 1, -2)
+		
+		-- 2. 데이터 저장하기
+		local c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("CharacterCollection_%s", self.SetVer), cValue)
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("CharacterCollection_%s", self.SetVer), cValue)
+			end
+		
+		end
+		------------------------------------------------------------------------
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetSynergyCollectionData(string userID)
+		-- SynergyCollection 프로퍼티를 저장하는 함수입니다.
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local collectionComponent = user.PlayerCollectionDataComponent
+		------------------------------------------------------------------------
+		-- (ID)-(Grade)_..._(ID)-(Grade)
+		-- 1. 데이터 가공
+		
+		local sValue = ""
+		
+		for sID, grade in pairs(collectionComponent.SynergyCollection) do
+			sValue = string.format("%s%s-%d_", sValue, sID, grade)
+		end
+		
+		sValue = string.sub(sValue, 1, -2)
+		
+		-- 2. 데이터 저장하기
+		local c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SynergyCollection_%s", self.SetVer), sValue)
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SynergyCollection_%s", self.SetVer), sValue)
+			end
+		end
+		------------------------------------------------------------------------
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetTitleData(string userID)
+		-- TitleManager의 프로퍼티를 불러오는 함수입니다
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local titleManager = user.TitleManager
+		------------------------------------------------------------------------
+		-- NameTagTable
+		-- 1. 데이터 불러오기
+		local nt_err, nameTagValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("NameTagTable_%s", self.SetVer))
+		for i = 1, 10 do
+			if nt_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				nt_err, nameTagValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("NameTagTable_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 적용
+		if isvalid(nameTagValue) then
+			if nameTagValue ~= "NIL" then
+				local nameTagTable = _UtilLogic:Split(nameTagValue, ",")
+				
+				for _, v in pairs(nameTagTable) do
+					local keyInfo = _UtilLogic:Split(v, "_")
+					
+					local key = keyInfo[1]
+					local value = (keyInfo[2] == "true")
+					
+					titleManager.NameTagTable[key] = value
+				end
+			end
+		end
+		------------------------------------------------------------------------
+		-- KeyWordFrontTable
+		-- 1. 데이터 불러오기
+		local kwf_err, kwfValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("KeyWordFrontTable_%s", self.SetVer))
+		for i = 1, 10 do
+			if kwf_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				kwf_err, kwfValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("KeyWordFrontTable_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 적용
+		if isvalid(kwfValue) then
+			if kwfValue ~= "NIL" then
+				local kwfTable = _UtilLogic:Split(kwfValue, ",")
+				
+				for _, v in pairs(kwfTable) do
+					local keyInfo = _UtilLogic:Split(v, "_")
+					
+					local key = keyInfo[1]
+					local value = (keyInfo[2] == "true")
+					
+					titleManager.KeyWordFrontTable[key] = value
+				end
+			end
+		end
+		------------------------------------------------------------------------
+		-- KeyWordBackTable
+		-- 1. 데이터 불러오기
+		local kwb_err, kwbValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("KeyWordBackTable_%s", self.SetVer))
+		for i = 1, 10 do
+			if kwb_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				kwb_err, kwbValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("KeyWordBackTable_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 적용
+		if isvalid(kwbValue) then
+			if kwbValue ~= "NIL" then
+				local kwbTable = _UtilLogic:Split(kwbValue, ",")
+				
+				for _, v in pairs(kwbTable) do
+					local keyInfo = _UtilLogic:Split(v, "_")
+					
+					local key = keyInfo[1]
+					local value = (keyInfo[2] == "true")
+					
+					titleManager.KeyWordBackTable[key] = value
+				end
+			end
+		end
+		------------------------------------------------------------------------
+		-- EquippedTitle
+		-- 1. 데이터 불러오기
+		local eq_err, equipTitleValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("EquippedTitle_%s", self.SetVer))
+		for i = 1, 10 do
+			if eq_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				eq_err, equipTitleValue = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("EquippedTitle_%s", self.SetVer))
+			end
+		end
+		
+		-- 2. 데이터 적용
+		if isvalid(equipTitleValue) then
+			if equipTitleValue ~= "NIL" then
+				local eqTable = _UtilLogic:Split(equipTitleValue, ",")
+				
+				for _, v in pairs(eqTable) do
+					local keyInfo = _UtilLogic:Split(v, "_")
+					
+					local key = keyInfo[1]
+					local value = keyInfo[2]
+					
+					titleManager.EquippedTitle[key] = value
+				end
+			end
+		end
+		------------------------------------------------------------------------
+		
+		titleManager:InitializeTitle()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetTitleData(string userID)
+		-- TitleManager의 프로퍼티를 저장하는 함수입니다
+		------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local titleManager = user.TitleManager
+		------------------------------------------------------------------------
+		-- NameTagTable
+		-- 1. 데이터 가공
+		local nameTagValue = ""
+		for id, bool in pairs(titleManager.NameTagTable) do
+			nameTagValue = string.format("%s%s_%s,", nameTagValue, id, tostring(bool))
+		end
+		
+		if nameTagValue == "" then
+			nameTagValue = "NIL"
+		else
+			nameTagValue = string.sub(nameTagValue, 1, -2)
+		end
+		
+		-- 2. 데이터 저장하기
+		local nt_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("NameTagTable_%s", self.SetVer), nameTagValue)
+		for i = 1, 10 do
+			if nt_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				nt_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("NameTagTable_%s", self.SetVer), nameTagValue)
+			end
+		end
+		------------------------------------------------------------------------
+		-- KeyWordFrontTable
+		-- 1. 데이터 가공
+		local kwfValue = ""
+		for id, bool in pairs(titleManager.KeyWordFrontTable) do
+			kwfValue = string.format("%s%s_%s,", kwfValue, id, tostring(bool))
+		end
+		
+		if kwfValue == "" then
+			kwfValue = "NIL"
+		else
+			kwfValue = string.sub(kwfValue, 1, -2)
+		end
+		
+		-- 2. 데이터 저장하기
+		local kwf_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("KeyWordFrontTable_%s", self.SetVer), kwfValue)
+		for i = 1, 10 do
+			if kwf_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				kwf_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("KeyWordFrontTable_%s", self.SetVer), kwfValue)
+			end
+		end
+		------------------------------------------------------------------------
+		-- KeyWordBackTable
+		-- 1. 데이터 가공
+		local kwbValue = ""
+		for id, bool in pairs(titleManager.KeyWordBackTable) do
+			kwbValue = string.format("%s%s_%s,", kwbValue, id, tostring(bool))
+		end
+		
+		if kwbValue == "" then
+			kwbValue = "NIL"
+		else
+			kwbValue = string.sub(kwbValue, 1, -2)
+		end
+		
+		-- 2. 데이터 저장하기
+		local kwb_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("KeyWordBackTable_%s", self.SetVer), kwbValue)
+		for i = 1, 10 do
+			if kwb_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				kwb_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("KeyWordBackTable_%s", self.SetVer), kwbValue)
+			end
+		end
+		------------------------------------------------------------------------
+		-- EquippedTitle
+		-- 1. 데이터 가공
+		local equipTitleValue = ""
+		for type, id in pairs(titleManager.EquippedTitle) do
+			equipTitleValue = string.format("%s%s_%s,", equipTitleValue, type, id)
+		end
+		
+		if equipTitleValue == "" then
+			equipTitleValue = "NIL"
+		else
+			equipTitleValue = string.sub(equipTitleValue, 1, -2)
+		end
+		
+		-- 2. 데이터 저장하기
+		local eq_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("EquippedTitle_%s", self.SetVer), equipTitleValue)
+		for i = 1, 10 do
+			if eq_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+		
+			else
+				eq_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("EquippedTitle_%s", self.SetVer), equipTitleValue)
+			end
+		end
+		------------------------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerRecordData(string userID)
+		-- 플레이어 기록용 데이터를 불러옵니다.
+		------------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		------------------------------------------------------------------------------
+		-- 1. 전체 기록
+			-- 플레이어 최고 도달 랭크
+			-- 플레이어 최고 도달 순위(%)
+			-- 게임 횟수
+				-- 시작한 게임 횟수
+				-- 이긴 게임 횟수
+				-- 총 게임 횟수
+		------------------------------------------------------------------------------
+		-- 플레이어 최고 도달 랭크
+		local hl_err, hl_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("HighClearLevelInfo_%s", self.SetVer))
+		for i = 1, 10 do
+			if hl_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				hl_err, hl_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("HighClearLevelInfo_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(hl_Value) then
+			playerDataComponent.HighClearLevelInfo = hl_Value
+			-- Level/SeasonNumber/OrdinalNumber
+		else
+			playerDataComponent.HighClearLevelInfo = "0/NIL/NIL"
+		end
+		------------------------------------------------------------------------------
+		-- 플레이어 최고 도달 순위(%)
+		local hr_err, hr_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("HighRankInfo_%s", self.SetVer))
+		for i = 1, 10 do
+			if hr_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				hr_err, hr_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("HighRankInfo_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(hr_Value) then
+			playerDataComponent.HighRankInfo = hr_Value
+			-- RankNum/RankPercent/SeasonNumber/OrdinalNumber
+		else
+			playerDataComponent.HighRankInfo = "NIL/NIL/NIL/NIL"
+		end
+		------------------------------------------------------------------------------
+		-- 게임 횟수
+		local c_err, c_value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("GameCountData_%s", self.SetVer))
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 10 then
+				log_error("Save 실패")
+			else
+				c_err, c_value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("GameCountData_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(c_value) then
+			-- Start/Play/Win
+			local c_Table = _UtilLogic:Split(c_value, "/") 
+			playerDataComponent.StartGameCount = tonumber(c_Table[1])
+			playerDataComponent.PlayGameCount = tonumber(c_Table[2])
+			playerDataComponent.WinGameCount = tonumber(c_Table[3])
+			playerDataComponent:SetGameRecordProperty(nil)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetPlayerSyrupsData(string userID, boolean upDate)
+		-- 플레이어 아웃게임용 재화(시럽) 상태를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- Syrup
+		local s_err, s_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("SyrupData_%s", self.SetVer))
+		for i = 1, 10 do
+			if s_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				s_err, s_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("SyrupData_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(s_Value) then
+			if upDate then
+				playerDataComponent.Syrup = tonumber(s_Value)
+			end
+		else
+			s_Value = "0"
+		end
+		
+		--------------------------------------------------------
+		-- RoyalSyrup
+		local rs_err, rs_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("RoyalSyrupData_%s", self.SetVer))
+		for i = 1, 10 do
+			if rs_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				rs_err, rs_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("RoyalSyrupData_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(rs_Value) then
+			if upDate then
+				playerDataComponent.RoyalSyrup = tonumber(rs_Value)
+			end
+		else
+			rs_Value = "0"
+		end
+		--------------------------------------------------------
+		-- Repechage
+		local rep_err, rep_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("RepechageData_%s", self.SetVer))
+		for i = 1, 10 do
+			if rs_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				rep_err, rep_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("RepechageData_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(rep_Value) then
+			if upDate then
+				playerDataComponent.Repechage = tonumber(rep_Value)
+			end
+		else
+			rep_Value = "0"
+		end
+		--------------------------------------------------------
+		-- Repechage_Free
+		local repF_err, repF_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("FreeRepechageData_%s", self.SetVer))
+		for i = 1, 10 do
+			if rs_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				repF_err, repF_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("FreeRepechageData_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(repF_Value) then
+			if upDate then
+				playerDataComponent.Repechage_Free = tonumber(repF_Value)
+			end
+		else
+			repF_Value = "0"
+		end
+		
+		return string.format("%s_%s_%s_%s", s_Value, rs_Value, rep_Value, repF_Value)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerSyrupData(string userID)
+		-- 플레이어의 아웃 게임 재화 _ Syrup 을 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- Syrup 저장
+		local s_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SyrupData_%s", self.SetVer), tostring(playerDataComponent.Syrup))
+		for i = 1, 10 do
+			if s_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				s_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("SyrupData_%s", self.SetVer), tostring(playerDataComponent.Syrup))
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerRoyalSyrupData(string userID)
+		-- 플레이어의 아웃 게임 재화 _ RoyalSyrup을 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- RoyalSyrup 저장
+		local s_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("RoyalSyrupData_%s", self.SetVer), tostring(playerDataComponent.RoyalSyrup))
+		for i = 1, 10 do
+			if s_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				s_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("RoyalSyrupData_%s", self.SetVer), tostring(playerDataComponent.RoyalSyrup))
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerRepechageData(string userID)
+		-- 플레이어의 아웃 게임 재화 _ Repechage를 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- Repechage 저장
+		local s_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("RepechageData_%s", self.SetVer), tostring(playerDataComponent.Repechage))
+		for i = 1, 10 do
+			if s_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				s_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("RepechageData_%s", self.SetVer), tostring(playerDataComponent.Repechage))
+			end
+		end
+		
+		-- Repechage_Free 저장
+		local s_err2 = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("FreeRepechageData_%s", self.SetVer), tostring(playerDataComponent.Repechage_Free))
+		for i = 1, 10 do
+			if s_err2 == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				s_err2 = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("FreeRepechageData_%s", self.SetVer), tostring(playerDataComponent.Repechage_Free))
+			end
+		end
+		--------------------------------------------------------
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerFavoriteDicData(string userID)
+		-- 사전 즐겨찾기 데이터를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		
+		-- Char
+		local dc_err, dc_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("DictionaryCharData_%s", self.SetVer))
+		for i = 1, 10 do
+			if dc_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				dc_err, dc_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("DictionaryCharData_%s", self.SetVer))
+			end
+		end
+		
+		if not isvalid(dc_Value) then
+			dc_Value = "NIL"
+		end
+		--------------------------------------------------------
+		-- Rune
+		local dr_err, dr_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("DictionaryRuneData_%s", self.SetVer))
+		for i = 1, 10 do
+			if dr_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				dr_err, dr_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("DictionaryRuneData_%s", self.SetVer))
+			end
+		end
+		
+		if not isvalid(dr_Value) then
+			dr_Value = "NIL"
+		end
+		--------------------------------------------------------
+		-- Item
+		local di_err, di_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("DictionaryItemData_%s", self.SetVer))
+		for i = 1, 10 do
+			if di_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				di_err, di_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("DictionaryItemData_%s", self.SetVer))
+			end
+		end
+		
+		if not isvalid(di_Value) then
+			di_Value = "NIL"
+		end
+		--------------------------------------------------------
+		-- 클라에 저장
+		self:GetPlayerFavoriteDicDataInClient(dc_Value, dr_Value, di_Value, userID)
+	end
+
+	@ExecSpace("Client")
+	method void GetPlayerFavoriteDicDataInClient(string charValue, string runeValue, string itemValue)
+		-- 클라이언트에 즐겨찾기를 저장합니다.
+		--------------------------------------------------------
+		-- char
+		if charValue ~= "NIL" then
+			
+			-- 한 번 초기화 하고 들어가기
+			_DictionaryFavoriteListManager:Initialize_CharList()
+			
+			local charIDList = _UtilLogic:Split(charValue, ",")
+			for _, charID in pairs(charIDList) do
+				_DictionaryManager:Character_Favorite(charID)
+			end
+		else
+			_DictionaryFavoriteListManager:Initialize_CharList()
+		end
+		--------------------------------------------------------
+		-- rune
+		if runeValue ~= "NIL" then
+			_DictionaryFavoriteListManager:Initialize_RuneList()	
+			
+			local runeIDList = _UtilLogic:Split(runeValue, ",")
+			
+			for _, runeID in pairs(runeIDList) do
+				_DictionaryManager:RuneCard_Favorite(runeID)
+			end
+		else
+			_DictionaryFavoriteListManager:Initialize_RuneList()
+		end
+		--------------------------------------------------------
+		-- item
+		if itemValue ~= "NIL" then
+			_DictionaryFavoriteListManager:Initialize_ItemList()
+			
+			local itemIDList = _UtilLogic:Split(itemValue, ",")
+			
+			for _, itemID in pairs(itemIDList) do
+				_DictionaryManager:Item_Favorite(itemID)
+			end
+		else
+			_DictionaryFavoriteListManager:Initialize_ItemList()
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("Server")
+	method void SetPlayerFavoriteDicData(Entity user)
+		-- 플레이어의 사전 내 즐겨찾기 정보를 저장합니다.
+		--------------------------------------------------------
+		--local user = _UserService:GetUserEntityByUserId(userID)
+		local userID = user.OwnerId
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		
+		-- 사전 내 즐겨찾기 정보를 string 값으로 변환합니다.
+		-----------------------------------------------------------------
+		local charValue = ""
+		local runeValue = ""
+		local itemValue = ""
+		-----------------------------------------------------------------
+		-- 1. Char 데이터 가공
+		for _, charID in pairs(playerDataComponent.fave_Character_Dictionary) do
+			charValue = string.format("%s%s,", charValue, charID)
+		end
+		
+		if charValue == "" then
+			charValue = "NIL"
+		else
+			charValue = string.sub(charValue, 1, -2)
+		end
+		-----------------------------------------------------------------
+		-- 2. Rune 데이터 가공
+		for _, runeID in pairs(playerDataComponent.fave_Rune_Dictionary) do
+			runeValue = string.format("%s%s,", runeValue, runeID)
+		end
+		
+		if runeValue == "" then
+			runeValue = "NIL"
+		else
+			runeValue = string.sub(runeValue, 1, -2)
+		end
+		-----------------------------------------------------------------
+		-- 3. Item 데이터 가공
+		for _, itemID in pairs(playerDataComponent.fave_Item_Dictionary) do
+			itemValue = string.format("%s%s,", itemValue, itemID)
+		end
+		
+		if itemValue == "" then
+			itemValue = "NIL"
+		else
+			itemValue = string.sub(itemValue, 1, -2)
+		end
+		------------------------------------------------------------------
+		
+		-- charValue 저장
+		local c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("DictionaryCharData_%s", self.SetVer), charValue)
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("DictionaryCharData_%s", self.SetVer), charValue)
+			end
+		end
+		--------------------------------------------------------
+		-- runeValue 저장
+		local r_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("DictionaryRuneData_%s", self.SetVer), runeValue)
+		for i = 1, 10 do
+			if r_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				r_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("DictionaryRuneData_%s", self.SetVer), runeValue)
+			end
+		end
+		--------------------------------------------------------
+		-- itemValue 저장
+		local i_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("DictionaryItemData_%s", self.SetVer), itemValue)
+		for i = 1, 10 do
+			if i_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				i_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("DictionaryItemData_%s", self.SetVer), itemValue)
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetLastLoginDateData(string userID)
+		-- 플레이어가 가장 최근에 로그인한 일시를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- LastLoginDate
+		local d_err, d_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("LastLoginDateData_%s", self.SetVer))
+		for i = 1, 10 do
+			if d_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				d_err, d_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("LastLoginDateData_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(d_Value) then
+			playerDataComponent.LastLoginDate = d_Value
+		end
+		--------------------------------------------------------
+		--self:SetLastLoginDateData(userID)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetLastLoginDateData(string userID)
+		-- 그 다음, 지금 접속한 날짜를 새로 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		local utc = DateTime.UtcNow
+		local nowLoginDate = string.format("%04d_%02d_%02d_%02d", utc.Year, utc.Month,utc.Day,utc.Hour)
+		
+		local err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("LastLoginDateData_%s", self.SetVer), nowLoginDate)
+		for i = 1, 10 do
+			if err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("LastLoginDateData_%s", self.SetVer), nowLoginDate)
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerInfoData(string userID)
+		-- 플레이어의 기본 정보를 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local pComponent = user.PlayerComponent
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- NickName 저장
+		local n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("NicknameData_%s", self.SetVer), pComponent.Nickname)
+		for i = 1, 10 do
+			if n_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("NicknameData_%s", self.SetVer), pComponent.Nickname)
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method string GetPlayerNickNameData(string userID)
+		-- 플레이어의 닉네임을 불러옵니다.
+		--------------------------------------------------------
+		-- LastLoginDate
+		local n_err, n_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("NicknameData_%s", self.SetVer))
+		for i = 1, 10 do
+			if n_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				n_err, n_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("NicknameData_%s", self.SetVer))
+			end
+		end
+		--------------------------------------------------------
+		return n_Value
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerCumulativeBoxPurchasesAmountData(string userID)
+		-- 플레이어의 가챠 구매 횟수를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- CumulativeBoxPurchasesData
+		local c_err, c_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("CumulativeBoxPurchasesData_%s", self.SetVer))
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				c_err, c_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("CumulativeBoxPurchasesData_%s", self.SetVer))
+			end
+		end
+		--------------------------------------------------------
+		if isvalid(c_Value) then
+			playerDataComponent.CumulativeBoxPurchases = tonumber(c_Value)
+		else
+			playerDataComponent.CumulativeBoxPurchases = 0
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerCumulativeBoxPurchasesAmountData(string userID)
+		-- 플레이어의 가챠 구매 횟수를 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- CumulativeBoxPurchasesData 저장
+		local c_Value = tostring(math.floor(playerDataComponent.CumulativeBoxPurchases))
+		local n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("CumulativeBoxPurchasesData_%s", self.SetVer), c_Value)
+		for i = 1, 10 do
+			if n_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("CumulativeBoxPurchasesData_%s", self.SetVer), c_Value)
+			end
+		end
+		--------------------------------------------------------
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckPlayerHighRankData(string userID, number checkSeason, number checkOrdinalNum)
+		-- 플레이어가 가진 데이터를 확인한 후, 더 높다면 기록
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		
+		-- 1. 유저 하이스코어 불러오기
+		local userDB = _DataStorageService:GetUserDataStorage(userID)
+		local setKey = string.format("RankScore_%d_%d", checkSeason, checkOrdinalNum)
+		--------------------------------------------------------
+		local sethighScore = 0
+		local geterr, sc_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(setKey)
+		for i = 1, 10 do
+			if geterr == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				geterr, sc_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(setKey)
+			end
+		end
+		
+		if isvalid(sc_Value) then
+			sethighScore = tonumber(sc_Value)
+		end
+		
+		-- 2. 현재 최고 도달 랭크 순위 불러오기
+		local highRankInfo = "NIL/NIL/NIL/NIL"
+		local hr_err, hr_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("HighRankInfo_%s", self.SetVer))
+		for i = 1, 10 do
+			if hr_err == 0 then
+				break
+			elseif i == 10 then
+				_UserService:KickUser(userID, KickReason.WorldContent)
+			else
+				hr_err, hr_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("HighRankInfo_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(hr_Value) then
+			highRankInfo = hr_Value
+			-- RankNum/RankPercent/SeasonNumber/OrdinalNumber
+		end
+		
+		-- 3. 랭킹 데이터 마지막 순위보다 점수가 낮은지 확인
+		------------------------------------------------------------------
+		local dbKey = string.format("RankModeRanking_%d_%d", checkSeason, checkOrdinalNum)
+		local rankingDB = _DataStorageService:GetSortableDataStorage(dbKey)
+		------------------------------------------------------------------
+		local err, rankPages = rankingDB:GetSortedAndWait(SortDirection.Descending, 1, math.maxinteger)
+		for i = 1, 10 do
+			if err ~= 0 then
+				err, rankPages = rankingDB:GetSortedAndWait(SortDirection.Descending, 1, math.maxinteger)
+			else
+				break
+			end
+		end
+		
+		-- 3-1. 높다면 순위도 불러오기
+		local playerCount = 0
+		local checkCount = 0
+		while true do
+			local items = rankPages:GetCurrentPageDatas()
+			
+			if #items > 0 then
+				for _, item in pairs(items) do
+					playerCount += 1
+					if item.KeyInfo.Key == userID then
+						checkCount = playerCount
+						log(string.format("Rank %d. %s = %d", playerCount,  item.KeyInfo.Tag, item.Value))
+						break
+					end
+				end
+				
+				if checkCount ~= 0 then
+					break
+				elseif rankPages.IsLastPage == true then
+					break
+				elseif playerCount >= 200 then
+					break
+				else
+					rankPages:MoveToNextPageAndWait()
+				end
+			else
+				checkCount = -1
+				log("#item = 0")
+				break
+			end
+		end
+		
+		-- 3-2. 낮다면 퍼센티지만 불러오기
+		local checkPercent = -1
+		local checkTable = _ModeDataLogic:GetRankModeUserClearPercent(checkSeason, checkOrdinalNum, userID)
+		log(checkTable)
+		if checkCount == -1 then
+			log("해당 시즌, 분기에 랭크 데이터가 없음")
+			return
+		elseif checkCount == 0 then
+			-- 순위 밖인 경우
+			checkPercent = checkTable["Percent"]
+		else
+			-- 순위 안쪽인 경우
+			checkPercent = checkCount / checkTable["All"]
+		end
+		
+		-- 4. 비교 후 저장
+		local saveCheck = false
+		
+		-- 저장된 최고 랭크 정보 분리
+		local setHighTable = _UtilLogic:Split(highRankInfo, "/")
+		
+		-- 순위 우선 데이터 저장
+		---------------------------------------------------------------
+		--[[
+		-- 이전 데이터가 없으면
+		if setHighTable[1] == "NIL" and setHighTable[2] == "NIL" then
+			if checkCount ~= -1 then
+				-- 무조건 저장
+				saveCheck = true
+			end
+		-- 이전 데이터에 비율만 있으면
+		elseif setHighTable[1] == "NIL" then
+			if checkCount > 0 then
+				-- 체크한 순위가 있다면 저장
+				saveCheck = true
+			elseif tonumber(setHighTable[2]) > checkPercent then
+				-- 체크한 비율이 더 좋으면 저장
+				saveCheck = true
+			end
+		-- 이전 데이터에 순위도 있으면
+		else
+			if tonumber(setHighTable[1]) == checkCount then
+				-- 체크한 순위가 같으면 비율 비교
+				if tonumber(setHighTable[2]) > checkPercent then
+					-- 체크한 비율이 더 좋으면 저장
+					saveCheck = true
+				end
+			elseif tonumber(setHighTable[1]) > checkCount and checkCount > 0 then
+				-- 체크한 순위가 더 좋으면 저장
+				saveCheck = true
+			end
+		end
+		]]--
+		
+		-- 비율 우선 데이터 저장
+		---------------------------------------------------------------
+		-- 이전 데이터가 없으면
+		if setHighTable[1] == "NIL" and setHighTable[2] == "NIL" then
+			if checkCount ~= -1 then
+				-- 무조건 저장
+				saveCheck = true
+			end
+		-- 체크한 비율이 더 좋으면 저장
+		elseif tonumber(setHighTable[2]) > checkPercent then
+			saveCheck = true
+		-- 체크한 비율이 같으면
+		elseif tonumber(setHighTable[2]) == checkPercent then
+			if tonumber(setHighTable[1]) > checkCount and checkCount > 0 then
+				-- 체크한 순위가 더 좋으면 저장
+				saveCheck = true
+			end
+		end
+		
+		log("Check = ", saveCheck, checkCount, checkPercent, setHighTable[2])
+		
+		-- 저장 시
+		if saveCheck then
+			local countStringValue = "NIL"
+			if checkCount > 0 then
+				countStringValue = string.format("%d", checkCount)
+			end
+			
+			local save_Value = string.format("%s/%d/%d/%d", countStringValue, checkPercent, checkSeason, checkOrdinalNum)
+			playerDataComponent.HighRankInfo = save_Value
+			
+			local save_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("HighRankInfo_%s", self.SetVer), save_Value)
+			for i = 1, 10 do
+				if save_err == 0 then
+					break
+				elseif i == 20 then
+					log_error("Save 실패")
+				else
+					save_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("HighRankInfo_%s", self.SetVer), save_Value)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerLevelData(string userID)
+		-- 플레이어 계정 레벨 상태를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- Level
+		local l_err, l_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("LevelData_%s", self.SetVer))
+		for i = 1, 10 do
+			if l_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				l_err, l_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("LevelData_%s", self.SetVer))
+			end
+		end
+		
+		if isvalid(l_Value) then
+			local lvInfo = _UtilLogic:Split(l_Value, "_")
+			playerDataComponent.Level = tonumber(lvInfo[1])
+			playerDataComponent.EXP = tonumber(lvInfo[2])
+		else
+			-- 데이터가 없을 때
+			playerDataComponent.Level = _PlayerLevelLogic.Level_Min
+			playerDataComponent.EXP = 0
+			_UI_PlayerLevel:InitializeLobbyProfile(userID)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerLevelData(string userID)
+		-- 플레이어 계정 레벨 상태를 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- Level, Exp 데이터 가공
+		local l_Value = string.format("%d_%d", playerDataComponent.Level, playerDataComponent.EXP)
+		
+		
+		-- Level 저장
+		local l_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("LevelData_%s", self.SetVer), l_Value)
+		for i = 1, 10 do
+			if l_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				l_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("LevelData_%s", self.SetVer), l_Value)
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerProfileIsPublicData(string userID)
+		-- 플레이어의 프로필 공개 여부를 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- 데이터 가공
+		local isPublicData = string.format("%s_%s", playerDataComponent.Profile_Record_IsPublic, playerDataComponent.Profile_History_IsPublic)
+		--------------------------------------------------------
+		-- Table 저장
+		local n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("IsPublicData_%s", self.SetVer), isPublicData)
+		for i = 1, 10 do
+			if n_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("IsPublicData_%s", self.SetVer), isPublicData)
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerProfileIsPublicData(string userID)
+		-- 플레이어의 프로필 공개 여부를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- isPublic
+		local p_err, p_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("IsPublicData_%s", self.SetVer))
+		for i = 1, 10 do
+			if p_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				p_err, p_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("IsPublicData_%s", self.SetVer))
+			end
+		end
+		--------------------------------------------------------
+		if isvalid(p_Value) then
+			local pInfo = _UtilLogic:Split(p_Value, "_")
+			playerDataComponent.Profile_Record_IsPublic = (pInfo[1] == "true")
+			playerDataComponent.Profile_History_IsPublic = (pInfo[2] == "true")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerTutorialData(string userID)
+		-- 플레이어의 튜토리얼 관련 정보를 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- 데이터 가공
+		local isRewardReceived = string.format("%s", playerDataComponent.TutorialRewardReceived)
+		local isTutorialRejected = string.format("%s", playerDataComponent.TutorialRejected)
+		--------------------------------------------------------
+		-- 스테이지 클리어 여부
+		local n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("IsTutorialRewardReceived_%s", self.SetVer), isRewardReceived)
+		for i = 1, 10 do
+			if n_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("IsTutorialRewardReceived_%s", self.SetVer), isRewardReceived)
+			end
+		end
+		--------------------------------------------------------
+		-- 튜토리얼 스킵 여부
+		n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("IsTutorialRejected_%s", self.SetVer), isTutorialRejected)
+		for i = 1, 10 do
+			if n_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("IsTutorialRejected_%s", self.SetVer), isTutorialRejected)
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerTutorialData(string userID)
+		-- 플레이어의 튜토리얼 관련 정보를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- 스테이지 클리어 여부
+		local p_err, p_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("IsTutorialRewardReceived_%s", self.SetVer))
+		for i = 1, 10 do
+			if p_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				p_err, p_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("IsTutorialRewardReceived_%s", self.SetVer))
+			end
+		end
+		--------------------------------------------------------
+		if isvalid(p_Value) then
+			local pInfo = _UtilLogic:Split(p_Value, "_")
+			playerDataComponent.TutorialRewardReceived = (pInfo[1] == "true")
+		end
+		
+		--------------------------------------------------------
+		-- 스테이지 클리어 여부
+		p_err, p_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("IsTutorialRejected_%s", self.SetVer))
+		for i = 1, 10 do
+			if p_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				p_err, p_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("IsTutorialRejected_%s", self.SetVer))
+			end
+		end
+		--------------------------------------------------------
+		if isvalid(p_Value) then
+			local pInfo = _UtilLogic:Split(p_Value, "_")
+			playerDataComponent.TutorialRejected = (pInfo[1] == "true")
+		end
+		
+		if playerDataComponent.TutorialRewardReceived == false and playerDataComponent.TutorialRejected == false then
+			user.TutorialManager_New:ActivateTutoSelectForServer(userID)
+		else
+			
+		end
+		
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerChallengeInfoData(string userID)
+		-- 플레이어의 챌린지 관련 정보를 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- 데이터 가공
+		local challengeInfoData = string.format("%d", playerDataComponent.ChallengeMode_LeftTryCount)
+		--------------------------------------------------------
+		-- Table 저장
+		local n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("ChallengeInfoData_%s", self.SetVer), challengeInfoData)
+		for i = 1, 10 do
+			if n_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("ChallengeInfoData_%s", self.SetVer), challengeInfoData)
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerChallengeInfoData(string userID)
+		-- 플레이어의 챌린지 관련 정보를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local playerDataComponent = user.PlayerDataComponent
+		--------------------------------------------------------
+		-- ChallengeInfo
+		local c_err, c_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("ChallengeInfoData_%s", self.SetVer))
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				c_err, c_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("ChallengeInfoData_%s", self.SetVer))
+			end
+		end
+		--------------------------------------------------------
+		if isvalid(c_Value) then
+			local cInfo = _UtilLogic:Split(c_Value, "_")
+			playerDataComponent.ChallengeMode_LeftTryCount = tonumber(cInfo[1])
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetPlayerDailyMissionData(string userID)
+		-- 플레이어의 일일 미션 관련 정보를 저장합니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local dmCompo = user.DailyMissionComponent
+		--------------------------------------------------------
+		-- 데이터 가공 : "미션ID,미션진행도,미션상태"/"미션ID,미션진행도,미션상태"/...
+		local data_before = {}
+		for i=1, 3 do
+			local missionData = dmCompo.MissionID[i]..","..dmCompo.MissionProgress[i]..","..dmCompo.MissionState[i]
+			table.insert(data_before, missionData)
+		end
+		
+		-- 보너스 데이터는 "보너스포인트,보너스보상수령상태"
+		local bonusData = string.format("%d,%d", dmCompo.BonusPoint, dmCompo.BonusRewardReceiveState)
+		local dailyMissionData = ""
+		for i=1, 3 do
+			if i ~= 1 then
+				dailyMissionData = dailyMissionData.."/"
+			end
+			dailyMissionData = dailyMissionData..data_before[i]
+		end
+		
+		dailyMissionData = dailyMissionData.."/"..bonusData
+		--------------------------------------------------------
+		-- Table 저장
+		local n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("DailyMissionInfoData_%s", self.SetVer), dailyMissionData)
+		for i = 1, 10 do
+			if n_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Save 실패")
+			else
+				n_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait(string.format("DailyMissionInfoData_%s", self.SetVer), dailyMissionData)
+			end
+		end
+		--------------------------------------------------------
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerDailyMissionData(string userID)
+		-- 플레이어의 일일 미션 관련 정보를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		local dmCompo = user.DailyMissionComponent
+		--------------------------------------------------------
+		local c_err, c_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("DailyMissionInfoData_%s", self.SetVer))
+		for i = 1, 10 do
+			if c_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				c_err, c_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("DailyMissionInfoData_%s", self.SetVer))
+			end
+		end
+		--------------------------------------------------------
+		dmCompo:OnLoadData(c_Value)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetPlayerGachaCountData(string userID)
+		-- 플레이어 가챠 횟수를 불러옵니다.
+		--------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userID)
+		--------------------------------------------------------
+		-- Syrup
+		local s_err, s_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("GachaCountData_%s", self.SetVer))
+		for i = 1, 10 do
+			if s_err == 0 then
+				break
+			elseif i == 20 then
+				log_error("Load 실패")
+			else
+				s_err, s_Value = _DataStorageService:GetUserDataStorage(userID):GetAndWait(string.format("GachaCountData_%s", self.SetVer))
+			end
+		end
+		--------------------------------------------------------
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserLeaveEvent(UserLeaveEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: UserService
+		-- Space: Server
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local ProfileCode = event.ProfileCode
+		local UserId = event.UserId
+		---------------------------------------------------------
+		-- _DynamicMapSystemLogic:PendingUser(UserId)
+		--_DynamicMapSystemLogic:UserDynamicMapDestroy(UserId)
+		
+		--[[
+		log("Leave UserID = ", UserId)
+		if isvalid(_UnitSetLogic_New.UnitsParentEntity[UserId]) == true then
+			local targetMapName = "Arena" .. tostring(UserId)
+			
+			local code = _DynamicMapService:DestroyDynamicMap(targetMapName)
+			log(code)
+		
+			
+		    --_UnitSetLogic_New:UnitSampleDestroy(userID)
+		    --_UnitSetLogic_New:ProjectileSampleDestroy(userID)
+		    --_UnitSetLogic_New.UnitsParentEntity[userID]:Destroy()
+		    --_UnitSetLogic_New.ProjectilesParentEntity[userID]:Destroy()
+		    --_UnitSetLogic_New.UnitsParentEntity[userID] = nil
+		    --_UnitSetLogic_New.ProjectilesParentEntity[userID] = nil
+			
+		end
+		]]--
+	end
+
+end

@@ -1,0 +1,213 @@
+@Component
+script UIRecipeSetTopBar extends Component
+
+	property string key = ""
+
+	property SyncTable<string, Entity> SortOptions
+
+	method void Refresh(table params)
+		-- 매개변수에 따라 레시피 설정 상단 바를 새로고침하는 함수
+		local key = self.key
+		if key == "Recipe" then
+			local trendInfo = self.Entity:GetChildByName("TrendInfo")
+			trendInfo.UITrendInfoBar:Refresh(true)
+			
+		elseif key == "Trial" then
+			local trialId = params[1]
+			self.Entity.UITrialSetTopBar:Refresh(trialId)
+			
+		elseif key == "VIPOrder" then
+			local slotIndex = params[1]
+			self:RefreshVIPOrderRequirements(slotIndex)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTrialResultGuess()
+		-- 트라이얼 결과 예상을 설정하는 함수
+		local uiRecipeListHolder = _UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder
+		local nowSelected = uiRecipeListHolder.NowSelected
+		if uiRecipeListHolder.NowKey ~= "Trial" then
+			return
+		end
+		
+		local resultGuess = self.Entity:GetChildByName("ResultGuess")
+		if nowSelected == 0 or nowSelected == nil then
+			resultGuess.Enable = false
+			return
+		end
+		resultGuess.Enable = true
+		
+		local bg = resultGuess:GetChildByName("BG")
+		local resultText = bg:GetChildByName("ResultText").TextComponent
+		local resultImg = bg:GetChildByName("ResultImg").SpriteGUIRendererComponent
+		
+		local trialId = uiRecipeListHolder.NowParams[1]
+		local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, _UserService.LocalPlayer, _TrialUILogic.UITrialSelect.UITrialSelect.SelectTab)
+		
+		---@type RecipeData
+		local recipeData = _UserService.LocalPlayer.PlayerRecipe.Recipes[nowSelected]
+		
+		if recipeData.TasteScore/challengingData.Requirement < 0.8 then
+			resultImg.ImageRUID = "9f0a8fb9c57c4a12bafbe6e8f6493f0a"
+			resultText.Text = _GetLocalizationTextLogic:GetText("TrialResultGuessBad")
+			resultText.FontColor = _ColorCodeEnum:GetColor("#DE2616")
+		elseif recipeData.TasteScore/challengingData.Requirement >= 0.8 and recipeData.TasteScore/challengingData.Requirement < 1 then
+			resultImg.ImageRUID = "688d48ca342e45888d52f279679b76ba"
+			resultText.Text = _GetLocalizationTextLogic:GetText("TrialResultGuessNormal")
+			resultText.FontColor = _ColorCodeEnum:GetColor("#474747")
+		else
+			resultImg.ImageRUID = "ed2a90c3349a49bb9f83ad13d902175d"
+			resultText.Text = _GetLocalizationTextLogic:GetText("TrialResultGuessGood")
+			resultText.FontColor = _ColorCodeEnum:GetColor("#355700")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 레시피 설정 상단 바를 초기화하는 함수
+		self.key = self.Entity.Name
+		
+		if self.key == "Recipe" then
+			local sortBtn = self.Entity:GetChildByName("SortButton")
+			local sortList = sortBtn:GetChildByName("SortList")
+			sortList.Enable = false
+			sortBtn:ConnectEvent(ButtonClickEvent, function()
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+				self:SetEnableSortList(not sortList.Enable)
+			end)
+			
+			for i, child in pairs(sortList.Children) do
+				if isvalid(child.ButtonComponent) == false then
+					continue
+				end
+				
+				self.SortOptions[child.Name] = child
+			end
+		end
+		
+		self._T.vipReqTooltipEntities = {}
+		self._T.vipReqTooltipInfos = {}
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetEnableSortList(boolean enable)
+		-- 정렬 목록의 활성화 상태를 설정하는 함수
+		if self.key ~= "Recipe" then
+			return
+		end
+		
+		local sortBtn = self.Entity:GetChildByName("SortButton")
+		local sortList = sortBtn:GetChildByName("SortList")
+		sortList.Enable = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshVIPOrderRequirements(integer slotIndex)
+		-- VIP 주문 요구사항을 새로고침하는 함수
+		if self.key ~= "VIPOrder" then
+			return
+		end
+		
+		local player = _UserService.LocalPlayer
+		local slotData = player.PlayerVIPOrder.VIPOrderSlotData[slotIndex]
+		local nowSelected = _UIEntityLogic_RecipeGroup.UIRecipeList.UIRecipeListHolder.NowSelected
+		
+		if slotData["OrderType"] ~= _VIPOrderTypeEnum.Recipe then
+			return
+		end
+		
+		local requirements = _VIPOrderDataSetLogic:ReturnRequirementDatasTableForUI(slotData)
+		
+		local requirementList = self.Entity:GetChildByName("Requirements"):GetChildByName("RequirementsList")
+		
+		for i = 1, #requirements do
+			local reqKey = requirements[i][1]
+			local reqValue = requirements[i][2]
+				
+			local reqSlot = requirementList:GetChildByName(reqKey)
+			local reqIcon = reqSlot:GetChildByName("Icon")
+			
+			
+			if self._T.vipReqTooltipEntities[i] == nil then
+				local tooltipEntity = reqSlot:GetChildByName("Model_Tooltip_RightOriented")
+				self._T.vipReqTooltipEntities[i] = tooltipEntity
+				reqSlot:ConnectEvent(ButtonClickEvent, function()
+					if _UIGroupManager:IsEnableOpenPopUp() == false then
+						return
+					end
+					
+					local text = self._T.vipReqTooltipInfos[i]
+					if _UtilLogic:IsNilorEmptyString(text) then
+						return
+					end
+					
+					_TooltipService:OpenTooltip(tooltipEntity, self._T.vipReqTooltipInfos[i])
+				end)
+			end
+			
+			local textInfo = ""
+			
+			---@type RecipeData
+			local nowRecipe = player.PlayerRecipe.Recipes[nowSelected]
+			
+			local isCorrect
+			local gap
+			if not (reqValue == nil or reqValue == 0) then
+				if reqKey == "TasteGrade" then
+					local gradeData = _TasteGradeDataSetLogic:GetTasteGradeData(reqValue)	
+					textInfo = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("VIPOrderRequirementTasteGrade", gradeData.Grade)
+					
+					if isvalid(nowRecipe) then
+						local tasteGrade = _TasteGradeDataSetLogic:ReturnGradeDataByScore(nowRecipe.TasteScore).Index
+						if tasteGrade >= reqValue then
+							isCorrect = true
+							gap = tasteGrade - reqValue
+						else
+							isCorrect = false
+						end
+					end
+					
+				elseif reqKey == "Tag" then
+					local tagData = _RecipeTagDataSetLogic:GetRecipeTagData(reqValue)	
+					textInfo = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("VIPOrderRequirementTag", _GetLocalizationTextLogic:GetText(tagData.TagNameKey))
+					
+					if isvalid(nowRecipe) then
+						if nowRecipe.Tag == reqValue then
+							isCorrect = true
+						else
+							isCorrect = false
+						end
+					end
+					
+				elseif reqKey == "Ingre1" or reqKey == "Ingre2" then
+					local ingreData = _IngredientDataSetLogic:GetIngredientData(reqValue)	
+					textInfo = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("VIPOrderRequirementIngre", _GetLocalizationTextLogic:GetText(ingreData.NameKey))
+					
+					if isvalid(nowRecipe) then
+						if _RecipeDataSetLogic:IsRecipeIncludeIngredient(nowRecipe.IngreList, reqValue) then
+							isCorrect = true
+						else
+							isCorrect = false
+						end
+					end
+				end
+			end
+			
+			self._T.vipReqTooltipInfos[i] = textInfo
+			
+			_VIPOrderDataSetLogic:RefreshRequirementSlotIcon(reqKey, reqValue, reqSlot, reqIcon, isCorrect, gap)
+		end
+		
+		for i, entity in pairs(self._T.vipReqTooltipEntities) do
+			entity.Enable = false
+		end
+		
+	end
+
+end

@@ -1,0 +1,228 @@
+@Component
+script UIStageInfo extends Component
+
+	property SyncTable<integer, Entity> Tabs
+
+	property SyncTable<integer, Entity> Pages
+
+	property integer SelectTab = 0
+
+	property integer StageId = 0
+
+	property Entity EndStageSettingBtn = "dcbbb485-169f-4f7f-955e-2ae10e19c1e7"
+
+	property boolean IsStageSetting = false
+
+	property Entity UIPanel = "4abe7f7f-3fe3-4527-8b86-99ded7a551c9"
+
+	property Entity StageTitle = "57d094fc-75ce-4d66-9060-6a697ec418ca"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 탭과 페이지를 설정하는 함수
+		self.Entity.Enable = false
+		
+		local tabRoot = self.Entity:GetChildByName("Panel"):GetChildByName("MenuBar")
+		table.clear(self.Tabs)
+		for i, entity in pairs(tabRoot.Children) do
+			if isvalid(entity.UIToggleTypeA) then
+				entity.UIToggleTypeA:SetIndex(i)
+				entity.UIToggleTypeA.OnClickedButton = function(event, index) self:SetSelectTab(index) end
+				table.insert(self.Tabs, entity)
+				entity:GetChildByName("RedDot").Enable = false
+			end
+		end
+		
+		local pageRoot = self.Entity:GetChildByName("Panel"):GetChildByName("Contents")
+		table.clear(self.Pages)
+		for i, entity in pairs(pageRoot.Children) do
+			self.Pages[i] = entity
+		end
+	end
+
+	method void Open(integer stageId, boolean isStageSetting)
+		-- 스테이지 정보 UI를 여는 함수
+		local stageData = _StageDataSetLogic:GetStageData(stageId)
+		if isvalid(stageData) == false then
+			return
+		end
+		
+		if stageId == 1 then 
+			return
+		end
+		
+		if stageData.HideSlot == true or stageData.ComingSoon == true then
+			return
+		end
+		
+		_UIGroupManager:EnableStageInfoGroup(true)
+		self.Entity.Enable = true
+		
+		_UIGroupManager:EnableMoneyBarGroup(true)
+		
+		self._T.isProcessing = true
+		self.EndStageSettingBtn.Enable = false
+		_UIEntityService:PlayUIOpenAnim(self.UIPanel, self.UIPanel.UITransformComponent.anchoredPosition, Vector2.up, nil, nil, nil, nil, function()
+			self.EndStageSettingBtn.Enable = isStageSetting
+			self._T.isProcessing = false
+		end)
+		
+		self.IsStageSetting = isStageSetting
+		
+		self.StageId = stageId
+		
+		self:SetStageTitle(stageId)
+		self:SetSelectTab(1)
+		
+		if self.IsStageSetting == true then
+			_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.EnterEndStageSetting)
+		end
+	end
+
+	method void Close()
+		-- 스테이지 정보 UI를 닫는 함수
+		if _StageDataSetLogic.UIStageSelect.Entity.Enable == false then
+			_UIGroupManager:EnableStageInfoGroup(false)
+		end
+		
+		self.Entity.Enable = false
+		_UIGroupManager:EnableMoneyBarGroup(nil)
+	end
+
+	method void SetSelectTab(integer selectTab)
+		-- 선택된 탭을 설정하는 함수
+		self.SelectTab = selectTab
+		self:OnSelectTab(selectTab)
+		self:Apply(selectTab)
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	method void OnSelectTab(integer selectTab)
+		-- 탭 선택 시 UI 상태를 변경하는 함수
+		for i, entity in ipairs(self.Tabs) do
+			---@type Entity
+			local tab = entity
+			local tabIndex = tab.UIToggleTypeA.index
+			local isSelect = tabIndex == selectTab
+			
+			local uiSpriteSelect = tab:GetChildByName("UISpriteSelect")
+			uiSpriteSelect.SpriteGUIRendererComponent.ImageRUID = isSelect and "4043c56d30de408cb46d83c6eaee1991" or "189b591b4e694a25a57e7d68aa7e1be1" 
+			uiSpriteSelect.UITransformComponent.RectSize = isSelect and Vector2(224, uiSpriteSelect.UITransformComponent.RectSize.y) or Vector2(163, uiSpriteSelect.UITransformComponent.RectSize.y)
+				
+			tab.UIToggleTypeA:SetTextColor(isSelect and _ColorCodeEnum:GetColor("#FFFFFF") or _ColorCodeEnum:GetColor("#5b483c"))
+			tab.UIToggleTypeA:SetTextOutLine(isSelect, _ColorCodeEnum:GetColor("#936502"))
+			
+			tab:GetChildByName("UISpriteIcon").Enable = isSelect
+		end
+	end
+
+	method void Apply(integer selectTab)
+		-- 선택된 탭에 따라 페이지를 적용하는 함수
+		for i, pg in pairs(self.Pages) do
+			pg.Enable = i == selectTab
+		end
+		
+		local page = self.Pages[selectTab]
+		if selectTab == 1 then
+			page.UIStageInfoStage:Refresh(self.StageId)
+		elseif selectTab == 2 then
+			page.UIStageInfoIngredient:Refresh(self.StageId, self.IsStageSetting)
+		elseif selectTab == 3 then
+			page.UIStageInfoEmployee:Refresh(self.StageId, self.IsStageSetting)
+		elseif selectTab == 4 then
+			page.UIStageInfoStrategy:Refresh(self.StageId, self.IsStageSetting)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetStageTitle(integer stageId)
+		-- 스테이지 제목을 설정하는 함수
+		local stageIcon = self.StageTitle:GetChildByName("StageIcon").SpriteGUIRendererComponent
+		local stageName = self.StageTitle:GetChildByName("StageName").TextComponent
+		local stageDesc = self.StageTitle:GetChildByName("StageDesc").TextComponent
+		
+		local stageData = _StageDataSetLogic:GetStageData(stageId)
+		stageIcon.ImageRUID = stageData.BadgeIconRUID
+		stageName.Text = string.format("%d %s", stageId, _GetLocalizationTextLogic:GetText(stageData.NameKey))
+		stageDesc.Text = _GetLocalizationTextLogic:GetText(stageData.DescKey)
+		
+		self.StageTitle:GetChildByName("Ing").Enable = stageId == _UserService.LocalPlayer.PlayerStage.NowStage
+	end
+
+	@EventSender("Entity", "94b9a277-1433-48bc-bda7-206ee4049ceb")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 첫 번째 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open(_UserService.LocalPlayer.PlayerStage.NowStage, false)
+	end
+
+	@EventSender("Entity", "d85fb072-7fcf-4dc1-973a-d722afbce95d")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 두 번째 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+	@EventSender("Entity", "dcbbb485-169f-4f7f-955e-2ae10e19c1e7")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 세 번째 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		local player = _UserService.LocalPlayer
+		local uiStageSetting = _StageDataSetLogic.UIStageSetting
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		local onOk = function()
+			local datas = uiStageSetting:GetDataFromClient()
+			player.PlayerStage:OnStartNewStage(uiStageSetting.NowStage, datas)
+			
+			self:Close()
+			uiStageSetting:Close()
+			_UIGroupManager:EnableStageInfoGroup(false)
+		end
+		
+		local contents = _GetLocalizationTextLogic:GetText("StageInfoStartPopupContents1") 
+		
+		local isValidData = _UtilLogic:IsNilorEmptyString(player.PlayerStage.StageSettingData[uiStageSetting.NowStage]) == false
+		if isValidData == true then
+			contents = contents.._GetLocalizationTextLogic:GetText("StageInfoStartPopupContents2") 
+		end
+		
+		contents = contents.._GetLocalizationTextLogic:GetText("StageInfoStartPopupContents3") 
+		
+		_UIPopup:Open(contents, onOk, function() end, _GetLocalizationTextLogic:GetText("StageInfoStartPopupTitle"))
+	end
+
+	@EventSender("Entity", "4724d49a-8a25-44be-abdc-c973a84ac4f3")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 네 번째 버튼 클릭 이벤트를 처리하는 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+end

@@ -1,0 +1,335 @@
+@Logic
+script IngredientDataSetLogic extends Logic
+
+	property table IngredientData = {}
+
+	property table BunData = {}
+
+	property integer SpicyThreshold = 15
+
+	property integer IngredientMaxStack = 999
+
+	property table BunSkinData = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 데이터셋을 로드하는 함수
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- 재료, 번, 번 스킨 데이터를 CSV에서 로드하는 함수
+		table.clear(self.IngredientData)
+		local ingreDataSet = _DataService:GetTable("IngredientData")
+		for i = 1, ingreDataSet:GetRowCount() do
+			local ingreData = IngredientData()
+			ingreData:Load(ingreDataSet, i)
+			
+			if self.IngredientData[ingreData.Index] ~= nil then
+				break
+			end
+		
+			self.IngredientData[ingreData.Index] = ingreData
+		end
+		
+		table.clear(self.BunData)
+		local bunDataSet = _DataService:GetTable("BunData")
+		local bunDatas = {}
+		for i = 1, bunDataSet:GetRowCount() do
+			local index = tonumber(bunDataSet:GetRow(i):GetItem("Index"))
+			if not isvalid(bunDatas[index]) then
+				bunDatas[index] = {}
+			end
+			
+			local type = bunDataSet:GetRow(i):GetItem("Type")
+			bunDatas[index][type] = bunDataSet:GetRow(i)
+			
+		    bunDatas[index]["Tag"] = bunDataSet:GetRow(i):GetItem("Tag")
+		    bunDatas[index]["Grade"] = bunDataSet:GetRow(i):GetItem("Grade")
+		end
+		
+		for k, v in pairs(bunDatas) do
+			local bunData = BunData()
+			bunData:Load(v, k)
+			
+			if self.BunData[bunData.Index] ~= nil then
+				break
+			end
+			
+			self.BunData[bunData.Index] = bunData
+		end
+		
+		table.clear(self.BunSkinData)
+		local bunSkinDataSet = _DataService:GetTable("BunSkinData")
+		local bunSkinDatas = {}
+		for i = 1, bunSkinDataSet:GetRowCount() do
+			local index = tonumber(bunSkinDataSet:GetRow(i):GetItem("Index"))
+			if not isvalid(bunSkinDatas[index]) then
+				bunSkinDatas[index] = {}
+			end
+			
+			local type = bunSkinDataSet:GetRow(i):GetItem("Type")
+			bunSkinDatas[index][type] = bunSkinDataSet:GetRow(i)
+			
+			bunSkinDatas[index]["GetCondition"] = bunSkinDataSet:GetRow(i):GetItem("GetCondition")
+			bunSkinDatas[index]["ConditionValue"] = bunSkinDataSet:GetRow(i):GetItem("ConditionValue")
+			bunSkinDatas[index]["RelatedItemId"] = bunSkinDataSet:GetRow(i):GetItem("RelatedItemId")
+		end
+		
+		for k, v in pairs(bunSkinDatas) do
+			local bunSkinData = BunSkinData()
+			bunSkinData:Load(v, k)
+			
+			if self.BunSkinData[bunSkinData.Index] ~= nil then
+				break
+			end
+			
+			self.BunSkinData[bunSkinData.Index] = bunSkinData
+		end
+	end
+
+	method string ReturnPropertyIconRUIDByType(string type)
+		-- 재료 속성 타입에 따른 아이콘 RUID를 반환하는 함수
+		if type == "light" then
+			return "638317f08f0947db9f5350709a86aca7"
+		elseif type == "heavy" then
+			return "8e942676a64d421e8eebfa01023be8e8"
+		elseif type == "spicy" then
+			return "21c115ac97b043ab9804932b1d6709d3"
+		end
+	end
+
+	method string ReturnDishRUIDByGrade(integer grade)
+		-- 등급에 따른 접시 RUID를 반환하는 함수
+		if grade == 2 then
+			return "53de4f9f6e424163b211a32c0ebbcf93"
+		elseif grade >=3 then
+			return "767ba5f8bccd46799529577b12ab4d3b"
+		else
+			return "b02d992e118b41d6a9bce359015eba2e"
+		end
+	end
+
+	method integer ReturnRandomIngredientOfGrade(integer grade, string requireTag, table exclusiveFrom, boolean includeEtc, boolean includeVeggie, Entity player)
+		-- 특정 등급과 태그 조건에 맞는 랜덤 재료를 반환하는 함수
+		local gradePool = {}
+		
+		local stagePool = _StageDataSetLogic:GetStageTotalIngredient(player.PlayerStage.NowStage, player)
+		for _, ingreId in pairs(stagePool) do
+			local data = self:GetIngredientData(ingreId)
+			if data.Grade == grade and self:ReturnIsTagMatch(requireTag, data, includeEtc, includeVeggie, player) then
+				local isDuplicated = false
+				if isvalid(exclusiveFrom) then
+					for i = 1, #exclusiveFrom do
+						if ingreId == exclusiveFrom[i] then
+							isDuplicated = true
+							break
+						end
+					end
+				end
+				
+				if isDuplicated == false then
+					table.insert(gradePool, ingreId)
+				end
+			end	
+		end
+		
+		local randomIndex = _UtilLogic:RandomIntegerRange(1, #gradePool)
+		local randomId = gradePool[randomIndex]
+		return randomId
+	end
+
+	method integer ReturnRandomBunOfGrade(integer grade)
+		-- 특정 등급의 랜덤 번을 반환하는 함수
+		local gradePool = {}
+		local correctedGrade = grade == 3 and 4 or 0
+		for k, v in pairs(self.BunData) do
+			---@type BunData
+			local data = v
+			
+			if data.Grade == grade or data.Grade == correctedGrade then
+				table.insert(gradePool, k)
+			end
+		end
+		
+		local randomIndex = _UtilLogic:RandomIntegerRange(1, #gradePool)
+		return randomIndex
+	end
+
+	method boolean ReturnIsTagMatch(string requireTag, IngredientData ingreData, boolean includeEtc, boolean includeVeggie, Entity player)
+		-- 재료가 요구되는 태그와 일치하는지 확인하는 함수
+		local ingreTag = ingreData.Type
+		if ingreTag == nil then
+			return true
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(requireTag) then
+			return true
+		end
+		
+		if requireTag == _RecipeTagEnum.All or requireTag == _RecipeTagEnum.None then
+			return true
+		end
+		
+		if requireTag == _RecipeTagEnum.Spicy then
+			if ingreData.SpicyPoint ~= nil then
+				if ingreData.SpicyPoint > 0 then
+					return true
+				end
+			end
+		else
+			if ingreData.SpicyPoint ~= nil then
+				if ingreData.SpicyPoint >= self:GetSpicyThreshold(player)/2 then
+					return false
+				end
+			end
+		end
+		
+		if includeEtc then
+			if ingreTag == "Etc" then
+				return true
+			end
+		end
+		
+		if includeVeggie then
+			if ingreTag == "Veggie" then
+				return true
+			end
+		end
+		
+		if ingreTag == requireTag then
+			return true
+		end
+		
+		return false
+	end
+
+	method integer ReturnExclusiveIngredientOfTag(string tag, Entity player)
+		-- 특정 태그에만 해당하는 재료를 랜덤으로 반환하는 함수
+		local tagPool = {}
+		local stagePool = _StageDataSetLogic:GetStageTotalIngredient(player.PlayerStage.NowStage, player)
+		
+		for i, ingreId in pairs(stagePool) do
+			local data = _IngredientDataSetLogic:GetIngredientData(ingreId)
+			local isTagExclusive = self:ReturnIsTagExclusive(tag, data)
+			if isTagExclusive then
+				table.insert(tagPool, ingreId)
+			end
+		end
+		
+		local randomIndex = _UtilLogic:RandomIntegerRange(1, #tagPool)
+		local randomId = tagPool[randomIndex]
+		return randomId
+	end
+
+	method boolean ReturnIsTagExclusive(string requireTag, IngredientData ingreData)
+		-- 재료가 특정 태그에만 배타적으로 해당하는지 확인하는 함수
+		if requireTag == _RecipeTagEnum.All or requireTag == _RecipeTagEnum.None then
+			return true
+		end
+		
+		local ingreTag = ingreData.Type
+		if requireTag == _RecipeTagEnum.Spicy then
+			if ingreData.SpicyPoint ~= nil then
+				if ingreData.SpicyPoint > 0 then
+					return true
+				end
+			end
+		else
+			if ingreData.SpicyPoint ~= nil then
+				if ingreData.SpicyPoint > 0 then
+					return false
+				end
+			end
+		end
+		
+		if ingreTag == requireTag then
+			return true
+		end
+		
+		return false
+	end
+
+	method IngredientData GetIngredientData(integer id)
+		-- ID로 재료 데이터를 가져오는 함수
+		---@type IngredientData
+		local ingreData = self.IngredientData[id]
+		return ingreData
+	end
+
+	method BunData GetBunData(integer id)
+		-- ID로 번 데이터를 가져오는 함수
+		---@type BunData
+		local bunData = self.BunData[id]
+		return bunData
+	end
+
+	method BunDetailData GetBunDetailData(integer id, string partKey)
+		-- ID와 부위 키로 번 상세 데이터를 가져오는 함수
+		local bunData = self:GetBunData(id)
+		return bunData[partKey]
+	end
+
+	method BunSkinData GetBunSkinData(integer id)
+		-- ID로 번 스킨 데이터를 가져오는 함수
+		return self.BunSkinData[id]
+	end
+
+	method BunSkinDetailData GetBunSkinDetailData(integer id, string partKey)
+		-- ID와 부위 키로 번 스킨 상세 데이터를 가져오는 함수
+		local bunSkinData = self:GetBunSkinData(id)
+		if bunSkinData == nil then
+			return nil
+		end
+		
+		return bunSkinData[partKey]
+	end
+
+	method number GetBunSkinBonusRate(Entity player)
+		-- 플레이어가 수집한 번 스킨 개수에 따른 보너스 비율을 계산하는 함수
+		local count = 0
+		for i, data in pairs(self.BunSkinData) do
+			if player.PlayerCollection.BunSkinCollection[i] == true then
+				count += 1
+			end
+		end
+		
+		local bonus = _GetConfigDataLogic:GetConfigNumDataByKey("BunSkinCollectBonusAmountPerCount")
+		
+		return count * bonus
+	end
+
+	method integer GetBalanceThreshold(Entity player)
+		-- 플레이어의 밸런스 임계값을 계산하는 함수
+		local balanceThreshold = player.PlayerStage.NowStage == 8 and _GetConfigDataLogic:GetConfigNumDataByKey("BalanceThresholdForStage8") or _GetConfigDataLogic:GetConfigNumDataByKey("BalanceThresholdDefault")
+		balanceThreshold = balanceThreshold + _StrategyEnum:GetSideMenuEffect(player.PlayerIngameManager.StageSideMenu, _StrategyEnum.SideMenu_BalanceThreshold, nil)
+		
+		return balanceThreshold
+	end
+
+	method integer GetSpicyThreshold(Entity player)
+		-- 플레이어의 매운맛 임계값을 계산하는 함수
+		local spicyThreshold = self.SpicyThreshold
+		spicyThreshold = spicyThreshold + _StrategyEnum:GetSideMenuEffect(player.PlayerIngameManager.StageSideMenu, _StrategyEnum.SideMenu_SpicyThreshold, nil)
+		
+		return spicyThreshold
+	end
+
+	@ExecSpace("Client")
+	method void RequestSetIngreNameKeywords(Entity player)
+		-- 재료 이름 키워드를 설정하도록 서버에 요청하는 함수
+		local tb = {}
+		for id, data in pairs(self.IngredientData) do
+			local ingreData = self:GetIngredientData(id)
+			tb[ingreData.Index] = _GetLocalizationTextLogic:GetText(ingreData.NameKeywordKey)
+		end
+		
+		self:SetIngreNameKeywords(tb, player)
+	end
+
+	@ExecSpace("Server")
+	method void SetIngreNameKeywords(table tb, Entity player)
+		-- 플레이어의 재료 이름 키워드를 설정하는 함수
+		table.initialize(player.PlayerIngredient.IngreNameKeywords, tb)
+	end
+
+end

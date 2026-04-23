@@ -1,0 +1,288 @@
+@Logic
+script ManagementDataSetLogic extends Logic
+
+	property integer ManagementMaxLevel = 5
+
+	property table ManagementLevelData = {}
+
+	property SyncTable<string, integer> MaintenanceCostData
+
+	property SyncTable<integer, integer> ApplianceCountSectionValue
+
+	property SyncTable<integer, number> ApplianceLevelSectionRate
+
+	property SyncTable<integer, integer> DisplayLevelSectionValue
+
+	property integer ApplianceScectionNum = 4
+
+	property Entity UIMLevelUpReward = "c209f18b-146c-4a78-ae6c-824a4a31b02a"
+
+	property number CounterLevelMax = 0
+
+	property number GrillLevelMax = 0
+
+	property number DisplayLevelMax = 0
+
+	property table MaintenanceTable = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 관리 관련 데이터셋을 로드하는 함수
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- 관리 레벨 데이터와 유지비 데이터를 CSV에서 로드하는 함수
+		table.clear(self.ManagementLevelData)
+		local levelData = _DataService:GetTable("ManagementLevelData")
+		for i = 1, levelData:GetRowCount() do
+			local data = ManagementLevelData()
+			data:Load(levelData, i)
+			
+			if self.ManagementLevelData[data.Level] ~= nil then
+				break
+			end
+			
+			self.ManagementLevelData[data.Level] = data
+		end
+		
+		table.clear(self.MaintenanceCostData)
+		
+		local costData = _DataService:GetTable("MaintenanceCostDataSet") 
+		for i =1 , costData:GetRowCount() do
+		
+			local type = costData:GetCell(i,"MaintenanceType") 
+			local value = tonumber(costData:GetCell(i,"MaintenanceCost"))
+			self.MaintenanceCostData[type] = value
+		end	
+	end
+
+	method void LoadConfigData()
+		-- 기구 관련 설정 데이터를 컨피그에서 로드하는 함수
+		
+		table.clear(self.ApplianceCountSectionValue)	
+		table.clear(self.ApplianceLevelSectionRate)
+		table.clear(self.DisplayLevelSectionValue)
+		
+		for i = 1 , self.ApplianceScectionNum do 
+			
+			self.ApplianceCountSectionValue[i] = _GetConfigDataLogic:GetConfigNumDataByKey("ApplianceCount"..tostring(i))
+			self.ApplianceLevelSectionRate[i] = _GetConfigDataLogic:GetConfigNumDataByKey("ApplianceLevelRate"..tostring(i))
+			self.DisplayLevelSectionValue[i] = _GetConfigDataLogic:GetConfigNumDataByKey("DisplayLevelSection"..tostring(i))
+			
+		end	
+		
+	end
+
+	method integer ReturnMaintenance(Entity player)
+		-- 플레이어의 총 유지비(매장 임대료 + 기구 비용)를 계산하여 반환하는 함수
+		local storeRent = self:ReturnStoreRent(player)
+		local applianceCost = self:ReturnApplianceCost(player)
+		
+		local maintenance = storeRent + applianceCost
+		return maintenance
+	end
+
+	method integer ReturnStoreRent(Entity player)
+		-- 플레이어의 매장 확장, 인테리어, 데코 레벨에 따른 임대료를 계산하는 함수
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(player.PlayerStage.NowStage).MaintainCostRate
+		local strategyEffect = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.ReduceStoreManaging, player.PlayerStage.NowStage)
+		
+		
+		local expansionLevel = player.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(_UpgradeTypeEnum.ExpansionStep)
+		
+		local expansionCost = 0
+		expansionCost = math.floor( self.MaintenanceCostData["ExpensionLevel"..tostring(expansionLevel+1)] * ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5 )
+		
+		
+		local interiorLevel = player.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(_UpgradeTypeEnum.InteriorLevel)
+		local interiorCost = math.floor( self.MaintenanceCostData["InteriorLevel"..tostring(interiorLevel)]	* ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5 )
+		
+		
+		local decoLevel = player.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(_UpgradeTypeEnum.StoreDeco)
+		
+		local decoCost = 0
+		if decoLevel > 0 then
+			decoCost = math.floor( self.MaintenanceCostData["DecoLevel"..tostring(decoLevel)] * ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5 )
+		end
+		
+		
+		local storeRent = expansionCost + interiorCost + decoCost
+		
+		if storeRent < 1 then
+			storeRent = 1
+		end
+		
+		self.MaintenanceTable["expansionCost"] = expansionCost
+		self.MaintenanceTable["interiorCost"] = interiorCost
+		self.MaintenanceTable["decoCost"] = decoCost
+		self.MaintenanceTable["storeRent"] = storeRent
+		
+		self.MaintenanceTable["stageConfig"] = stageConfig
+		self.MaintenanceTable["strategyEffect"] = strategyEffect
+		
+		return storeRent
+	end
+
+	method integer ReturnApplianceCost(Entity player)
+		-- 플레이어의 기구 개수와 레벨에 따른 유지비를 계산하는 함수
+		local strategyEffect = _StrategyEnum:GetPlayerStrategyEffect(player, _StrategyEnum.ReduceStoreManaging, player.PlayerStage.NowStage)
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(player.PlayerStage.NowStage).MaintainCostRate
+		
+		
+		local grillCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.GrillCount)
+		local counterCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.CounterCount)
+		local displayCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.DisplayCount)
+		local grillCostPerCount = 0
+		local counterCostPerCount = 0
+		local displayCostPerCount = 0
+		
+		for i = 1 , self.ApplianceScectionNum do
+			if grillCount <= self.ApplianceCountSectionValue[i] then			
+				grillCostPerCount = self.MaintenanceCostData["GrillCount"..tostring(i)]
+				break		
+			end
+		end
+		
+		for i = 1 , self.ApplianceScectionNum do
+			if counterCount <= self.ApplianceCountSectionValue[i] then			
+				counterCostPerCount = self.MaintenanceCostData["CounterCount"..tostring(i)]
+				break		
+			end
+		end
+		
+		for i = 1 , self.ApplianceScectionNum do
+			if displayCount <= self.ApplianceCountSectionValue[i] then			
+				displayCostPerCount = self.MaintenanceCostData["DisplayCount"..tostring(i)]
+				break	
+			end
+		end
+		
+		grillCostPerCount = math.floor( grillCostPerCount * ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5  )
+		counterCostPerCount = math.floor( counterCostPerCount * ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5 )
+		displayCostPerCount = math.floor( displayCostPerCount * ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5 )
+		
+		
+		if grillCostPerCount < 1 then
+			grillCostPerCount = 1
+		end
+		if counterCostPerCount < 1 then
+			counterCostPerCount = 1
+		end
+		if displayCostPerCount < 1 then
+			displayCostPerCount = 1
+		end
+		
+		local applianceCountCost = grillCount*grillCostPerCount + counterCount*counterCostPerCount + displayCount*displayCostPerCount
+		
+		self.CounterLevelMax = _UpgradeDataSetLogic:ReturnMaxLevelValueOfType( _UpgradeTypeEnum.CounterLevel , player ,player.PlayerComponent.UserId)
+		self.GrillLevelMax = _UpgradeDataSetLogic:ReturnMaxLevelValueOfType( _UpgradeTypeEnum.GrillLevel , player ,player.PlayerComponent.UserId)
+		self.DisplayLevelMax = _UpgradeDataSetLogic:ReturnMaxLevelValueOfType( _UpgradeTypeEnum.DisplaystandLevel , player ,player.PlayerComponent.UserId)
+		
+		local grillLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.GrillLevel , player.PlayerComponent.UserId )
+		local counterLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.CounterLevel , player.PlayerComponent.UserId)
+		local displayLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.DisplaystandLevel , player.PlayerComponent.UserId)
+		
+		local grillCostPerLevel = 0
+		local counterCostPerLevel = 0
+		local displayCostPerLevel = 0
+		
+		local LevelSectionNum = self.ApplianceScectionNum + 1
+		
+		for i = 1 , LevelSectionNum do
+			if i <= self.ApplianceScectionNum then
+				if grillLevel <= math.floor( self.GrillLevelMax * self.ApplianceLevelSectionRate[i] +0.5 ) then			
+					grillCostPerLevel = self.MaintenanceCostData["GrillLevel"..tostring(i)]
+					break	
+				end
+			elseif i > self.ApplianceScectionNum then
+				grillCostPerLevel = self.MaintenanceCostData["GrillLevel"..tostring(i)]
+			end	
+		end
+		
+		for i = 1 , LevelSectionNum do
+			if i <= self.ApplianceScectionNum then
+				if counterLevel <= math.floor( self.CounterLevelMax * self.ApplianceLevelSectionRate[i] +0.5 ) then		
+					counterCostPerLevel = self.MaintenanceCostData["CounterLevel"..tostring(i)]
+					break	
+				end
+			elseif i > self.ApplianceScectionNum then
+				counterCostPerLevel = self.MaintenanceCostData["CounterLevel"..tostring(i)]
+			end
+		end
+		
+		for i = 1 , LevelSectionNum do
+			if i <= self.ApplianceScectionNum then
+				if displayLevel <= self.DisplayLevelSectionValue[i] then			
+					displayCostPerLevel = self.MaintenanceCostData["DisplayLevel"..tostring(i)]
+					break	
+				end
+			elseif i > self.ApplianceScectionNum then
+				displayCostPerLevel = self.MaintenanceCostData["DisplayLevel"..tostring(i)]
+			end
+		end
+		
+		
+		grillCostPerLevel = math.floor( grillCostPerLevel * ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5 )
+		counterCostPerLevel = math.floor( counterCostPerLevel * ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5 )
+		displayCostPerLevel = math.floor( displayCostPerLevel * ( 1 + stageConfig) * (1 - strategyEffect ) + 0.5 )
+		
+		if grillCostPerLevel < 1 then
+			grillCostPerLevel = 1
+		end
+		if counterCostPerLevel < 1 then
+			counterCostPerLevel = 1
+		end
+		if displayCostPerLevel < 1 then
+			displayCostPerLevel = 1
+		end
+		
+		
+		local applianceLevelCost = grillLevel*grillCostPerLevel + counterLevel*counterCostPerLevel + displayLevel*displayCostPerLevel
+		
+		local applianceCost = applianceCountCost + applianceLevelCost
+		
+		
+		self.MaintenanceTable["grillCountCost"] = grillCount * grillCostPerCount
+		self.MaintenanceTable["counterCountCost"] = counterCount*counterCostPerCount 
+		self.MaintenanceTable["displayCountCost"] = displayCount*displayCostPerCount
+		self.MaintenanceTable["grillLevelCost"] = grillLevel*grillCostPerLevel
+		self.MaintenanceTable["counterLevelCost"] = counterLevel*counterCostPerLevel
+		self.MaintenanceTable["displayLevelCost"] = displayLevel*displayCostPerLevel
+		
+		self.MaintenanceTable["applianceCountCost"] = applianceCountCost
+		self.MaintenanceTable["applianceLevelCost"] = applianceLevelCost
+		self.MaintenanceTable["applianceCost"] = applianceCost
+		
+		
+		return applianceCost
+	end
+
+	@ExecSpace("Client")
+	method void MakeGoalCompleteReport(integer achiId, integer achiValue)
+		-- 관리 목표 달성 메시지를 리포트 대기열에 추가하는 클라이언트 함수
+		local nameText = _AchievementLogic:ReturnAchievementNameText(achiId, achiValue)
+		_ReportMessageMaker:RequestAddToReportQueue(6007, nameText, "", "")
+	end
+
+	method ManagementLevelData GetManagementLevelData(integer level)
+		-- 지정된 레벨의 관리 레벨 데이터를 반환하는 함수
+		return self.ManagementLevelData[level]
+	end
+
+	@ExecSpace("Client")
+	method void RequestStartMLevelUpRewardRender(integer managementLevel)
+		-- 관리 레벨 업 보상 UI 렌더링을 시작하는 클라이언트 함수
+		self.UIMLevelUpReward.UIManagementLevelUpReward:Open(managementLevel)
+	end
+
+	method ManagementGoalData GetManagementGoalData(integer stageId, integer level)
+		-- 지정된 스테이지와 레벨의 관리 목표 데이터를 반환하는 함수
+		local stageData = _StageDataSetLogic:GetStageData(stageId)
+		if stageData == nil then
+			return nil
+		end
+		
+		return stageData.StageManagementData[level]
+	end
+
+end

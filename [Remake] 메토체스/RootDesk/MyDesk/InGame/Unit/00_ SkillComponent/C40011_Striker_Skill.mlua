@@ -1,0 +1,158 @@
+@Component
+script C40011_Striker_Skill extends Component
+
+	property number skillAnimLength = 1.13
+
+	property string attackEffectRUID = "9c57e537c1734b2d99bd7bc9da28d103"
+
+	property string hitEffectRUID = "deb404d31b7f4c00885e73a5eb867dcd"
+
+	property number skillStack = 0
+
+	property boolean flipX = false
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		self.skillStack += 1
+		_StatusChangeLogic:GetBuff(myUnit, "Add_SkillRange", 1, -1)
+		
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		---@type table<Entity>
+		local attackedTiles = {unitInfo.setTile}
+		
+		self:SaveFlipX(unitInfo.OwnerId)
+		
+		local fncCount = 0
+		local hitSkillTimer = 0
+		local targetTile = targetInfo.setTile
+		local function hitSkill()
+			if (fncCount > 0) or _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				fncCount += 1
+				
+				if not isvalid(targetTile) then
+					_TimerService:ClearTimer(hitSkillTimer)
+					return
+				end
+				
+				local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+				local teamManager = user.TeamManager
+				
+				local attackTiles = _BTLogic_New:getTiles(myUnit, targetTile, nil, "CircularSector_" .. math.floor(fncCount))
+				
+				if #attackTiles == 0 then
+					_TimerService:ClearTimer(hitSkillTimer)
+					return
+				end
+				
+				for _, tile in pairs(attackTiles) do
+					local attacked = false
+					for _, attackedTile in pairs(attackedTiles) do
+						if attackedTile == tile then
+							attacked = true
+							break
+						end
+					end
+					
+					if not attacked then
+						table.insert(attackedTiles, tile)
+						self:SetAttackEffect(tile, unitInfo.OwnerId)
+						local unit = teamManager.EntityOnTile[tile]
+						if isvalid(unit) then
+							if unit.UnitInfo.TeamType ~= unitInfo.TeamType then
+								if _BTLogic_New:CheckAttackAble(unit, unit, "Skill") then
+									self:SetSkillDamage(unit)
+								end
+							end
+						end
+					end
+				end
+				
+				if fncCount >= self.skillStack then
+					_TimerService:ClearTimer(hitSkillTimer)
+				end
+			else
+				_TimerService:ClearTimer(hitSkillTimer)
+			end
+		end
+		
+		hitSkillTimer = _TimerService:SetTimerRepeat(hitSkill, 0.25 / skillRate, 0.65 / skillRate)
+	end
+
+	@ExecSpace("Client")
+	method void SetAttackEffect(Entity targetTile)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Attack Effect
+		local options = {["FlipX"] = self.flipX, ["PlayRate"] = 1, ["Color"] = Color(1, 1, 1, (_ESCMenuService.skillEffectAlpha-10)/100)}
+		
+		_EffectService:PlayEffectAttached(self.attackEffectRUID, targetTile, Vector3.zero, 0, Vector3.one * 0.4, false, options)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0126")
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		self:HitEffect(targetUnit, unitInfo.OwnerId)
+		
+		local skillSetDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C40011_Active_SDamage_Physic[unitInfo.level] +
+								unitStatus.MaxHP * _S01_SkillDescLogic.C40011_Active_SDamage_MaxHPPer[unitInfo.level]
+		
+		local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Physical")
+		_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local options = {["FlipX"] = self.flipX, ["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		self.skillStack = 0
+	end
+
+	@ExecSpace("Client")
+	method void SaveFlipX()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		self.flipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+	end
+
+end

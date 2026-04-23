@@ -1,0 +1,211 @@
+@Logic
+script DPSLogic extends Logic
+
+	property table damageInfo = {}
+
+	property table damageRatio = {}
+
+	property DPSUIComponent dpsUI = "7ae84a23-a694-4217-ac32-c700bffa3f01"
+
+	property table dpsInfo = {}
+
+	property integer seconds = 0
+
+	property table dpsRatio = {}
+
+	property table damagePerSeconds = {}
+
+	property table attackCount = {}
+
+	property table attackCountRatio = {}
+
+	@ExecSpace("ClientOnly")
+	method void AddDamage(string uniqueKey, number damage)
+		-- 무기별 데미지 누적 및 공격 횟수 카운트
+		if uniqueKey == nil then return end
+		
+		local damageInfo = self.damageInfo
+		local damagePerSeconds = self.damagePerSeconds
+		local attackCount = self.attackCount
+		if damageInfo[uniqueKey] == nil then
+			damageInfo[uniqueKey] = damage
+			self.dpsUI:RegisterColor(uniqueKey)
+		else
+			damageInfo[uniqueKey] += damage
+		end
+		
+		if damagePerSeconds[uniqueKey] == nil then
+			damagePerSeconds[uniqueKey] = damage
+		else
+			damagePerSeconds[uniqueKey] += damage
+		end
+		
+		if attackCount[uniqueKey] == nil then
+			attackCount[uniqueKey] = 1
+		else
+			attackCount[uniqueKey] += 1
+		end
+	end
+
+	method boolean TryAddSpecialBuffDamage(string uniqueKey, number damage, MonsterObject sender)
+		-- 특수 버프 데미지 추가 시도 및 처리
+		if uniqueKey == nil then return end
+		
+		local buffTable = self._T.DPSFuncTable[uniqueKey]
+		
+		if buffTable ~= nil then
+			sender:SpecialBuffDPS(buffTable, damage)
+			return true
+		end
+		
+		return false
+	end
+
+	method void InitSpecialBuffTable()
+		-- 특수 버프 테이블 초기화 (무기별 버프 데이터 연결)
+		local t = self._T.DPSFuncTable
+		if t== nil then
+			t = {sword = true, fireStaff = true, bow = true, chessPiece = true, breathShooter = true, fan = true, hammer = true}
+			self._T.DPSFuncTable = t
+		end
+		
+		t.sword = _SpecialBuffLogic.swordTable
+		t.fireStaff = _SpecialBuffLogic.fireStaffTable
+		t.bow = _SpecialBuffLogic.bowTable
+		t.chessPiece = _SpecialBuffLogic.chessPieceTable
+		t.breathShooter = _SpecialBuffLogic.breathShooterTable
+		t.fan = _SpecialBuffLogic.fanTable
+		t.hammer = _SpecialBuffLogic.hammerTable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CalcRatio()
+		-- 누적 데미지와 공격 횟수의 비율 계산
+		self:CalcRatioBase(self.damageInfo, self.damageRatio)
+		self:CalcRatioBase(self.attackCount, self.attackCountRatio)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartCheckDPS()
+		-- DPS 계산 타이머 시작 (매초 비율 계산 및 데이터 초기화)
+		local callback = function()
+			self:CalcRatio()
+			self:CalcDPS()
+		end
+		
+		_TimerLogic:SetTimerRepeat(callback, 1, 0, "DPSLogic.StartCheckDPS_calc")
+		
+		local clearCallback = function()
+			table.clear(self.damagePerSeconds)
+			table.clear(self.dpsInfo)
+			table.clear(self.dpsRatio)
+		end
+		
+		_TimerLogic:SetTimerRepeat(clearCallback, 1, 1, "DPSLogic.StartCheckDPS_clear")
+		
+		
+		self.dpsUI:Refresh()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CalcDPS()
+		-- 초당 데미지(DPS) 계산 및 비율 업데이트
+		local sum = 0
+		local tempTable = {}
+		local index = 1
+		local dpsInfo = self.dpsInfo
+		
+		for uniqueKey, damage in pairs(self.damagePerSeconds) do
+			dpsInfo[uniqueKey] = damage
+		end
+		
+		self:CalcRatioBase(dpsInfo, self.dpsRatio)
+		
+		self.dpsUI:Refresh()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CalcRatioBase(table infoTable, table ratioTable)
+		-- 기본 비율 계산 로직 (전체 합계 대비 각 아이템의 비율)
+		local sum = 0
+		local index = 1
+		
+		local iter, _ = pairs(infoTable)
+		
+		for _, value in iter, infoTable, nil do
+			sum += value
+		end
+		
+		for i=1, #ratioTable do
+			self:ReturnPair(ratioTable[i])
+			ratioTable[i] = nil
+		end
+		
+		for uniqueKey, value in iter, infoTable, nil do
+			local pair = self:RentPair()
+			pair.uniqueKey = uniqueKey
+			pair.ratio = value / sum
+			ratioTable[index] = pair
+			index += 1
+		end
+		
+		table.sort(ratioTable, self._T.tableSortComparer)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- DPS 로직 초기화 (큐, 정렬 함수, 메타테이블 설정)
+		self._T.pairQueue = _DataStructLogic:GetQueue()
+		self._T.tableSortComparer = function(a, b) return a.ratio > b.ratio end
+		self._T.ratioClearMetatable = {
+			__tclear = function(t)
+				for i=1, #t do
+					self:ReturnPair(t[i])
+					t[i] = nil
+				end
+			end
+		}
+		
+		local mt = self._T.ratioClearMetatable
+		
+		setmetatable(self.attackCountRatio, mt)
+		setmetatable(self.damageRatio, mt)
+		setmetatable(self.dpsRatio, mt)
+		
+		self:InitSpecialBuffTable()
+	end
+
+	@ExecSpace("ClientOnly")
+	method table RentPair()
+		-- 비율 데이터 저장용 테이블 대여
+		---@type LuaQueue
+		local pairQueue = self._T.pairQueue
+		
+		if pairQueue:IsEmpty() then
+			return {uniqueKey = false, ratio = false}
+		end
+		
+		return pairQueue:Dequeue()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ReturnPair(table value)
+		-- 사용 완료된 테이블을 큐에 반납
+		self._T.pairQueue:Enqueue(value)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "StageLogic")
+	handler HandleStageStartEvent(StageStartEvent event)
+		-- 스테이지 시작 시 모든 DPS 데이터 초기화 및 계산 시작
+		table.clear(self.damageInfo)
+		table.clear(self.damageRatio)
+		table.clear(self.dpsInfo)
+		table.clear(self.dpsRatio)
+		table.clear(self.damagePerSeconds)
+		table.clear(self.attackCount)
+		self.seconds = 0
+		self:StartCheckDPS()
+	end
+
+end

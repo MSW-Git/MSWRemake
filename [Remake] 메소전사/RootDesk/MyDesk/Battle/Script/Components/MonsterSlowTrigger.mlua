@@ -1,0 +1,165 @@
+@Component
+script MonsterSlowTrigger extends Component
+
+	property boolean poison = true
+
+	property number poisonPerSecond = 0
+
+	property number damageRate = 0
+
+	property table monsterOnSkill = {}
+
+	property Entity owner = nil
+
+	@ExecSpace("Client")
+	method void Slow(Entity target, boolean switch)
+		-- 몬스터에게 슬로우 효과 적용/해제
+		if switch then
+			target.MonsterObject:ApplySlowSpeed(0.5, true)
+		else
+			target.MonsterObject:ApplySlowSpeed(0, false)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Poisoned(Entity target)
+		-- 몬스터에게 독 데미지 적용
+		local maxHp = target.MonsterObject:GetMaxHp()
+		local averageMonster = _WaveLogic:GetAverageWave().monster
+		local hp = 0
+		
+		
+		if isvalid(_MonsterLogic.monsterData[averageMonster]) then
+			hp = _MonsterLogic.monsterData[averageMonster].hp
+		else
+			hp = averageMonster.hp
+		end
+		
+		
+		local monsterCount = 0
+		
+		for key, value in pairs(self.monsterOnSkill) do
+			if value ~= nil then
+				monsterCount = monsterCount + 1
+			end
+		end
+		
+		local damage = (hp * self.damageRate) / monsterCount
+		
+		
+		if damage < 1 then
+			damage = 1
+		end
+		
+		
+		if isvalid(self.owner) then
+			if isvalid(self.owner.CurrentMap.RandomBossMapComponent) then 
+				damage = damage / 10 
+			end
+		end
+		
+		
+		target.MonsterObject:SetDamage(damage, Vector2(0, 0), false, "")
+	end
+
+	@ExecSpace("Client")
+	method void Init(Entity player, integer level)
+		-- 슬로우 트리거 초기화 및 레벨별 효과 설정
+		self.owner = player
+		
+		self.Entity.SpriteRendererComponent.SortingLayer = player.AvatarRendererComponent.SortingLayer
+		self.Entity.SpriteRendererComponent.OrderInLayer = player.AvatarRendererComponent.OrderInLayer - 1
+		
+		for i = 1 , #self.Entity.Children do
+			if isvalid(self.Entity.Children[i].BasicParticleComponent) then
+				self.Entity.Children[i].BasicParticleComponent.SortingLayer = player.AvatarRendererComponent.SortingLayer
+				self.Entity.Children[i].BasicParticleComponent.OrderInLayer = player.AvatarRendererComponent.OrderInLayer - 1
+			end
+		end
+		
+		local systemMessage = ""
+		
+		if level >= 1 then 
+			self.damageRate = 0.25
+			self.poisonPerSecond = 1
+			systemMessage = string.format(_LocalizeLogic:GetText("systemMessage180"), _LocalizationService:GetText("Suit_Poor"))
+		
+		
+			if level >= 2 then 
+		
+				self.Entity.TransformComponent.Scale = Vector3(1.25,1.25,0)
+				systemMessage = string.format(_LocalizeLogic:GetText("systemMessage181"), _LocalizationService:GetText("Suit_Poor"))
+		
+			
+				if level >= 3 then 
+					self.poisonPerSecond = 0.75
+					systemMessage = string.format(_LocalizeLogic:GetText("systemMessage182"), _LocalizationService:GetText("Suit_Poor"))
+		
+				end
+			end
+		end
+		
+		player.PlayerArmorSkillComponent:CallSystemMessage(systemMessage, "equ")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 플레이어 위치 추적 및 타운 진입 시 파괴
+		self.Entity.TransformComponent.WorldPosition = _UserService.LocalPlayer.TransformComponent.WorldPosition
+		
+		if self.Entity.CurrentMapName == "Town" then
+			_EntityService:Destroy(self.Entity)
+		end 
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 몬스터 진입 시 독 효과 적용 시작
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		
+		if isvalid(TriggerBodyEntity.MonsterObject) then
+			if self.poison == true then
+				self.monsterOnSkill[TriggerBodyEntity.Id] = TriggerBodyEntity
+				local timer = 0
+				
+				local attackAgain = function()
+					if isvalid(self.monsterOnSkill[TriggerBodyEntity.Id]) == false then 
+						_TimerLogic:ClearTimer(timer)
+						
+					elseif isvalid(TriggerBodyEntity.MonsterObject) and TriggerBodyEntity.MonsterObject.isDead == true then 
+						_TimerLogic:ClearTimer(timer)
+						self.monsterOnSkill[TriggerBodyEntity.Id] = nil
+						
+					elseif isvalid(TriggerBodyEntity.BattlePlayer) and TriggerBodyEntity.BattlePlayer.isDead == true then 
+						_TimerLogic:ClearTimer(timer)
+						self.monsterOnSkill[TriggerBodyEntity.Id] = nil
+		
+						
+					else
+						self:Poisoned(TriggerBodyEntity) 
+					end
+				end
+				
+				timer = _TimerLogic:SetTimerRepeat(attackAgain,self.poisonPerSecond,self.poisonPerSecond, "MonsterSlowTrigger.TriggerEnterEvent")
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerLeaveEvent(TriggerLeaveEvent event)
+		-- 몬스터 이탈 시 독 효과 제거
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		if isvalid(TriggerBodyEntity.MonsterObject) then
+			if self.poison == true then
+				self.monsterOnSkill[TriggerBodyEntity.Id] = nil
+			end
+		end
+	end
+
+end

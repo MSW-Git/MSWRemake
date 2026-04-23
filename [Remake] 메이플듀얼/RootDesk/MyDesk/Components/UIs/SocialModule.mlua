@@ -1,0 +1,275 @@
+@Component
+script SocialModule extends Component
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	property Entity cancelEntity = "c5a80165-7e20-430e-9d0f-0d16ce9d0bf3"
+
+	property Entity blockEntity = "d70ab9f9-cbee-48b8-8c7b-eccc90623815"
+
+	property Entity popupEntity = nil
+
+	property Entity panelEntity = "91f0ece8-d99e-4438-be32-39aec0ca0a12"
+
+	property ButtonComponent socialButton = nil
+
+	property ButtonComponent acceptButton = nil
+
+	property ButtonComponent refuseButton = nil
+
+	property TextComponent popupNicknameText = nil
+
+	property ButtonComponent leftArrowButton = nil
+
+	property ButtonComponent rightArrowButton = nil
+
+	property SpriteGUIRendererComponent rankImage = nil
+
+	property TextComponent nicknameText = nil
+
+	property TextComponent profileCodeText = nil
+
+	property TextComponent friendText = nil
+
+	property Entity friendMenuEntity = nil
+
+	property TextComponent pageNumberText = nil
+
+	property table friendSlotArray = {}
+
+	property boolean isOpen = false
+
+	property Character sender = nil
+
+	property integer pageIndex = 0
+
+	property any popupTweener = nil
+
+	property any panelTweener = nil
+
+	property table userIdArray = {}
+
+	property integer refreshTimer = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 소셜 모듈 초기화 및 이벤트 연결
+		local character = _UserService.LocalPlayer.Character
+		
+		self.cancelEntity:ConnectEvent(TouchEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			self:Close()
+		end)
+		
+		self.socialButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if not character.isLoaded or _Server:IsRequesting() then
+				return
+			end
+			
+			if self.isOpen then
+				self:Close()
+			else
+				_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickOpenSound, 1)
+				
+				self:Open()
+			end
+		end)
+		
+		self.acceptButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickRawSound, 1)
+			
+			_Server:Request(character, "AcceptFriendRequest", {self.sender})
+		end)
+		
+		self.refuseButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			if _Server:IsRequesting() then
+				return
+			end
+			
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickRawSound, 1)
+			
+			_Server:Request(character, "RefuseFriendRequest", {self.sender})
+		end)
+		
+		self.leftArrowButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			if self.pageIndex > 1 then
+				self:ShowFriendSlots(self.pageIndex - 1)
+			end
+		end)
+		
+		self.rightArrowButton.Entity:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(self.resourceManager:GetResource("UI").buttonClickSwitchSound, 1)
+			
+			if self.pageIndex < math.ceil(#self.userIdArray / 7) then
+				self:ShowFriendSlots(self.pageIndex + 1)
+			end
+		end)
+		
+		_UserService.LocalPlayer:ConnectEvent(SetRank, function()
+			self.rankImage.ImageRUID = self.resourceManager:GetResource("Rank")[character:GetMajorRank()]
+		end)
+		
+		character.Entity.CurrentMap:ConnectEvent(GetFriends, function(event)
+			local userIdArray = event.userIdArray
+			local friendArray = event.friendArray
+			
+			for i = 1, 7 do
+				local friendSlot = self.friendSlotArray[i]
+				friendSlot.Entity.Enable = false
+			end
+			
+			for i, friend in ipairs(friendArray) do
+				local userId = userIdArray[i]
+				local friendSlot = self.friendSlotArray[i]
+				
+				if character.friendTable[userId] == nil then
+					friendSlot:Clear()
+				elseif _Table:IsEmpty(friend) then
+					friendSlot:SetFriendOffline(userId, character.friendTable[userId])
+				else
+					friendSlot:SetFriendOnline(userId, friend)
+				end
+				
+				friendSlot.Entity.Enable = true
+			end
+		end)
+		
+		local y = 1.69
+		for i = 1, 7 do
+			local friendSlot = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("FriendSlot"), "FriendSlot", Vector3(0, y, -1), self.friendMenuEntity).FriendSlot
+			table.insert(self.friendSlotArray, friendSlot)
+			friendSlot:Clear()
+			friendSlot.Entity.Enable = false
+			
+			y -= (1.69 - -2.24) / 6
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open()
+		-- 소셜 모듈 열기
+		self.isOpen = true
+		self.uiManager:UpdateButtons()
+		self.uiManager:UpdateMobileUI()
+		
+		self.cancelEntity.Enable = true
+		self.blockEntity.Enable = true
+		
+		local character = _UserService.LocalPlayer.Character
+		local user = _UserService.Users[character.Entity.Name]
+		self.rankImage.ImageRUID = self.resourceManager:GetResource("Rank")[character:GetMajorRank()]
+		self.nicknameText.Text = user.Nickname
+		self.profileCodeText.Text = "#" .. user.ProfileCode
+		self.friendText.Text = string.format("%s (%d)", _LocalizationService:GetText("Friend"), character:GetFriendCount())
+		
+		self.userIdArray = table.keys(character.friendTable)
+		table.sort(self.userIdArray, function(left, right) return character.friendTable[left].nickname < character.friendTable[right].nickname end) 
+		
+		self:ShowFriendSlots(1)
+		
+		self.refreshTimer = _TimerService:SetTimerRepeat(function()
+			self:ShowFriendSlots(self.pageIndex)
+		end, 5)
+		
+		if self.panelTweener then
+			self.panelTweener:Destroy()
+		end
+		self.panelTweener = _Tween:ScaleTo(self.panelEntity, Vector2.one, 0.125, EaseType.Linear)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 소셜 모듈 닫기
+		self.isOpen = false
+		self.uiManager:UpdateButtons()
+		self.uiManager:UpdateMobileUI()
+		
+		self.cancelEntity.Enable = false
+		self.blockEntity.Enable = false
+		
+		_TimerService:ClearTimer(self.refreshTimer)
+		
+		if self.panelTweener then
+			self.panelTweener:Destroy()
+		end
+		self.panelTweener = _Tween:ScaleTo(self.panelEntity, Vector2.zero, 0.125, EaseType.Linear)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSocialButtonEnable(boolean enable)
+		-- 소셜 버튼의 활성화 상태 설정
+		self.socialButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPanelButtonsEnable(boolean enable)
+		-- 소셜 패널 버튼들의 활성화 상태 설정
+		self.leftArrowButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.rightArrowButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		
+		for _, friendSlot in ipairs(self.friendSlotArray) do
+			friendSlot:SetButtonsEnable(enable)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetPopupButtonsEnable(boolean enable)
+		-- 소셜 팝업 버튼들의 활성화 상태 설정
+		self.acceptButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+		self.refuseButton.Entity.SpriteGUIRendererComponent.RaycastTarget = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowPopup(Character sender)
+		-- 친구 요청 팝업 표시
+		self.sender = sender
+		local user = _UserService.Users[sender.Entity.Name]
+		self.popupNicknameText.Text = string.format("%s#%s", user.Nickname, user.ProfileCode)
+		
+		local transform = self.popupEntity.TransformComponent
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+		
+		if self.popupTweener then
+			self.popupTweener:Destroy()
+		end
+		self.popupTweener = _Tween:ScaleTo(self.popupEntity, Vector2.one, 0.125, EaseType.Linear)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HidePopup()
+		-- 친구 요청 팝업 숨기기
+		local transform = self.popupEntity.TransformComponent
+		transform.Scale.x = 0
+		transform.Scale.y = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowFriendSlots(integer pageIndex)
+		-- 친구 목록 슬롯 표시
+		self.pageIndex = pageIndex
+		
+		local character = _UserService.LocalPlayer.Character
+		local start = 1 + 7 * (pageIndex - 1)
+		local finish = math.min(7 * pageIndex, #self.userIdArray)
+		local userIdArray = {}
+		for i = start, finish do
+			table.insert(userIdArray, self.userIdArray[i])
+		end
+		_Server:Request(character.Entity.CurrentMap.Map, "GetFriends", {character, userIdArray})
+		
+		self.pageNumberText.Text = string.format("%d/%d", pageIndex, math.max(1, math.ceil(#self.userIdArray / 7)))
+	end
+
+end

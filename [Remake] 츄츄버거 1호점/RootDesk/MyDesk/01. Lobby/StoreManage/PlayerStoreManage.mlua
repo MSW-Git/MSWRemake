@@ -1,0 +1,332 @@
+@Component
+script PlayerStoreManage extends Component
+
+	property integer SupplymentCoolTime = 0
+
+	property integer PromotionCoolTime = 5
+
+	property integer NowCoolTime_Supp = 0
+
+	property integer NowCoolTime_Prom = 0
+
+	property Entity StoreManageUI = "3dc6e8fc-4a58-4de5-b386-5cad10239ab2"
+
+	property number CustomerSpawnTimer = 0
+
+	property table StoreManageStageData = {}
+
+	@ExecSpace("ClientOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 플레이어가 로비 맵에 입장했을 때 상점 관리 UI 초기화 및 쿨타임 리셋
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		if _UtilLogic:Contains(enteredMap.Name, "Lobby") then
+			
+			self.StoreManageUI.UIStoreManage:SetCost()
+			self:ResetCool()
+			self:Promotion(true)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Promotion(boolean isFree)
+		-- 홍보 기능을 실행하여 고객을 유치하는 함수
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		if self.PromotionCoolTime ~= self.NowCoolTime_Prom then
+			_UIToast:ShowMessage(_LocalizationService:GetText("StoreManageToastMsg_Cooltime"))
+			return
+		end
+		self:RequestModifyClover("Promotion", isFree)
+		
+	end
+
+	@ExecSpace("Client")
+	method void BurgerSupplyment(boolean isFree)
+		-- 버거 진열대에 버거를 보충하는 함수
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if self.SupplymentCoolTime ~= self.NowCoolTime_Supp then
+			_UIToast:ShowMessage(_LocalizationService:GetText("StoreManageToastMsg_Cooltime"))
+			return
+		end
+		
+		local isFull = self:CheckBurgerIsFull()
+		
+		if isFull == true then
+			_UIToast:ShowMessage(_LocalizationService:GetText("StoreManageToastMsg_BurgerIsFull"))
+		else
+			self:RequestModifyClover("Supply", isFree)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void CoolDown()
+		-- 홍보와 보충 기능의 쿨타임을 1씩 증가시키는 함수
+		self.NowCoolTime_Prom += 1
+		self.NowCoolTime_Supp += 1
+		
+		self.NowCoolTime_Prom = math.min(self.NowCoolTime_Prom, self.PromotionCoolTime)
+		self.NowCoolTime_Supp = math.min(self.NowCoolTime_Supp, self.SupplymentCoolTime)
+		self:UpdateCoolTimeUI()
+	end
+
+	@ExecSpace("Client")
+	method void ResetCool()
+		-- 모든 쿨타임을 초기화하고 타이머를 정리하는 함수
+		self.NowCoolTime_Prom = self.PromotionCoolTime
+		self.NowCoolTime_Supp = self.SupplymentCoolTime
+		_TimerService:ClearTimer(self.CustomerSpawnTimer)
+		self:UpdateCoolTimeUI()
+	end
+
+	@ExecSpace("Client")
+	method void UpdateCoolTimeUI()
+		-- 상점 관리 UI의 쿨타임 표시를 업데이트하는 함수
+		self.StoreManageUI.UIStoreManage:UpdatePromotionCoolTimeUI(self.NowCoolTime_Prom)
+		self.StoreManageUI.UIStoreManage:UpdateSupplymentCoolTimeUI(self.NowCoolTime_Supp)
+		self.StoreManageUI.UIStoreManage:SetCost()
+	end
+
+	@ExecSpace("Server")
+	method void RequestModifyClover(string type, boolean isFree)
+		-- 상점 관리 기능 사용 시 비용을 차감하고 기능을 실행하는 서버 함수
+		local player = self.Entity
+		local cost 
+		
+		local managementLevel = player.PlayerManagement.ManagementLevel
+		local stageId = self.Entity.PlayerStage.NowStage
+		---@type StoreManageStageData
+		local stageData =  self.StoreManageStageData[stageId]
+		if not isvalid(stageData) then
+			local dt = self:SetData(player.PlayerComponent.UserId)
+			stageData = dt[stageId]
+		end
+		---@type StoreManageData
+		local data = stageData.StoreManageCostData[managementLevel]
+		
+		if isFree then
+			cost = 0 
+		else
+			if type == "Supply" then
+				cost = data.SupplimentCost
+			elseif type == "Promotion" then
+				cost = data.PromotionCost
+			end
+		end
+		
+		if player.PlayerInventory:ModifyArcaneSymbol(-cost, type, "PlayerStoreManage") then
+			if type == "Supply" then
+				self:CanSupply(isFree, self.Entity.PlayerComponent.UserId)
+			
+			elseif type == "Promotion" then
+				self:CanPromotion(isFree, self.Entity.PlayerComponent.UserId)
+			end
+		else
+			self:FailToManageStore(self.Entity.PlayerComponent.UserId)
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void CanSupply(boolean isFree)
+		-- 보충 기능이 성공적으로 실행되었을 때 호출되는 함수
+		self:ModifyDisplayBurger(isFree)
+	end
+
+	@ExecSpace("Client")
+	method boolean CheckBurgerIsFull()
+		-- 현재 메뉴의 모든 진열대가 가득 찼는지 확인하는 함수
+		local player = _UserService.LocalPlayer
+		local playerRecipe = player.PlayerRecipe.Recipes
+		local menuManager = player.MenuManager
+		local menuList = menuManager.CurrentSetRecipes
+		local managementLevel = self.Entity.PlayerManagement.ManagementLevel 
+		local isFull = false
+		
+		for curSlot, curId in pairs(menuList) do 
+		
+			local recipeData = playerRecipe[curId]
+			local uniqueID = recipeData.UniqueId
+			local slotIdx = menuManager:ReturnSlotIdxByUniqueID(uniqueID)
+			
+			local curStackburgerNum  = 0
+			local displayAmount = menuManager.DisplayBurger[uniqueID]
+			if isvalid(displayAmount) then
+				if isvalid(displayAmount[slotIdx]) then 
+					curStackburgerNum = displayAmount[slotIdx]
+				end
+			end
+			
+			local displayLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player,_UpgradeTypeEnum.DisplaystandLevel)
+			local displayMaxCount = _KitchenAppService:GetData(_KitchenAppEnumType.Display..displayLv).EffectValue
+			
+			local remainStackNum = displayMaxCount - curStackburgerNum
+			local stageId = self.Entity.PlayerStage.NowStage
+			---@type StoreManageStageData
+			local stageData =  self.StoreManageStageData[stageId]
+			if not isvalid(stageData) then
+				local dt = self:SetData()
+				stageData = dt[stageId]
+			end
+			---@type StoreManageData
+			local data = stageData.StoreManageCostData[managementLevel]
+			local supplyBurgerNum = data.SupplimentBurgerCount
+			remainStackNum = math.min(remainStackNum, supplyBurgerNum)
+			
+			if remainStackNum < 1 then
+				isFull = true
+			else
+				isFull = false 
+				break
+			end
+			
+		end
+		
+		return isFull
+	end
+
+	@ExecSpace("Client")
+	method void ModifyDisplayBurger(boolean isFree)
+		-- 진열대에 버거를 실제로 추가하고 보고서 메시지를 생성하는 함수
+		local player = _UserService.LocalPlayer
+		local playerRecipe = player.PlayerRecipe.Recipes
+		local menuManager = player.MenuManager
+		local menuList = menuManager.CurrentSetRecipes
+		local managementLevel = self.Entity.PlayerManagement.ManagementLevel 
+		local stageId = self.Entity.PlayerStage.NowStage
+		---@type StoreManageStageData
+		local stageData =  self.StoreManageStageData[stageId]
+		if not isvalid(stageData) then
+			local dt = self:SetData()
+			stageData = dt[stageId]
+		end
+		---@type StoreManageData
+		local data = stageData.StoreManageCostData[managementLevel]
+		
+		local supplyBurgerNum = data.SupplimentBurgerCount
+		local isFull = false
+		
+		local displayCount = _KitchenAppService:ReturnDisplayNum(player) 
+		
+		for curSlot, curId in pairs(menuList) do 
+		
+			local recipeData = playerRecipe[curId]
+			local uniqueID = recipeData.UniqueId
+			local slotIdx = menuManager:ReturnSlotIdxByUniqueID(uniqueID)
+			for i = 1, 3 do 
+				local displayId = slotIdx + (i - 1) * 5
+				if displayId > displayCount then
+					break
+				end
+				local curStackburgerNum  = 0
+				local displayAmount = menuManager.DisplayBurger[uniqueID]
+				if isvalid(displayAmount) then
+					if isvalid(displayAmount[displayId]) then 
+						curStackburgerNum = displayAmount[displayId]
+					end
+				end
+				
+				local displayLv = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player,_UpgradeTypeEnum.DisplaystandLevel)
+				local displayMaxCount = _KitchenAppService:GetData(_KitchenAppEnumType.Display..displayLv).EffectValue
+				
+				local remainStackNum = displayMaxCount - curStackburgerNum
+				
+				remainStackNum = math.min(remainStackNum, supplyBurgerNum)
+				if remainStackNum ~= 0 then
+					menuManager:ModifyDisplayBurger(uniqueID, displayId, remainStackNum) 
+				end
+			end
+		
+		end
+		
+		if isFree then
+			_ReportMessageMaker:RequestAddToReportQueue(8025, "", "", "")
+		else
+			_ReportMessageMaker:RequestAddToReportQueue(8024, _StringUtilLogic:NumToString(supplyBurgerNum), "", "")
+		end
+		self.NowCoolTime_Supp = 0
+		self:UpdateCoolTimeUI()
+	end
+
+	@ExecSpace("Client")
+	method void CanPromotion(boolean isFree)
+		-- 홍보 기능이 성공적으로 실행되었을 때 호출되는 함수
+		self.NowCoolTime_Prom = 0
+		self:UpdateCoolTimeUI()
+		
+		if isFree == false then 
+			self:StartPromotion()
+			local managementLevel = self.Entity.PlayerManagement.ManagementLevel 
+			local stageId = self.Entity.PlayerStage.NowStage
+			---@type StoreManageStageData
+			local stageData =  self.StoreManageStageData[stageId]
+			if not isvalid(stageData) then
+				local dt = self:SetData()
+				stageData = dt[stageId]
+			end
+			---@type StoreManageData
+			local data = stageData.StoreManageCostData[managementLevel]
+			local customerNum = data.PromotionCustomerCount
+			_ReportMessageMaker:RequestAddToReportQueue(8023, _StringUtilLogic:NumToString(customerNum), "", "")
+		end
+	end
+
+	@ExecSpace("Server")
+	method void StartPromotion()
+		-- 홍보 효과로 일정 시간 동안 고객을 연속으로 스폰시키는 서버 함수
+		local managementLevel = self.Entity.PlayerManagement.ManagementLevel 
+		
+		local stageId = self.Entity.PlayerStage.NowStage
+		---@type StoreManageStageData
+		local stageData =  self.StoreManageStageData[stageId]
+		if not isvalid(stageData) then
+			local dt = self:SetData(self.Entity.PlayerComponent.UserId)
+			stageData = dt[stageId]
+		end
+		---@type StoreManageData
+		local data = stageData.StoreManageCostData[managementLevel]
+		local customerNum = data.PromotionCustomerCount
+		
+		local randomInterval = _GetConfigDataLogic:GetConfigNumDataByKey("SpeedUpCustomerSpawnDelay")  
+		self.Entity.CustomerManager.CustomerCount = 0 
+		local count = 1
+		self.CustomerSpawnTimer = _TimerService:SetTimerRepeat(function()
+			
+			count += 1	
+			self.Entity.CustomerManager:SpawnCustomer()
+			if count >= customerNum then
+				_TimerService:ClearTimer(self.CustomerSpawnTimer)
+			end
+			
+		end, randomInterval, 0.5)
+	end
+
+	@ExecSpace("Client")
+	method void FailToManageStore()
+		-- 상점 관리 기능 사용 실패 시 토스트 메시지를 표시하는 함수
+		_UIToast:ShowMessage(_LocalizationService:GetText("NoArcaneSymbolToastMsg"))
+	end
+
+	method table SetData()
+		-- 상점 관리 데이터를 스테이지별로 로드하고 쿨타임을 설정하는 함수
+		table.clear(self.StoreManageStageData)
+		local dataSet = _DataService:GetTable("StoreManageDataSet")
+		
+		local stageNum = _StageDataSetLogic.LastStageNum
+		for i = 1, stageNum do
+			local data = StoreManageStageData()
+			data:Load(i) 
+			self.StoreManageStageData[data.StageId] = data
+		end
+		
+		self.PromotionCoolTime = _GetConfigDataLogic:GetConfigNumDataByKey("PromotionCoolDown")
+		
+		return self.StoreManageStageData
+	end
+
+end

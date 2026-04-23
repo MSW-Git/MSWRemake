@@ -1,0 +1,120 @@
+@Logic
+script LocalTimeLogic extends Logic
+
+	@HideFromInspector
+	property any currentDate = nil
+
+	method any GetKST()
+		-- UTC 시간을 한국 표준시(KST)로 변환하여 반환
+		local utc = self:GetUtcNow()
+		local timeSpan = TimeSpan(9, 0, 0)
+		
+		if isvalid(self.currentDate) then
+			return utc
+		else
+			return utc + timeSpan
+		end
+	end
+
+	method integer GetWeek(any dateTime)
+		-- 주어진 날짜가 해당 월의 몇 번째 주인지 계산하여 반환
+		local firstDate = DateTime(tostring(dateTime))
+		local month = firstDate.Month
+		local week = 1
+		
+		while true do
+			if firstDate.Day == 1 then
+				break
+			end
+			
+			firstDate = firstDate - TimeSpan(24, 0, 0)
+		end
+		
+		for i = 1, dateTime.Day do
+			local converteDate = firstDate + TimeSpan(24 * (i - 1), 0, 0)
+			
+			if converteDate:ToFormattedString("dddd") == "Monday" and converteDate.Day ~= 1 then
+				week += 1
+			end
+		end
+		
+		return week
+	end
+
+	method any GetUtcNow()
+		-- 현재 UTC 시간을 반환 (설정된 날짜가 있으면 해당 날짜 사용)
+		if isvalid(self.currentDate) then
+			return self.currentDate
+		else
+			return DateTime.UtcNow
+		end
+	end
+
+	@ExecSpace("Multicast")
+	method void SetCurrentDate(number year, integer month, integer day, integer hour, integer minute)
+		-- 현재 날짜를 수동으로 설정 (테스트나 특별한 상황에서 사용)
+		self.currentDate = DateTime(year, month, day, hour, minute, 0)
+		
+	end
+
+	method integer GetCurrentSeasonWeek()
+		-- 현재 시즌의 몇 번째 주인지 계산하여 반환
+		local firstWeek = DateTime(_GameConfig:GetConfig().SEASON_STANDARAD_DATETIME) 
+		local currentDateTime = self:GetKST()
+		local elapsedDay = tonumber((currentDateTime - firstWeek):ToFormattedString("dd"))
+		local seasonWeek = math.floor(elapsedDay / 7) + 1
+		
+		return seasonWeek
+	end
+
+	method integer GetSeasonWeek(any dateTime)
+		-- 특정 날짜가 시즌의 몇 번째 주인지 계산하여 반환
+		local firstWeek = DateTime(_GameConfig:GetConfig().SEASON_STANDARAD_DATETIME) 
+		local elapsedDay = tonumber((dateTime - firstWeek):ToFormattedString("dd"))
+		local seasonWeek = math.floor(elapsedDay / 7) + 1
+		
+		return seasonWeek
+	end
+
+	method number GetElapsed()
+		-- 1970년 1월 1일부터 현재까지의 경과 시간을 밀리초로 반환
+		
+		return self:GetUtcNow().Elapsed
+	end
+
+	@ExecSpace("Server")
+	method void RequestSeverTime(string userId)
+		-- 서버 시간을 클라이언트에게 동기화 요청
+		if isvalid(self.currentDate) then
+			self:SyncDate(tostring(self.currentDate), userId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncDate(string date)
+		-- 서버로부터 받은 날짜 정보로 클라이언트 시간 동기화
+		self.currentDate = DateTime(date)
+	end
+
+	method number GetElapsedSecond()
+		-- 1970년 1월 1일부터 현재까지의 경과 시간을 초 단위로 반환
+		return self:GetElapsed() / 1000
+	end
+
+	method integer GetUTCTotalMilliseconds()
+		-- 현재 UTC 시간의 총 밀리초 값을 반환
+		local dateTime = self:GetUtcNow()
+		
+		return dateTime.Elapsed
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserEnterEvent(UserEnterEvent event)
+		-- 사용자가 입장할 때 서버 시간 동기화 요청
+		
+		local UserId = event.UserId
+		self:RequestSeverTime(UserId)
+	end
+
+end

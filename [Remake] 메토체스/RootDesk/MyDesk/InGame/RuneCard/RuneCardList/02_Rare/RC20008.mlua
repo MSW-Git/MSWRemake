@@ -1,0 +1,281 @@
+@Component
+script RC20008 extends RuneCardComponent
+
+	property number SetTimer = 0
+
+	property string checkSynergyID = ""
+
+	property number SetAmount = 30
+
+	@ExecSpace("ServerOnly")
+	method void StartRoundHandler(any event)
+		__base:StartRoundHandler(event)
+		
+		
+		-- '특정 시너지'는 새 라운드가 시작할 때마다 바뀝니다.
+		------------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		
+		if not self.Copied then
+			-- 원본 시너지 설정
+			local setSynergyInfo = self:SetSynergy(nil)
+			
+			self.checkSynergyID = setSynergyInfo[1]
+			self:SetStringTypeValue(setSynergyInfo[1])
+			self:SetDirectorValue(setSynergyInfo[3],user.PlayerComponent.UserId)
+			self:PlayEffect("", "", false, user.PlayerComponent.UserId)
+			--log(synergyTable:FindRow("SynergyID", setSynergyID):GetItem("Name"), "로 이번 라운드 지정")
+			
+			
+			-- 카피된 게 있는지 체크한 후 거기도 같이 시너지 설정
+			if isvalid(self.CopiedComponent) then
+				---@type RC20008
+				local copiedCompo = self.CopiedComponent
+				copiedCompo.checkSynergyID = setSynergyInfo[1]
+				copiedCompo:SetStringTypeValue(setSynergyInfo[1])
+				copiedCompo:SetDirectorValue(setSynergyInfo[3],user.PlayerComponent.UserId)
+				copiedCompo:PlayEffect("","",false,user.PlayerComponent.UserId)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartBattleHandler(any event)
+		__base:StartBattleHandler(event)
+		
+		-- '특정 시너지'가 활성화된 채로 전투에 진입하면, 1초마다 모든 유닛의 최대 체력이 30씩 증가합니다.
+		-- '특정 시너지'는 새 라운드가 시작할 때마다 바뀝니다.
+		-------------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local userPControl = user.TM_PropertyControl
+		-------------------------------------------------------------------
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		local row = synergyTable:FindRow("SynergyID", self.checkSynergyID)
+		
+		-- 시너지를 활성화하는데 필요한 최소한의 숫자 체크
+		local activateCondition = 0
+		for i = 1, 5 do
+			local count = row:GetItem(string.format("NeedCount_step%d", math.floor(i)))
+			if isvalid(tonumber(count)) then
+				activateCondition = tonumber(count)
+				break
+			end
+		end
+		
+		
+		-- 시너지 활성화 체크
+		---@type table<Entity>
+		local checkUnits = nil
+		
+		if isvalid(teamManager.OnFieldSynergy[self.checkSynergyID]) and self.SetTeamType == "User" then
+			if teamManager.OnFieldSynergy[self.checkSynergyID] >= activateCondition then
+				checkUnits = teamManager.OwnUnits
+			end
+		elseif isvalid(teamManager.EnemyOwnedFieldSynergy[self.checkSynergyID]) and self.SetTeamType == "Enemy" then
+			if teamManager.EnemyOwnedFieldSynergy[self.checkSynergyID] >= activateCondition then
+				checkUnits = teamManager.EnemyUnits
+			end
+		end
+		
+		if isvalid(checkUnits) then
+			-- 초당 최대 체력 증가 함수
+			local function getMaxHPFnc()
+				if isvalid(user) == false then
+					_TimerService:ClearTimer(self.SetTimer)
+				end
+				
+				---@type table<Entity>
+				local units = {}
+				
+				---@type table<Entity>
+				local enemy = {}
+						
+				for _, unit in pairs(checkUnits) do
+					if isvalid(unit.UnitAIWanderComponent) then
+						if unit.UnitAIWanderComponent.Enable then
+							_StatusChangeLogic:GetBuff(unit, "Add_MaxHP", self.SetAmount, -1)
+							if self.SetTeamType == "User" then
+								table.insert(units, unit)
+							else
+								table.insert(enemy, unit)
+							end
+						end
+					else
+						_TimerService:ClearTimer(self.SetTimer)
+					end
+				end
+				
+				local setunits = _UtilLogic:TableToString(units)
+				local setenemy = _UtilLogic:TableToString(enemy)
+				self:PlayEffect(setunits, setenemy, true, user.PlayerComponent.UserId)
+			end
+			
+			self.SetTimer = _TimerService:SetTimerRepeat(getMaxHPFnc, 1, 0)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndRoundHandler(any event)
+		__base:EndRoundHandler(event)
+		
+		-- 타이머 종료
+		-------------------------------------------------------------------
+		_TimerService:ClearTimer(self.SetTimer)
+	end
+
+	@ExecSpace("Server")
+	method void BuyThisRuneCard(string runeID)
+		__base:BuyThisRuneCard(runeID)
+		
+		-- '특정 시너지'는 새 라운드가 시작할 때마다 바뀝니다.
+		------------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		
+		if not self.Copied then
+			local setSynergyInfo = self:SetSynergy(nil)
+			
+			self.checkSynergyID = setSynergyInfo[1]
+			
+			self:SetStringTypeValue(setSynergyInfo[1])
+			self:SetDirectorValue(setSynergyInfo[3],user.PlayerComponent.UserId)
+		else
+			---@type RC20008
+			local copiedComponent2 = self.CopiedComponent
+			self.checkSynergyID = copiedComponent2.checkSynergyID
+			self:SetStringTypeValue(self.CopiedComponent.RuneStringTypeValue)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method SyncTable<string> SetSynergy(string setSynergyID)
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		local bySeasonTable = _DataService:GetTable("SynergyListBySeason")
+		local user = self.Entity.Parent.Parent
+		local gameManager = user.GameManager
+		local version = string.format("%.1f", gameManager.ModeSetVersion)
+		
+		if setSynergyID ~= nil and setSynergyID ~= "" then
+			-- 시너지를 설정할 필요가 없는 경우
+			log("시너지를 설정할 필요가 없는 경우")
+		else
+			local possibleSynergyIDTable = {}
+			
+			for i = 1, synergyTable:GetRowCount() do
+				local sID = synergyTable:GetRow(i):GetItem("SynergyID")
+				if synergyTable:GetRow(i):GetItem("NeedCount_step3") == "-" and bySeasonTable:FindRow("SynergyID", sID):GetItem(version) == "TRUE" then
+					table.insert(possibleSynergyIDTable, string.format("S%d", math.floor(10000 + i)))
+				end
+			end
+			
+			local sIDIdx = _UtilLogic:RandomIntegerRange(1, #possibleSynergyIDTable)
+			setSynergyID = possibleSynergyIDTable[sIDIdx]
+		end
+		
+		return { setSynergyID, synergyTable:FindRow("SynergyID", setSynergyID):GetItem("Name"), synergyTable:FindRow("SynergyID", setSynergyID):GetItem("IconRUID") }
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(string units, string enemy, boolean Battle)
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		units = _UtilLogic:StringToTable(units)
+		enemy = _UtilLogic:StringToTable(enemy)
+		------------------------------------------------------------
+		local stringValue = string.format("%d", self.SetAmount)
+		
+		if Battle == false then
+			local index = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+		
+			--특수 연출
+			_RuneCardDirector:RC20008Director(index, true)
+			
+		else
+			if self.SetAmount <= 0 then return end
+			
+			--룬 카드 발동 연출
+			if #units > 0 then
+				local index = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+				_RuneCardDirector:ShakingCard_Battle(index, false)
+				_RuneCardDirector:IconToastDirector_Battle(index, {_RuneCardDirectEnum.MaxHP}, {stringValue}, false)
+			end
+			
+			if #enemy > 0 then
+				local index = _RuneCardDirector:GetRuneCardIndex(self.Entity, true)
+				_RuneCardDirector:ShakingCard_Battle(index, true)
+				_RuneCardDirector:IconToastDirector_Battle(index, {_RuneCardDirectEnum.MaxHP}, {stringValue}, true)
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetDirectorValue(string RUID)
+		_RuneCardDirector.RuneCardManagingValue["RC20008"][self.Entity.Id] = RUID
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetActiveHandler(any event)
+		-------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local active = event.active
+		-------------------------------------------------------------
+		if active ~= self.OnActive then
+			if active then
+				-- 활성화 시
+				-- 원본 시너지 설정
+				local setSynergyInfo = self:SetSynergy(nil)
+				
+				self.checkSynergyID = setSynergyInfo[1]
+				self:SetStringTypeValue(setSynergyInfo[1])
+				self:SetDirectorValue(setSynergyInfo[3], user.PlayerComponent.UserId)
+				self:PlayEffect("", "", false, user.PlayerComponent.UserId)
+				
+				
+				-- 카피된 게 있는지 체크한 후 거기도 같이 시너지 설정
+				if isvalid(self.CopiedComponent) then
+					---@type RC20008
+					local copiedCompo = self.CopiedComponent
+					copiedCompo.checkSynergyID = setSynergyInfo[1]
+					copiedCompo:SetStringTypeValue(setSynergyInfo[1])
+					copiedCompo:SetDirectorValue(setSynergyInfo[3], user.PlayerComponent.UserId)
+					copiedCompo:PlayEffect("", "", false, user.PlayerComponent.UserId)
+				end
+			else
+				-- 비활성화 시
+			end
+		end
+		
+		
+		__base:SetActiveHandler(event)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InGameDataLoadHandler(any event)
+		-- '특정 시너지'는 새 라운드가 시작할 때마다 바뀝니다.
+		------------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		if not self.Copied then
+			local setSynergyInfo = self:SetSynergy(self.RuneStringTypeValue)
+			
+			self.checkSynergyID = setSynergyInfo[1]
+			log("self.checkSynergyID = ", self.RuneStringTypeValue)
+			
+			self:SetStringTypeValue(setSynergyInfo[1])
+			self:SetDirectorValue(setSynergyInfo[3], user.PlayerComponent.UserId)
+			self:PlayEffect("", "", false, user.PlayerComponent.UserId)
+		else
+			local setSynergyInfo = self:SetSynergy(self.RuneStringTypeValue)
+			
+			---@type RC20008
+			local copiedCompo = self.CopiedComponent
+			self.checkSynergyID = copiedCompo.checkSynergyID
+			self:SetStringTypeValue(copiedCompo.RuneStringTypeValue)
+			copiedCompo:SetDirectorValue(setSynergyInfo[3], user.PlayerComponent.UserId)
+			copiedCompo:PlayEffect("", "", false, user.PlayerComponent.UserId)
+		end
+		
+		__base:InGameDataLoadHandler(event)
+	end
+
+end

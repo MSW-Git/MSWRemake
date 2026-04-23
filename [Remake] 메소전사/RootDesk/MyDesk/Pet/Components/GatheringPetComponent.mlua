@@ -1,0 +1,153 @@
+@Component
+script GatheringPetComponent extends Component
+
+	@HideFromInspector
+	property table targetEnemies = {}
+
+	property integer timer = 0
+
+	property number gatherInterval = 10
+
+	@HideFromInspector
+	property number seconds = 0
+
+	@HideFromInspector
+	property number range = 3
+
+	@HideFromInspector
+	property TransformComponent transformComponent = nil
+
+	property integer searchCount = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 거더링 펫 컴포넌트 초기화 및 렌더링 순서 설정
+		self.Entity.SpriteRendererComponent.OrderInLayer = _UserService.LocalPlayer.AvatarRendererComponent.OrderInLayer - 1
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Gather()
+		-- 범위 내 몬스터들을 집합시켜 랜덤 위치로 이동시키기
+		local monsters = self.Entity.CurrentMap:GetChildComponentsByTypeName("MonsterObject")
+		local worldPos = self.transformComponent.WorldPosition
+		local angle = _UtilLogic:RandomIntegerRange(0, 360) * 2 * math.pi
+		
+		local randomPos = Vector3(worldPos.x + 2 * math.cos(angle), worldPos.y + 2 * math.sin(angle), 0)
+		
+		if self.searchCount >= 5 then
+			self.searchCount = 0
+			
+			_EffectService:PlayEffect("68e6cdfd31e3434eb7ad31366c3088be", self.Entity.CurrentMap, randomPos, 0, Vector3.one * 2, false, {["PlayRate"] = 4})
+			self.Entity.SpriteRendererComponent.Color = Color.white
+			
+			return
+		end
+		
+		self.Entity.SpriteRendererComponent.Color = Color.white
+		
+		table.clear(self.targetEnemies)
+		
+		for _, monster in pairs(monsters) do
+			local entity = monster.Entity
+			if isvalid(entity) and entity.Enable then
+				local position = entity.TransformComponent.WorldPosition
+				local distance = worldPos:Distance(position)
+				
+				if distance <= self.range then
+					self.targetEnemies[entity] = entity
+				end
+			end
+		end
+		
+		if self.transformComponent.Scale.x >= 0 and worldPos.x > randomPos.x then 
+			local diff = math.abs(randomPos.x - worldPos.x)
+			randomPos.x = worldPos.x + diff
+		elseif self.transformComponent.Scale.x < 0 and worldPos.x < randomPos.x then
+			local diff = math.abs(worldPos.x - randomPos.x)
+			randomPos.x = worldPos.x - diff
+		end
+		
+		local playEffect = false
+		
+		for _, entity in pairs(self.targetEnemies) do
+			---@type MonsterObject
+			local monster = entity.MonsterObject
+			monster.isGatheringNow = true
+			
+			if isvalid(entity) and entity.Enable and isvalid(monster) then
+				playEffect = true
+				local rand = Vector3(_UtilLogic:RandomIntegerRange(-300, 300) / 1000, _UtilLogic:RandomIntegerRange(-300, 300) / 1000, 0)
+				
+				monster:BodyEnable(false)
+				
+				_Tweener:MoveTo(entity, randomPos + rand, 0.3, 0, EaseType.SineEaseIn, nil, "GatheringPetComponent_Gather")
+				_TimerLogic:SetTimerOnce(function()
+						if isvalid(monster) then
+							monster:BodyEnable(true)
+							monster.isGatheringNow = false
+						end
+					end, 0.31, "GatheringPetComponent.Gather_finish")
+			end
+		end
+		
+		if playEffect then
+			_EffectService:PlayEffectAttached("0578cb95b5c244e8a0043a6b3d2e23a6", self.Entity, Vector3(0, 0.75, 0), 0, Vector3(0.5, 0.5, 1))
+			_EffectService:PlayEffect("b7c5a98037f14bfc8a04a50100792ffe", self.Entity, randomPos, 0, Vector3.one, false, {["PlayRate"] = 0.75})
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartGather()
+		-- 거더링 스킬 타이머를 시작하고 쿨다운 시각적 효과 설정
+		_TimerLogic:ClearTimer(self.timer)
+		self.timer = _TimerLogic:SetTimerRepeat(function()
+				if not isvalid(self) then 
+					_TimerLogic:ClearTimer(self.timer)
+					return
+				end
+				self:Gather()
+			end, self.gatherInterval, 5, "GatheringPetComponent.StartGater")
+		
+		local timer = 0
+		timer = _TimerLogic:SetTimerRepeat(function()
+				if not isvalid(self) or not isvalid(self.Entity) then 
+					_TimerLogic:ClearTimer(timer)
+				end
+			
+				if isvalid(self) then
+					local color = math.abs(self.seconds - self.gatherInterval) / self.gatherInterval
+					self.seconds = self.seconds + 1
+					
+					if self.seconds % self.gatherInterval == 0 then
+						self.seconds = 0 
+					end
+				else
+					_TimerLogic:ClearTimer(timer)
+				end
+			end, 1, 5, "GatheringPetComponent.StartGater_cooltimeAlpha")
+		
+		self.transformComponent = self.Entity.TransformComponent
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 컴포넌트 파괴 시 타이머 정리
+		_TimerLogic:ClearTimer(self.timer)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleChangedLookAtEvent(ChangedLookAtEvent event)
+		-- 플레이어의 시선 방향에 따라 거더링 펫의 위치와 스케일 조정
+		
+		local LookAtX = event.LookAtX
+		if LookAtX > 0 then
+			self.transformComponent.Position.x = math.abs(self.Entity.TransformComponent.Position.x) * (-1)
+			self.transformComponent.Scale.x = -1
+		else
+			self.transformComponent.Position.x = math.abs(self.Entity.TransformComponent.Position.x)
+			self.transformComponent.Scale.x = 1
+		end
+	end
+
+end

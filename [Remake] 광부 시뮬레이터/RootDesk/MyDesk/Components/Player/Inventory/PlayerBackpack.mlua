@@ -1,0 +1,225 @@
+@Component
+script PlayerBackpack extends Component
+
+	property SyncTable<number> storageList
+
+	@Sync
+	property number maxStorageNum = 0
+
+	property number failStack = 0
+
+	@ExecSpace("Server")
+	method void AddItem(number itemIdx, number amount)
+		-- 플레이어에게 아이템을 추가하되 배낭 용량과 행운 스탯을 고려하여 처리
+		-- 현재 보유량 체크
+		local storageAmount = 0
+		for i=1, #self.storageList do
+			storageAmount = storageAmount + self.storageList[i]
+		end
+		
+		-- 행운 스탯 적용
+		if itemIdx > 4 then
+			local randValue = _UtilLogic:RandomDouble()*100
+			
+			if randValue < self.Entity.PlayerData.Luck then
+				amount = amount * 2
+			end
+			
+		end
+		
+		-- 남은 칸 수 이내로 획득
+		local allowedAmount = self.maxStorageNum - storageAmount
+		
+		local itemTable = _DataService:GetTable("DropItem")
+		if allowedAmount < amount then
+			amount = allowedAmount
+			
+			-- 남은 칸이 없다면 안내 후 종료
+			if amount <= 0 then
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_BackpackIsFull", self.Entity.OwnerId)
+				self.failStack = self.failStack + 1
+				if self.failStack >=8 then
+					local showGuideMessage = function()
+						_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_Tip_BuyBackpack", self.Entity.OwnerId)
+					end
+					_TimerService:SetTimerOnce(showGuideMessage, 4)
+				end
+				return
+			end
+		end
+		
+		self.storageList[itemIdx] = self.storageList[itemIdx] + amount
+		self:SetTableElementClient("storageList", itemIdx, tostring(self.storageList[itemIdx]), self.Entity.OwnerId)
+		self.Entity.PlayerCollection:RecordData(itemIdx, amount)
+		
+		local itemType = itemTable:GetCell(itemIdx, 6)
+		local itemRUID = itemTable:GetCell(itemIdx, 2)
+		if itemType == "MineralType1" then
+		
+			_UIGetLog:AddLog(Color.white, itemTable:GetCell(itemIdx, 1), amount, true, itemType, itemRUID, self.Entity.OwnerId)
+			for i=10, 16 do
+				self.Entity.PlayerAchievementComponent:GetProgress(i, amount)
+			end
+		elseif itemType == "MineralType2" then
+			_UIGetLog:AddLog(Color.FromHexCode("#FF7878"), itemTable:GetCell(itemIdx, 1), amount, true, itemType, itemRUID, self.Entity.OwnerId)
+			--_UIGetLog:AddLog("[보석]"..string.format(" %s %d개 획득", itemTable:GetCell(itemIdx, 1), amount), Color.FromHexCode("#FF7878"), self.Entity.OwnerId)
+			for i=17, 21 do
+				self.Entity.PlayerAchievementComponent:GetProgress(i, amount)
+			end
+		elseif itemType == "MineralType3" then
+			_UIGetLog:AddLog(Color.FromHexCode("#FFD926"), itemTable:GetCell(itemIdx, 1), amount, true, itemType, itemRUID, self.Entity.OwnerId)
+			--_UIGetLog:AddLog("[화석]"..string.format(" %s %d개 획득", itemTable:GetCell(itemIdx, 1), amount), Color.FromHexCode("#FFD926"),self.Entity.OwnerId)
+			for i=22, 25 do
+				self.Entity.PlayerAchievementComponent:GetProgress(i, amount)
+			end
+		end
+		
+		_SoundService:PlaySound("2e4f923874f749fda5f69170aee85061", 0.5, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void DiscardAllItem()
+		-- 배낭의 모든 아이템을 버리고 저장소를 비우는 기능
+		for i=1, #self.storageList do
+			self.storageList[i] = 0
+		end
+		
+		self:ClearTableClient("storageList", "0", #self.storageList, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 배낭 관련 속성이 동기화될 때 해당 UI 컴포넌트들을 새로고침
+		if self.Entity ~= _UserService.LocalPlayer then
+			return
+		end
+		
+		if name == "maxStorageNum" then
+			_EntityService:GetEntityByPath("/ui/InventoryGroup/Storage").StorageUI:RefreshUI()
+			_EntityService:GetEntity("8aec349b-b945-45c2-bc5d-a2894e9e92ee").InventoryButtonUI:RefreshUI(false)
+		end
+	end
+
+	method void OnBeginPlay()
+		-- 배낭 컴포넌트 초기화 시 테이블 설정과 모든 아이템 클리어 수행
+		-- 코드에서 참고할 Table들을 string 형식으로 참고할 수 있도록 별도의 Table에 저장
+		self._T.tableList = { storageList = self.storageList }
+		self._T.tableType = { storageList = "number" }
+		self._T.dropItemDataSet = _DataService:GetTable("DropItem") 
+		
+		--ServerOnly 이므로 Server 체크 필요 X
+		self:ClearAllProperty()
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 받은 테이블 데이터를 클라이언트에 설정하고 관련 테이블 변경사항 적용
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 테이블의 특정 인덱스 요소를 클라이언트에서 업데이트하고 타입 파싱 후 변경사항 적용
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트에서 테이블을 초기값으로 클리어하고 변경사항을 적용
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		
+		for index = 1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string tableName)
+		-- 배낭 테이블 데이터가 변경되었을 때 관련 UI 컴포넌트들을 새로고침
+		if tableName == "storageList" then
+			--_EntityService:GetEntity("48667632-97d3-4ffa-a58a-50f9d188cc1e").InventoryUI:RefreshUI()
+			_EntityService:GetEntity("8aec349b-b945-45c2-bc5d-a2894e9e92ee").InventoryButtonUI:RefreshUI(true)
+			_EntityService:GetEntityByPath("/ui/InventoryGroup/Storage").StorageUI:RefreshUI()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearAllProperty()
+		-- 서버에서 모든 아이템 저장 정보를 초기화하고 클라이언트에 동기화
+		local itemIdxNum = self._T.dropItemDataSet:GetRowCount()
+		
+		
+		for i=1, itemIdxNum do
+			self.storageList[i] = 0
+		end
+		
+		self:ClearTableClient("storageList", "0", itemIdxNum, self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void PlayAttackMotion(Vector3 targetEntityPos, boolean isSuccess)
+		-- 플레이어의 공격 모션을 재생하고 성공/실패에 따라 다른 이펙트와 사운드 출력
+		self.Entity.StateComponent:ChangeState("ATTACK")
+		
+		local targetPos = targetEntityPos
+		targetPos = targetPos + Vector3(0.2, -0.12, 0)
+		
+		if isSuccess == true then
+			-- Effect & Sound
+			local playDirection = function()
+				_EffectService:PlayEffect("1a536dd7c01340ae89deaccb32bd4136", self.Entity, targetPos, 0, 0.5*Vector3.one)
+				_SoundService:PlaySoundAtPos("44e9c1bd622c4939b4361eb5d05ed35a", targetPos, self.Entity, 1)
+			end
+			_TimerService:SetTimerOnce(playDirection, 0.325)
+		else 
+			local playDirection = function()
+				_SoundService:PlaySoundAtPos("ca4c49b20de341d4bb9dea4c1c9c68fc", targetPos, self.Entity, 1)
+			end
+			_TimerService:SetTimerOnce(playDirection, 0.325)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(any enteredMap)
+		-- 플레이어가 광산 맵에 입장할 때 해당 맵의 채굴 타겟들의 방문 기록을 초기화
+		if string.sub(enteredMap.Name, 1, 4) == "Mine" then
+			local miningTargetManager = self.Entity.CurrentMap:GetChildByName("MiningTargets")
+			
+			for i=1, #miningTargetManager.Children do
+				
+				local childEntity = miningTargetManager.Children[i]
+				
+				if childEntity.MiningTargetObject ~= nil then
+					childEntity.MiningTargetObject:RemoveVisitRecord(self.Entity.PlayerComponent.UserId)
+				end
+				
+			end
+			
+		end
+	end
+
+end

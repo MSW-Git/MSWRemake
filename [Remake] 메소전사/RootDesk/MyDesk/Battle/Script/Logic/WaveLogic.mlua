@@ -1,0 +1,235 @@
+@Logic
+script WaveLogic extends Logic
+
+	property table waveData = {}
+
+	property table chapterData = {}
+
+	property number currentChapter = 1
+
+	property number spawnMultiply = 1
+
+	property boolean delayClearState = false
+
+	method void OnBeginPlay()
+		-- 웨이브 데이터 초기화 및 보스 웨이브 설정
+		local waveTable = {}
+		local chapterData = _DataService:GetTable("WaveData")
+		self:Init(chapterData)
+		
+		for chapter,chapterData in pairs(self.chapterData) do
+			for wave,waveData in pairs(chapterData) do
+				if wave == self:GetLastWave(chapter) then
+					for _,group in pairs(waveData) do
+						for _,v in pairs(group) do
+							v.formation = "boss"
+							v.delay = 5
+						end
+					end
+				end
+			end
+		end
+		
+	end
+
+	method table GetNumberTableBySplash(string data)
+		-- 슬래시로 구분된 문자열을 숫자 테이블로 변환
+		local split = _UtilLogic:Split(data,"/")
+		local output = {}
+		for k,v in pairs(split) do
+			table.insert(output,tonumber(v))
+		end
+		return output
+	end
+
+	method table GetChapterWave(number chapter, number wave)
+		-- 특정 챕터와 웨이브의 랜덤 데이터 반환
+		local chapterTable = self.chapterData[chapter]
+		local random = _RandomLogic:RandomIntegerRange(1,#chapterTable[wave])
+		return chapterTable[wave][random]
+	end
+
+	method number GetLastWave(number chapter)
+		-- 챕터의 마지막 웨이브 번호 반환
+		if self:IsClient() and _GameConfig:GetConfig().GAMEMODE_LIMITLAND == _GameSettingLogic.mode then
+			return _LimitLandWaveLogic:GetLastWave(chapter)
+		end
+		
+		return self.chapterData[chapter].lastWave
+	end
+
+	method void SetChapter(number chapter)
+		-- 현재 챕터 설정
+		self.currentChapter = chapter
+	end
+
+	method any GetAverageWave()
+		-- 현재 챕터의 평균 웨이브 데이터 반환
+		if self.currentChapter < 0 then
+			return nil
+		end
+		local waveData = self.chapterData[self.currentChapter]
+		
+		if self:IsClient() and _GameConfig:GetConfig().GAMEMODE_LIMITLAND == _GameSettingLogic.mode then
+			return _LimitLandWaveLogic:GetAverageWave()
+		end
+		
+		if self:IsClient() and _GameConfig:GetConfig().GAMEMODE_RANDOMBOSS == _GameSettingLogic.mode then
+			local monster = {["name"] = "더미", ["attack"] = _GameConfig:GetConfig().RANDOMBOSS_BOSS_ATK * 0.5, ["hp"] = _GameConfig:GetConfig().RANDOMBOSS_BOSS_HP * 0.1 }
+			local dummyMonster = {["monster"] = monster}
+			return dummyMonster
+		end
+		
+		if not isvalid(waveData[3]) or not isvalid(waveData[3][1]) or not isvalid(waveData[3][1][1]) then
+			return false
+		end
+		
+		local data = waveData[3][1][1]
+		
+		for i = 1, 5 do
+			if data.monster ~= "WAVE" then
+				break
+			end
+			data = waveData[3][1][i]
+		end
+		
+		return data
+	end
+
+	method any GetFirstWave()
+		-- 현재 챕터의 첫 번째 웨이브 데이터 반환
+		local waveData = self.chapterData[self.currentChapter]
+		
+		if not isvalid(waveData[1]) or not isvalid(waveData[1][1]) or not isvalid(waveData[1][1][1]) then
+			return false
+		end
+		
+		return waveData[1][1][1]
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetLastBossId()
+		-- 현재 챕터의 마지막 보스 ID 반환 (캐시 사용)
+		if _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_RANDOMBOSS then
+			return _UserService.LocalPlayer.CurrentMap.RandomBossMapComponent.bossInfo.id
+		end
+		if self.currentChapter < 0 then
+			return ""
+		end
+		
+		local lastBossIdCache = self._T.lastBossIdCache
+		local currentChapter = self.currentChapter
+		
+		if lastBossIdCache[currentChapter] then
+			return lastBossIdCache[currentChapter]
+		end
+		
+		local waveData = self.chapterData[currentChapter]
+		
+		local lastWave = waveData.lastWave
+		local bossId = nil
+		
+		for key, value in pairs(waveData[lastWave][1]) do
+			local monsterId = value.monster
+			
+			if _UtilLogic:Contains(monsterId, "Boss") then
+				bossId = monsterId
+				lastBossIdCache[currentChapter] = monsterId
+				break
+			end
+		end
+		
+		return bossId or ""
+	end
+
+	method void Init(any chapterData)
+		-- 웨이브 데이터 테이블을 파싱하여 챕터별로 구성
+		for i = 1, chapterData:GetRowCount() do
+			local chapter = tonumber(chapterData:GetCell(i,"chapter"))
+			local wave = tonumber(chapterData:GetCell(i,"wave"))
+			local group = tonumber(chapterData:GetCell(i,"group"))
+			local monster = chapterData:GetCell(i,"monster")
+			local delay = tonumber(chapterData:GetCell(i,"delay"))
+			local interval = tonumber(chapterData:GetCell(i,"interval"))
+			local spawnCount = tonumber(chapterData:GetCell(i,"spawnCount"))
+			local spawnMin = tonumber(chapterData:GetCell(i,"spawnMin"))
+			local spawnMax = tonumber(chapterData:GetCell(i,"spawnMax"))
+			local formation = chapterData:GetCell(i,"formation")
+			local monsterWave = chapterData:GetCell(i,"monsterWave")
+			local spawnRadius = tonumber(chapterData:GetCell(i,"spawnRadius"))
+			local life = tonumber(chapterData:GetCell(i,"life"))
+			local option = tonumber(chapterData:GetCell(i,"option"))
+		
+			self:AddChapterData(chapter,wave,group,monster,delay,interval,spawnCount,spawnMin,spawnMax,formation,monsterWave,spawnRadius,life,option)
+			
+			
+		end
+		
+		
+		self._T.lastBossIdCache = {}
+	end
+
+	method void SetDelayClearState(boolean delay)
+		-- 웨이브 클리어 지연 상태 설정
+		self.delayClearState = delay
+	end
+
+	method void AddChapterData(number chapter, number wave, number group, string monster, number delay, number interval, number spawnCount, number spawnMin, number spawnMax, string formation, string monsterWave, number spawnRadius, number life, number option)
+		-- 챕터별 웨이브 데이터를 구조화하여 저장
+		
+			if self.chapterData[chapter] == nil then
+				self.chapterData[chapter] = {}
+				self.chapterData[chapter].lastWave = wave
+			end 
+			self.chapterData[chapter].lastWave = math.max(wave,self.chapterData[chapter].lastWave)
+			
+			local chapterTable = self.chapterData[chapter]
+			if chapterTable[wave] == nil then
+				chapterTable[wave] = {}
+			end
+			
+			if chapterTable[wave][group] == nil then
+				chapterTable[wave][group] = {}
+			end
+			local eachSpawnData = {}
+			eachSpawnData.monster = monster
+			eachSpawnData.delay = delay
+			eachSpawnData.interval = interval
+			eachSpawnData.spawnCount = spawnCount
+			eachSpawnData.spawnMin = spawnMin
+			eachSpawnData.spawnMax = spawnMax
+			eachSpawnData.formation = formation
+			eachSpawnData.option = option
+			eachSpawnData.monsterWave = monsterWave
+			eachSpawnData.spawnRadius = spawnRadius
+			eachSpawnData.life = life
+		
+			table.insert(chapterTable[wave][group],eachSpawnData)
+	end
+
+	method string GetLastBossByStage(number currentChapter)
+		-- 특정 스테이지의 마지막 보스 ID 반환
+		local lastBossIdCache = self._T.lastBossIdCache
+		
+		if lastBossIdCache[currentChapter] then
+			return lastBossIdCache[currentChapter]
+		end
+		
+		local waveData = self.chapterData[currentChapter]
+		local lastWave = waveData.lastWave
+		local bossId = nil
+		
+		for key, value in pairs(waveData[lastWave][1]) do
+			local monsterId = value.monster
+			
+			if _UtilLogic:Contains(monsterId, "Boss") then
+				bossId = monsterId
+				lastBossIdCache[currentChapter] = monsterId
+				break
+			end
+		end
+		
+		return bossId or ""
+	end
+
+end

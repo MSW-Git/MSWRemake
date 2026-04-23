@@ -1,0 +1,380 @@
+@Component
+script LimitMapComponent extends BattleMap
+
+	property EntityRef spawnPoint = "3ededc82-24c0-4324-b48d-495c9a45cc53"
+
+	property EntityRef tile = "3d6a108a-61b4-429f-9d50-fa80da4fef8d"
+
+	property UILevelUpPopup levelUpPpopUp = "2f9bc163-5c61-4175-b386-71c49bc0094c"
+
+	@HideFromInspector
+	property string currentTheme = "forest"
+
+	property EntityRef mapEntities = "b07559ce-6477-4477-8ac8-1f27e546873f"
+
+	property any waveClearedMilliSecond = nil
+
+	property TriggerComponentRef innerTrigger = "7e6837e8-b8bd-47bb-9c63-ba524da9401a"
+
+	property MapLayerComponentRef playerLayer = "b73bc5ae-718b-403a-80fc-9fe3b277459f"
+
+	property RectTileMapComponentRef rectTile = "b02f48db-93b2-4105-b618-4fee6ddde8ee"
+
+	property RectTileMapComponentRef fenceRectTile = "6028551a-ce7a-4ff2-84bc-1840066aada9"
+
+	property RectTileMapComponentRef fenceBottomRectTile = "48b33576-f3dd-470f-9891-06e7bfe2d365"
+
+	method void OnBeginPlay()
+		-- 리미트맵 컴포넌트 초기화
+		if self:IsServer() then
+			return
+		end
+		self._T.currentSpawners = {}
+		self._T.startedWaveTime = 0
+		self.chapter = 1
+		self.wave = 1
+		
+		self._T.leftBottom = self.leftBottom
+		self._T.rightTop = self.rightTop
+		
+		_PoolingLogic:PreLoad(_MonsterLogic.baseModel,self.Entity,100)
+		_PoolingLogic:PreLoad("model://afa7a38c-67b8-45f5-87f5-d90af408383f",self.Entity,100)
+		
+		_BattleUIManager.suddenMissionUI:ForceClose()
+	end
+
+	method void Init()
+		-- 리미트맵 초기화 및 웨이브 시작
+		if self:IsClient() then
+			self.width = 20
+			self.height = 12
+			self.chapter = 1
+			self.wave = 1
+			self.waveClearedMilliSecond = nil
+			self:SetTile()
+			_BattleUIManager:SetTimer(_GameConfig:GetConfig().TIMER_LIMITLAND)
+			_BattleUIManager.limitLandResultUI:Init()
+		end
+		self.isClear = false
+		
+		self:StartWave()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTile()
+		-- 웨이브에 따른 맵 타일과 테마 설정
+		local theme = _LimitLandWaveLogic:GetTheme(self.wave)
+		
+		if theme == self.theme then return end
+		
+		self.theme = theme
+		
+		local tile = "754ffa66c5384fb0967eb6199af24f5c"
+		local fence =  "tileset://34e00eef-5110-47fc-ac7f-063ffda30a3a"
+		
+		for key, value in pairs(_StageLogic.stageData) do
+			if value.theme == self.theme and _UtilLogic:Contains(value.id, "00") then
+				tile = value.tile
+				self.stageData = value
+				fence = _StageLogic.chapterData[value.chapter].fence
+				
+				break
+			end
+		end
+		
+		self.fenceRectTile.TileSetRUID = fence
+		self.fenceBottomRectTile.TileSetRUID = fence
+		
+		---@type Entity
+		local mapEntities = self.mapEntities 
+		local soundComponent = self.Entity.SoundComponent
+		
+		if theme == "forest" then
+			soundComponent.AudioClipRUID = "7ca2c33f65204582959207ac4c7c9870"
+		elseif theme == "desert" then
+			soundComponent.AudioClipRUID = "2dd03c76b331416bbf9752f6a897988e"
+		elseif theme == "pirates" then
+			soundComponent.AudioClipRUID = "bc60a5ce1e754011b22c1a29e938106c"
+		elseif theme == "factory" then
+			soundComponent.AudioClipRUID = "87784fb48a1e435dad1c33f348322dc4"
+		elseif theme == "cookie" then
+			soundComponent.AudioClipRUID = "754991d9176c47ea9bda8929f4f3733f"
+		elseif theme == "winter" then
+			soundComponent.AudioClipRUID = "3c7eac1135c54c06963e44aeea3306f7"
+		elseif theme == "temple" then
+			soundComponent.AudioClipRUID = "b096f4699a334cdbb084d78bf7f590a5"
+		elseif theme == "hotSpring" then
+			soundComponent.AudioClipRUID = "729f9844bceb480089e5f1b2aed9fcb9"
+		end
+		
+		self.tile.SpriteRendererComponent.SpriteRUID = tile
+		
+		mapEntities.Visible = false
+		self._T.mapEntites = mapEntities
+		self:SetMapSize(20,12)
+		
+		self.tile.SpriteRendererComponent.SortingLayer = "Layer1"
+	end
+
+	method void StartWave()
+		-- 새로운 웨이브를 시작하고 몬스터 스폰
+		local player = _UserService.LocalPlayer
+		local userId = player.PlayerComponent.UserId
+		
+		if self._T.startedWaveTime + 5 > _TimerLogic.ElapsedSeconds then
+			_WorldLog:LogAbnormalFlow(userId, "Invalid LimitLand Wave Time.", self._T.startedWaveTime + 5, _TimerLogic.ElapsedSeconds, _TimerLogic.ElapsedSeconds - self._T.startedWaveTime, self.wave)
+			
+			self._T.startedWaveTime = _TimerLogic.ElapsedSeconds
+			player.PlayerInfoComponent.isInvalidRecord = true
+			
+			return
+		end
+		
+		local limitTime = TimeSpan(_GameConfig:GetConfig().TIMER_LIMITLAND * 1000)
+		local remainTime = TimeSpan(_BattleUIManager.remainSeconds * 1000)
+		local elapsedTime = limitTime - remainTime
+		
+		if elapsedTime.TotalSeconds > 0 then
+			self.waveClearedMilliSecond = elapsedTime
+		end
+		self.spawnedBox = 0
+		_ResourceService:UnloadUnusedResources(0)
+		
+		local wave = _LimitLandWaveLogic:GetChapterWave(self.chapter,self.wave)
+		local battlePlayer = player.BattlePlayer
+		
+		if self.wave ~= _LimitLandWaveLogic:GetLastWave(self.chapter) then
+			_UIToast:ShowMessage(string.format(_LocalizeLogic:GetText("toast7"),self.wave))
+			_LimitLandWaveLogic:SendEvent(WaveStartEvent(false, self.wave))
+			_ArmorSkillLogic:SendEvent(WaveStartEvent(false, self.wave))
+		else
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast9"))
+			_LimitLandWaveLogic:SendEvent(WaveStartEvent(true, self.wave))
+			_ArmorSkillLogic:SendEvent(WaveStartEvent(true, self.wave))
+		end
+		_BattleUIManager:RefreshCurrentWave()
+				
+		if self.wave % 5 == 0 then
+			if self.requestedClearRewardTime + 1 < _UtilLogic.ServerElapsedSeconds and not player.PlayerInfoComponent.isInvalidRecord then
+				_RewardLogic:ReuqestGetLimitLandWaveReward(self.wave, tostring(elapsedTime))
+				self.requestedClearRewardTime = _UtilLogic.ServerElapsedSeconds
+			else
+				player.PlayerInfoComponent.isInvalidRecord = true
+				_WorldLog:LogAbnormalFlow(userId, "Invalid LimitLand Wave Time.", self.requestedClearRewardTime, _UtilLogic.ServerElapsedSeconds, _UtilLogic.ServerElapsedSeconds - self.requestedClearRewardTime, self.wave)
+				_UserService:KickUser(userId, KickReason.WorldError)
+			end
+		end
+		
+		if isvalid(self._T.waveStartTimeStamp) then
+			if self._T.waveStartTimeStamp + 0.01 >= _UtilLogic.ElapsedSeconds then
+				_WorldLog:LogAbnormalFlow(userId, "Invalid LimitLand Wave Start Time", 0, self._T.waveStartTimeStamp, 0, self.wave)
+				_UserService:KickUser(userId, KickReason.WorldError)
+				
+				return
+			end
+		end
+		
+		self._T.waveStartTimeStamp = _UtilLogic.ElapsedSeconds
+		_WorldLog:LogIngameFlowWaveStart(player, _GameConfig:GetConfig().GAMEMODE_LIMITLAND, self.wave, tostring(elapsedTime), player.MyPlayer.deviceType)
+		
+		self._T.waveSpawnEnd = false
+		
+		self._T.totalTimer = 0
+		self._T.monsterSpawnCall = 0
+		
+		for k,v in pairs(wave) do
+			local repeatId = 0
+			local spawnCount = 0
+			self._T.totalTimer = self._T.totalTimer + 1
+			repeatId = _TimerLogic:SetTimerRepeat(function() 
+					spawnCount = spawnCount + 1
+					
+					self:SpawnWave(v)
+					if spawnCount >= v.spawnCount then				
+						self._T.totalTimer = self._T.totalTimer - 1
+						if self._T.totalTimer == 0 then
+							self.isTimerOut = true
+						end
+						_TimerLogic:ClearTimer(repeatId)
+						self._T.currentSpawners[repeatId] = nil
+					end
+			end,v.interval,v.delay, "LimitMapComponent.StartWave")
+			self._T.currentSpawners[repeatId] = repeatId
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitPlayer()
+		-- 리미트랜드용 플레이어 초기화
+		local player = _UserService.LocalPlayer
+		local battlePlayer = player.BattlePlayer
+		
+		for i = 1, _GameConfig:GetConfig().MAX_EQUIPMENT_CNT do
+			battlePlayer:AddWeapon("")
+		end
+		
+		for key, value in pairs(battlePlayer.equipGun) do
+			---@type BattleGunObject
+			local gun = value.gun.BattleGunObject
+			
+			for i = 1, _GameConfig:GetConfig().WEAPONCARD_LV_MAX - 1 do
+				gun:CardLevelUp(false)
+			end
+		end
+		
+		self.levelUpPpopUp:Shuffle(battlePlayer.lv)
+		battlePlayer:LevelUp(false)
+		player.PlayerInfoComponent.isInvalidRecord = false
+		player.PlayerInfoComponent:InitInvalidRecord()
+	end
+
+	method void SpawnWave(table wave)
+		-- 웨이브 데이터에 따라 몬스터를 스폰
+		self.isTimerOut = false
+		
+		local pos = _UserService.LocalPlayer.TransformComponent.Position
+		
+		
+		local monsterCnt = _UtilLogic:RandomIntegerRange(wave.spawnMin,wave.spawnMax) * _WaveLogic.spawnMultiply
+		local angleOffset = math.rad(_UtilLogic:RandomDouble() * 360)
+		local angle = angleOffset
+		for i = 1,monsterCnt do
+			local offsetX = 0
+			local offsetY = 0
+			
+			if wave.formation == "circle" then
+				angle = angleOffset + i * math.rad(wave.option)
+			elseif wave.formation == "group" then
+				offsetX = wave.option * (_UtilLogic:RandomDouble()  - 0.5)
+				offsetY = wave.option * (_UtilLogic:RandomDouble()  - 0.5)
+			else
+				angle = math.rad(_UtilLogic:RandomDouble() * 360)
+			end
+			local radius = wave.spawnRadius
+		
+			local x = radius * math.cos(angle) + pos.x + offsetX
+			local y = radius * math.sin(angle) + pos.y + offsetY
+			local z = pos.z
+			if wave.formation == "center" then
+				x = 0
+				y = 0
+			end
+			
+			if wave.monster == "WAVE" then
+				self:SpawnMonsterWaveSkill(wave.monsterWave, wave.monsterWaveAtk)
+			else
+				local monsterData = _MonsterLogic:GetMonsterData(wave.monster)
+		
+				if monsterData == nil then
+				else
+					local spawnFun = function(monster)
+						---@type MonsterObject	
+						local monsterComp = monster.MonsterObject
+						monsterComp:SetPosition(Vector2(x,y))
+						monsterComp:Init(wave.monster, false,false,wave.life)
+						monsterComp.speed = monsterComp.speed * 1.5
+						monsterComp:SetTarget(_UserService.LocalPlayer)
+						monsterComp.respawnPosition = Vector2(x,y)
+						if monsterComp.id == 0 then
+							monsterComp.id = self.totalmonsterCnt
+							self.totalmonsterCnt = self.totalmonsterCnt + 1
+						end
+					end
+					if monsterData.model == _MonsterLogic.baseModel then
+						_PoolingLogic:SpawnModelForPendingAsync(monsterData.model,Vector3(x,y,z),self.Entity,spawnFun)
+					else
+						_PoolingLogic:SpawnModelAsync(monsterData.model,Vector3(x,y,z),self.Entity,spawnFun)
+					end
+				end		
+			end	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "MonsterLogic")
+	handler HandleMonsterCountChange(MonsterCountChange event)
+		-- 몰스터 수 변경 시 웨이브 진행 상태 및 종료 처리
+		local count = event.count
+		local causeForceClear = event.causeForceClear
+		local tempEnd = false
+		
+		if self.isTimerOut then
+			if self._T.monsterSpawnCall == 0 then
+				self._T.waveSpawnEnd = true		
+			end
+		end
+		
+		_EditorTextLog:Log("monstercount",string.format("몬스터수 : %d",count))
+		if count <= 0 and not self.isClear then
+			if self.wave == _LimitLandWaveLogic:GetLastWave(self.chapter) then
+				if causeForceClear then return end
+				
+				for k,v in pairs(self._T.currentSpawners) do
+					_TimerLogic:ClearTimer(k)
+				end
+				table.clear(self._T.currentSpawners)
+				self._T.waveSpawnEnd = true
+			end
+		
+			if self._T.waveSpawnEnd then
+				if self.wave == _LimitLandWaveLogic:GetLastWave(self.chapter) then
+					self.isClear = true
+					_UserService.LocalPlayer.BattlePlayer:ApplyInvincible(999999)
+					
+					_TimerService:SetTimerOnce(function()
+						if isvalid(_UserService.LocalPlayer) and isvalid(_UserService.LocalPlayer.BattlePlayer) then
+							_UserService.LocalPlayer.BattlePlayer:OnEndBattle(true)
+						end
+					end, 5)
+					
+					
+					return
+				end
+		
+				_LimitLandWaveLogic:SendEvent(WaveEndEvent())
+				self.isClear = false
+				self.wave = self.wave + 1
+				
+				self:SetTile()
+				self:StartWave()
+			end
+			
+			if tempEnd then
+				self._T.waveSpawnEnd = true
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleLimitLandEndEvent(LimitLandEndEvent event)
+		-- 리미트랜드 종료 이벤트 처리
+		local isClear = event.isClear
+		if not self.isClear then 
+			_UserService.LocalPlayer.BattlePlayer:Dead(true)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleBattleChapterEnd(BattleChapterEnd event)
+		-- 배틀 챕터 종료 시 보상 요청 및 결과 UI 표시
+		local clear = event.clear
+		if self.requestedClearRewardTime + 5 < _UtilLogic.ServerElapsedSeconds then
+			_UserService.LocalPlayer.PlayerTempStorageComponent:RequestGetRewards(clear)
+			self.requestedClearRewardTime = _UtilLogic.ServerElapsedSeconds
+		else
+			
+			return
+		end
+		
+		self.isEnd = true
+		_BattleUIManager.levelUpPopup:Hide("",0,1)
+		_BuffLogic:Init()
+		_UserService.LocalPlayer.PlayerArmorSkillComponent:ResetArmorSkill(_UserService.LocalPlayer)
+		self.isClear = clear
+		
+		_BattleUIManager.limitLandResultUI:SetEnable(true, clear)
+	end
+
+end

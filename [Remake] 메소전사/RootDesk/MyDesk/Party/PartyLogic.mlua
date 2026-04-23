@@ -1,0 +1,834 @@
+@Logic
+script PartyLogic extends Logic
+
+	property table partyTable = {}
+
+	property integer partyIndex = 1
+
+	property integer LIMIT_MEMBERCOUNT = 4
+
+	property any requestQueue = nil
+
+	@Sync
+	property SyncTable<string, integer> levelTable
+
+	@Sync
+	property SyncTable<string, string> nicknameTable
+
+	property table costumeTable = {}
+
+	@Sync
+	property SyncTable<string, string> mapTable
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestCreateParty(string partyName, integer maxMemberCount)
+		-- 파티 생성 요청 처리 및 유효성 검사
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(user) then return end
+		
+		if self:IsInParty(senderUserId) then
+			_LocalizeLogic:ShowToast("toast188", senderUserId)
+		else
+			self:CreateParty(senderUserId, partyName, maxMemberCount)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CreateParty(string userId, string partyName, integer maxMemberCount)
+		-- 새로운 파티를 생성하고 리더를 설정하여 데이터 동기화
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local fieldPlayer = user.PlayerFieldMapComponent
+		local battlePlayer = user.MultiBattlePlayer
+		
+		local partyInfo = {}
+		
+		partyInfo.name = partyName
+		
+		partyInfo.max = maxMemberCount
+		partyInfo.member = {}
+		
+		for i = 1, self.LIMIT_MEMBERCOUNT do
+			partyInfo.member[i] = ""
+		end
+		partyInfo.member[1] = userId
+		
+		partyInfo.leader = userId
+		partyInfo.status = 0 
+		partyInfo.index = self.partyIndex
+		
+		self.partyTable[self.partyIndex] = partyInfo
+		fieldPlayer:SetPartyIndex(self.partyIndex)
+		 
+		self:SyncPartyTable(self.partyTable, true, userId)
+		if isvalid(battlePlayer) then
+			_PartyUILogic:RequestRefreshHpBar(self.partyIndex, userId, battlePlayer.hp, battlePlayer.maxHp)
+		end
+		
+		self.partyIndex += 1
+	end
+
+	@ExecSpace("Server")
+	method void RequestJoinParty(integer targetPartyId)
+		-- 파티 가입 요청 처리 및 다양한 조건 검사
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(user) then return end
+		
+		if not isvalid(self.partyTable[targetPartyId]) then 
+			_LocalizeLogic:ShowToast("toast186", senderUserId)
+			_PartyUILogic:ClearRequestedTableById(targetPartyId, senderUserId)
+			
+			return
+		end
+		
+		if self:IsInParty(senderUserId) then
+			_LocalizeLogic:ShowToast("toast190", senderUserId)
+			_PartyUILogic:ClearRequestedTableById(targetPartyId, senderUserId)
+			
+			return
+		end
+		
+		if not self:IsEnoughPartySlot(targetPartyId) then
+			_LocalizeLogic:ShowToast("toast198", senderUserId)
+			_PartyUILogic:ClearRequestedTableById(targetPartyId, senderUserId)
+			
+			return
+		
+		end
+		
+		if not self:IsOpenParty(targetPartyId) then
+			_LocalizeLogic:ShowToast("toast196", senderUserId)
+			_PartyUILogic:ClearRequestedTableById(targetPartyId, senderUserId)
+		
+			return
+		end
+		
+		self:SendJoinPartyMessage(senderUserId, targetPartyId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void JoinParty(string userId, integer targetPartyId)
+		-- 사용자를 파티에 가입시키고 HP 바 및 보너스 설정
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local fieldPlayer = user.PlayerFieldMapComponent
+		
+		for key, memberId in pairs(self.partyTable[targetPartyId].member) do
+			if memberId == "" then
+				self.partyTable[targetPartyId].member[key] = userId
+		
+				break
+			end
+		end
+		
+		self:NoticeJoinParty(self.partyTable[targetPartyId].name, userId)
+		fieldPlayer:SetPartyIndex(targetPartyId)
+		self:SyncPartyTableToMembers(targetPartyId)
+		
+		for key, memberId in pairs(self.partyTable[targetPartyId].member) do
+			if memberId ~= "" then
+				local member = _UserService:GetUserEntityByUserId(memberId)
+				local battlePlayer = member.MultiBattlePlayer
+				
+				if isvalid(battlePlayer) then
+					_PartyUILogic:RequestRefreshHpBar(targetPartyId, memberId, battlePlayer.hp, battlePlayer.maxHp)
+				else
+					_PartyUILogic:RequestRefreshHpBar(targetPartyId, memberId, 1, 1)
+				end
+				
+				_TimerService:SetTimerOnce(function() 
+					if isvalid(member.MultiBattlePlayer) then
+						_PartyUILogic:RequestRefreshHpBar(targetPartyId, memberId, member.MultiBattlePlayer.hp, member.MultiBattlePlayer.maxHp)
+					end
+				end, 2)
+			end
+		end
+		
+		if self:GetPartyBonusRate(userId) == 1 then
+			for key, memberId in pairs(self.partyTable[targetPartyId].member) do
+				if memberId ~= "" then
+					_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage178"), "neg", memberId)
+					_SystemMessageLogic:ShowMessage(_LocalizeLogic:GetText("systemMessage179"), "neg", memberId)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DestroyParty(integer targetPartyId)
+		-- 파티를 완전히 삭제하고 데이터 동기화
+		if not isvalid(self.partyTable[targetPartyId]) then
+			
+			return
+		else
+			local members = _GameUtil:DeepCopyTable(self.partyTable[targetPartyId].member)
+			
+			
+			self.partyTable[targetPartyId] = nil
+			self:SyncPartyTable(self.partyTable, false)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestLeaveParty()
+		-- 파티 탈퇴 요청 처리 및 유효성 검사
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(user) then return end
+		
+		if not self:IsInParty(senderUserId) then
+			_LocalizeLogic:ShowToast("toast195", senderUserId)
+		else
+			self:LeaveParty(senderUserId, false)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LeaveParty(string userId, boolean isBan)
+		-- 파티에서 멤버를 제거하고 리더 교체 및 파티 유효성 검사
+		if _UtilLogic:IsNilorEmptyString(userId)  then return end
+		
+		local result, error = pcall(function()
+			
+			local isAnyPartyExist = false
+		
+			for key, value in pairs(self.partyTable) do
+				if isvalid(value.name) then
+					isAnyPartyExist = true
+					
+					break
+				end
+			end
+			
+			if not isAnyPartyExist then return end
+			
+			local user = _UserService:GetUserEntityByUserId(userId)
+			
+			if not isvalid(user) then 
+				local targetIndex = 0
+				local memberKey = 0
+				
+				for partyIndex, party in pairs(self.partyTable) do
+					if isvalid(party.member) then
+						local isLeader = self:IsLeader(userId, partyIndex)
+						local changedLeader = false
+						local minTime = math.maxinteger
+						local willLeaderId = ""
+						
+						
+						for key, memberId in pairs(party.member) do
+							local member = _UserService:GetUserEntityByUserId(memberId)
+							
+							if isLeader then 
+								if userId == memberId then
+									memberKey = key
+									targetIndex = partyIndex
+								elseif isvalid(member) then 
+									if member.PlayerFieldMapComponent.partyJoinedTime < minTime then
+										willLeaderId = memberId
+										minTime = member.PlayerFieldMapComponent.partyJoinedTime
+										changedLeader = true
+									end
+								end
+								
+							else
+								if userId == memberId then
+									self.partyTable[partyIndex].member[key] = ""
+									targetIndex = partyIndex
+									
+									break
+								end
+							end
+						end
+						
+						
+						if changedLeader then
+							self:ChangeLeader(targetIndex, willLeaderId)
+						end
+					end
+				end
+			
+				self.partyTable[targetIndex].member[memberKey] = ""
+				
+				self:CheckPartyIsValid(targetIndex)
+				self:SyncPartyTableToMembers(targetIndex)
+				_PartyUILogic:HideOpenedInfoUI(targetIndex)
+		
+				return
+			end
+			
+			local partyIndex = user.PlayerFieldMapComponent.partyIndex
+			
+			if partyIndex <= 0 then
+				return
+			end
+			
+			local isLeader = self:IsLeader(userId, partyIndex)
+			local changedLeader = false
+			local minTime = math.maxinteger
+			local willLeaderId = ""
+			local memberKey = 0
+			
+			user.PlayerFieldMapComponent:SetPartyIndex(0)
+			
+			for key, memberId in pairs(self.partyTable[partyIndex].member) do
+				if isLeader then 
+					local member = _UserService:GetUserEntityByUserId(memberId)
+					
+					if userId == memberId then
+						memberKey = key
+					elseif isvalid(member) then 
+						if member.PlayerFieldMapComponent.partyJoinedTime < minTime then
+							willLeaderId = memberId
+							minTime = member.PlayerFieldMapComponent.partyJoinedTime
+							changedLeader = true
+						end
+					end
+				else
+					if userId == memberId then
+						self.partyTable[partyIndex].member[key] = ""
+						
+						break
+					end
+				end
+			end
+			
+			self.partyTable[partyIndex].member[memberKey] = ""
+					
+			if changedLeader then
+				self:ChangeLeader(partyIndex, willLeaderId)
+			end
+			
+			self:CheckPartyIsValid(partyIndex)
+			self:SyncPartyTableToMembers(partyIndex)
+			
+			if not isBan then
+				_LocalizeLogic:ShowToast("toast192", userId)
+				self:SyncPartyTable(self.partyTable, false, userId)
+			end
+		
+			_PartyUILogic:RefreshMinimapIcon(userId)
+			_PartyUILogic:HideOpenedInfoUI(partyIndex)
+		end)
+	end
+
+	@ExecSpace("Server")
+	method void SetPartyConfig(integer targetPartyId, string partyName, integer maxMemberCount, integer status)
+		-- 파티 설정 변경 (이름, 최대 인원, 상태) 및 권한 검사
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(user) then return end
+		
+		local partyId = user.PlayerFieldMapComponent.partyIndex
+		
+		
+		if self:IsLeader(user.PlayerComponent.UserId, partyId) then
+			self.partyTable[partyId].name = partyName
+			self.partyTable[partyId].max = maxMemberCount
+			self.partyTable[partyId].status = status
+			
+			_LocalizeLogic:ShowToast("toast209", senderUserId)
+			self:SyncPartyTableToMembers(targetPartyId)
+		else
+			_LocalizeLogic:ShowToast("partyStr11", senderUserId)
+		end
+	end
+
+	method boolean IsInParty(string userId)
+		-- 사용자가 파티에 속해있는지 확인
+		local user = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(user) then return false end
+		
+		if user.PlayerFieldMapComponent.partyIndex == 0 then
+			return false
+		else
+			return true
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncPartyTable(table partyTable, boolean showInfoUI)
+		-- 클라이언트에 파티 테이블 동기화 및 UI 갱신
+		self.partyTable = partyTable
+		
+		_PartyUILogic:Refresh()
+		
+		if showInfoUI then
+			_PartyUILogic:GetPartyInfoUI().PartyInfoUIComponent:Refresh()
+			_PartyUILogic:GetPartyInfoUI().PartyInfoUIComponent:Show()
+		end
+	end
+
+	method boolean IsEnoughPartySlot(integer targetPartyId)
+		-- 파티에 빈 자리가 있는지 확인
+		local count = 0
+		
+		for key, value in pairs(self.partyTable[targetPartyId].member) do
+			if value ~= "" then
+				count += 1
+			end
+		end
+		
+		if count >= self.partyTable[targetPartyId].max then 
+			return false
+		else
+			return true
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestBanMember(integer targetPartyId, string banUserId)
+		-- 파티 멤버 추방 요청 처리 및 권한 검사
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(user) then return end
+		
+		local banUser = _UserService:GetUserEntityByUserId(banUserId)
+		
+		if not isvalid(banUser) then return end
+		
+		if not self:IsLeader(senderUserId, targetPartyId) then
+			_LocalizeLogic:ShowToast("partyStr12", senderUserId)
+			
+			return
+		end
+		
+		if not self:IsInParty(banUserId) then
+			_LocalizeLogic:ShowToast("toast211", senderUserId)
+			
+			return
+		end
+		
+		self:BanMember(targetPartyId, banUserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void BanMember(integer targetPartyId, string banUserId)
+		-- 멤버를 강제로 파티에서 추방하고 알림 및 UI 정리
+		self:LeaveParty(banUserId, true)
+		_LocalizeLogic:ShowToast("toast194", banUserId)
+		self:SyncPartyTableToMembers(targetPartyId)
+		
+		self:SyncPartyTable(self.partyTable, false, banUserId)
+		_PartyUILogic:CloseInfoUI(banUserId)
+	end
+
+	method boolean IsLeader(string userId, integer targetPartyId)
+		-- 사용자가 해당 파티의 리더인지 확인
+		
+		if self.partyTable[targetPartyId].leader == userId then
+			return true
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckPartyIsValid(integer partyIndex)
+		-- 파티가 유효한지 검사하고 비어있으면 삭제
+		if isvalid(self.partyTable[partyIndex]) then
+			if self:GetPartyMemberCount(partyIndex) <= 0 then
+				self:DestroyParty(partyIndex)
+			end
+		else
+		end
+	end
+
+	method integer GetPartyMemberCount(integer partyIndex)
+		-- 파티의 현재 멤버 수를 계산하여 반환
+		if not isvalid(self.partyTable[partyIndex]) or not isvalid(self.partyTable[partyIndex].member) then
+			return -1
+		else
+			local count = 0
+			
+			for key, userId in pairs(self.partyTable[partyIndex].member) do
+				
+				if not _UtilLogic:IsNilorEmptyString(userId) then 
+					count += 1
+				else
+					self.partyTable[partyIndex][key] = ""
+				end
+			end
+			
+			return count
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestChangeLeader(integer targetPartyId, string changeUserId)
+		-- 파티 리더 변경 요청 처리 및 권한 검사
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if not isvalid(user) then 
+			return 
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(changeUserId) then
+			_LocalizeLogic:ShowToast("toast204", senderUserId)
+			
+			return
+		end
+		
+		local changeUser = _UserService:GetUserEntityByUserId(changeUserId)
+		
+		if not isvalid(changeUser) then 
+			_LocalizeLogic:ShowToast("toast204", senderUserId)
+			
+			return 
+		end
+		
+		if not self:IsLeader(senderUserId, targetPartyId) then
+			_LocalizeLogic:ShowToast("toast202", senderUserId)
+			
+			return
+		end
+		
+		self:ChangeLeader(targetPartyId, changeUserId)
+		_LocalizeLogic:ShowToast("toast191", senderUserId)
+		_LocalizeLogic:ShowToast("toast201", changeUserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeLeader(integer targetPartyId, string changeUserId)
+		-- 파티 리더를 변경하고 멤버들에게 동기화
+		self.partyTable[targetPartyId].leader = changeUserId
+		
+		self:SyncPartyTableToMembers(targetPartyId)
+	end
+
+	@ExecSpace("Server")
+	method void SyncPartyTableToMembers(integer targetPartyId)
+		-- 파티 모든 멤버들에게 파티 데이터 동기화
+		if not isvalid(self.partyTable[targetPartyId]) then return end
+		
+		for _, userId in pairs(self.partyTable[targetPartyId].member) do
+			local user = _UserService:GetUserEntityByUserId(userId)
+			
+			if isvalid(user) then
+				self:SyncPartyTable(self.partyTable, false, userId)
+				_PartyUILogic:RefreshMinimapIcon(userId)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSyncTable()
+		-- 클라이언트에서 파티 테이블 동기화 요청
+		self:SyncPartyTable(self.partyTable, false, senderUserId)
+	end
+
+	method integer GetAllPartyCount()
+		-- 전체 파티 개수를 계산하여 반환
+		local count = 0
+		
+		for key, value in pairs(_PartyLogic.partyTable) do
+			if isvalid(value.name) then
+				count += 1
+			end
+		end
+		
+		return count
+	end
+
+	method integer GetAverageLevel(integer partyIndex)
+		-- 파티 멤버들의 평균 레벨을 계산하여 반환
+		local level = 0
+		local userCount = 0
+		
+		for _, userId in pairs(self.partyTable[partyIndex].member) do
+			
+			if isvalid(_PartyLogic.levelTable[userId]) then
+				level += _PartyLogic.levelTable[userId]
+				userCount += 1
+			end
+		end
+		
+		if userCount == 0 or level == 0 then
+			return 1
+		end
+		
+		return level / userCount
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SendJoinPartyMessage(string userId, integer targetPartyId)
+		-- 파티 가입 요청 메시지를 리더에게 전송
+		local party = self.partyTable[targetPartyId]
+		
+		if isvalid(party) then
+			local leader = _UserService:GetUserEntityByUserId(party.leader)
+			
+			if isvalid(leader) then
+				self:EnqueueJoinPartyMessage(userId, targetPartyId, party.leader)
+			end
+		end
+	end
+
+	method boolean IsOpenParty(integer targetPartyId)
+		-- 파티가 공개 상태인지 확인
+		if self.partyTable[targetPartyId].status == 0 then 
+			return true
+		else
+			return false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void EnqueueJoinPartyMessage(string userId, integer targetPartyId)
+		-- 파티 가입 요청 메시지를 큐에 추가하고 처리 시작
+		if not isvalid(self.requestQueue) then
+			self.requestQueue = _DataStructLogic:GetQueue()
+		end
+		
+		local show = self.requestQueue:IsEmpty()
+		
+		self.requestQueue:Enqueue(userId)
+		
+		if show then
+			self:ShowRequestJoinPartyMessage()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestAcceptJoinParty(string userId)
+		-- 파티 가입 요청 수락 처리 및 다양한 조건 검사
+		local leader = _UserService:GetUserEntityByUserId(senderUserId)
+		local targetPartyId = leader.PlayerFieldMapComponent.partyIndex
+		
+		if not self:IsLeader(senderUserId, targetPartyId) then return end
+		
+		if not isvalid(self.partyTable[targetPartyId]) then 
+			_LocalizeLogic:ShowToast("toast186", senderUserId)
+			
+			return
+		end
+		
+		if self:IsInParty(userId) then
+			_LocalizeLogic:ShowToast("toast190", senderUserId)
+			
+			return
+		end
+		
+		if not self:IsEnoughPartySlot(targetPartyId) then
+			_LocalizeLogic:ShowToast("toast193", senderUserId)
+			_LocalizeLogic:ShowToast("toast197", userId)
+			_PartyUILogic:ClearRequestedTableById(targetPartyId, userId)
+			
+			return
+		
+		end
+		
+		if not self:IsOpenParty(targetPartyId) then
+			_LocalizeLogic:ShowToast("toast189", senderUserId)
+			
+			return
+		end
+		
+		self:JoinParty(userId, targetPartyId)
+	end
+
+	@ExecSpace("Server")
+	method void SendMessage(integer messageCode, string userId, string etc)
+		-- 파티 관련 메시지 전송 (새 멤버 알림, 거절 알림)
+		if messageCode == 1 then
+			local requestUser = _UserService:GetUserEntityByUserId(etc)
+			local messageTargetUser = _UserService:GetUserEntityByUserId(userId)
+			
+			if isvalid(messageTargetUser) and isvalid(requestUser) and messageTargetUser.PlayerFieldMapComponent.partyIndex == requestUser.PlayerFieldMapComponent.partyIndex then
+				local nickname = _UserService:GetUserEntityByUserId(etc).PlayerComponent.Nickname
+				
+				self:NoticeJoinNewMember(nickname, userId)
+			end
+		elseif messageCode == 2 then
+			local requestUser = _UserService:GetUserEntityByUserId(userId)
+			local partyId = tonumber(etc)
+		
+			if isvalid(requestUser) and requestUser.PlayerFieldMapComponent.partyIndex == 0 then
+				_LocalizeLogic:ShowToast("toast214", userId)
+				_PartyUILogic:ClearRequestedTableById(partyId, userId)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowRequestJoinPartyMessage()
+		-- 파티 가입 요청 팝업을 표시하고 수락/거절 처리
+		if self.requestQueue:IsEmpty() then return end
+		if _UIPopup.isOpen then return end
+		
+		local userId = self.requestQueue:Dequeue()
+		
+		if not _UtilLogic:IsNilorEmptyString(userId) then
+			local user = _UserService:GetUserEntityByUserId(userId)
+			
+			if not _UtilLogic:IsNilorEmptyString(userId) then 
+		
+				local targetPartyId = _UserService.LocalPlayer.PlayerFieldMapComponent.partyIndex
+				local str = string.format(_LocalizeLogic:GetText("popup22"), self.nicknameTable[userId])
+				_SoundService:PlaySound("5db4f31bbcc243ec8f08713ad78dbe79", 1)
+			
+				_UIPopup:Open(_LocalizeLogic:GetText("popup21"), str, 
+					function() 
+						self:RequestAcceptJoinParty(userId)
+						for _, memberId in pairs(self.partyTable[targetPartyId].member) do
+							if not _UtilLogic:IsNilorEmptyString(memberId) then
+								self:SendMessage(1, memberId, userId)
+							end
+						end
+						_TimerService:SetTimerOnce(function()
+							self:ShowRequestJoinPartyMessage() 
+						end, 0.2)
+					end, 
+					function() 
+						self:SendMessage(2, userId, tostring(targetPartyId))
+						_TimerService:SetTimerOnce(function()
+							self:ShowRequestJoinPartyMessage() 
+						end, 0.2)
+					end)
+			end
+		end
+	end
+
+	method number GetPartyBonusRate(string userId)
+		-- 파티 보너스 비율을 계산 (레벨 차이와 인원수 기반)
+		local partyBonusRate = 1
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local diff = 50
+		
+		if isvalid(user) and self:IsInParty(userId) then
+			local party = _PartyLogic.partyTable[user.PlayerFieldMapComponent.partyIndex]
+			local memberCount = 0
+			local min = math.maxinteger
+			local max = math.mininteger
+			
+			if isvalid(party) then
+				for key, value in pairs(party.member) do
+					if value ~= "" then
+						local member = _UserService:GetUserEntityByUserId(value)
+						if isvalid(member) then
+							local level = _PartyLogic.levelTable[value]
+							
+							if level > max then
+								max = level
+							end
+							
+							if level < min then
+								min = level
+							end
+							
+							memberCount += 1
+						end
+					end
+				end
+				
+				if memberCount >= 2 and max - min <= diff then
+					partyBonusRate = (memberCount * 0.05) + 1
+				end
+			end
+			
+		end
+		
+		return partyBonusRate
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AutoLeaveParty(string message)
+		-- 자동으로 파티를 탈퇴하고 메시지 표시
+		if _PartyLogic:IsInParty(_UserService.LocalPlayer.PlayerComponent.UserId) then
+			_PartyLogic:RequestLeaveParty()
+			_UIToast:ShowMessage(message)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetLevelTable(string userId, integer level)
+		-- 사용자의 레벨 정보를 동기화 테이블에 설정
+		self.levelTable[userId] = level
+	end
+
+	@ExecSpace("Server")
+	method void SetCostumeTable(table costumeTable)
+		-- 사용자의 코스튀 정보를 테이블에 저장
+		self.costumeTable[senderUserId] = costumeTable
+	end
+
+	@ExecSpace("Server")
+	method void SetMapTable()
+		-- 사용자의 현재 맵 정보를 동기화 테이블에 설정
+		self.mapTable[senderUserId] = _MultiMapDataLogic:GetMapName(senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeJoinNewMember(string nickname)
+		-- 새로운 멤버 가입 알림 토스트 메시지 표시
+		local str = string.format(_LocalizeLogic:GetText("toast210"), nickname)
+		
+		_UIToast:ShowMessage(str)
+	end
+
+	@ExecSpace("Client")
+	method void NoticeJoinParty(string partyName)
+		-- 파티 가입 성공 알림 토스트 메시지 표시
+		local str = string.format(_LocalizeLogic:GetText("toast203"), partyName)
+		
+		_UIToast:ShowMessage(str)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserLeaveEvent(UserLeaveEvent event)
+		-- 사용자 나가기 이벤트 처리 시 파티 탈퇴 및 데이터 정리
+		
+		local UserId = event.UserId
+		self:LeaveParty(UserId, false)
+		self.levelTable[UserId] = nil
+		self.nicknameTable[UserId] = nil
+		self.costumeTable[UserId] = nil
+		self.mapTable[UserId] = nil
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserEnterEvent(UserEnterEvent event)
+		-- 사용자 입장 이벤트 처리 시 닉네임 정보 저장
+		
+		local UserId = event.UserId
+		self.nicknameTable[UserId] = _UserService:GetUserEntityByUserId(UserId).PlayerComponent.Nickname
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleInitMapleCostumeEvent(InitMapleCostumeEvent event)
+		-- 로컬 플레이어 코스튀 초기화 시 코스튀 데이터 서버에 전송
+		
+		local AvartarItems = event.AvartarItems
+		local userId = _UserService.LocalPlayer.PlayerComponent.UserId
+		local temp = {}
+		
+		for key, value in pairs(AvartarItems) do
+			temp[tostring(value.Category)] = value.ItemId
+		end
+		
+		self:SetCostumeTable(temp)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 맵 변경 이벤트 처리 시 맵 정보 업데이트
+		
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		if isvalid(Entity) then
+			self:SetMapTable()
+		end
+	end
+
+end

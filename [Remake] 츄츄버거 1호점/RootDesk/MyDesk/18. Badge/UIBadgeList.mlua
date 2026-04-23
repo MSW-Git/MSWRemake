@@ -1,0 +1,290 @@
+@Component
+script UIBadgeList extends Component
+
+	property integer NowFilter = 0
+
+	property integer NowSort = 0
+
+	property Entity BadgeSlotSample = "1de99280-5344-461d-b436-b1b21da0bd03"
+
+	property Entity FilterSelectArea = "3b628c0e-f1da-499d-a445-84de9563ff3c"
+
+	property TextComponent NowFilterText = "7ae29137-41ce-4a28-9892-b030e33a8858"
+
+	property SliderComponent ProgressSlider = "54225174-558a-45b4-a430-5d0c2bad2c34"
+
+	property TextComponent ProgressText = "f65f79c0-207e-45a8-8c79-4a0965930034"
+
+	property TextComponent ProgressPercentText = "293d3076-6df7-4e9c-8663-1231b950a59e"
+
+	property RecycleScrollView BadgeList = "524b5a85-bc65-4608-a211-7e6de4ce940d"
+
+	property Entity UIPanel = "c1e9da7e-f171-4fc8-be22-5cabe07ce8c5"
+
+	property SyncTable<integer, Entity> Tabs
+
+	property integer SelectTab = 0
+
+	property Entity EmptyText = "c188698e-9104-45fd-80c7-699d6e2db59d"
+
+	property SyncTable<string, Entity> FilterOptions
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 컴포넌트 초기화 및 이벤트 연결을 수행하는 함수
+		local filterBtn = self.UIPanel:GetChildByName("FilterSortBar"):GetChildByName("FilterBtn")
+		
+		filterBtn:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			self.FilterSelectArea:SetEnable(not self.FilterSelectArea.Enable)
+		end)
+		
+		for i, child in pairs(self.FilterSelectArea.Children) do
+			if isvalid(child.ButtonComponent) == false then
+				continue
+			end
+			
+			local key = tonumber(child.Name)
+			child:ConnectEvent(ButtonClickEvent, function()
+				if _UIGroupManager:IsEnableOpenPopUp() == false then
+					return
+				end
+				
+				if self.NowFilter == key then
+					return
+				end
+				
+				_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+				self:SetFilter(key)
+			end)
+			
+			self.FilterOptions[tostring(key)] = child
+		end
+		
+		self.BadgeList.onUpdateCell = function(index, entity)
+			entity.UIBadgeSlot:Refresh(self._T.drawList[index])
+		end
+		
+		local tabRoot = self.Entity:GetChildByName("Panel"):GetChildByName("Tabs")
+		for i, entity in pairs(tabRoot.Children) do
+			if isvalid(entity.UIToggleTypeA) then
+				entity.UIToggleTypeA:SetIndex(i)
+				entity.UIToggleTypeA.OnClickedButton = function(event, index) self:SetSelectTab(index) end
+				table.insert(self.Tabs, entity)
+				entity:GetChildByName("RedDot").Enable = false
+			end
+		end
+	end
+
+	method void Open()
+		-- 배지 UI를 열고 초기 상태를 설정하는 함수
+		_UIGroupManager:EnableBadgeGroup(true)
+		
+		self:SetFilter(9)
+		
+		local isComplete = true
+		for id, _ in pairs(_BadgeDataSetLogic.BadgeData) do
+			local badgeData = _BadgeDataSetLogic:GetBadgeData(id)
+			
+			if badgeData.IsHideOnUI == true then
+				continue
+			end
+					
+			local isAchieved = _UserService.LocalPlayer.PlayerBadge.BadgeAchieved[id]
+			if isAchieved == nil then
+				isAchieved = false
+			end
+			
+			if isAchieved == false then
+				isComplete = false
+				break
+			end
+		end
+		
+		if isComplete == true then
+			self:SetSelectTab(2)
+		else
+			self:SetSelectTab(1)
+		end
+		
+		self._T.isProcessing = true
+		_UIEntityService:PlayUIOpenAnim(self.UIPanel, self.UIPanel.UITransformComponent.anchoredPosition, Vector2.up, nil, nil, nil, nil, function()
+			self._T.isProcessing = false
+		end)
+	end
+
+	method void Close()
+		-- 배지 UI를 닫는 함수
+		_UIGroupManager:EnableBadgeGroup(false)
+	end
+
+	method void SetSelectTab(integer selectTab)
+		-- 선택된 탭을 변경하고 UI를 업데이트하는 함수
+		self.SelectTab = selectTab
+		self:OnSelectTab(selectTab)
+		self:Refresh()
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+	end
+
+	method void OnSelectTab(integer selectTab)
+		-- 탭 선택 시 탭 UI 스타일을 업데이트하는 함수
+		for i, entity in ipairs(self.Tabs) do
+			---@type Entity
+			local tab = entity
+			local tabIndex = tab.UIToggleTypeA.index
+			local isSelect = tabIndex == selectTab
+			
+			local uiSpriteSelect = tab:GetChildByName("UISpriteSelect")
+			uiSpriteSelect.SpriteGUIRendererComponent.ImageRUID = isSelect and "4043c56d30de408cb46d83c6eaee1991" or "189b591b4e694a25a57e7d68aa7e1be1" 
+			uiSpriteSelect.UITransformComponent.RectSize = isSelect and Vector2(224, uiSpriteSelect.UITransformComponent.RectSize.y) or Vector2(163, uiSpriteSelect.UITransformComponent.RectSize.y)
+				
+			tab.UIToggleTypeA:SetTextColor(isSelect and _ColorCodeEnum:GetColor("#FFFFFF") or _ColorCodeEnum:GetColor("#5b483c"))
+			tab.UIToggleTypeA:SetTextOutLine(isSelect, _ColorCodeEnum:GetColor("#936502"))
+			
+			tab:GetChildByName("UISpriteIcon").Enable = isSelect and selectTab == 2
+		end
+	end
+
+	method void SetFilter(integer filter)
+		-- 필터를 설정하고 UI를 업데이트하는 함수
+		self.NowFilter = filter
+		
+		_SelectDropDownLogic:RefreshSelected(self.FilterOptions, tostring(self.NowFilter))
+		
+		self:Refresh()
+		
+		self.NowFilterText.Text = _GetLocalizationTextLogic:GetText("UIBadgeFilter"..filter)
+		
+	end
+
+	method void Refresh()
+		-- 현재 필터와 탭에 따라 배지 목록을 새로고침하는 함수
+		self.FilterSelectArea.Enable = false
+		
+		self:RefreshProgressBar()
+		
+		local drawList = {}
+		for id, _ in pairs(_BadgeDataSetLogic.BadgeData) do
+			local badgeData = _BadgeDataSetLogic:GetBadgeData(id)
+			
+			if badgeData.IsHideOnUI == true then
+				continue
+			end
+			
+			if self.NowFilter ~= 9 then
+				if badgeData.Grade ~= self.NowFilter then
+					continue
+				end
+			end
+			
+			local isAchieved = _UserService.LocalPlayer.PlayerBadge.BadgeAchieved[id]
+			if isAchieved == nil then
+				isAchieved = false
+			end
+			
+			if self.SelectTab == 2 then
+				if isAchieved == false then
+					continue
+				end
+			end
+			
+			if self.SelectTab == 1 then
+				if isAchieved == true then
+					continue
+				end
+			end
+			
+			table.insert(drawList, id)
+		end
+		
+		
+		table.sort(drawList, function(a, b)
+			local aSort = _BadgeDataSetLogic:GetBadgeData(a).UISort
+			local bSort = _BadgeDataSetLogic:GetBadgeData(b).UISort
+			return aSort < bSort
+		end)
+		
+		
+		self._T.drawList = drawList
+		self.EmptyText.Enable = #drawList <= 0
+		self.BadgeList:SetTotalCount(#drawList)
+	end
+
+	method void RefreshProgressBar()
+		-- 배지 수집 진행도 바를 업데이트하는 함수
+		local count = 0
+		local userCount = 0
+		for id, _ in pairs(_BadgeDataSetLogic.BadgeData) do
+			local badgeData = _BadgeDataSetLogic:GetBadgeData(id)
+			
+			if badgeData.IsHideOnUI == true then
+				continue
+			end
+			
+			count += 1
+			
+			local isAchieved = _UserService.LocalPlayer.PlayerBadge.BadgeAchieved[id]
+			if isAchieved == nil then
+				isAchieved = false
+			end
+			
+			if isAchieved == true then
+				userCount += 1
+			end
+		end
+		
+		self.ProgressSlider.Value = userCount/count
+		self.ProgressText.Text = string.format("%d/%d", userCount, count)
+		self.ProgressPercentText.Text = math.floor(userCount/count * 100).."%"
+	end
+
+	@EventSender("Entity", "8d89e596-b0a9-44eb-946a-e60ccc50cb1a")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 배지 UI 열기 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:Open()
+	end
+
+	@EventSender("Entity", "173b3047-536c-482d-8c3e-af02504c2169")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 배지 UI 닫기 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+	@EventSender("Entity", "f821477f-c868-43c3-9aea-85c2ffbc0206")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 배지 UI 배경 클릭으로 닫기 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		if self._T.isProcessing == true then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:Close()
+	end
+
+end

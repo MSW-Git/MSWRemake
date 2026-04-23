@@ -1,0 +1,341 @@
+@Component
+script RelicMergeShopUI extends Component
+
+	property string targetGrade = ""
+
+	property boolean IsPlayingDirection = false
+
+	property number autoMerge_SelectedGrade = 0
+
+	@ExecSpace("Client")
+	method void PlayMergeDirection()
+		-- 유물 합성 완료 시 애니메이션 효과 및 결과 표시
+		self.IsPlayingDirection = true
+		
+		local paper = _EntityService:GetEntityByPath("/ui/RelicMergeGroup/RelicMergeShop/Panel/img_paper")
+		
+		-- 일부 버튼을 임시 제거합니다.
+		local closeBtn = _EntityService:GetEntityByPath("/ui/RelicMergeGroup/RelicMergeShop/Panel/TitlePanel/ExitButton")
+		local mergeBtn = _EntityService:GetEntityByPath("/ui/RelicMergeGroup/RelicMergeShop/Panel/MergeButton")
+		closeBtn.Enable = false
+		mergeBtn.Enable = false
+		local btnEnable = function()
+			closeBtn.Enable = true
+			mergeBtn.Enable = true
+		end
+		_TimerService:SetTimerOnce(btnEnable, 3)
+		
+		
+		
+		-- 재료 슬롯에 이펙트를 재생하고, 아이콘을 비웁니다.
+		for i=1, 4 do
+			local slot = paper:GetChildByName("Slot_"..tostring(i))
+			local SlotEffect = slot:GetChildByName("Effect")
+			local icon = slot:GetChildByName("Icon")
+			
+			local caution = slot:GetChildByName("CautionButton")
+			caution.Enable = false
+			
+			local cloneSlotEffect = function()
+				local clonedEffect = SlotEffect:Clone()
+				icon.Enable = false
+				_SoundService:PlaySound("c0d7360d9e0c4a4aa06555b51975a8ab", 0.5)
+				
+				clonedEffect:Destroy(1)
+			end
+			
+			_TimerService:SetTimerOnce(cloneSlotEffect, 0.25*i)
+		end
+		
+		
+		local resultPanel = _EntityService:GetEntityByPath("/ui/RelicMergeGroup/RelicMergeShop/ResultPanel")
+		local resultPanelEffect = resultPanel:GetChildByName("Effect")
+		local resultPopup = resultPanel:GetChildByName("Popup")
+		
+		resultPanel.SpriteGUIRendererComponent.Color.a = 0
+		resultPanel.Enable = true
+		resultPopup.Enable = false
+		
+		-- 결과창의 블랙패널 투명도를 0.5까지 서서히 높입니다.
+		local alpha = 0
+		local setPanelAlpha = function()
+			alpha = alpha + 1/60
+			resultPanel.SpriteGUIRendererComponent.Color.a = alpha
+		end
+		for i=1, 30 do
+			_TimerService:SetTimerOnce(setPanelAlpha, i/30)
+		end
+		
+		-- 책 이펙트를 재생합니다.
+		local cloneResultEffect = function()
+			local clonedEffect = resultPanelEffect:Clone()
+			_SoundService:PlaySound("4feadbd22c8f46e6b5ecf6b1e980c774", 0.5)
+			
+			clonedEffect:Destroy(2.5)
+		end
+		
+		_TimerService:SetTimerOnce(cloneResultEffect, 1.5)
+		
+		
+		-- 결과창 팝업이 뜹니다.
+		local popupEnable = function()
+			resultPopup.Enable = true
+			self.IsPlayingDirection = false
+		end
+		_TimerService:SetTimerOnce(popupEnable, 2.5)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshMainPanel()
+		-- 메인 패널의 유물 재료 수, 결과 수, 선택 상태 갱신
+		local listEntity = _EntityService:GetEntityByPath("/ui/RelicMergeGroup/RelicMergeShop/Panel/img_paper/Scroll_Layout")
+		
+		local relicTable = _DataService:GetTable("Relic")
+		
+		-- 등록 가능한 재료 수 및 결과 개수를 먼저 계산합니다.
+		local havingRelic = _UserService.LocalPlayer.PlayerRelic.HavingPurifiedItem
+		local relicCount = {40, 17, 17, 16}
+		local materialCount = {}
+		local gradeMaterialCount = {0, 0, 0, 0}
+		
+		for i=1, relicTable:GetRowCount() do
+			if self:IsPossibleRegistToBook(i) == false then
+				materialCount[i] = havingRelic[i]
+				
+				if i <= relicCount[1] then
+					gradeMaterialCount[1] = gradeMaterialCount[1] + materialCount[i]
+					
+				elseif i <= relicCount[1] + relicCount[2] then
+					gradeMaterialCount[2] = gradeMaterialCount[2] + materialCount[i]
+					
+				elseif i <= relicCount[1] + relicCount[2] + relicCount[3] then
+					gradeMaterialCount[3] = gradeMaterialCount[3] + materialCount[i]
+					
+				else
+					gradeMaterialCount[4] = gradeMaterialCount[4] + materialCount[i]
+				end
+			else
+				materialCount[i] = 0
+			end
+		end
+		
+		-- 재료는 4배수를 소모하므로, 나머지 수만큼 뺍니다.
+		for i=1, 4 do
+			gradeMaterialCount[i] = gradeMaterialCount[i] - (gradeMaterialCount[i]%4)
+		end
+		
+		
+		-- 각 등급별 재료 수, 결과 수, 선택 버튼 UI를 갱신합니다. 
+		for i=1, 4 do
+			local slot = listEntity:GetChildByName("Slot_"..tostring(i))
+			
+			local materialAmountUI = _EntityService:GetEntityByPath(slot.Path.."/HavingAmount/text")
+			local resultAmountUI = _EntityService:GetEntityByPath(slot.Path.."/result/text") --slot:GetChildByName("Result")
+			local selectedSprite = _EntityService:GetEntityByPath(slot.Path.."/icon_check/on") --slot:GetChildByName("SelectButton")
+			local deselectedSprite = _EntityService:GetEntityByPath(slot.Path.."/icon_check/off") -- selectButton:GetChildByName("DeselectButton")
+			local unselectableCover = _EntityService:GetEntityByPath(slot.Path.."/cover_dark")
+			
+			-- 재료 수에 따라 '선택 불가' 커버 씌움
+			if gradeMaterialCount[i] < 4 then
+				unselectableCover.Enable = true
+				slot.ButtonComponent.Enable = false
+			else 
+				unselectableCover.Enable = false
+				slot.ButtonComponent.Enable = true
+			end
+			
+			-- 재료 및 결과 수량
+			materialAmountUI.TextComponent.Text = _ThousandsSeparator:Separate(gradeMaterialCount[i])
+			resultAmountUI.TextComponent.Text = _ThousandsSeparator:Separate(math.floor(gradeMaterialCount[i]/4))
+			
+			-- 선택 여부에 따라 체크아이콘 표시 + 머터리얼 적용 + 텍스트 투명도 변경
+			if self.autoMerge_SelectedGrade == i then
+				deselectedSprite.Enable = false
+				selectedSprite.Enable = true
+				slot.SpriteGUIRendererComponent:ChangeMaterial("material://57bd5075-8354-4c94-9b33-0f6fff7886a7")
+				materialAmountUI.TextComponent.FontColor.a = 1
+				resultAmountUI.TextComponent.FontColor.a = 1
+			else 
+				deselectedSprite.Enable = true
+				selectedSprite.Enable = false
+				slot.SpriteGUIRendererComponent:ChangeMaterial("")
+				materialAmountUI.TextComponent.FontColor.a = 0.4
+				resultAmountUI.TextComponent.FontColor.a = 0.4
+			end	
+		end
+		
+		-- '합성하기' 버튼 활성화 여부를 결정합니다 : 등급 선택됐는지 + 재료 수가 있는지
+		local autoMergeButton = _EntityService:GetEntityByPath("/ui/RelicMergeGroup/RelicMergeShop/Panel/MergeButton")
+		if self.autoMerge_SelectedGrade > 0 and gradeMaterialCount[self.autoMerge_SelectedGrade] >= 4 then
+			autoMergeButton.ButtonComponent.Enable = true
+		else 
+			autoMergeButton.ButtonComponent.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method boolean IsPossibleRegistToBook(number relicIdx)
+		-- 해당 유물을 도감에 등록 가능한지 확인
+		if relicIdx == nil or relicIdx < 1 or relicIdx > 90 then
+			return false
+		end
+		
+		-- 유물 도감에 등록 가능한지 여부를 확인, 가능한게 확인되면 즉시 true를 반환합니다.
+		local relicSetTable = _DataService:GetTable("RelicSet")
+		local registInfo = _UserService.LocalPlayer.PlayerRelic.RegistrationInfo
+		
+		
+		-- 모든 세트를 순회하면서 검사합니다
+		for i=1, relicSetTable:GetRowCount() do
+			-- 각 재료의 1~4번 재료가 현재 보려는 재료와 일치하는지 검사합니다.
+			for j=1, 4 do
+				local registMaterialIdx = tonumber(relicSetTable:GetCell(i, j*2))
+				
+				-- 일치할 경우, 해당 슬롯에 등록되었는지 여부를 확인합니다.
+				if registMaterialIdx == relicIdx then
+					local registedInfo = registInfo[(i-1)*4+j]
+					if registedInfo == false then
+						return true
+					end
+				end
+			end
+		end
+		
+		-- 등록 가능한 슬롯을 찾지 못했다면 false를 리턴합니다.
+		return false
+	end
+
+	@ExecSpace("Client")
+	method void SelectGrade(number grade)
+		-- 자동 합성에서 선택한 등급을 설정하고 메인 패널 갱신
+		self.autoMerge_SelectedGrade = grade
+		self:RefreshMainPanel()
+	end
+
+	@ExecSpace("Client")
+	method void SetResultPopup(string resultTableStr)
+		-- 유물 합성 결과를 보여주는 팝업 설정 및 리스트 갱신
+		local resultTable = _UtilLogic:StringToTable(resultTableStr)
+		
+		local resultPanel = _EntityService:GetEntityByPath("/ui/RelicMergeGroup/RelicMergeShop/AutoMerge_Result")
+		
+		local relicTable = _DataService:GetTable("Relic")
+		local gradeTable = _DataService:GetTable("GradeIconback")
+		--------------------------------------------------------------------------------------------------------------
+		-- 리스트를 갱신합니다.
+		local listEntity = resultPanel:GetChildByName("Popup"):GetChildByName("ListPanel")
+		local originalSlotEntity = listEntity:GetChildByName("Slot")
+		for i=1, #resultTable do
+			local slot = listEntity:GetChildByName("Slot_"..tostring(i))
+			if resultTable[i] > 0 then
+				if slot == nil then
+					slot = originalSlotEntity:Clone("Slot_"..tostring(i))
+				end
+				
+				local grade = tonumber(string.sub(relicTable:GetCell(i, "Grade"), 7, -1))
+				local icon = relicTable:GetCell(i, "IconRUID")
+				
+				slot.SpriteGUIRendererComponent.ImageRUID = gradeTable:GetCell(grade, "iconback")
+				slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = icon
+				slot:GetChildByName("Amount").TextComponent.Text = string.format("%d", resultTable[i])
+			else 
+				if slot ~= nil then
+					slot:Destroy()
+				end
+			end
+		end
+		--------------------------------------------------------------------------------------------------------------
+		-- 결과 팝업을 활성화합니다.
+		resultPanel.Enable = true
+		
+		-- 사운드를 재생합니다.
+		_SoundService:PlaySound("f32c90e7ee55491fbc9e681977d52959", 0.75)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "5cbecb35-ab18-4d03-8cd7-bb0d653c973a")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 합성하기 버튼 클릭 시 자동 합성 실행
+		-- Parameters
+		local Entity = event.Entity
+		--------------------------------------------------------
+		Entity.ButtonComponent.Enable = false
+		_UserService.LocalPlayer.PlayerRelic:AutoMerge(self.autoMerge_SelectedGrade)
+		
+		self.autoMerge_SelectedGrade = 0
+		self:RefreshMainPanel()
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- ESC 키 입력 시 연출 중이 아닐 때 UI 닫기
+		-- Parameters
+		local key = event.key
+		---------------------------------------------------------
+		if key == KeyboardKey.Escape and self.IsPlayingDirection == false then
+			self.Entity.Enable = false
+			_UserService.LocalPlayer.MovementComponent.Enable = true
+		end
+	end
+
+	@EventSender("Entity", "2aa926ca-d9f2-47bf-930d-2f46955529d4")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 1등급 유물 선택 버튼 클릭 시 선택 상태 토글
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		local idx = 1
+		
+		if self.autoMerge_SelectedGrade == idx then
+			self:SelectGrade(0)
+		else 
+			self:SelectGrade(idx)
+		end
+	end
+
+	@EventSender("Entity", "30d16d01-338e-4427-b281-5613968cafab")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 2등급 유물 선택 버튼 클릭 시 선택 상태 토글
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		local idx = 2
+		
+		if self.autoMerge_SelectedGrade == idx then
+			self:SelectGrade(0)
+		else 
+			self:SelectGrade(idx)
+		end
+	end
+
+	@EventSender("Entity", "c9c732c1-293a-426f-816a-c706da367980")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 3등급 유물 선택 버튼 클릭 시 선택 상태 토글
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		local idx = 3
+		
+		if self.autoMerge_SelectedGrade == idx then
+			self:SelectGrade(0)
+		else 
+			self:SelectGrade(idx)
+		end
+	end
+
+	@EventSender("Entity", "3a180165-3203-458d-8593-8068c0247dca")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 4등급 유물 선택 버튼 클릭 시 선택 상태 토글
+		-- Parameters
+		local Entity = event.Entity
+		---------------------------------------------------------
+		local idx = 4
+		
+		if self.autoMerge_SelectedGrade == idx then
+			self:SelectGrade(0)
+		else 
+			self:SelectGrade(idx)
+		end
+	end
+
+end

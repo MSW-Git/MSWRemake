@@ -1,0 +1,612 @@
+@Logic
+script IngreSynthLogic extends Logic
+
+	property Entity IngreListEntity = "3e0906fb-0514-4e1e-8034-9ee6b8097ea7"
+
+	property SyncTable<integer, integer> IngreIndexTable
+
+	property SyncTable<integer, Entity> IngreSlotEntityTable
+
+	property SyncTable<integer, integer> SelectedIngreIndexTable
+
+	property Entity SelectedIngreListEntity = "3b856477-7366-4a4f-b919-231b5d1c4050"
+
+	property integer MaxSlotCount = 10
+
+	property integer filterType = 0
+
+	property string TagType = ""
+
+	property boolean ForceGreatSuccess = false
+
+	property Entity SelectedIngreListEntity_3col = "de3416d3-569a-4e02-868a-c89708f31390"
+
+	@ExecSpace("ClientOnly")
+	method void DrawIngreList()
+		-- 플레이어의 재료 카드를 필터링하여 재료 목록을 그리고 UI를 갱신하는 함수
+		local shallowCopy = function(t)
+			local copy = {}
+			for k, v in pairs(t) do
+				if not isvalid(v) then
+					v = 0
+				end
+				copy[k] = v
+			end
+			return copy
+		end
+		
+		local ingrediesntCards = shallowCopy(_UserService.LocalPlayer.PlayerIngredient.IngredientCards)
+		local ingreCardIds = {} 
+		
+		for id, count in pairs(ingrediesntCards) do
+			---@type IngredientData
+			local data = _IngredientDataSetLogic:GetIngredientData(id)
+			local filterGrade = self:ReturnIngreGradeFromFilterType(self.filterType)
+			if data.Grade == filterGrade then
+				table.insert(ingreCardIds, id)
+			end
+		end
+		
+		self:RegisterRecycleScrollLayoutCallback()
+		
+		local totalCount = #ingreCardIds
+		for i = 1, totalCount do
+			self.IngreIndexTable[i] = ingreCardIds[i]
+		end
+		
+		self.IngreListEntity.RecycleScrollView:SetTotalCount(totalCount)
+		self.IngreListEntity.RecycleScrollView:Refresh(true)
+		
+		if totalCount < 1 then
+			_UIGroupManager.IngreSynthGroup.UIIngreSynthComponent:EnableNoticePanel(true, false) 
+		end
+		
+		local IngreListTable = self.IngreListEntity.Children
+		
+		table.clear(self.IngreSlotEntityTable)
+		for i = 1, #IngreListTable do  
+			if _UtilLogic:Contains(IngreListTable[i].Name, "Item") then
+				table.insert(self.IngreSlotEntityTable, IngreListTable[i])
+			end
+		end
+		
+		for i = 1, #self.IngreSlotEntityTable do
+			local entity = self.IngreSlotEntityTable[i]
+			local ingreId = ingreCardIds[i]
+			if isvalid(ingreId) then
+				entity.UIIngreSynthListSlot:Refresh(ingreId, i)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RegisterRecycleScrollLayoutCallback()
+		-- 재료 목록의 리사이클 스크롤뷰 콜백을 등록하는 함수
+		if self.IngreListEntity.RecycleScrollView.onUpdateCell ~= nil then
+			return
+		end
+		
+		local recycleFunc = function(index, entity)
+			self:RecycleScrollOnUpdateByIndex(index, entity)
+		end
+		self.IngreListEntity.RecycleScrollView.onUpdateCell = recycleFunc
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RecycleScrollOnUpdateByIndex(integer index, Entity entity)
+		-- 리사이클 스크롤뷰에서 특정 인덱스의 슬롯을 갱신하는 함수
+		local ingreId = self.IngreIndexTable[index]
+		
+		entity.UIIngreSynthListSlot:Refresh(ingreId, index)
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer ReturnIngreGradeFromFilterType(integer filterType)
+		-- 필터 타입에 따라 재료 등급을 반환하는 함수
+		
+		if filterType == 1 then
+			return 1
+		elseif filterType == 2 then
+			return 2
+		elseif filterType == 3 then
+			return 3
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean OnSelectIngreSlot(integer ingreId)
+		-- 재료 슬롯을 선택했을 때 선택 목록에 추가하는 함수
+		
+		local selectedSlotCount = #self.SelectedIngreIndexTable 
+		if selectedSlotCount >= self.MaxSlotCount then
+			return false
+		end
+		
+		table.insert(self.SelectedIngreIndexTable, ingreId)
+		self:RefreshSelectedIngreListSlot()
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDeselectIngreSlot(integer slotNum, integer ingreId)
+		-- 선택된 재료 슬롯을 해제하고 목록을 정리하는 함수
+		table.remove(self.SelectedIngreIndexTable, slotNum)
+		local list = {}
+		for i = 1, #self.SelectedIngreIndexTable do
+			list[i] = self.SelectedIngreIndexTable[i]
+		end
+		
+		table.clear(self.SelectedIngreIndexTable)
+		
+		for i = 1, #list do
+			local v = list[i]
+			if isvalid(v) then 
+				table.insert(self.SelectedIngreIndexTable, v)
+			end
+		end
+		self:RefreshSelectedIngreListSlot()
+		
+		
+		for i = 1, #self.IngreSlotEntityTable do
+			local entity = self.IngreSlotEntityTable[i]
+			if entity.UIIngreSynthListSlot.IngreId == ingreId then
+				entity.UIIngreSynthListSlot:OnClickSelectedSlot()
+			end
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetAllSelectedIngreSlot()
+		-- 선택된 모든 재료 슬롯을 초기화하는 함수
+		table.clear(self.SelectedIngreIndexTable)
+		
+		self.IngreListEntity.RecycleScrollView:Refresh(true)
+		
+		self:SetMaxSlotCount(self.filterType)
+		self:CheckNoticePanelState()
+		
+		local listEntity = self:ReturnSelectedListEntityAndOffAnother()
+		for i, entity in pairs(listEntity.Children) do
+			if isvalid(entity.UIIngreSynthSelectedSlot) then
+				entity.UIIngreSynthSelectedSlot:InitEmpty()
+			end
+			if i <= self.MaxSlotCount then
+				entity.Enable = true
+			else
+				entity.Enable = false
+			end 
+		end
+		
+		for i = 1, #self.IngreSlotEntityTable do
+			self.IngreSlotEntityTable[i].UIIngreSynthListSlot:ResetCount()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetMaxSlotCount(integer filterType)
+		-- 필터 타입에 따라 최대 슬롯 개수를 설정하는 함수
+		if not isvalid(filterType) then
+			filterType = 1
+		end
+		 
+		if filterType == 3 then
+			self.MaxSlotCount = 3
+		else
+			self.MaxSlotCount = 10
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshSelectedIngreListSlot()
+		-- 선택된 재료 목록 슬롯들을 갱신하는 함수
+		local listEntity = self:ReturnSelectedListEntityAndOffAnother()
+		for i, entity in pairs(listEntity.Children) do
+			local ingreId = self.SelectedIngreIndexTable[i]
+			entity.UIIngreSynthSelectedSlot:Refresh(ingreId)
+		end
+		self:CheckNoticePanelState()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetFilterType(integer filterType)
+		-- 재료 필터 타입을 설정하고 슬롯 개수를 조정하는 함수
+		self.filterType = filterType
+		self:SetMaxSlotCount(self.filterType)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckNoticePanelState()
+		-- 선택된 재료 개수에 따라 알림 패널과 합성 버튼 상태를 조정하는 함수
+		local selectIngreNum = #self.SelectedIngreIndexTable 
+		if selectIngreNum == self.MaxSlotCount then
+			_UIGroupManager.IngreSynthGroup.UIIngreSynthComponent:EnableNoticePanel(true, true) 
+			if not _UtilLogic:IsNilorEmptyString(self.TagType) then
+				self:SetStateSynthBtn(true, false) 
+			end
+		elseif selectIngreNum > 0 then
+			 self:SetStateSynthBtn(true, true) 
+			_UIGroupManager.IngreSynthGroup.UIIngreSynthComponent:EnableNoticePanel(false, false) 
+		else
+			_UIGroupManager.IngreSynthGroup.UIIngreSynthComponent:EnableNoticePanel(false, false) 
+			self:SetStateSynthBtn(false, true) 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTagType(integer tagNum)
+		-- 태그 번호에 따라 태그 타입을 설정하고 알림 패널 상태를 확인하는 함수
+		self.TagType = self:ReturnTagTypeString(tagNum)
+		self:CheckNoticePanelState()
+	end
+
+	@ExecSpace("Client")
+	method void OnClickSynthBtn()
+		-- 합성 버튼 클릭 시 조건을 확인하고 합성을 요청하는 함수
+		if #self.SelectedIngreIndexTable ~= self.MaxSlotCount then
+			_UIToast:ShowMessage(_LocalizationService:GetText("IngreSynthToastMsg1")) 
+			return
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(self.TagType) then
+			_UIToast:ShowMessage(_LocalizationService:GetText("IngreSynthToastMsg2")) 
+			return
+		end
+		
+		self:SetStateSynthBtn(false, true)
+		self:RequestSynth(_UserService.LocalPlayer, self.SelectedIngreIndexTable, self.filterType, self.TagType)
+	end
+
+	@ExecSpace("Server")
+	method void RequestSynth(Entity player, table selectedIngreIndexTable, integer filterType, string tagType)
+		-- 클라이언트에서 합성 요청을 받아 서버에서 합성을 실행하는 함수
+		self.filterType = filterType
+		self.TagType = tagType
+		
+		self:Synth(player, selectedIngreIndexTable, filterType, tagType)
+	end
+
+	@ExecSpace("Server")
+	method boolean IsChance()
+		-- 합성 대성공 확률을 계산하여 성공 여부를 반환하는 함수
+		local prob = _GetConfigDataLogic:GetConfigNumDataByKey("IngreSynthBonusProb")
+		
+		if self.ForceGreatSuccess == true then
+			return true 
+		end
+		
+		local chance = math.random() * 100
+		if chance < prob then
+			return true
+		else
+			return false
+		end
+	end
+
+	@ExecSpace("Server")
+	method void Synth(Entity player, table selectedIngreIndexTable, integer filterType, string tagType)
+		-- 실제 재료 합성을 수행하여 보상을 지급하는 함수
+		local playerIngredient = player.PlayerIngredient
+		local usedIngreIdListString = ""
+		
+		table.clear(self.SelectedIngreIndexTable)
+		for i = 1, #selectedIngreIndexTable do
+			self.SelectedIngreIndexTable[i] = selectedIngreIndexTable[i]
+		end
+		
+		for i, ingreId in pairs(self.SelectedIngreIndexTable) do
+			if not isvalid(ingreId) then
+				continue
+			end
+			local check = playerIngredient:RemoveIngredientCard(ingreId, 1, "IngreSynth")
+			if check ~= 0 then
+			end
+			local sep = ","
+			if usedIngreIdListString == "" then
+				sep = ""
+			end
+			usedIngreIdListString = usedIngreIdListString..sep..ingreId
+		end
+		
+		local pool = self:MakeIngrePool(player, filterType, tagType)
+		
+		math.randomseed(os.time())
+		local pick = function()
+			local id = pool[math.random(1, #pool)]
+			return id
+		end
+		
+		local rewards = {}
+		local isGreatSuccess = self:IsChance() 
+		if isGreatSuccess then
+			for i = 1, 2 do
+				local ingreId = pick()
+				playerIngredient:AddIngredientCard(ingreId, 1, "IngreSynth") 
+				if rewards[ingreId] == nil then
+					rewards[ingreId] = 0
+				end
+				rewards[ingreId] = rewards[ingreId] + 1
+			end
+		
+		else
+			local ingreId = pick()
+			playerIngredient:AddIngredientCard(ingreId, 1, "IngreSynth")
+			if rewards[ingreId] == nil then
+				rewards[ingreId] = 0
+			end
+			rewards[ingreId] = rewards[ingreId] + 1
+		end
+		
+		local rewardString = ""
+		for _, id in pairs(table.keys(rewards)) do
+			local sep = ","
+			if rewardString == "" then
+				sep = ""
+			end
+			rewardString = rewardString..sep..id
+		end
+		self:LogIngreSynthResult(player, isGreatSuccess, usedIngreIdListString, rewardString)
+		
+		self:PlaySynthEffect(isGreatSuccess, player.PlayerComponent.UserId)
+		
+		_TimerService:SetTimerOnce(function()
+			self:FinishSynth(rewards, player.PlayerComponent.UserId) 
+		end, 2)
+	end
+
+	method integer ReturnGrade(integer filterType)
+		-- 필터 타입에 따라 합성 결과물의 등급을 반환하는 함수
+		if filterType == 1 then
+			return 2
+			
+		elseif filterType == 2 or filterType == 3 then
+			return 3
+		end
+	end
+
+	@ExecSpace("Client")
+	method void FinishSynth(table rewards)
+		-- 합성 완료 후 보상 UI를 표시하고 초기 화면으로 돌아가는 함수
+		local rewardDatas = {}
+		for k, v in pairs(rewards) do
+		local rewardId = k..":".."False"
+			rewardDatas[rewardId] = v
+		end
+		
+		_UIItemRewardService:SetItemRewardUI(rewardDatas, "IngreSynth")
+		_UIGroupManager.IngreSynthGroup.UIIngreSynthComponent:InitUIFirstPage()
+		
+	end
+
+	@ExecSpace("Client")
+	method void PlaySynthEffect(boolean isGreatSuccess)
+		-- 합성 효과를 재생하고 선택 목록을 비활성화하는 함수
+		self.SelectedIngreListEntity.Enable = false
+		self.SelectedIngreListEntity_3col.Enable = false
+		
+		_UIGroupManager.IngreSynthGroup.UIIngreSynthComponent:PlayEffect(isGreatSuccess)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AutoSet()
+		-- 재료를 자동으로 선택하여 슬롯을 채우는 함수
+		local totalCount = 0
+		for i, slot in pairs(self.IngreSlotEntityTable) do
+			local ingreId = slot.UIIngreSynthListSlot.IngreId
+			if not isvalid(ingreId) or ingreId == 0 then
+				continue
+			end
+			local ingreCount =  slot.UIIngreSynthListSlot.InventoryCount
+			if not isvalid(ingreCount) then
+				ingreCount = 0
+			end
+			local grade = self:ReturnIngreGradeFromFilterType(self.filterType)
+			if grade == _IngredientDataSetLogic:GetIngredientData(ingreId).Grade then 
+				totalCount = totalCount + ingreCount
+				if totalCount >= self.MaxSlotCount then
+					break 
+				end
+			end
+		end
+		
+		if totalCount < self.MaxSlotCount then
+			_UIToast:ShowMessage(_LocalizationService:GetText("IngreSynthToastMsg3")) 
+			return
+		end
+		
+		self:ResetAllSelectedIngreSlot() 
+		
+		for i, slot in pairs(self.IngreSlotEntityTable) do
+			if #self.SelectedIngreIndexTable >= self.MaxSlotCount then 
+				break
+			end
+			
+			local ingreCount = slot.UIIngreSynthListSlot.InventoryCount
+			if not isvalid(ingreCount) then
+				ingreCount = 0
+			end
+			for j = 1, ingreCount do
+				if #self.SelectedIngreIndexTable >= self.MaxSlotCount then 
+					break
+				end
+				local ingreId = slot.UIIngreSynthListSlot.IngreId
+				local grade = self.filterType
+				if grade == _IngredientDataSetLogic:GetIngredientData(ingreId).Grade then
+					slot.UIIngreSynthListSlot:OnClickSlot()
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetStateSynthBtn(boolean enable, boolean dim)
+		-- 합성 버튼의 활성화 상태와 디밍 상태를 설정하는 함수
+		_UIGroupManager.IngreSynthGroup.UIIngreSynthComponent:SetStateSynthBtn(enable, dim) 
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogIngreSynthResult(Entity player, boolean isGreatSuccess, string usedIngreIdListString, string rewardIngreIdListString)
+		-- 재료 합성 결과를 로그로 기록하는 함수
+		
+		local success,value = pcall(function()	
+			
+			local tagType = self.TagType
+			local synthRecipe = self.filterType
+			
+			_LogStorageLogic:LogValue(player.PlayerComponent.UserId,
+				_LogEnumType.IngreSynthResult,
+				_HttpService:JSONEncode({
+					tostring(isGreatSuccess),
+					rewardIngreIdListString
+				}),
+				{ 	
+					nickname = player.PlayerComponent.Nickname,
+					playerStageId =  tostring(player.PlayerStage.NowStage),
+					manageLevel = tostring(player.PlayerManagement.ManagementLevel),
+					tagType = tostring(tagType),
+					synthRecipe = tostring(synthRecipe),
+					usedIngreIdList = usedIngreIdListString,
+					rewardIngreIdList = rewardIngreIdListString,
+					isGreatSuccess = tostring(isGreatSuccess),
+					utc = _DateTimeLogic:GetUtcNowText(),
+					profileCode = player.PlayerComponent.ProfileCode
+				})
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("Client")
+	method Entity ReturnSelectedListEntityAndOffAnother()
+		-- 슬롯 개수에 따라 적절한 선택 목록 엔티티를 반환하는 함수
+		if self.MaxSlotCount == 3 then
+			self.SelectedIngreListEntity.Enable = false
+			self.SelectedIngreListEntity_3col.Enable = true
+			return self.SelectedIngreListEntity_3col
+		else
+			self.SelectedIngreListEntity_3col.Enable = false
+			self.SelectedIngreListEntity.Enable = true
+			return self.SelectedIngreListEntity
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table MakeIngrePool(Entity player, integer filterType, string tagType)
+		-- 필터와 태그에 따라 합성 가능한 재료 풀을 생성하는 함수
+		local playerIngredient = player.PlayerIngredient
+		
+		local grade = self:ReturnGrade(filterType)
+		local pool = {}
+		
+		
+		local totalIngreList = _StageDataSetLogic:GetStageTotalIngredient(player.PlayerStage.NowStage, player)
+		for _, id in pairs(totalIngreList) do
+			local ingreData = _IngredientDataSetLogic:GetIngredientData(id)
+			if ingreData.Grade == grade then
+				if tagType == _RecipeTagEnum.Spicy then
+					if ingreData.SpicyPoint ~= nil and ingreData.SpicyPoint > 0 then
+						table.insert(pool, id)
+					end
+				else
+					if ingreData.Type == tagType then
+						table.insert(pool, id)
+					end
+				end
+			end
+		end
+		
+		return pool
+	end
+
+	@ExecSpace("ServerOnly")
+	method void IngreSynthSimul(Entity player, integer times, integer filterType, integer tagNum)
+		-- 재료 합성을 여러 번 시뮬레이션하여 결과를 확인하는 함수
+		local tagTypeString = self:ReturnTagTypeString(tagNum)
+		
+		local pool = self:MakeIngrePool(player, filterType, tagTypeString)
+		
+		math.randomseed(os.time())
+		local pick = function()
+			local id = pool[math.random(1, #pool)]
+			return id
+		end
+		
+		
+		local rewards = {}
+		local greatSuccessCnt = 0
+		for i = 1, times do
+			local isGreatSuccess = self:IsChance() 
+			if isGreatSuccess then
+				greatSuccessCnt += 1
+				for i = 1, 2 do
+					local ingreId = pick()
+					if rewards[ingreId] == nil then
+						rewards[ingreId] = 0
+					end
+					rewards[ingreId] = rewards[ingreId] + 1
+				end
+			else
+				local ingreId = pick()
+				if rewards[ingreId] == nil then
+					rewards[ingreId] = 0
+				end
+				rewards[ingreId] = rewards[ingreId] + 1
+			end
+		end
+		
+		local string = string.format("<< 대성공 / 일반성공 = %d / %d >>", greatSuccessCnt, times-greatSuccessCnt)
+		
+		self:CheatLog(string, rewards, player.PlayerComponent.UserId)
+		
+	end
+
+	method string ReturnTagTypeString(integer tagNum)
+		-- 태그 번호에 따라 해당하는 태그 타입 문자열을 반환하는 함수
+		local tagType = ""
+		
+		if tagNum == 1 then
+			tagType = _RecipeTagEnum.Meat
+		elseif tagNum == 2 then
+			tagType = _RecipeTagEnum.Chicken
+		elseif tagNum == 3 then
+			tagType = _RecipeTagEnum.Seafood
+		elseif tagNum == 4 then
+			tagType = _RecipeTagEnum.Veggie
+		elseif tagNum == 5 then
+			tagType = _RecipeTagEnum.Spicy
+		end
+		return tagType
+	end
+
+	@ExecSpace("Client")
+	method void CheatLog(string string, table rewards)
+		-- 디버그용 합성 결과 로그를 출력하는 함수
+		local rewardString = ""
+		for id, cnt in pairs(rewards) do
+			local name = _IngredientDataSetLogic:GetIngredientData(id).NameKey
+			name = _LocalizationService:GetText(name)
+			rewardString = rewardString..string.format("  [%s]: %d", name, cnt)
+		end
+		
+	end
+
+	method integer CountSelectedIngre(integer ingreId)
+		-- 선택된 재료 목록에서 특정 재료의 선택 개수를 세는 함수
+		local count = 0
+		for i = 1, #self.SelectedIngreIndexTable do
+			local id = self.SelectedIngreIndexTable[i]
+			if not isvalid(id) then
+				continue
+			end
+			if id == ingreId then
+				count += 1
+			end
+		end
+		
+		return count
+	end
+
+end

@@ -1,0 +1,1130 @@
+@Component
+script PlayerInventory extends Component
+
+	@TargetUserSync
+	property SyncTable<string, integer> Items
+
+	@TargetUserSync
+	property integer Money = 0
+
+	@TargetUserSync
+	property integer LunchBox = 0
+
+	@TargetUserSync
+	property integer MaxLunchBoxNum = 20
+
+	@TargetUserSync
+	property integer ArcaneSymbol = 0
+
+	@TargetUserSync
+	property integer Heart = 0
+
+	@TargetUserSync
+	property integer LunchBoxRemainDay = 0
+
+	@TargetUserSync
+	property integer Tip = 0
+
+	@TargetUserSync
+	property integer TrainingTicket = 2
+
+	@TargetUserSync
+	property integer TrainingEnterLunchBox = 10
+
+	@TargetUserSync
+	property number Reputation = 0
+
+	property number ReputationReviewScore = 0
+
+	property string ExcessData = ""
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 인벤토리 데이터를 데이터베이스에 저장하는 함수
+		local invenTotal = {}
+		
+		invenTotal["Items"] = _UtilLogic:TableToString(self.Items)
+		invenTotal["Money"] = self.Money
+		invenTotal["LunchBox"] = self.LunchBox
+		invenTotal["MaxLunchBoxNum"] = self.MaxLunchBoxNum
+		invenTotal["ArcaneSymbol"] = self.ArcaneSymbol
+		invenTotal["Heart"] = self.Heart
+		invenTotal["LunchBoxRemainDay"] = self.LunchBoxRemainDay
+		invenTotal["Tip"] = self.Tip
+		invenTotal["TrainingTicket"] = self.TrainingTicket
+		invenTotal["Reputation"] = self.Reputation
+		invenTotal["ReputationReviewScore"] = self.ReputationReviewScore
+		invenTotal["ExcessData"] = self.ExcessData
+		
+		saveData["InventoryData"] = invenTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 인벤토리 데이터를 로드하는 함수
+		local invenTable = loadedData["InventoryData"]
+		if invenTable == nil then
+			invenTable = {}
+		end
+		
+		if #table.keys(invenTable) > 0 then
+			
+			if invenTable["Items"] then
+				table.initialize(self.Items, _UtilLogic:StringToTable(invenTable["Items"]))
+			end
+			
+			self.Money = tonumber(invenTable["Money"])
+			self.LunchBox = _DBUtilLogic:GetNumberByTable(invenTable, "LunchBox", 0)
+			self.MaxLunchBoxNum = _DBUtilLogic:GetNumberByTable(invenTable, "MaxLunchBoxNum", 20)
+			self.ArcaneSymbol = tonumber(invenTable["ArcaneSymbol"])
+			self.Heart = tonumber(invenTable["Heart"])
+			self.LunchBoxRemainDay = _DBUtilLogic:GetNumberByTable(invenTable, "LunchBoxRemainDay", 0)
+			self.Tip = tonumber(invenTable["Tip"])
+			self.TrainingTicket = tonumber(invenTable["TrainingTicket"])
+			self.Reputation = tonumber(invenTable["Reputation"])
+			self.ReputationReviewScore = tonumber(invenTable["ReputationReviewScore"])
+			self.ExcessData = invenTable["ExcessData"]
+		else
+			self.Money = _StrategyEnum:GetPlayerStrategyEffect(self.Entity, _StrategyEnum.StartWithGold, self.Entity.PlayerStage.NowStage)
+		end
+		
+		self:CheckTrainingRedDot()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 인벤토리 컴포넌트를 초기화하는 함수
+		table.clear(self.Items)
+			
+		self.Money = 0
+		self.LunchBox = 0
+		self.MaxLunchBoxNum = 20
+		self.ArcaneSymbol = 0 
+		self.Heart = 0
+		self.LunchBoxRemainDay = 0
+		self.Tip = 0 
+		self.TrainingTicket = 2
+		self.Reputation = 0
+		self.ReputationReviewScore = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer AddItem(string itemId, integer count, string source, string modMapNameForNxLog)
+		-- 아이템을 인벤토리에 추가하는 함수
+		
+		local itemData =  _ItemDataSetLogic:GetItemData(itemId)
+		if itemData == nil then
+			return 1
+		end
+		
+		if count < 1 then
+			return 2
+		end
+		
+		local firstStr = string.sub(itemId, 1, 1)
+		local isPackage = firstStr == "P" or firstStr == "D"
+		if isPackage == true then
+			self.Entity.PlayerItemFunction:OpenPackage(itemData.funcUseItemParam, count)
+			return
+		end
+		
+		if itemId == "G0001" then
+			self:ModifyMoney(count,source,modMapNameForNxLog)
+			return
+		
+		elseif itemId == "G0002" then
+			self:ModifyLunchBox(count,source,modMapNameForNxLog)
+			return
+		elseif itemId == "G0004" then
+			self:ModifyArcaneSymbol(count,source,modMapNameForNxLog)
+			return
+			
+		elseif itemId == "G0005" then
+			self:ModifyHeart(count,source,modMapNameForNxLog)
+			return
+			
+		elseif itemId == "G0006" then
+			self:ModifyReputation(count)	
+			return	
+			
+		elseif itemId == "G0007" then
+			self.Entity.PlayerVIPOrder:AddVIPOrderSeasonRewardScore(count)
+			return
+			
+		elseif itemId == "G0008" then 
+			self.Entity.PlayerOutgameManager:ModifyStrategyPoint(count, source, modMapNameForNxLog)
+			return
+			
+		elseif itemId == "G1001" then 
+			self.Entity.PlayerOutgameManager:ModifyDiamond(count, false, source , modMapNameForNxLog)
+			return
+			
+		elseif itemId == "G1002" then 
+			self.Entity.PlayerOutgameManager:ModifyDiamond(count, true, source , modMapNameForNxLog)
+			return
+		end
+		
+		local changeBef = 0
+		local afterCnt = 0
+		
+		if itemData.SaveToOutgameDB == true then 
+			if self.Entity.PlayerOutgameManager.OutgameInventory[itemId] == nil then
+				self.Entity.PlayerOutgameManager.OutgameInventory[itemId] = 0
+			end
+			
+			
+			changeBef = self.Entity.PlayerOutgameManager.OutgameInventory[itemId]
+			
+			local isOver = self:IsItemOverMaxCount(itemId, count)
+			if isOver > 0 then
+				local requestCount = count
+				count = isOver - changeBef
+				local overAmount = requestCount - count
+				
+			end
+			
+			self.Entity.PlayerOutgameManager:AddItem(itemId, count, source, modMapNameForNxLog)
+			afterCnt = self.Entity.PlayerOutgameManager.OutgameInventory[itemId]
+			
+		else 
+			if self.Items[itemId] == nil then
+				self.Items[itemId] = 0
+			end
+			
+			changeBef = self.Items[itemId]
+			
+			if itemData.MaxStackCount == nil then
+				self.Items[itemId] = self.Items[itemId] + count
+				
+			else
+				if self.Items[itemId] + count > itemData.MaxStackCount then
+					self.Items[itemId] = itemData.MaxStackCount
+					
+				else
+					self.Items[itemId] = self.Items[itemId] + count
+				end
+			end
+			
+			afterCnt = self.Items[itemId]
+		end
+		
+		local logValue = string.format("%d",changeBef) 
+		local flowType = "1" 
+		local modresourcename = itemData.Id 
+		local modresourcechangecnt = string.format("%d",count) 
+		local modresourceaftcnt = string.format("%d",afterCnt) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		self.Entity.PlayerLog:ItemFlow(logValue, flowType, modresourcename, modresourcechangecnt, modresourceaftcnt, modresourcemakerdefinetag, modmapname, nil)
+		
+		if itemData.ItemCategory == 5 then 
+			self:UseItem(itemId, 1, source, modMapNameForNxLog, nil)
+			return
+		end
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddItems(SyncTable<string, integer> addItems, string source, string modMapNameForNxLog)
+		-- 여러 아이템을 인벤토리에 추가하는 함수
+		for i, j in pairs(addItems) do
+			self:AddItem(i, j,source,modMapNameForNxLog)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer RemoveItem(string itemId, integer count, string source, string modMapNameForNxLog, string targetEmpId)
+		-- 인벤토리에서 아이템을 제거하는 함수
+		local checkResult = self:CanUseItem(itemId, count)
+		if checkResult ~= 0 then
+			return checkResult
+		end
+		
+		local itemData = _ItemDataSetLogic:GetItemData(itemId)
+		
+		local currentCount = 0
+		local afterCount = 0
+		if itemData.SaveToOutgameDB == true then 
+			currentCount = self.Entity.PlayerOutgameManager.OutgameInventory[itemId]
+			
+			self.Entity.PlayerOutgameManager:RemoveItem(itemId,count,source,modMapNameForNxLog,targetEmpId)
+			
+			if currentCount - count == 0 then
+				afterCount = 0
+			else
+				afterCount = self.Entity.PlayerOutgameManager.OutgameInventory[itemId]
+			end
+			
+		else 
+			currentCount = self.Items[itemId]
+			if currentCount - count == 0 then
+				self.Items[itemId] = nil
+				afterCount = 0
+			else
+				self.Items[itemId] = currentCount - count
+				afterCount = self.Items[itemId]
+			end
+		end
+		
+		
+		
+		local logValue = string.format("%d",currentCount) 
+		local flowType = "2" 
+		local modresourcename = itemData.Id 
+		if count < 0 then count = count * -1 end
+		local modresourcechangecnt = string.format("%d",count) 
+		local modresourceaftcnt = string.format("%d",afterCount) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		self.Entity.PlayerLog:ItemFlow(logValue, flowType, modresourcename, modresourcechangecnt, modresourceaftcnt, modresourcemakerdefinetag, modmapname, targetEmpId)
+		
+		return 0
+	end
+
+	method integer CanUseItem(string itemId, integer count)
+		-- 아이템 사용 가능 여부를 확인하는 함수
+		
+		local itemData = _ItemDataSetLogic:GetItemData(itemId)
+		if itemData == nil then
+			return 1
+		end
+		
+		if count < 1 then
+			return 2
+		end
+		
+		if itemData.SaveToOutgameDB == true then 
+			if self.Entity.PlayerOutgameManager.OutgameInventory[itemId] == nil then
+				return 3
+			end
+			
+			if self.Entity.PlayerOutgameManager.OutgameInventory[itemId] < count then
+				return 3
+			end
+			
+		else 
+			if self.Items[itemId] == nil then
+				return 3
+			end
+			
+			if self.Items[itemId] < count then
+				return 3
+			end
+		end
+		
+		return 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RemoveItems(SyncTable<string, integer> removeItems, string source, string modMapNameForNxLog)
+		-- 여러 아이템을 인벤토리에서 제거하는 함수
+		for i, j in pairs(removeItems) do
+			self:RemoveItem(i, j,source,modMapNameForNxLog, nil)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ClearItems()
+		-- 모든 아이템을 지우는 함수
+		table.clear(self.Items)
+		table.clear(self.Entity.PlayerOutgameManager.OutgameInventory)
+	end
+
+	@ExecSpace("Server")
+	method void RequestUseItem(string itemId, integer count, string source, string modMapNameForNxLog, string empId)
+		-- 아이템 사용을 요청하는 함수
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+		    self.Entity.PlayerIngredient:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+		    return
+		end
+		
+		self:UseItem(itemId, count, source, modMapNameForNxLog, empId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestAddItem(string itemId, integer count, string source, string modMapNameForNxLog)
+		-- 아이템 추가를 요청하는 함수
+		self:AddItem(itemId, count,source,modMapNameForNxLog)
+	end
+
+	@ExecSpace("Server")
+	method boolean ModifyMoney(integer money, string source, string modMapNameForNxLog)
+		-- 돈을 증가 또는 감소시키는 함수
+		if money == 0 then
+			return true
+		elseif money > 0 then
+			return self:AddMoney(money,source,modMapNameForNxLog)
+		else
+			return self:SubMoney(-money,source,modMapNameForNxLog)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddMoney(integer money, string source, string modMapNameForNxLog)
+		-- 돈을 추가하는 함수
+		if money == 0 then
+			return true
+		end
+		if money < 0 then
+			return false
+		end
+		
+		
+		local itemData = _ItemDataSetLogic:GetItemData("G0001")
+		local changeBef = self.Money
+		self.Money = math.min(self.Money + money,itemData.MaxStackCount)
+		
+		
+		local logValue = string.format("%d",changeBef) 
+		local flowType = "1" 
+		local modresourcename = _ItemDataEnum.Money 
+		local modresourcechangecnt = string.format("%d",money) 
+		local modresourceaftcnt = string.format("%d",self.Money) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		
+		self.Entity.PlayerLog:ResourceFlow(logValue,flowType,modresourcename,modresourcechangecnt,modresourceaftcnt,modresourcemakerdefinetag,modmapname)
+		self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.ObtainedMoney, self.Money-changeBef)
+		
+		local moneyChangedEvent = PlayerMoneyChangedEvent()
+		moneyChangedEvent:Init(self.Money, money)
+		self.Entity:SendEvent(moneyChangedEvent)
+		
+		if self.Money >= _UpgradeDataSetLogic:GetLevelData(_UpgradeTypeEnum.TipStorageLevel, 1):GetUpgradeCost(self.Entity) and _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.TipStorageLevel) < 1 then
+			_TutorialManager:SendTutorialTriggerEvent(_TutorialEventEnum.CanUpgradeTipStorage, self.Entity.PlayerComponent.UserId)
+		end
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SubMoney(integer money, string source, string modMapNameForNxLog)
+		-- 돈을 차감하는 함수
+		if money == 0 then
+			return true
+		end
+		if money < 0 then
+			return false
+		end
+		
+		if self.Money < money then
+			return false
+		end
+		
+		local changeBef = self.Money  
+		self.Money = self.Money - money
+		
+		
+		
+		local logValue = string.format("%d",changeBef)
+		local flowType = "2" 
+		local modresourcename = _ItemDataEnum.Money 
+		local modresourcechangecnt = string.format("%d",money) 
+		local modresourceaftcnt = string.format("%d",self.Money) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		self.Entity.PlayerLog:ResourceFlow(logValue,flowType,modresourcename,modresourcechangecnt,modresourceaftcnt,modresourcemakerdefinetag,modmapname)
+		
+		local moneyChangedEvent = PlayerMoneyChangedEvent()
+		moneyChangedEvent:Init(self.Money, -money)
+		self.Entity:SendEvent(moneyChangedEvent)
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성 변경 시 UI 업데이트를 처리하는 함수
+		local player = self.Entity
+		if name == "Money" then
+			local moneyChangedEvent = PlayerMoneyChangedEvent()
+			moneyChangedEvent:Init(value, 0)
+			player:SendEvent(moneyChangedEvent)
+				
+		elseif name == "Items" then
+			local inventoryItemChanged = PlayerInventoryItemChangedEvent()
+			player:SendEvent(inventoryItemChanged)
+			player.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.IngreGacha)
+			
+		elseif name == "LunchBox" then
+			local tokenChangedEvent = PlayerTrainingTokenChangedEvent()
+			tokenChangedEvent:Init(value, nil)
+			player:SendEvent(tokenChangedEvent)	
+			
+		elseif name == "ArcaneSymbol" then 
+			local arcaneChangedEvent = PlayerArcaneSymbolChangedEvent()
+			arcaneChangedEvent:Init(value,0)
+			player:SendEvent(arcaneChangedEvent)	
+			_ToDoManager:RefreshToDoInfos()
+			
+		elseif name == "Heart" then 
+			local heartChangedEvent = PlayerHeartChangedEvent()
+			heartChangedEvent:Init(value,0)
+			player:SendEvent(heartChangedEvent)	
+			
+		elseif name == "Tip" then
+			local tipChangedEvent = PlayerTipChangedEvent()
+			tipChangedEvent:Init(value, nil)
+			player:SendEvent(tipChangedEvent)	
+			
+		elseif name == "Reputation" then
+			local repChangedEvent = PlayerReputationChangedEvent()
+			repChangedEvent:Init(value, 0)
+			player:SendEvent(repChangedEvent)
+			
+		elseif name == "TrainingTicket" then
+			_UIGroupManager.TrainingSettingGroup.UITrainingSetting:UpdateTrainingTicketUI() 
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddLunchBox(integer lunchBox, string source, string modMapNameForNxLog)
+		-- 도시락을 추가하는 함수
+		if lunchBox == 0 then
+			return true
+		end
+		
+		if lunchBox < 0 then
+			return false
+		end
+		
+		local prevToken = self.LunchBox
+		self.LunchBox = self.LunchBox + lunchBox
+		
+		if self.LunchBox >= self.MaxLunchBoxNum then
+			self.LunchBox = self.MaxLunchBoxNum
+		end
+		
+		
+		local logValue = string.format("%d",prevToken)
+		local flowType = "1" 
+		local modresourcename = "G0002" 
+		local modresourcechangecnt = string.format("%d",lunchBox) 
+		local modresourceaftcnt = string.format("%d",self.LunchBox) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		self.Entity.PlayerLog:ResourceFlow(logValue,flowType,modresourcename,modresourcechangecnt,modresourceaftcnt,modresourcemakerdefinetag,modmapname)
+		
+		local tokenChangedEvent = PlayerTrainingTokenChangedEvent()
+		tokenChangedEvent:Init(self.LunchBox, nil)
+		self.Entity:SendEvent(tokenChangedEvent)
+		self:CalcLunchBoxRemainDay()
+		self:CheckTrainingRedDot()
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SubLunchBox(integer lunchBox, string source, string modMapNameForNxLog)
+		-- 도시락을 차감하는 함수
+		if lunchBox == 0 then
+			return true
+		end
+		if lunchBox < 0 then
+			return false
+		end
+		
+		if self.LunchBox < lunchBox then
+			return false
+		end
+		
+		local prevToken = self.LunchBox
+		self.LunchBox = self.LunchBox - lunchBox
+		
+		if prevToken >= self.MaxLunchBoxNum then
+		end
+		
+		
+		
+		local logValue = string.format("%d",prevToken)
+		local flowType = "2" 
+		local modresourcename = "G0002" 
+		local modresourcechangecnt = string.format("%d",lunchBox) 
+		local modresourceaftcnt = string.format("%d",self.LunchBox) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		self.Entity.PlayerLog:ResourceFlow(logValue,flowType,modresourcename,modresourcechangecnt,modresourceaftcnt,modresourcemakerdefinetag,modmapname)
+		
+		local tokenChangedEvent = PlayerTrainingTokenChangedEvent()
+		tokenChangedEvent:Init(self.LunchBox, nil)
+		self.Entity:SendEvent(tokenChangedEvent)
+		self:CalcLunchBoxRemainDay()
+		self:CheckTrainingRedDot()
+		
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ModifyLunchBox(integer value, string source, string modmapnameForNxlog)
+		-- 도시락 수량을 증가 또는 감소시키는 함수
+		if value == 0 then
+			return true
+		elseif value > 0 then
+			return self:AddLunchBox(value,source,modmapnameForNxlog)
+		else
+			return self:SubLunchBox(-value,source,modmapnameForNxlog)
+		end
+	end
+
+	@ExecSpace("Server")
+	method boolean ModifyArcaneSymbol(integer value, string source, string modmapnameForNxlog)
+		-- 아케인 심볼을 증가 또는 감소시키는 함수
+		if value == 0 then
+			return true
+		elseif value > 0 then
+			return self:AddArcaneSymbol(value,source,modmapnameForNxlog)
+		else
+			return self:SubArcaneSymbol(-value,source,modmapnameForNxlog)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddArcaneSymbol(integer value, string source, string modmapnameForNxlog)
+		-- 아케인 심볼을 추가하는 함수
+		if value == 0 then
+			return true
+		end
+		if value < 0 then
+			return false
+		end
+		
+		
+		local itemData = _ItemDataSetLogic:GetItemData("G0004")
+		local changeBef = self.ArcaneSymbol 
+		self.ArcaneSymbol = math.min(self.ArcaneSymbol + value,itemData.MaxStackCount)
+		
+		if self.ArcaneSymbol == itemData.MaxStackCount then 
+		end
+		
+		
+		local logValue = string.format("%d",changeBef)
+		local flowType = "1" 
+		local modresourcename = _ItemDataEnum.Clover 
+		local modresourcechangecnt = string.format("%d",value) 
+		local modresourceaftcnt = string.format("%d",self.ArcaneSymbol) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modmapnameForNxlog
+		
+		self.Entity.PlayerLog:ResourceFlow(logValue, flowType, modresourcename, modresourcechangecnt, modresourceaftcnt, modresourcemakerdefinetag, modmapname)
+		
+		self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.ObtainedClover, self.ArcaneSymbol-changeBef)
+			
+		local arcaneSymbolChangedEvent = PlayerArcaneSymbolChangedEvent()
+		arcaneSymbolChangedEvent:Init(self.ArcaneSymbol, value)
+		self.Entity:SendEvent(arcaneSymbolChangedEvent)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SubArcaneSymbol(integer value, string source, string modMapNameForNxLog)
+		-- 아케인 심볼을 차감하는 함수
+		if value == 0 then
+			return true
+		end
+		if value < 0 then
+			return false
+		end
+		
+		
+		if self.ArcaneSymbol < value then
+			return false
+		end
+		local changeBef = self.ArcaneSymbol 
+		self.ArcaneSymbol = self.ArcaneSymbol - value
+		
+		
+		
+		local logValue = string.format("%d",changeBef)
+		local flowType = "2" 
+		local modresourcename = _ItemDataEnum.Clover 
+		local modresourcechangecnt = string.format("%d",value) 
+		local modresourceaftcnt = string.format("%d",self.ArcaneSymbol) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		self.Entity.PlayerLog:ResourceFlow(logValue,flowType,modresourcename,modresourcechangecnt,modresourceaftcnt,modresourcemakerdefinetag,modmapname)
+		
+		
+		local arcaneSymbolChangedEvent = PlayerArcaneSymbolChangedEvent()
+		arcaneSymbolChangedEvent:Init(self.ArcaneSymbol, value)
+		self.Entity:SendEvent(arcaneSymbolChangedEvent)
+		return true
+	end
+
+	@ExecSpace("Server")
+	method boolean ModifyHeart(integer value, string source, string modMapNameForNxLog)
+		-- 하트를 증가 또는 감소시키는 함수
+		if value == 0 then
+			return true
+		elseif value > 0 then
+			return self:AddHeart(value,source,modMapNameForNxLog)
+		else
+			return self:SubHeart(-value,source,modMapNameForNxLog)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddHeart(integer value, string source, string modMapNameForNxLog)
+		-- 하트를 추가하는 함수
+		if value == 0 then
+			return true
+		end
+		if value < 0 then
+			return false
+		end
+		
+		
+		local itemData = _ItemDataSetLogic:GetItemData("G0005")
+		local changeBef = self.Heart  
+		self.Heart = math.min(self.Heart + value,itemData.MaxStackCount)
+		if self.Heart == itemData.MaxStackCount then 
+		end
+		
+		
+		
+		local logValue = string.format("%d",changeBef)
+		local flowType = "1" 
+		local modresourcename = _ItemDataEnum.Heart 
+		local modresourcechangecnt = string.format("%d",value) 
+		local modresourceaftcnt = string.format("%d",self.Heart) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		self.Entity.PlayerLog:ResourceFlow(logValue,flowType,modresourcename,modresourcechangecnt,modresourceaftcnt,modresourcemakerdefinetag,modmapname)
+		
+		self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.ObtainedHeart, self.Heart-changeBef)
+		
+		local heartChangedEvent = PlayerHeartChangedEvent()
+		heartChangedEvent:Init(self.Heart, value)
+		self.Entity:SendEvent(heartChangedEvent)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SubHeart(integer value, string source, string modMapNameForNxLog)
+		-- 하트를 차감하는 함수
+		if value == 0 then
+			return true
+		end
+		
+		if value < 0 then
+			return false
+		end
+		
+		if self.Heart < value then
+			return false
+		end
+		
+		local changeBef = self.Heart  
+		self.Heart = self.Heart - value
+		
+		
+		
+		local logValue = string.format("%d",changeBef)
+		local flowType = "2" 
+		local modresourcename = _ItemDataEnum.Heart 
+		local modresourcechangecnt = string.format("%d",value) 
+		local modresourceaftcnt = string.format("%d",self.Heart) 
+		local modresourcemakerdefinetag = source
+		local modmapname = modMapNameForNxLog
+		
+		self.Entity.PlayerLog:ResourceFlow(logValue,flowType,modresourcename,modresourcechangecnt,modresourceaftcnt,modresourcemakerdefinetag,modmapname)
+		
+		
+		local heartChangedEvent = PlayerHeartChangedEvent()
+		heartChangedEvent:Init(self.Heart, value)
+		self.Entity:SendEvent(heartChangedEvent)
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method boolean ModifyTip(integer value)
+		-- 팁을 증가 또는 감소시키는 함수
+		local level = self.Entity.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(_UpgradeTypeEnum.TipStorageLevel)
+		if level <1 then 
+			return false
+		end
+		
+		if value == 0 then
+			return true
+		elseif value > 0 then
+			return self:AddTip(value)
+		else
+			return self:SubTip(-value)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddTip(integer value)
+		-- 팁을 추가하는 함수
+		if value == 0 then
+			return true
+		end
+		if value < 0 then
+			return false
+		end
+		
+		
+		local itemData = _ItemDataSetLogic:GetItemData("G0005") 
+		
+		self.Tip = math.min(self.Tip + value,itemData.MaxStackCount)
+		if self.Tip == itemData.MaxStackCount then 
+		end
+		
+		local heartChangedEvent = PlayerTipChangedEvent()
+		heartChangedEvent:Init(self.Tip, nil)
+		self.Entity:SendEvent(heartChangedEvent)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SubTip(integer value)
+		-- 팁을 차감하는 함수
+		if value == 0 then
+			return true
+		end
+		
+		if value < 0 then
+			return false
+		end
+		
+		if self.Tip < value then
+			return false
+		end
+		
+		self.Tip = self.Tip - value
+		
+		local heartChangedEvent = PlayerTipChangedEvent()
+		heartChangedEvent:Init(self.Tip, nil)
+		self.Entity:SendEvent(heartChangedEvent)
+		
+		return true
+	end
+
+	@ExecSpace("Server")
+	method void RequestUseTip()
+		-- 팁 사용을 요청하여 하트로 전환하는 함수
+		local curTip = self.Tip 
+		if curTip <= 0 then
+			return
+		end
+		
+		if self:ModifyTip(curTip*-1) then 
+			self:ModifyHeart(curTip,"TipStorageBox","Lobby HUD")
+			
+			local tipProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.TipHeart)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.TipHeart, tipProgress + curTip)
+			
+			_LobbyHUDService:PlayGainTipEffectOnTipButton(self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SubMoneyUnderZero(integer money, string source, string modMapNameForNxLog)
+		-- 돈을 차감하여 음수가 되도록 하는 함수
+		if self.Money - money > 0 then
+			self:SubMoney(money,source,modMapNameForNxLog)
+			return false
+		end
+		
+		if money == 0 then
+			return false
+		end
+		
+		self.Money = self.Money - money
+		
+		local moneyChangedEvent = PlayerMoneyChangedEvent()
+		moneyChangedEvent:Init(self.Money, -money)
+		self.Entity:SendEvent(moneyChangedEvent)
+		
+		return true 
+	end
+
+	@ExecSpace("Server")
+	method void AddLunchBoxGaugePerDay()
+		-- 매일 도시락 게이지를 추가하는 함수
+		
+		if self.LunchBox >= self.MaxLunchBoxNum then
+			return
+		end
+		
+		local levelValue = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.LunchBoxGainSpeed)
+		self.LunchBoxRemainDay -= 1
+		if self.LunchBoxRemainDay < 1 then
+			self:ModifyLunchBox(1,"Day per LunchBox","Lobby")
+			self.LunchBoxRemainDay = levelValue 
+		end
+		self:CalcLunchBoxRemainDay()
+		
+	end
+
+	@ExecSpace("Server")
+	method void CalcLunchBoxRemainDay()
+		-- 도시락 남은 일수를 계산하는 함수
+		local isOn = true
+		if  self.LunchBox >= self.MaxLunchBoxNum then
+			isOn = false
+			
+		else
+		
+			local levelValue = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.LunchBoxGainSpeed)
+			self.MaxLunchBoxNum = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.LunchBoxCapacity)
+			
+			if levelValue < self.LunchBoxRemainDay then 
+				self.LunchBoxRemainDay = levelValue
+			end
+			
+		end
+		
+		self:RefreshLunchBoxRemainDay(isOn, self.LunchBox, self.LunchBoxRemainDay, self.MaxLunchBoxNum, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshLunchBoxRemainDay(boolean isOn, integer lunchBox, integer remainDay, integer maxNum)
+		-- 도시락 남은 일수 UI를 새로고침하는 함수
+		self.LunchBoxRemainDay = remainDay
+		self.LunchBox = lunchBox
+		self.MaxLunchBoxNum = maxNum
+		_LobbyHUDService:UpdateTrainingTokenUI(lunchBox)
+		_LobbyHUDService:RefreshRemainText(isOn)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateLunchBoxUpgradeInfo()
+		-- 도시락 업그레이드 정보를 업데이트하는 함수
+		self.MaxLunchBoxNum = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.LunchBoxCapacity)
+		self:CalcLunchBoxRemainDay()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ModifyTrainingTicket(integer value)
+		-- 훈련 티켓 수량을 수정하는 함수
+		if self.TrainingTicket == value then
+			return
+		end
+		self.TrainingTicket += value
+		if self.TrainingTicket >= 2 then
+			self.TrainingTicket = 2
+		elseif self.TrainingTicket <= 0 then
+			self.TrainingTicket = 0
+		end
+		self:CheckTrainingRedDot()
+	end
+
+	@ExecSpace("Server")
+	method void CheckTrainingRedDot()
+		-- 훈련 메뉴의 빨간점 표시 여부를 확인하는 함수
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		local isUnlocked =  _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.MainMenuTraining, self.Entity, userId)
+		if not isUnlocked then
+			_MainMenuRedDotManager:EnableTrainingRedDot(false, userId)
+			return
+		end
+		
+		if self.TrainingTicket == 0 or self.LunchBox < self.TrainingEnterLunchBox then
+			_MainMenuRedDotManager:EnableTrainingRedDot(false, userId)
+			
+		elseif self.TrainingTicket >= 1 and self.LunchBox >= self.TrainingEnterLunchBox then
+			_MainMenuRedDotManager:EnableTrainingRedDot(true, userId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method boolean ModifyReputation(number value)
+		-- 평판을 증가 또는 감소시키는 함수
+		if value == 0 then
+			return true
+		elseif value > 0 then
+			return self:AddReputation(value)
+		else
+			return self:SubReputation(-value)
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean AddReputation(number value)
+		-- 평판을 추가하는 함수
+		if value == 0 then
+			return true
+		end
+		if value < 0 then
+			return false
+		end
+		
+		local itemData = _ItemDataSetLogic:GetItemData("G0006")
+		
+		local stageEarningLevelData = _StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage):GetStageEarningLevelData(self.Entity.PlayerSettlement.EarningLevel)
+		if stageEarningLevelData == nil then
+			return
+		end
+		local storeAttractiveData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+		
+		local maxReputation = storeAttractiveData.MaxReputation
+		self.Reputation = math.min(self.Reputation + value, maxReputation)
+		if self.Reputation == maxReputation then
+		end
+		
+		local repChangedEvent = PlayerReputationChangedEvent()
+		repChangedEvent:Init(self.Reputation, value)
+		self.Entity:SendEvent(repChangedEvent)
+		
+		self.ReputationReviewScore = _ReputationDataSetLogic:ReturnReputationReviewScore(self.Entity)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean SubReputation(number value)
+		-- 평판을 차감하는 함수
+		if value == 0 then
+			return true
+		end
+		
+		if value < 0 then
+			return false
+		end
+		
+		local stageEarningLevelData = _StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage):GetStageEarningLevelData(self.Entity.PlayerSettlement.EarningLevel)
+		local storeAttractiveData = _BalanceDataSetLogic:GetStoreAttractiveLevelData(stageEarningLevelData.StoreAttractiveLevel)
+		
+		local minReputation = storeAttractiveData.MinReputation
+		self.Reputation = math.max(self.Reputation - value, minReputation)
+		
+		local repChangedEvent = PlayerReputationChangedEvent()
+		repChangedEvent:Init(self.Reputation, value)
+		self.Entity:SendEvent(repChangedEvent)
+		
+		self.ReputationReviewScore = _ReputationDataSetLogic:ReturnReputationReviewScore(self.Entity)
+		
+		return true
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UseItem(string itemId, integer count, string source, string modMapNameForNxLog, string targetEmpId)
+		-- 아이템을 사용하는 함수
+		local result = self:RemoveItem(itemId, count,source,modMapNameForNxLog, targetEmpId)
+		if result ~= 0 then
+			if result == 3 then
+				_GetLocalizationTextLogic:CallToastByLocalizationKey("InventoryErrorMessage1", nil, false, self.Entity.PlayerComponent.UserId)
+			end
+		
+			self.Entity.PlayerIngredient:ChangeConnectingStatus(false, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		self.Entity.PlayerItemFunction:CommandFunc(itemId, count)
+	end
+
+	method integer GetItemCount(string itemId)
+		-- 특정 아이템의 보유 개수를 반환하는 함수
+		if itemId == "G0001" then
+			return self.Money
+		elseif itemId == "G0002" then
+		     return self.LunchBox
+		elseif itemId == "G0004" then
+			 return self.ArcaneSymbol
+		elseif itemId == "G0005" then
+			return self.Heart
+		elseif itemId == "G0006" then
+			return self.Reputation
+		elseif itemId == "G0007" then
+			return self.Entity.PlayerVIPOrder.SeasonCompleteScore
+		elseif itemId == "G1001" or itemId == "G1002" then 
+			return self.Entity.PlayerOutgameManager:GetDiamondCount()
+		end
+		
+		local itemData = _ItemDataSetLogic:GetItemData(itemId)
+		if itemData == nil then
+			return 0
+		end
+		
+		local count = nil
+		if itemData.SaveToOutgameDB == true then
+			count = self.Entity.PlayerOutgameManager.OutgameInventory[itemId]
+		else
+			count = self.Items[itemId]
+		end
+		
+		if count == nil then
+			count = 0
+		end
+		
+		return count
+	end
+
+	method integer IsItemOverMaxCount(string itemId, integer addedCount)
+		-- 아이템이 최대 보유 수량을 초과하는지 확인하는 함수
+		if _ItemDataSetLogic.ItemData[itemId] == nil then
+			return nil
+		end
+		
+		if addedCount < 1 then
+			return nil
+		end
+		
+		local myCount = 0
+		
+		local firstStr = string.sub(itemId, 1, 1)
+		
+		local isPackage = firstStr == "P" or firstStr == "D"
+		if isPackage == true then
+			local items = _ItemDataSetLogic:GetItemData(itemId):GetUseItems_List()
+			for i=1 , #items do
+				local itemdId = items[i][1]
+				local count = items[i][2] * addedCount
+				
+				local maxCount = self.Entity.PlayerInventory:IsItemOverMaxCount(itemdId, count)
+				
+				if maxCount > 0 then
+					local userId = self.Entity.PlayerComponent.UserId
+					_UIPurchasePopupLogic:OpenOverMaxCountPopup(itemId, _ItemDataSetLogic:GetItemData(itemdId).NameKey, maxCount, nil, false, true, userId)
+					return maxCount
+				end
+			end
+			return -1
+		end
+		
+		
+		if itemId == "G0001" then
+			myCount = self.Money
+		elseif itemId == "G0002" then
+		    myCount = self.LunchBox
+		elseif itemId == "G0004" then
+			myCount = self.ArcaneSymbol
+		elseif itemId == "G0005" then
+			myCount = self.Heart
+		elseif itemId == "G0006" then
+			myCount = self.Reputation
+		elseif itemId == "G0007" then
+			myCount = self.Entity.PlayerVIPOrder.SeasonCompleteScore
+		elseif itemId == "G1001" or itemId == "G1002" then 
+			myCount = self.Entity.PlayerOutgameManager:GetDiamondCount()
+		else
+			myCount = self:GetItemCount(itemId)
+		end
+		
+		local itemMaxCount = _ItemDataSetLogic:GetItemData(itemId).MaxStackCount
+		if myCount + addedCount > itemMaxCount then
+			return itemMaxCount
+		end
+		
+		return -1
+	end
+
+end

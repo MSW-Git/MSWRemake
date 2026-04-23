@@ -1,0 +1,413 @@
+@Component
+script BossObject extends MonsterObject
+
+	property boolean isUsingSkill = false
+
+	property number phase = 1
+
+	property boolean dropGem = false
+
+	property boolean isBoss = true
+
+	property number type = 2
+
+	property boolean useDefaultShadow = false
+
+	property number changePhaseDelayTime = 3
+
+	property string changePhaseMaterial = "material://efbe29ee-f82a-4366-bda4-a10fde15f9ff"
+
+	property boolean sendedMessage = false
+
+	property string bgm = ""
+
+	property any onDead = nil
+
+	method void UpdateMove()
+		-- 보스 스킬 사용 및 이동 패턴 처리
+		if self.isDead then
+			return
+		end
+		if self.isUsingSkill then
+			return
+		end
+		
+		if not isvalid(self.target) then return end
+		
+		if self._T.skillTable == nil or #self._T.skillTable == 0 then
+			return
+		end
+		local skillId = self._T.skillTable[_UtilLogic:RandomIntegerRange(1,#self._T.skillTable)]
+		local skillData = _MonsterSkillLogic:GetSkill(skillId)
+		
+		local _T = self._T
+		self:UseSkill(skillId,nil,self.target)
+		if skillData.multiShot > 1 then
+			for i = 2, skillData.multiShot do
+				_TimerLogic:SetTimerOnce(function()
+					self:UseSkill(skillId,nil,self.target)
+				end,i * skillData.multiShotDelay, "BossObject.UpdateMove_multishot")
+			end
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(skillData.monsterRUID) == false then
+			_T.spriteRenderer.SpriteRUID = skillData.monsterRUID
+		else
+			_T.spriteRenderer.SpriteRUID = self.attack
+		end 
+		
+		
+		self:OnSkillSpec(skillId)
+		
+		self.isUsingSkill = true
+		
+		_TimerLogic:SetTimerOnce(function()
+				self.isUsingSkill = false
+				_T.spriteRenderer.SpriteRUID = self.move
+				self:UpdateMoveBoss()
+		 end,skillData.duration, "BossObject.UpdateMove")
+	end
+
+	method void SetDamage(number damage, Vector2 knockback, boolean isCritical, string weaponUniqueKey)
+		-- 보스 데미지 처리 및 페이즈 체크, 특수 효과 적용
+		if self.isInvincible then
+			
+			
+			return
+		end
+		
+		if self.isDead then
+			return
+		end
+		
+		local _T = self._T
+		if _T.currentMap.BattleMap.isEnd then return end
+		
+		if _BuffLogic.appliedBuff.gloveFlameLevel >= 1 then
+			self:Ignited(_BuffLogic.appliedBuff.gloveFlameLevel, damage)
+		end
+		
+		local realDamage = damage 
+		
+		if self:GetMaxHp() - damage < 0 then
+			realDamage = self.hp
+		end
+		
+		
+		if realDamage >= 1 then
+			if _OptionLogic.showDamageSkin then
+				_DamageSkinService:Play(self.Entity, self._T.damageSkin,0,{damage},DamageSkinTweenType.Volcano,isCritical,Vector2(0,0))
+			end
+			
+			self.hp = self.hp - realDamage
+		end
+		
+		if self.hp <= 0 then
+			
+			self:Dead(true)
+			if _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_BASIC then
+				_UserService.LocalPlayer.PlayerMissionComponent:SendKillBossMissionEvent(self.monsterId)
+			end
+		else
+			self:UpdateBossInfo()
+			
+		end
+		
+		if _BuffLogic:GetAbsorption() > 0 and _UserService.LocalPlayer.PlayerStorageComponent.storage[weaponUniqueKey] ~= nil then
+			local rand = _UtilLogic:RandomIntegerRange(1, 100)
+			if rand <= 1 then
+				_UserService.LocalPlayer.BattlePlayer:Absorb()
+			end
+		end
+		
+		
+		self:CheckPhase()
+		
+		if not _DPSLogic:TryAddSpecialBuffDamage(weaponUniqueKey, realDamage, self) then
+			_DPSLogic:AddDamage(weaponUniqueKey, realDamage)
+		end
+		
+		_UserService.LocalPlayer:SendEvent(AttackMonsterEvent())
+			
+	end
+
+	method void CheckPhase()
+		-- 보스 체력에 따른 페이즈 변경 체크
+		if #self._T.monsterData.phase <= self.phase then
+			return
+		end
+		local hpRatio = self.hp / self._T.maxHp * 100
+		local nextPhase = self._T.monsterData.phase[self.phase + 1]
+		if hpRatio <= nextPhase then
+			self.phase = self.phase + 1
+			self:OnChangePhase(self.phase)
+			self:SetSkillSet(self.phase)
+		end
+	end
+
+	method void SetKnockback(Vector2 knockback, number duration, boolean force)
+		-- 보스는 넉백 무시 (빈 구현)
+		
+	end
+
+	method void DropGem()
+		-- 보스 경험치 젬 드롭 처리 (설정에 따라)
+		if self.dropGem == false then
+			return
+		end
+		
+		__base:DropGem()
+	end
+
+	method void Init(string monsterId, boolean isAfterMonster, boolean respawn, number life)
+		-- 보스 초기화 및 등장 효과, BGM 설정
+		self.phase = 1
+		__base:Init(monsterId,isAfterMonster,respawn,life)
+		
+		self._T.spriteRenderer.Color.a = 1
+		
+		self:UpdateBossInfo()
+		self._T.damageSkin = _ItemDataLogic.decorationData[_UserService.LocalPlayer.PlayerInfoComponent.playerInfo.damageSkin].ruid
+		
+		if not isvalid(self._T.damageSkin) then
+			self._T.damageSkin = "b6b059a7ec8c44ad966363ed20f3926b"
+		end
+		
+		
+		local sprite = self.Entity.SpriteRendererComponent
+		local tweenInvincible = self.isInvincible == false
+		local delay = 2
+		if tweenInvincible then
+			self.isInvincible = true
+			self.Entity.CurrentMap.BattleMap.isAppearingBoss = true
+			self._T.checkInvincibleTime = _UtilLogic.ServerElapsedSeconds
+			_TimerLogic:SetTimerOnce(function() 
+				self.isInvincible = false
+				self.Entity.CurrentMap.BattleMap.isAppearingBoss = false
+			end,delay, "BossObject.Init")
+		end
+		sprite:ChangeMaterial("material://a42cdbe3-5687-4fe0-8b02-e157d7d8521b")
+		
+		_Tweener:PlayTween(0.05,0,delay,0,EaseType.Linear,function(value) 
+				
+		   			local changeValue = {["Scale"] = value}		
+					_MaterialService:ChangeMaterialProperty("material://a42cdbe3-5687-4fe0-8b02-e157d7d8521b",changeValue)
+				end,function() 
+					sprite:ChangeMaterial("")
+				end, "BossObject_Init")
+		
+		
+		self:CheckLastBoss()
+		self.sendedMessage = false
+		
+		if _UtilLogic:IsNilorEmptyString(self.bgm) == false then
+			self.Entity.CurrentMap.SoundComponent.AudioClipRUID = self.bgm
+			self.Entity.CurrentMap.SoundComponent:Play()
+		end
+		
+		if isvalid(self.Entity.CurrentMap.LimitMapComponent) then
+			self.speed *= 1.5
+		end
+		
+		self.stand = self._T.monsterData.stand_ruid
+		self.move = self._T.monsterData.move_ruid
+		self._T.moveRuid = self.move
+		self.attack = self._T.monsterData.attack_ruid
+		self.hit = self._T.monsterData.hit_ruid
+		self.die = self._T.monsterData.die_ruid
+	end
+
+	method void RefreshBossInfo()
+		-- 보스 정보 갱신 및 보스 사망 이벤트 발송
+		local battleMap = self.Entity.CurrentMap.BattleMap
+		local randomBossMap = self.Entity.CurrentMap.RandomBossMapComponent
+		
+		if _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_RANDOMBOSS then
+			if randomBossMap.wave == randomBossMap.lastWave then
+				_MonsterLogic:SendEvent(BossDead()) 
+			end
+		elseif _GameSettingLogic.mode == _GameConfig:GetConfig().GAMEMODE_BASIC then
+			if battleMap.wave == _WaveLogic:GetLastWave(battleMap.chapter) then
+				_MonsterLogic:SendEvent(BossDead()) 
+			end
+		end
+		
+		_MonsterLogic:SendEvent(BossInfoChange(self.hp,self._T.maxHp,false,damage,self.monsterId))
+	end
+
+	method void OnChangePhase(number phase)
+		-- 페이즈 변경 시 히트 모션 및 이펙트 처리
+		---@type SpriteRendererComponent
+		local sprite = self._T.spriteRenderer
+		
+		sprite.SpriteRUID = self.hit
+		self.isUsingSkill = true
+		local hitMotionTime = self.changePhaseDelayTime
+		_UserService.LocalPlayer.CameraComponent:ShakeCamera(0.5,hitMotionTime)
+		self:MoveStop()
+		self._T.moveStopTime = _TimerLogic.ElapsedSeconds + hitMotionTime
+		sprite.Color = Color(0.7,0.7,0.7)
+		if _UtilLogic:IsNilorEmptyString(self.changePhaseMaterial) == false then
+		self.Entity.SpriteRendererComponent:ChangeMaterial(self.changePhaseMaterial)
+			_EffectService:PlayEffect("086a32324c244de0962a9b270ebf21d6",self.Entity, self.Entity.TransformComponent.Position + Vector3(0,2,0), 0, Vector3(2,2,2), false)
+			_TimerLogic:SetTimerOnce(function() 
+					sprite.SpriteRUID = self.move
+					self.isUsingSkill = false
+					self.Entity.SpriteRendererComponent:ChangeMaterial("")
+					sprite.Color = Color.white
+					end,hitMotionTime, "BossObject.OnChangePhase")
+		end
+	end
+
+	method void OnBeginPlay()
+		-- 보스 시작 시 그림자 컴포넌트 설정
+		__base:OnBeginPlay()
+		
+		local shadow = self.Entity:GetChildByName("shadow")
+		if isvalid(shadow) then
+			self._T.shadow = shadow.SpriteRendererComponent
+		end
+	end
+
+	method void OnChangedSpriteRUID(string ruid)
+		-- 스프라이트 변경 시 그림자도 동기화
+		if isvalid(self._T.shadow ) then
+			self._T.shadow.SpriteRUID = ruid 
+		end
+	end
+
+	method void OnChangedSpriteFlipX(boolean flip)
+		-- 스프라이트 플립 시 그림자도 동기화
+		if isvalid(self._T.shadow ) then
+			self._T.shadow.FlipX = flip 
+		end
+	end
+
+	method void UpdateMoveBoss()
+		-- 보스의 기본 이동 로직 (타겟 추적)
+		if self.isDead then
+			return
+		end
+		
+		local _T = self._T
+		
+		
+		
+		local target = self.target
+		if not isvalid(target) then return end
+		
+		
+		
+		if _T.moveStopTime > _G.ElapsedSeconds then
+			return
+		end
+		
+		local pos = self:GetPositionVec2()
+		local targetPos = _TargetCacheLogic:GetTargetPosition(target)
+		local dx = targetPos.x - pos.x
+		local dy = targetPos.y - pos.y
+		local ld = math.sqrt(dx ^ 2 + dy ^ 2)
+		dx /= ld
+		dy /= ld
+		
+		local nextSpeed = self.speed * self.speedFactor
+		local vx = dx * nextSpeed
+		local vy = dy * nextSpeed
+		
+		
+		self:SetVelocity(Vector2(vx, vy))
+		
+		if math.abs(dx) > 0 then
+			if dx < 0 ~= self._T.isFaceLeft then
+				_T.spriteRenderer.FlipX = _T.isFaceLeft
+				_T.isFaceLeft = not _T.isFaceLeft
+				self:OnChangedSpriteFlipX(not _T.isFaceLeft)
+			end
+		end
+		_T.spriteRenderer.SpriteRUID = self.move
+	end
+
+	method void Ignited(number level, number damage)
+		-- 보스 화상 상태 적용 및 지속 데미지 처리
+		if self.isIgnited == true then
+			return
+		end
+		
+		self.isIgnited = true
+		
+		local ignite = function(damage)
+			self:SetDamage(damage, Vector2.zero, false, "")
+		end
+		
+		local options = { ["SortingLayer"] = "Empty" ,
+							["OrderInLayer"] = 1}
+		
+		local maxTimer = 5
+		local rate = 0.1
+		
+		if level == 1 then
+			rate = 0.03
+		elseif level == 2 then
+			rate = 0.05
+		elseif level == 3 then
+			rate = 0.1
+		end
+		
+		local totalDamage = damage * rate 
+		if totalDamage < 1 then
+			totalDamage = 1
+		end
+		
+		for i = 1 , maxTimer do
+			self.igniteTimer = _TimerLogic:SetTimerOnce(function()
+				ignite(totalDamage/maxTimer)
+					if i == maxTimer then
+						self.isIgnited = false
+						_EffectService:RemoveEffect(self.igniteEffectSerial)
+					end
+			end, i, "BossObject.Ignited")
+		end
+		self.igniteEffectSerial = _EffectService:PlayEffectAttached("521b6c51d0ff425093bc14f89b6cd223", self.Entity, Vector3.zero, 0 ,Vector3.one, true, options)
+		
+		
+		
+	end
+
+	method void CheckLastBoss()
+		-- 최종 보스인지 확인하고 이벤트 발송
+		local currentMap = self.Entity.CurrentMap
+		local battleMap = currentMap.BattleMap
+		
+		if not isvalid(currentMap.RandomBossMapComponent) and not isvalid(currentMap.LimitMapComponent) and battleMap.wave == _WaveLogic:GetLastWave(battleMap.chapter) then
+			if self.isBoss then
+				self.Entity.CurrentMap:SendEvent(SpawnLastBoss(self.Entity))
+		
+			end
+		end
+	end
+
+	method void SetVelocity(Vector2 velocity)
+		-- 보스 속도 설정 (기본 구현 호출)
+		__base:SetVelocity(velocity)
+	end
+
+	method void OnDamageBuffCard(number amount)
+		-- 데미지 버프 카드 효과 처리 (현재 빈 구현)
+		
+	end
+
+	method void Dead(boolean dropExp)
+		-- 보스 사망 처리 및 콜백 실행
+		__base:Dead(dropExp)
+		self:RefreshBossInfo()
+		if self.onDead ~= nil then
+			self.onDead(self:GetPositionVec2())
+		end
+	end
+
+	method void UpdateBossInfo()
+		-- 보스 체력 정보 UI 업데이트 이벤트 발송
+		_MonsterLogic:SendEvent(BossInfoChange(self.hp,self._T.maxHp,true,0,self.monsterId))
+	end
+
+end

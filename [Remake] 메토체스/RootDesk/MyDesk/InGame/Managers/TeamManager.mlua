@@ -1,0 +1,1212 @@
+@Component
+script TeamManager extends Component
+
+	@TargetUserSync
+	property number HP = 0
+
+	@TargetUserSync
+	property number Golds = 0
+
+	@TargetUserSync
+	property number Level = 0
+
+	@TargetUserSync
+	property number EXP = 0
+
+	@TargetUserSync
+	property number WinningStreak = 0
+
+	@TargetUserSync
+	property SyncTable<Entity> OwnUnits
+
+	@TargetUserSync
+	property SyncTable<string> OwnItems
+
+	@TargetUserSync
+	property SyncTable<string> OwnRunes
+
+	@TargetUserSync
+	property SyncTable<Entity> OnEntityUsingToOwnedRunes
+
+	@TargetUserSync
+	property SyncTable<string, number> OwnUnitsBySetID
+
+	@TargetUserSync
+	property number OnFieldUnitCount = 0
+
+	@TargetUserSync
+	property SyncTable<string, number> OnFieldUnitIDs
+
+	@TargetUserSync
+	property SyncTable<string, number> OnFieldSynergy
+
+	@TargetUserSync
+	property SyncTable<Entity, Entity> EntityOnTile
+
+	@TargetUserSync
+	property SyncTable<string> ItemListFromBox
+
+	@TargetUserSync
+	property SyncTable<Entity> EnemyUnits
+
+	@TargetUserSync
+	property SyncTable<string, number> EnemyOwnedFieldSynergy
+
+	@TargetUserSync
+	property SyncTable<string> EnemyOwnedRunes
+
+	@TargetUserSync
+	property SyncTable<Entity> OnEntityUsingToEnemyOwnedRunes
+
+	@TargetUserSync
+	property number GetGoldAmount = 0
+
+	@TargetUserSync
+	property number UsedGoldAmount = 0
+
+	method string UnitInfo_ToString(Entity unit)
+		-- UnitID / 별등급 / 장착한 아이템 3종의 id (없으면 0) / 영구증가 버프 / 배치 정보
+		
+		local unitInfo = unit.UnitInfo
+		
+		local unitID = unit.UnitInfo.charID
+		local level = string.format("%d", unitInfo.level)
+		local itemIDs = {}
+		for i=1, 3 do
+			if unit.UnitStatus.EquippedItemIDList[i] == nil then
+				itemIDs[i] = "0"
+			else
+				itemIDs[i] = unit.UnitStatus.EquippedItemIDList[i]
+		
+			end
+		end
+		local stackProperty_str = _UtilLogic:TableToString(unit.UnitStatus.StackProperty)
+		local tilePosition = string.format("%d/%d", unitInfo.setTileVerticalNum, unitInfo.setTileHorizontalNum)
+		
+		return string.format("%s_%s_%s/%s/%s_%s_%s",
+			unitID,
+			level,
+			itemIDs[1], itemIDs[2], itemIDs[3],
+			stackProperty_str,
+			tilePosition)
+	end
+
+	method void UnitInfo_Parsing(string data, Entity targetEntity)
+		local parsing = _UtilLogic:Split(data, "_")
+		
+		local targetInfo = targetEntity.UnitInfo
+		
+		targetInfo:SetPropertyToServer("charID", parsing[1], nil, true)
+		targetInfo:SetPropertyToServer("level", tonumber(parsing[2]), nil, true)
+		
+		local items = _UtilLogic:Split(parsing[3], "/")
+		for i=1, 3 do
+			if items[i] ~= "0" then
+				targetEntity.UnitStatus.EquippedItemIDList[i] = items[i]
+			else 
+				targetEntity.UnitStatus.EquippedItemIDList[i] = nil
+			end
+		end
+		
+		local stackProperty = _UtilLogic:StringToTable(parsing[4])
+		table.initialize(targetEntity.UnitStatus.StackProperty, stackProperty)
+		
+		local tileInfo = _UtilLogic:Split(parsing[5], "/")
+		targetEntity.UnitInfo.setTileVerticalNum = tonumber(tileInfo[1])
+		targetEntity.UnitInfo.setTileHorizontalNum = tonumber(tileInfo[2])
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitNewGame(boolean loadSavedData)
+		-- 게임 시작을 위한 준비 함수입니다.
+		------------------------------------------------------------------------
+		local isContinuedGameLoaded = false
+		if loadSavedData == true then
+			isContinuedGameLoaded = self:LoadContinuedGame()
+		end
+		------------------------------------------------------------------------
+		local user = self.Entity
+		local userID = user.OwnerId
+		local gameManager = user.GameManager
+		local playerDataComponent = user.PlayerDataComponent
+		------------------------------------------------------------------------
+		-- 게임 로드가 아닌 경우
+		if not isContinuedGameLoaded then
+			playerDataComponent.StartGameCount += 1
+			
+			local c_value = string.format("%d/%d/%d", playerDataComponent.StartGameCount, playerDataComponent.PlayGameCount, playerDataComponent.WinGameCount)
+			local c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait("GameCountData", c_value)
+			for i = 1, 10 do
+				if c_err == 0 then
+					break
+				elseif i == 10 then
+					log_error("Save 실패")
+				else
+					c_err = _DataStorageService:GetUserDataStorage(userID):SetAndWait("GameCountData", c_value)
+				end
+			end
+		end
+		------------------------------------------------------------------------
+		self.HP = 5
+		self:AddGolds(-self.Golds, "init")
+		self.Level = 3
+		self.EXP = 0
+		self.WinningStreak = 0
+		self.GetGoldAmount = 0
+		self.UsedGoldAmount = 0
+		
+		table.clear(gameManager.RewardTable)
+		gameManager.UsedRepechage = false
+		
+		table.clear(self.OwnUnits)
+		table.clear(self.OwnItems)
+		table.clear(self.OwnRunes)
+		table.clear(self.OwnUnitsBySetID)
+		table.clear(self.OnFieldSynergy)
+		table.clear(self.OnFieldUnitIDs)
+		
+		table.clear(self.OnEntityUsingToOwnedRunes)
+		table.clear(self.OnEntityUsingToEnemyOwnedRunes)
+		
+		self.OnFieldUnitCount = 0
+		
+		user.TM_PropertyControl:InitProperties()
+		
+		table.clear(self.EntityOnTile)
+		table.clear(self.EnemyUnits)
+		table.clear(self.ItemListFromBox)
+			
+		user.CharacterShopManager_New:Initiate()
+		user.SynergyManager_New:InitAllStacks()
+		user.SynergyManager_New:OnGameStart()
+		
+		local runeEntity = user:GetChildByName("RuneCardParent")
+		if isvalid(runeEntity) then
+			runeEntity:Destroy()
+			
+			local spawnRuneEntity = function()
+				local runeP = user:GetChildByName("RuneCardParent")
+				local coachP = user:GetChildByName("CoachListEntity")
+				local penaltyP = user:GetChildByName("PenaltyListEntity")
+				local challengeP = user:GetChildByName("ChallengeEntity")
+				
+				if isvalid(runeP) then
+					runeP:Destroy()
+				end
+				if isvalid(coachP) then
+					coachP:Destroy()
+				end
+				if isvalid(penaltyP) then
+					penaltyP:Destroy()
+				end
+				if isvalid(challengeP) then
+					challengeP:Destroy()
+				end
+				
+				_SpawnService:SpawnByModelId("model://e077af6b-58cf-4d5d-a5d8-addfc2d50594", "RuneCardParent", Vector3.zero, user)
+				_SpawnService:SpawnByModelId("model://73d2bbb6-4ce9-4c8e-ae21-965a6a467b44", "CoachListEntity", Vector3.zero, user)
+				_SpawnService:SpawnByModelId("model://0590c2b5-69ea-4ca8-8c53-1fd00e259900", "PenaltyListEntity", Vector3.zero, user)
+				_SpawnService:SpawnByModelId("model://1c966833-aa2c-4640-9a77-56f7558d0c01", "ChallengeEntity", Vector3.zero, user)
+			end
+			_TimerService:SetTimerOnce(spawnRuneEntity, 0.2)
+		end
+		
+		user.TeamBattleStatistics:PropertyClear()
+		
+		local loadTimer = 0
+		local function loadCheckFnc()
+			if isvalid(user) == false then
+				_TimerService:ClearTimer(loadTimer)
+				return
+			end
+			
+			-- 불러올 데이터가 있는 경우
+			if isContinuedGameLoaded then
+				-- 유닛 샘플 스폰 대기
+				if user.LoadingManager.LoadedCount["UnitSampleSpawn"] == 1 then
+					_TimerService:ClearTimer(loadTimer)
+					
+					user.CoachManager:InitNewGameCoachSet()
+					user.PenaltyManager:InitNewGamePenaltySet()
+					user.ChallengeManager:InitNewGameChallengeSet()
+					_InGameInfoDataLogic:LoadInGameData(user.OwnerId)
+					
+				end
+			else
+				_TimerService:ClearTimer(loadTimer)
+				---- 24.10.08 즐겨찾기 데이터 추가 ----- 25.04.10 주석처리
+				--_PlayerDataLogic:GetPlayerFavoriteDicData(user.OwnerId) -- 실행환경 상 오류가 날 수도..
+				----------------------------------------
+				user.CoachManager:InitNewGameCoachSet()
+				user.PenaltyManager:InitNewGamePenaltySet()
+				user.ChallengeManager:InitNewGameChallengeSet()
+				user.LoadingManager.LoadedCount["GameDataLoad"] = 1
+				user.GameManager.PlayTime = 0
+				
+				if string.sub(gameManager.ModeType, 1, 9) == "Challenge" then
+					user.PlayerDataComponent:SetChallengeModeTryCount(user.PlayerDataComponent.ChallengeMode_LeftTryCount - 1)
+					log("챌린지 모드 도전 횟수 1 차감")
+				end
+			end
+		end
+		
+		
+		loadTimer = _TimerService:SetTimerRepeat(loadCheckFnc, 1, 0.5)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean LoadContinuedGame()
+		-- 진행 중이던 게임이 있다면 불러옵니다.
+		---------------------------------------------------
+		local user = self.Entity
+		local userID = user.OwnerId
+		local gameManager = self.Entity.GameManager
+		---------------------------------------------------
+		if gameManager.SetSavedData and gameManager.NeedDataLoad then
+			return true
+		else
+			return false
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveCurrentGame()
+		-- 강제 종료, 튕김 등의 사유 발생을 예방하기 위해 현재 상태를 저장합니다.
+		local user = self.Entity
+		local gameManager = user.GameManager
+		local userPControl = user.TM_PropertyControl
+		
+		if gameManager.PhaseType == "End" or gameManager.PhaseType == "" then
+			-- 게임을 진행하고 있지 않거나, 게임이 이미 끝난 상태라면 따로 저장하지 않음
+		elseif gameManager.PhaseType == "Clean" then
+			gameManager:GoToNextPhase()
+			_InGameInfoDataLogic:SaveInGameData(user.OwnerId)
+		elseif gameManager.PhaseType == "Battle" or gameManager.PhaseType == "Setting" then
+			-- 전투 시작, 진행 시 탈주라면 패배 처리 후 저장
+			-----------------------------------------------------------------
+			if self.HP > 1 then
+				
+				self:AddTeamHP(-1)
+				local getGolds = math.max(0, userPControl.Golds_baseReward) + math.max(userPControl.Golds_baseReward_Lose, 0)
+				self:AddGolds(getGolds, "init")
+				-- 마지막 라운드인 경우
+				if gameManager.Stage == 8 and gameManager.Round == 3 then
+					-- 체력, 돈 제외 따로 처리 x
+				else
+					-- 다음 라운드로 넘겨야 함
+					gameManager.Stage = math.floor(gameManager.Round/3) + gameManager.Stage
+					gameManager.Round = (gameManager.Round%3) + 1
+				end
+				user:SendEvent(RoundStart("Ready", gameManager.Round, gameManager.Stage))	-- 에러 아님
+				_InGameInfoDataLogic:SaveInGameData(user.OwnerId)
+			else
+				-- 체력 1인 경우, 더 이상 깎을 체력이 없으므로 따로 저장하지 않고 끝냄
+				-- 보상은 일단 스킵..
+			end
+		else
+			_InGameInfoDataLogic:SaveInGameData(user.OwnerId)
+		end
+		--저장 로그 기록
+		gameManager.PhaseType = ""
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddEXP(number EXP)
+		-- 경험치를 올립니다.
+		self.EXP += EXP
+		
+		local errorCode, returnValue = 
+			pcall(function()
+				_PlaySoundLogic:PlaySound("M0003", self.Entity.OwnerId)
+			end)
+		------------------------------------------------
+		self:Check_LevelUpCondition()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Check_LevelUpCondition()
+		local exp = self.EXP
+		
+		--레벨업 조건 확인
+		for i = 1, 10 do
+			local NeedEXP = _ExpTableLogic:GetNeedExp(self.Entity, self.Level)
+			
+			if NeedEXP > 0 then
+				if NeedEXP <= exp then
+					self:LevelUP()
+					if self.Level >= 10 then
+						exp = 0
+					else
+						exp -= tonumber(NeedEXP)
+					end
+				else
+					break
+				end
+			elseif NeedEXP == 0 then
+				self.EXP = 0
+			elseif NeedEXP == -1 then
+			end
+		end
+		self.EXP = exp
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LevelUP()
+		self.Level += 1
+		
+		self.Entity.SynergyManager_New:OnLevelUp()
+		
+		self.Entity:SendEvent(LevelUpTeam(self.Level))	-- 에러 아님
+		
+		-- 일일 미션 : 10레벨 달성
+		if self.Level == 10 then
+			if string.sub(self.Entity.GameManager.ModeType, 1, 6) == "Single" then
+				self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10005", self.Entity.GameManager.ModeLevel, 1)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddGolds(number amount, string cause)
+		self.Golds += amount
+		
+		if amount >= 0 then
+			self.GetGoldAmount += amount
+		else
+			self.UsedGoldAmount -= amount
+		end
+		
+		
+		if cause == "coach" or cause == "runeCard" or cause == "item" or cause == "char" or cause == "roundResult" or cause == "repechage"or cause == "synergy" then
+			-- 일일 미션 : 싱글 모드에서 코인 획득
+			if string.sub(self.Entity.GameManager.ModeType, 1, 6) == "Single" then
+				if amount > 0 then
+					self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10006", self.Entity.GameManager.ModeLevel, amount)
+				end
+			end
+			_GeneralDirectorLogic:PlayCoinDirector_Text(false,self.Golds,self.Entity.OwnerId)
+			
+		elseif cause == "start" or cause == "init" or cause == "cheat" then
+			_GeneralDirectorLogic:PlayCoinDirector_Text(true,self.Golds,self.Entity.OwnerId)
+		else
+			_GeneralDirectorLogic:PlayCoinDirector_Text(false,self.Golds,self.Entity.OwnerId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddTeamHP(number amount)
+		self.HP += amount
+		
+		if self.HP > self.Entity.TM_PropertyControl.HP_Max then
+			self.HP = self.Entity.TM_PropertyControl.HP_Max
+		end
+		
+		-- HP 깎일 때 연출
+		if amount < 0 then
+			_GeneralDirectorLogic:MinusLifeCount(math.abs(amount), self.HP + math.abs(amount), self.Entity.PlayerComponent.UserId)
+			
+		elseif amount > 0 then
+			_GeneralDirectorLogic:AddLifeCount(amount, self.HP, self.Entity.PlayerComponent.UserId)
+			
+		end
+		
+		_GeneralDirectorLogic:CheckLife(self.HP, self.Entity.PlayerComponent.UserId)
+		
+		-- 하트가 1개 남았으면 BGM 변경
+		if self.HP == 1 and self.Entity.GameManager.Stage < 8 then
+			_PlaySoundLogic:PlayBGM_Ver2(10, self.Entity.PlayerComponent.UserId)
+		elseif self.HP > 1 and amount > 0 then
+			_PlaySoundLogic:PlayBGM_Ver2(self.Entity.GameManager.Stage, self.Entity.PlayerComponent.UserId)
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 팀 체력 UI를 갱신합니다.
+		local SetUI_TeamHP = function()
+			local hpIconList = _EntityService:GetEntityByPath("/ui/Arena_Default/Progress/List_Life")
+			
+			for i=1, 5 do
+				local icon = hpIconList:GetChildByName(string.format("Life_%d", i))
+				
+				if i > self.HP then
+					icon.SpriteGUIRendererComponent.Color = Color.FromHexCode("#3859ac")
+				else
+					icon.SpriteGUIRendererComponent.Color = Color.FromHexCode("#769eff")
+				end
+			end
+		end
+		--------------------------------------------------------------------------------------------------
+		-- 팀 레벨 UI를 갱신합니다.
+		local SetUI_TeamLv = function()
+			local lvText = _EntityService:GetEntityByPath("/ui/Arena_Default/InfoPanel/Level/Text_Lv")
+			if self.Level == self.Entity.TM_PropertyControl.Level_MaxLevel then
+				lvText.TextComponent.Text = "Lv. MAX"
+			else 
+				lvText.TextComponent.Text = string.format("Lv. %d", self.Level)
+			end
+			
+			self.Entity.SpecialShopManager:UI_RefreshRuneShopChanceList()
+		end
+		--------------------------------------------------------------------------------------------------
+		-- 팀 경험치 UI를 갱신합니다.
+		local SetUI_TeamEXP = function()
+			local lvFill = _EntityService:GetEntityByPath("/ui/Arena_Default/InfoPanel/Level/Fill")
+			local expText = _EntityService:GetEntityByPath("/ui/Arena_Default/InfoPanel/Level/Text_EXP")
+			
+			local needEXP = _ExpTableLogic:GetNeedExp(self.Entity, self.Level)
+			if needEXP == 0 then
+				lvFill.SpriteGUIRendererComponent.FillAmount = 0
+				expText.TextComponent.Text = ""
+				local expFillDecoCircle1 = _EntityService:GetEntityByPath("/ui/Arena_Default/InfoPanel/Level/Fill_Circle_1")
+				local expFillDecoCircle2 = _EntityService:GetEntityByPath("/ui/Arena_Default/InfoPanel/Level/Fill_Circle_2")
+				expFillDecoCircle1.Enable = false
+				expFillDecoCircle2.Enable = false
+			else
+				local fillAmount = self.EXP / needEXP
+				lvFill.SpriteGUIRendererComponent.FillAmount = fillAmount
+				expText.TextComponent.Text = string.format("<color=#00e3d4>%d</color> / %d", self.EXP, _ExpTableLogic:GetNeedExp(self.Entity, self.Level))
+				local expFillDecoCircle1 = _EntityService:GetEntityByPath("/ui/Arena_Default/InfoPanel/Level/Fill_Circle_1")
+				local expFillDecoCircle2 = _EntityService:GetEntityByPath("/ui/Arena_Default/InfoPanel/Level/Fill_Circle_2")
+				local circleGuageAngle = 90 - (360 * fillAmount)
+				expFillDecoCircle1.Enable = true
+				expFillDecoCircle2.Enable = true
+				expFillDecoCircle2.UITransformComponent.anchoredPosition = 48 * Vector2(math.cos(math.rad(circleGuageAngle)), math.sin(math.rad(circleGuageAngle)))
+			end
+		end
+		--------------------------------------------------------------------------------------------------
+		-- 경험치 툴팁을 갱신합니다.
+		local SetUI_EXPToolTip = function()
+			local tooltip = _EntityService:GetEntityByPath("/ui/Arena_Default/TooltipUI_Exp")
+			local ui_title = tooltip:GetChildByName("Text_Name")
+			local ui_subTitle = tooltip:GetChildByName("Text_CostToLevelUp")
+			
+			local ui = _EntityService:GetEntityByPath("/ui/Arena_Default/HoverUI_Exp/Text_CostToLevelUp")
+			if self.Level == self.Entity.TM_PropertyControl.Level_MaxLevel then
+				ui_subTitle.TextComponent.Text = ""
+			else
+				local targetLevel = self.Level + 1
+				local needEXP = _ExpTableLogic:GetNeedExp(self.Entity, self.Level) - self.EXP
+				local needBuyingCount = math.ceil(needEXP / self.Entity.TM_PropertyControl.Exp_BuyExpReward)
+				local needCost = needBuyingCount * self.Entity.TM_PropertyControl.Exp_Cost
+				ui_subTitle.TextComponent.Text = _LocalizationService:GetTextFormat("EXPInfo_Cost", targetLevel, needCost)
+			end
+			
+		end
+		--------------------------------------------------------------------------------------------------
+		-- 연승 UI를 갱신합니다.
+		local SetUI_WinningStreak = function()
+			local winningStreakUI = _EntityService:GetEntityByPath("/ui/Arena_Default/Progress/Text_WinningStreak")
+			winningStreakUI.TextComponent.Text = string.format("%d", math.abs(self.WinningStreak))
+			
+			if self.WinningStreak > 0 then
+				winningStreakUI:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = "7861e9a9a33c413b9c8b38ce8c19ec6f"
+			elseif self.WinningStreak == 0 then
+				winningStreakUI:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = "eda72d24b3d041c4ad0a095378af0f37"
+			else
+				winningStreakUI:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = "19ade8d33226460dae3eea6e989a1bc7"
+			end
+		end
+		--------------------------------------------------------------------------------------------------
+		-- 보유 골드량 UI를 갱신합니다.
+		local SetUI_Golds = function()
+			---------------------------------------------
+			if self.Golds < 5 then -- 보유한 골드량에 따라 상점 목록을 새로고침합니다. (각 상품을 흑백 처리)
+				self.Entity.CharacterShopManager_New:UI_RefreshShopList()
+			end
+			---------------------------------------------
+			-- 보유한 골드량에 따라 상점 UI를 새로고침 (경험치 구매, 새로고침 버튼 등을 흑백 처리)
+			self.Entity.CharacterShopManager_New:UI_RefreshUIByOwnGoldsCondition()
+			self.Entity.SpecialShopManager:UI_RefreshItemShop()
+			self.Entity.SpecialShopManager:UI_RefreshItemShopCost()
+			self.Entity.SpecialShopManager:UI_RefreshRuneShop()
+			---------------------------------------------
+			-- 보유한 골드 표기량 갱신
+			
+			-- 획득량이 0보다 큰 경우 = 획득 연출 재생
+		
+			_GeneralDirectorLogic:PlayCoinDirector_Text(false,self.Golds)
+		end
+		--------------------------------------------------------------------------------------------------
+		--------------------------------------------------------------------------------------------------
+		if name == "HP" then
+			SetUI_TeamHP()
+		--------------------------------------------------------------------------------------------------	
+		elseif name == "Level" or name == "EXP" then
+			SetUI_TeamLv()
+			SetUI_TeamEXP()
+			SetUI_EXPToolTip()
+			self.Entity.CharacterShopManager_New:UI_RefreshChanceList() -- Shop
+		
+			if name == "Level" and isvalid(value) then
+				self:SetUI_OnFieldUnitsCount()
+				
+				--레벨업 이펙트
+				local lvupeffect=_EntityService:GetEntity("7e9e44dd-5459-4dbb-a641-046114f8928e") -- /ui/Arena_Default/InfoPanel/LvupEffect
+				lvupeffect.SpriteGUIRendererComponent.ImageRUID=""
+				lvupeffect.SpriteGUIRendererComponent.ImageRUID="239cc4ab3c32457fa5a62b9f554178f9"
+				lvupeffect.Enable=true
+				_PlaySoundLogic:PlaySound("M0011")
+				_TimerService:SetTimerOnce(function() lvupeffect.Enable=false end, 1)
+				
+				--모험가 시너지 이펙트
+				_SynergyBattleDirectorLogic:S10023Status()
+				
+				--전장 유닛 초과표시 체크
+				_GeneralDirectorLogic:ShowRedTile(_UserService.LocalPlayer.PlayerComponent.UserId)
+			end
+		--------------------------------------------------------------------------------------------------
+		elseif name == self.WinningStreak then
+			SetUI_WinningStreak()
+		--------------------------------------------------------------------------------------------------
+		elseif name == "Golds" then
+			SetUI_Golds()
+		--------------------------------------------------------------------------------------------------
+		elseif name == "OwnUnits" then
+		    --for idx, unit in pairs(self.OwnUnits) do
+		    --    log("OnSync, Idx = ", idx, ", CharID = ", unit.UnitInfo.charID)
+		    --end
+		--------------------------------------------------------------------------------------------------
+		elseif name == "OwnItems" then
+			
+			local itemCount = #self.OwnItems
+			local ui_invenButton_itemCount = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/DefaultPanel/Button_Inventory/Text_OwnItemsCount")
+			--------------------------------------------------------------------------------------------------
+			--아이템이 추가되었고 아이템 보유 개수가 한 페이지를 넘어가면 레드닷을 표시합니다.
+			if #self.OwnItems>_UI_Inventory.ItemCount and #self.OwnItems>_UI_Inventory.ItemSlotCount_Item  then
+				_UI_Inventory:SetReddot(true)
+			end
+			
+			_UI_Inventory.ItemCount=#self.OwnItems
+			
+			_UI_Inventory:RefreshUI_ByOnSyncProperty()
+			-- _ItemCombineService:UI_SetCombineTableUI()
+		--------------------------------------------------------------------------------------------------
+		elseif name == "OnFieldSynergy" then
+			local ui_userSynList = _EntityService:GetEntityByPath("/ui/Arena_Default/SynergyList_Left")
+			ui_userSynList.UI_SynergyListComponent:RefreshSynergyList(self.OnFieldSynergy)
+		--------------------------------------------------------------------------------------------------
+		elseif name == "EnemyOwnedFieldSynergy" then
+			local ui_enemySynList = _EntityService:GetEntityByPath("/ui/Arena_BattlePhase/SynergyList_Right")
+			ui_enemySynList.UI_SynergyListComponent:RefreshSynergyList(self.EnemyOwnedFieldSynergy)
+		--------------------------------------------------------------------------------------------------
+		elseif name == "ItemListFromBox" then
+			if #self.ItemListFromBox > 0 then
+				_UI_Inventory:ShowItemSelectPopup(true)
+			end
+		--------------------------------------------------------------------------------------------------
+		elseif name == "OnFieldUnitCount" then
+			self:SetUI_OnFieldUnitsCount()
+			_GeneralDirectorLogic:ShowRedTile(_UserService.LocalPlayer.PlayerComponent.UserId)
+		
+		--------------------------------------------------------------------------------------------------
+		elseif name == "OwnUnitsBySetID" then
+			self.Entity.CharacterShopManager_New:UI_RefreshShopList()
+		--------------------------------------------------------------------------------------------------
+		elseif name == "OnEntityUsingToOwnedRunes" then
+			_UI_Inventory:RefreshUI_RuneInventory()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetBattleResult(boolean win, number surviveNum)
+		-- 배틀의 승패 및 남은 유닛 수에 따라 체력을 깎습니다.
+		-- 연승/연패 데이터를 저장합니다.
+		-- 현재 상황에 따라 돈을 얻습니다.
+		---------------------------------------------
+		local getMoney = 0
+		---------------------------------------------
+		-- 현재 소지금에 대한 이자 (10원당 1원, 최대 5원)
+		-- 연승/연패에 따라 획득하는 돈
+		-- 기본 획득 소지금
+		---------------------------------------------
+		if win then
+			self.WinningStreak = math.max(0, self.WinningStreak) + 1
+			getMoney += 1
+		else
+			self.WinningStreak = math.min(0, self.WinningStreak) - 1
+			
+			local lossHP = 0
+		
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetItemBoxList(string boxID)
+		-- 아이템 박스를 열었을 때, 선택지를 결정하는 함수입니다.
+		-----------------------------------------------------
+		local user = self.Entity
+		local userPControl = user.TM_PropertyControl
+		local season = string.format("%.1f", user.GameManager.ModeSetVersion)
+		-----------------------------------------------------
+		table.clear(self.ItemListFromBox)
+		-----------------------------------------------------
+		local itemInfoTable = _DataService:GetTable("ItemStatus")
+		local itemListBySeason = _DataService:GetTable("ItemListBySeason")
+		-----------------------------------------------------
+		local hasTag = function(dataRow, tag) 
+			local tags = _UtilLogic:Split(dataRow:GetItem("Tags"), ",")
+			for i=1, #tags do
+				if tags[i] == tag then
+					return true
+				end
+			end
+			
+			return false
+		end
+		-----------------------------------------------------
+		-- Type을 결정합니다.
+		local targetType = ""
+		local boxIdx = tonumber(string.sub(boxID, 3, -1))
+		if boxIdx <= 3 then
+			targetType = "MaterialItem"
+		elseif boxIdx <= 12 then
+			targetType = "NormalItem"
+		elseif boxIdx == 13 then
+			targetType = "Consumable"
+		elseif boxIdx == 14 then
+			targetType = "Emblem"
+		end
+		-----------------------------------------------------
+		local targetTag = itemInfoTable:FindRow("ItemID", boxID):GetItem("Tags") 
+		-----------------------------------------------------
+		local targetIDList = {}
+		for i=1, itemInfoTable:GetRowCount() do
+			local row = itemInfoTable:GetRow(i)
+			local type = row:GetItem("Type")
+			local targetID = row:GetItem("ItemID") 
+			if type == targetType then
+				local isTarget = true
+				-- 조건 1. 특정 태그를 가진 아이템만 등장하는 경우 (예: 공격형, 방어형, 재료템에 따라, ...)
+				if _UtilLogic:IsNilorEmptyString(targetTag) == false then
+					if hasTag(row, targetTag) == false then
+						isTarget = false
+					end
+				end
+				
+				-- 조건 2. 현재 플레이 중인 시즌에 포함되는 경우
+				local seasonInfo = itemListBySeason:FindRow("ItemID", targetID)
+				if seasonInfo:GetItem(season) ~= "TRUE" then
+					isTarget = false
+				end
+				
+				if isTarget == true then
+					table.insert(targetIDList, targetID)
+				end
+			end
+		end
+		-----------------------------------------------------
+		-- 등장 목록에서 제외될 아이템에 대한 예외 처리 (예: 소모품 상자 - 황금 카르마 가위)
+		local exceptionHandlingItemIDList = {}
+		if targetType == "Consumable" then
+			table.insert(exceptionHandlingItemIDList, "CI0002")
+			table.insert(exceptionHandlingItemIDList, "CI0010")
+		end
+		
+		for i=1, #exceptionHandlingItemIDList do
+			for j=#targetIDList, 1, -1 do
+				if targetIDList[j] == exceptionHandlingItemIDList[i] then
+					table.remove(targetIDList, j)
+					break
+				end 
+			end
+		end
+		-----------------------------------------------------
+		for i=1, 3 + userPControl.Item_AddBoxListCount do
+			local randomIdx = _UtilLogic:RandomIntegerRange(1, #targetIDList)
+			local targetID = targetIDList[randomIdx]
+			
+			table.insert(self.ItemListFromBox, targetID)
+			table.remove(targetIDList, randomIdx)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetEmblemBoxList()
+		-- 메달 박스를 열었을 때, 선택지를 결정하는 함수입니다.
+		--[[
+		메달 박스 메커니즘 (시너지 활성화 유무에 상관없이, 시너지를 갖고 있는 것만으로도 해당됨)
+		
+		현재 가진 시너지 수 0~4개: 완전 무작위 메달
+		현재 가진 시너지 수 5~6개: 현재 가진 시너지 중에 1개가 메달 선택지에 확정적으로 등장.
+		현재 가진 시너지 수 7~8개: 현재 가진 시너지 중에 2개가 메달 선택지에 확정적으로 등장.
+		현재 가진 시너지 수 9~10개: 현재 가진 시너지 중에 3개가 메달 선택지에 확정적으로 등장.
+		현재 가진 시너지 수 11개 이상: 모든 메달이 현재 가진 시너지 중에서 등장. 
+		
+		]]--
+		-----------------------------------------------------
+		local user = self.Entity
+		local userPControl = user.TM_PropertyControl
+		local season = string.format("%.1f", user.GameManager.ModeSetVersion)
+		-----------------------------------------------------
+		table.clear(self.ItemListFromBox)
+		-----------------------------------------------------
+		local listCount = 4 + userPControl.Item_AddBoxListCount
+		local confirmedIDCount = 0
+		-----------------------------------------------------
+		local itemInfoTable = _DataService:GetTable("ItemStatus")
+		local itemListBySeason = _DataService:GetTable("ItemListBySeason")
+		local targetIDList = {}
+		
+		-- 아이템DB에서 모든 메달 갖고오기
+		for i=1, itemInfoTable:GetRowCount() do
+			local row = itemInfoTable:GetRow(i)
+			local type = row:GetItem("Type")
+			local targetID = row:GetItem("ItemID")
+			if type == "Emblem" then
+				-- 시즌 포함 여부 확인
+				local seasonInfo = itemListBySeason:FindRow("ItemID", targetID)
+				if seasonInfo:GetItem(season) == "TRUE" then
+					table.insert(targetIDList, targetID)
+				end
+			end
+		end
+		
+		--[[
+		현재 시너지 수에따라, 갖고 있는 시너지 선택지에 등장시키기
+		self.OnFieldSynergy의 테이블 순회해서, 현재 시너지와 매칭되면 등록하기
+		]]-- 
+		local confirmedIDList = {}
+		
+		for synergyID,synergyCount in pairs(self.OnFieldSynergy) do
+			for i=1,#targetIDList do
+				local keyTail = string.sub(targetIDList[i], 3, -1)
+				if synergyID == "S"..keyTail then
+					table.insert(confirmedIDList, targetIDList[i])
+				end
+			end
+		end
+		
+		--갖고 있는 시너지에 따라 현재 가진 시너지를 확정적으로 선택지에 넣기
+		if #confirmedIDList == 5 or #confirmedIDList == 6 then listCount = 3 confirmedIDCount = 1
+		elseif #confirmedIDList == 7 or #confirmedIDList == 8 then listCount = 2 confirmedIDCount = 2 
+		elseif #confirmedIDList == 9 or #confirmedIDList == 10 then listCount = 1 confirmedIDCount = 3 
+		elseif #confirmedIDList >= 11 then listCount = 0 confirmedIDCount = 4 end
+		
+		if confirmedIDCount >= 1 then
+			for i=1,confirmedIDCount do
+				local randomIdx = _UtilLogic:RandomIntegerRange(1, #confirmedIDList)
+				local targetID = confirmedIDList[randomIdx]
+				table.insert(self.ItemListFromBox, targetID)
+				table.remove(confirmedIDList, randomIdx)
+				--갖고 있는 시너지를 선택지에 넣었다면 전체 시너지 리스트에서 중복선택되지 않게 빼기
+				for i=1, #targetIDList do
+					if targetIDList[i] == targetID then
+						table.remove(targetIDList,i)
+						break
+					end
+				end
+			end
+		end
+		--남은 선택지에는 전체 시너지 리스트에서 랜덤으로 골라서 선택지에 넣기
+		if listCount ~= 0 then
+			for i=1, listCount do
+				local randomIdx = _UtilLogic:RandomIntegerRange(1, #targetIDList)
+				local targetID = targetIDList[randomIdx]
+				table.insert(self.ItemListFromBox, targetID)
+				table.remove(targetIDList, randomIdx)
+			end
+		end
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void GetItemFromItemBox(integer selectIdx)
+		-- 아이템 박스에서 selectIdx번 슬롯을 선택하면, 해당 슬롯의 아이템을 얻도록 처리합니다.
+		--------------------------------------------------------------------------------------------
+		-- 검증
+		
+		-- 준비 단계인가?
+		if self.Entity.GameManager.PhaseType ~= "Ready" then
+			log_warning("준비 단계가 아닙니다.")
+			return
+		end
+		
+		-- 아이템 상자를 연 상태가 맞는가?
+		if _UtilLogic:IsNilorEmptyString(self.ItemListFromBox[selectIdx]) == true then
+			return
+		end
+		--------------------------------------------------------------------------------------------
+		-- 처리
+		local itemID = self.ItemListFromBox[selectIdx]
+		--------------------------------------------------------------------------------------------
+		-- 챌린지 2 : 모든 완성 아이템은 '산타 장갑'이 됩니다.
+		if self.Entity.TM_PropertyControl.Challenge_SetCheck["CH10002"] >= 1 and string.sub(itemID, 1, 2) == "NI" then
+			itemID = "NI10033"
+		end
+		--------------------------------------------------------------------------------------------
+		table.insert(self.OwnItems, itemID)
+		table.clear(self.ItemListFromBox)
+		
+		_UI_Inventory:ShowItemSelectPopup(false, self.Entity.OwnerId)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0009",self.Entity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetOnFieldSynergyCount(string synergyID, number count)
+		-- 활성화된 시너지 수를 count만큼 증감시킵니다.
+		--------------------------------------------------------------
+		if count > 0 then
+			if isvalid(self.OnFieldSynergy[synergyID]) == false then
+				self.OnFieldSynergy[synergyID] = count
+			else
+				self.OnFieldSynergy[synergyID] += count
+			end
+		else
+			if isvalid(self.OnFieldSynergy[synergyID]) then
+				self.OnFieldSynergy[synergyID] += count
+				
+				if self.OnFieldSynergy[synergyID] <= 0 then
+					self.OnFieldSynergy[synergyID] = nil
+				end
+			end
+		end
+		
+		--log("SynergyID = ", synergyID, self.OnFieldSynergy[synergyID])
+		
+		self.Entity:SendEvent(OnFieldSynergyCountChanged("User", synergyID, self.OnFieldSynergy[synergyID]))		-- 에러 아님
+		
+		
+		-- 일일 미션 : 싱글 모드에서 시너지 6종 이상 활성화
+		if string.sub(self.Entity.GameManager.ModeType, 1, 6) == "Single" then
+			-- 활성화된 시너지 수 체크
+			local synergyTable = _DataService:GetTable("SynergyInfo")
+			local tableRowCount = synergyTable:GetRowCount()
+			local activateConditionTable = {}
+			local activeSynergyCount = 0
+			
+			-- 시너지 활성화 여부 체크를 위해 최소로 필요한 숫자 테이블 가져오기
+			for i = 1, tableRowCount do
+				local synergyRow = synergyTable:GetRow(i)
+				local synID = synergyRow:GetItem("SynergyID")
+				
+				for j = 1, 5 do
+					local needCount = synergyRow:GetItem(string.format("NeedCount_step%d", j))
+					if isvalid(tonumber(needCount)) then
+						activateConditionTable[i] = tonumber(needCount)
+						break
+					end
+				end
+			end
+			
+			for i = 1, tableRowCount do
+				local synergyRow = synergyTable:GetRow(i)
+				local synID = synergyRow:GetItem("SynergyID")
+				
+				if isvalid(self.OnFieldSynergy[synID]) then
+					if self.OnFieldSynergy[synID] >= activateConditionTable[i] then
+						activeSynergyCount += 1
+					end 
+				end
+			end
+			
+			if activeSynergyCount >= 6 then
+				self.Entity.DailyMissionComponent:AddDailyMissionProgress("DM10003", self.Entity.GameManager.ModeLevel, 1)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetEnemyOwnedFieldSynergyCount(string synergyID, number count)
+		-- 활성화된 시너지 수를 count만큼 증감시킵니다.
+		--------------------------------------------------------------
+		if isvalid(self.EnemyOwnedFieldSynergy[synergyID]) == false then
+			self.EnemyOwnedFieldSynergy[synergyID] = count
+		else
+			self.EnemyOwnedFieldSynergy[synergyID] += count
+		end
+		
+		self.Entity:SendEvent(OnFieldSynergyCountChanged("Enemy", synergyID, self.EnemyOwnedFieldSynergy[synergyID]))	-- 에러 아님
+		
+		
+		if isvalid(self.EnemyOwnedFieldSynergy[synergyID]) then
+			if self.EnemyOwnedFieldSynergy[synergyID] <= 0 then
+				self.EnemyOwnedFieldSynergy[synergyID] = nil
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DespawnOnetimeUnits()
+		for i=#self.OwnUnits, 1, -1 do
+			if self.OwnUnits[i].UnitInfo.IsOnetimeUnit == true then
+				self.OwnUnits[i].UnitInfo:CleanCharInfo()
+				table.remove(self.OwnUnits, i)
+			end
+		end
+		
+		for i=#self.EnemyUnits, 1, -1 do
+			if self.EnemyUnits[i].UnitInfo.IsOnetimeUnit == true then
+				self.EnemyUnits[i].UnitInfo:CleanCharInfo()
+				table.remove(self.EnemyUnits, i)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SwapRuneCardIndex(integer a, integer b)
+		-- 룬 카드의 배치 순서를 변경 요청을 받아 실행하는 함수입니다.
+		-- a슬롯 카드와 b슬롯의 위치를 스왑합니다.
+		------------------------------------------------
+		-- 검증1. a, b값이 정상적인지
+		if a < 1 or a > 5 or b < 1 or b > 5 then
+			log("parameter is not valid")
+			return
+		end
+		
+		-- 검증2. a ~= b 인지
+		if a == b then
+			log("a = b")
+			return
+		end
+		
+		-- 검증3. 보유한 카드 수보다 높은 슬롯을 바꾸려 했는지?
+		if a > #self.OwnRunes or b > #self.OwnRunes then
+			return
+		end
+		------------------------------------------------
+		-- Swap!
+		local temp = self.OwnRunes[a]
+		self.OwnRunes[a] = self.OwnRunes[b]
+		self.OwnRunes[b] = temp
+		
+		local tempEntity = self.OnEntityUsingToOwnedRunes[a]
+		self.OnEntityUsingToOwnedRunes[a] = self.OnEntityUsingToOwnedRunes[b]
+		self.OnEntityUsingToOwnedRunes[b] = tempEntity
+		------------------------------------------------
+		-- 이벤트를 쏩니다. ("룬 카드 순서 교환 시~")
+		self.Entity:SendEvent(ChangeRuneCardOrder())
+	end
+
+	method integer GetRuneCardCount(string runeID)
+		local setCount = 0
+		for i=1, #self.OwnRunes do
+			local checkRuneID = _UtilLogic:Split(self.OwnRunes[i], "_")[1]
+			if runeID == checkRuneID then
+				setCount += 1
+			end
+		end
+		
+		return setCount
+	end
+
+	@ExecSpace("Server")
+	method RuneCardComponent FindRuneCardComponent(string runeID, number setUID)
+		if self:GetRuneCardCount(runeID) > 0 then
+			local runeParent = self.Entity:GetChildByName("RuneCardParent")
+			for i=1, #runeParent.Children do
+				local cardEntity = runeParent.Children[i]
+				
+				if string.sub(cardEntity.Name, 1, 10) == "PlayerRune" then
+					
+					---@type RuneCardComponent
+					local rcComponent = cardEntity:GetComponent(runeID)
+					
+					if isvalid(rcComponent) and rcComponent.UID == setUID then
+						return rcComponent
+					end
+				end	
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetUI_OnFieldUnitsCount()
+		local ui_fieldUnitCount = _EntityService:GetEntityByPath("/ui/Arena_Default/Text_OnFieldUnitsCount")
+		local ui_unitCountIcon = ui_fieldUnitCount:GetChildByName("Icon")
+		
+		local maxCount = self.Level + self.Entity.TM_PropertyControl.Level_MaxUnitAdjustment 
+		if self.OnFieldUnitCount == maxCount then
+			ui_fieldUnitCount.TextComponent.Text = string.format("%d/%d", self.OnFieldUnitCount, maxCount)
+			ui_fieldUnitCount.TextComponent.OutlineColor = Color.FromHexCode("#00d8ff")
+			ui_unitCountIcon.SpriteGUIRendererComponent.OutlineColor = Color.FromHexCode("#00d8ff")
+		else
+			ui_fieldUnitCount.TextComponent.Text = string.format("%d/%d", self.OnFieldUnitCount, maxCount)
+			ui_fieldUnitCount.TextComponent.OutlineColor = Color.FromHexCode("#ff0000")
+			ui_unitCountIcon.SpriteGUIRendererComponent.OutlineColor = Color.FromHexCode("#ff0000")
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void Test_PrintOwnUnitsLog()
+		log("#self.OwnUnits = ", #self.OwnUnits)
+		for i=1, #self.OwnUnits do
+			log(i,self.OwnUnits[i].UnitInfo.charID)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer CheckActiveSynergy()
+		--현재 활성화된 시너지들의 수를 리턴해주는 함수입니다.
+		-------
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		local tableRowCount = synergyTable:GetRowCount()
+		local activateConditionTable = {}
+		
+		local activeSynergyAmount = 0
+		
+		-- 시너지 활성화 여부 체크를 위해 최소로 필요한 숫자 테이블 가져오기
+		for i = 1, tableRowCount do
+			local synergyRow = synergyTable:GetRow(i)
+			local synergyID = synergyRow:GetItem("SynergyID")
+			
+			for i = 1, 5 do
+				local count = synergyRow:GetItem(string.format("NeedCount_step%d", i))
+				if isvalid(tonumber(count)) then
+					activateConditionTable[synergyID] = tonumber(count)
+					break
+				end
+			end
+		end
+		for k, v in pairs(self.OnFieldSynergy) do
+			--최소 조건 이상인지 체크
+			if activateConditionTable[k] <= v then
+				activeSynergyAmount = activeSynergyAmount + 1
+			end
+		end
+		
+		return activeSynergyAmount
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CheckSpecificSynergy(string checkSynergyID)
+		--특정 시너지 활성화 여부를 리턴해주는 함수입니다.
+		-------
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		local tableRowCount = synergyTable:GetRowCount()
+		local activateConditionTable = {}
+		
+		local IsSynergyActive = false
+		
+		-- 시너지 활성화 여부 체크를 위해 최소로 필요한 숫자 테이블 가져오기
+		
+		local synergyRow = synergyTable:FindRow("SynergyID",checkSynergyID)
+			
+		for i = 1, 5 do
+			local count = synergyRow:GetItem(string.format("NeedCount_step%d", i))
+			if isvalid(tonumber(count)) then
+				activateConditionTable[checkSynergyID] = tonumber(count)
+				break
+			end
+		end
+		
+		--최소 조건 이상인지 체크
+		if isvalid(activateConditionTable[checkSynergyID]) then 
+			if isvalid(self.OnFieldSynergy[checkSynergyID]) then
+				if activateConditionTable[checkSynergyID] <= self.OnFieldSynergy[checkSynergyID] then
+					IsSynergyActive = true
+				end
+			end
+		end
+		
+		return IsSynergyActive
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnEndPlay()
+		local user = self.Entity
+		local userID = user.OwnerId
+		---------------------------------------------------------
+		self:SaveCurrentGame()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleScreenTouchReleaseEvent(ScreenTouchReleaseEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: InputService
+		-- Space: Client
+		---------------------------------------------------------
+		-- Parameters
+		local TouchId = event.TouchId
+		local TouchPoint = event.TouchPoint
+		local user = _UserService.LocalPlayer
+		---------------------------------------------------------
+		if self.Entity.OwnerId == user.OwnerId and isvalid(_UnitSetLogic_New.SelectUnit) == true then
+			
+			-- UI위에 마우스가 있다면 이 함수(이벤트 핸들러)를 실행하지 않습니다.
+			--[[if _InputService:IsPointerOverUI() == true then
+				_UnitSetLogic_New:DragOff(_UnitSetLogic_New.SelectUnit)
+				return 
+			end]]
+			
+			-- 하이라이트 처리된 엔티티가 있다면 그것 기준으로 작동
+			if isvalid(_CursorPosManager.HoverEntity) == true and isvalid(_CursorPosManager.HoverEntity.TileComponent_New) == true then
+				local tileCompo = _CursorPosManager.HoverEntity.TileComponent_New
+				if (tileCompo.Zone == "Waiting") or (tileCompo.Zone == "User") then
+					--log("unit to tile")
+					_UnitSetLogic_New.SelectTile = tileCompo.Entity
+					_UnitSetLogic_New:TouchRelease(user.OwnerId, _UnitSetLogic_New.SelectUnit, _UnitSetLogic_New.SelectTile)
+					return
+				else
+					_UnitSetLogic_New:DragOff(_UnitSetLogic_New.SelectUnit)
+					return
+				end
+			end
+			
+			local simulator = _CollisionService:GetSimulator(_UserService.LocalPlayer.CurrentMapName)
+			local worldpoint = _UILogic:ScreenToWorldPosition(TouchPoint)
+			local component = simulator:OverlapPoint(CollisionGroups.TriggerBox, worldpoint)
+		
+			if isvalid(component) then
+				-- 타일에 touchExit 한 경우
+				if isvalid(component.Entity.TileComponent_New) then
+					local tileCompo = component.Entity.TileComponent_New
+					if (tileCompo.Zone == "Waiting") or (tileCompo.Zone == "User") then
+						--log("unit to tile")
+						_UnitSetLogic_New.SelectTile = component.Entity
+						_UnitSetLogic_New:TouchRelease(user.OwnerId, _UnitSetLogic_New.SelectUnit, _UnitSetLogic_New.SelectTile)
+						return
+					else
+						_UnitSetLogic_New:DragOff(_UnitSetLogic_New.SelectUnit)
+						return
+					end
+					
+				-- 다른 유닛에 touchExit 한 경우
+				elseif isvalid(component.Entity.UnitInfo) then
+					local tileCompo = component.Entity.UnitInfo.setTile.TileComponent_New
+					if (tileCompo.Zone == "Waiting") or (tileCompo.Zone == "User") then
+						_UnitSetLogic_New.SelectTile = component.Entity.UnitInfo.setTile
+						_UnitSetLogic_New:TouchRelease(user.OwnerId, _UnitSetLogic_New.SelectUnit, _UnitSetLogic_New.SelectTile)
+						return
+					else
+						_UnitSetLogic_New:DragOff(_UnitSetLogic_New.SelectUnit)
+						return
+					end
+					
+				-- SellZone에 touchExit 한 경우
+				elseif isvalid(component.Entity.SellZoneComponent) then
+					if _UserService.LocalPlayer.GameManager.ModeType == "Tutorial" and _UserService.LocalPlayer.TutorialManager_New.AllowSellCharacter == false then
+						_UIToast:ShowMessageByLocalizingKey("Toast_SellCharError")
+						_UnitSetLogic_New:DragOff(_UnitSetLogic_New.SelectUnit)
+						return
+					end
+					
+					_UserService.LocalPlayer.CharacterShopManager_New:UI_ShowSellUI(false, 0)
+					_UnitSetLogic_New:SellUnit(user.OwnerId, _UnitSetLogic_New.SelectUnit)
+					return
+				end
+				
+				-- 걸리는 컴포넌트는 있는데 위의 해당 사항이 없는 경우
+				log("걸리는 컴포넌트는 있는데 위의 해당 사항이 없는 경우")
+				_UnitSetLogic_New:DragOff(_UnitSetLogic_New.SelectUnit)
+				return
+				
+				
+			-- 걸리는 컴포넌트가 없는 경우
+			else
+				_UnitSetLogic_New:DragOff(_UnitSetLogic_New.SelectUnit)
+				return
+			end
+			
+			-- _ItemSetLogic:TouchRelease(touchUserId)
+		end
+	end
+
+end

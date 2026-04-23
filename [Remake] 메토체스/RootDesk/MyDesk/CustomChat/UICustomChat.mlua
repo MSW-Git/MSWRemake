@@ -1,0 +1,294 @@
+@Component
+script UICustomChat extends Component
+
+	property GridViewComponent grid = "b7055408-51fa-46c1-88e3-e9e77a7c7e8d"
+
+	property Entity baseMsg = "df882129-632d-4928-aa9e-417ca475ac1b"
+
+	property table chatData = {}
+
+	property integer maxChatCount = 100
+
+	property integer currentChatIndex = 0
+
+	property Entity inputText = "12682d83-21d8-4782-9594-de5b59c70944"
+
+	property string colorDefaultMsg = "#ffffff"
+
+	property string colorSysMsg = "#ffff00"
+
+	property string colorMyNickname = "#ffb000"
+
+	property string colorNickname = "#06ebff"
+
+	property string colorWhisperMsg = "#249bff"
+
+	property string colorMegaphoneMsg = "#ff0000"
+
+	property string lastUsingCommand = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 채팅 UI 초기화 및 이벤트 연결
+		self._T.inputTextSelected = false
+		self._T.scrollInited = false
+		
+		local colorInfo = {}
+		colorInfo[_CustomChatLogic.TYPE_SYSTEM] = self.colorSysMsg
+		colorInfo[_CustomChatLogic.TYPE_WHISPER] = self.colorWhisperMsg
+		colorInfo[_CustomChatLogic.TYPE_MEGAPHONE] = self.colorMegaphoneMsg
+		
+		local myPPSN = _UserService.LocalPlayer.PlayerComponent.UserId
+		
+		local getColor = function(type)
+			if colorInfo[type] ~= nil then
+				return Color.FromHexCode(colorInfo[type])
+			end
+			return Color.FromHexCode(self.colorDefaultMsg)
+		end
+		local getNicknameColor = function(ppsn)
+			if ppsn == myPPSN then
+				return self.colorMyNickname
+			end
+			return self.colorNickname
+		end
+		self.grid.ItemEntity = self.baseMsg
+		
+		self.grid.OnRefresh = function(i,e)
+			local index = i
+		
+			---@type OnGetChatMessage
+			local event = self.chatData[index + 1]
+			---@type Entity
+			local entity = e
+			---@type TextComponent
+			local nicknameTextCompo = entity:GetChildByName("nickname").TextComponent
+			---@type TextComponent
+			local textComp = entity:GetChildByName("text").TextComponent
+			local spriteGUI = textComp.Entity.SpriteGUIRendererComponent
+			local nicknameText = ""
+			local text = ""
+			if event.type == _CustomChatLogic.TYPE_SYSTEM then
+				nicknameText = ""
+				text = string.format("%s", event.msg)
+				spriteGUI.Enable = false
+			elseif event.type == _CustomChatLogic.TYPE_MEGAPHONE then
+				spriteGUI.Enable = true
+				nicknameText = string.format("[전체]%s",event.name)
+				nicknameTextCompo.FontColor = Color.FromHexCode(getNicknameColor(event.ppsn))
+				text = string.format("%s",event.msg)
+			else
+				spriteGUI.Enable = true
+				nicknameText = string.format("%s",event.name)
+				nicknameTextCompo.FontColor = Color.FromHexCode(getNicknameColor(event.ppsn))
+				text = string.format("%s",event.msg)
+			end
+			if textComp.Text ~= text then
+				textComp.Text = text
+			end	
+			if nicknameTextCompo.Text ~= nicknameText then
+				nicknameTextCompo.Text = nicknameText
+			end
+			textComp.FontColor = getColor(event.type)
+			
+			-- 닉네임 길이에 따라 닉네임 텍스트와 메세지 텍스트의 너비 조절
+			local resizeMessageUI = function()
+				textComp.Entity.UITransformComponent.anchoredPosition.x = nicknameTextCompo.Entity.UITransformComponent.RectSize.x
+			end
+			_TimerService:SetTimerOnce(resizeMessageUI, 0.001)
+		end
+		
+		self.inputText:ConnectEvent(TextInputSubmitEvent,function(e)
+			local Text = e.Text
+			local placeHolder = self:OnSumitMessage(Text)
+			_TimerService:SetTimerOnce(function() 
+				self.inputText.TextInputComponent.Text = placeHolder
+			end,0.01)
+			
+			
+		end)
+		self.inputText.TextInputComponent.CharacterLimit = _CustomChatLogic.CharacterLimit
+		
+		
+		self.inputText:ConnectEvent(TextInputEndEditEvent,function(e)
+			_TimerService:SetTimerOnce(function() 		
+				if self._T.inputTextSelected then
+					self:OnTextInputEndEdit()
+				end
+			end,0.15)
+			
+		end)
+		
+		_CustomChatLogic:AddSystemMessage("메이플 올스타 리그에 오신걸 환영합니다.")
+	end
+
+	method string OnSumitMessage(string text)
+		-- 채팅 메시지 제출 처리 및 명령어 파싱
+		-- 빈 텍스트가 제출된 경우 아무런 행동 수행 X
+		if _UtilLogic:IsNilorEmptyString(text) then		
+			return ""
+		end 
+		----------------------------------------------------------------------
+		local split = _UtilLogic:Split(text," ")
+		
+		local type = _CustomChatLogic:GetTypeByMessage(text)
+		if type == _CustomChatLogic.TYPE_DEFAULT then
+			_CustomChatLogic:RequestChat(text,_UtilLogic.ServerElapsedSeconds,type,"")
+		elseif type == _CustomChatLogic.TYPE_WHISPER then
+			if #split > 2 then
+				local code = split[2]
+				local result = text:match("^\\w%s%S+%s(.+)$")
+				_CustomChatLogic:RequestChat(result,_UtilLogic.ServerElapsedSeconds,type,code)
+				return text:match("^(\\w%s%S+)%s") .." "
+			else
+				_CustomChatLogic:AddSystemMessage("올바르지 않은 명령어입니다.")
+			end
+		elseif type == _CustomChatLogic.TYPE_PARTY then
+			if #split > 1 then		
+				local result = text:match("\\p%s+(.+)")
+				_CustomChatLogic:RequestChat(result,_UtilLogic.ServerElapsedSeconds,type,"")
+				return "\\p "
+			else
+				_CustomChatLogic:AddSystemMessage("올바르지 않은 명령어입니다.")
+			end
+		elseif type == _CustomChatLogic.TYPE_MEGAPHONE then
+			if #split > 1 then		
+				local result = text:match("\\m%s+(.+)")
+				_CustomChatLogic:RequestChat(result,_UtilLogic.ServerElapsedSeconds,type,"")
+				return "\\m "
+			else
+				_CustomChatLogic:AddSystemMessage("올바르지 않은 명령어입니다.")
+			end
+		else
+			--To do
+		end
+		
+		return ""
+	end
+
+	method void SetWhisper(string ppsn)
+		-- 귓속말 대상 설정
+		local userInfo = _UserService.Users[ppsn]
+		if userInfo == nil then
+			return
+		end
+		
+		self.inputText.TextInputComponent.Text = string.format("\\w %s ",userInfo.ProfileCode)
+		self:ActivateInputField()
+	end
+
+	method void Refresh(integer count)
+		-- 채팅 목록 UI 갱신
+		self.grid.TotalCount = count
+		self._T.needRefresh = true
+		
+		if self._T.refreshEvent == nil then
+			self._T.refreshEvent = _TimerService:SetTimerRepeat(function() 
+				if self._T.needRefresh then
+					self._T.needRefresh = false
+					local scrollValue = self.grid:GetScrollNormalizedPosition(UITransformAxis.Vertical)
+					self.grid:Refresh(false,true)
+		
+					if self._T.scrollInited == false then		
+						self.grid:SetScrollNormalizedPosition(UITransformAxis.Vertical,1)	
+						if self.grid:GetScrollNormalizedPosition(UITransformAxis.Vertical) > 0 then
+							self._T.scrollInited = true
+						end
+					else
+						self.grid:SetScrollNormalizedPosition(UITransformAxis.Vertical,scrollValue)	
+					end
+				end
+			end,0.1)
+		end
+	end
+
+	method void ActivateInputField()
+		-- 채팅 입력 필드 활성화
+		if self._T.inputTextSelected == false then
+			self.inputText.TextInputComponent:ActivateInputField()
+			self:OnActivateInputField()
+		end
+	end
+
+	method void OnTextInputEndEdit()
+		-- 텍스트 입력 종료 처리
+		self._T.inputTextSelected = false
+		
+		
+	end
+
+	method void OnActivateInputField()
+		-- 입력 필드 활성화 상태 설정
+		self._T.inputTextSelected = true
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "CustomChatLogic")
+	handler HandleOnGetChatMessage(OnGetChatMessage event)
+		-- 새로운 채팅 메시지 수신 처리
+		-- Parameters
+		local msg = event.msg
+		local nickName = event.name
+		local ppsn = event.ppsn
+		local type = event.type
+		local extra = event.extra
+		---------------------------------------------------------
+		
+		
+		
+		table.insert(self.chatData,event)
+		
+		if self.currentChatIndex > self.maxChatCount then
+			table.remove(self.chatData,1)
+		end
+		self.currentChatIndex += 1
+		
+		self:Refresh(#self.chatData)
+		
+		
+		
+		if _UserService.LocalPlayer.PlayerComponent.UserId ~= ppsn then
+			return
+		end
+		
+		if self._T.hideEventId ~= nil then
+			_TimerService:ClearTimer(self._T.hideEventId)
+			self._T.hideEventId = nil
+		end
+		
+		local chatBalloon = _UserService.LocalPlayer.ChatBalloonComponent
+		chatBalloon.Message = msg
+		
+		self._T.hideEventId = _TimerService:SetTimerOnce(function() 
+			chatBalloon.Message = ""
+			self._T.hideEventId = nil
+		end,5)
+		
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyUpEvent(KeyUpEvent event)
+		-- 키보드 입력 처리 (채팅 활성화)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: InputService
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local key = event.key
+		---------------------------------------------------------
+		if key == KeyboardKey.Return or key == KeyboardKey.Slash then
+			--튜토리얼에선 채팅을 사용하지 않음
+			if _UserService.LocalPlayer.GameManager.ModeType == "Tutorial" then
+				return
+			end
+			self:ActivateInputField()
+		end
+	end
+
+end

@@ -1,0 +1,381 @@
+@Logic
+script UpgradeDataSetLogic extends Logic
+
+	property table UpgradeData = {}
+
+	property Entity UIUpgradePanel = "31fe604b-b2a0-4292-a719-a94e149267f8"
+
+	property table SubscriptionData = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 업그레이드 데이터셋을 로드
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- 업그레이드 타입 데이터와 구독 데이터를 CSV에서 로드
+		table.clear(self.UpgradeData)
+		local dataSet = _DataService:GetTable("UpgradeTypeData")
+		for i = 1, dataSet:GetRowCount() do
+			local data = UpgradeTypeData()
+			data:Load(dataSet, i)
+			
+			if self.UpgradeData[data.Id] ~= nil then
+				break
+			end
+			
+			self.UpgradeData[data.Id] = data
+		end
+		
+		table.clear(self.SubscriptionData)
+		local sDataSet = _DataService:GetTable("SubscriptionData")
+		for i = 1, sDataSet:GetRowCount() do
+			local data = SubscriptionData()
+			data:Load(sDataSet, i)
+			
+			if self.SubscriptionData[data.Id] ~= nil then
+				break
+			end
+			
+			self.SubscriptionData[data.Id] = data
+		end
+	end
+
+	method number ReturnValueOfTypeLevel(integer typeId, integer level, Entity player)
+		-- 특정 업그레이드 타입과 레벨에 대한 효과 값을 반환
+		if level == nil then
+			level = 0
+		end
+		
+		local levelData = self:GetLevelData(typeId, level)
+		return levelData:GetUpgradeValue(player)
+	end
+
+	method integer ReturnMaxLevelValueOfType(integer typeId, Entity player)
+		-- 업그레이드 타입의 최대 레벨에서의 효과 값을 반환
+		
+		local levelData = self:GetLevelData(typeId, self:GetData(typeId):GetMaxLevel(player))
+		return levelData:GetUpgradeValue(player)
+	end
+
+	method integer ReturnCurrentPlayerValue(Entity player, integer typeId)
+		-- 플레이어의 현재 업그레이드 레벨에서의 효과 값을 반환
+		local playerLevel = player.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(typeId)
+		local levelData = self:GetLevelData(typeId, playerLevel)
+		
+		return levelData:GetUpgradeValue(player)
+	end
+
+	method table ReturnTabDatas(integer tabId, Entity player)
+		-- 탭 ID에 따른 업그레이드 목록 데이터를 반환
+		local tabData = {}
+		
+		if tabId == 0 then
+			local REC_MAX_COUNT = 6 
+			
+			local typeIds = {}
+			for typeId, data in pairs(self.UpgradeData) do
+				local typeData = self:GetData(typeId)
+				
+				local isOpened = typeData:IsUpgradeConditionSatisfied(player)
+				local canUpgrade = self:CanUpgrade(player, typeId)
+				
+				if isOpened and canUpgrade then
+					table.insert(typeIds, typeId)
+				end
+			end
+			
+			table.sort(typeIds, function(a, b)
+				local aPriority = self:GetData(a).RecommendPriority
+				local bPriority = self:GetData(b).RecommendPriority
+				return aPriority < bPriority
+			end)
+			
+			for i = 1, REC_MAX_COUNT do
+				if isvalid(typeIds[i]) then
+					table.insert(tabData, typeIds[i])
+				end		
+			end
+			
+			table.sort(tabData, function(a, b)
+				local aCost = self:GetLevelData(a, self:ReturnCurrentPlayerLevel(player, a)+1):GetUpgradeCost(player)
+				local bCost = self:GetLevelData(b, self:ReturnCurrentPlayerLevel(player, b)+1):GetUpgradeCost(player)
+				return aCost < bCost
+			end)
+				
+		else
+			for k, v in pairs(self.UpgradeData) do
+				---@type UpgradeTypeData
+				local data = v
+				
+				if data.Tab == tabId then
+					
+					local isOpened = data:IsUpgradeConditionSatisfied(player)
+					if isOpened == false then
+						continue
+					end
+					
+					table.insert(tabData, k)
+				end
+			end
+			
+			table.sort(tabData, function(a, b) 
+				local aUISort = self:GetData(a).UIOrder
+				local bUISort = self:GetData(b).UIOrder
+				
+				return aUISort < bUISort
+			end)
+		end
+		
+		return tabData
+	end
+
+	method boolean CanUpgrade(Entity player, integer typeId)
+		-- 플레이어가 해당 업그레이드를 할 수 있는지 확인
+		---@type UpgradeTypeData
+		local typeData = self.UpgradeData[typeId]
+		local maxLevel = typeData:GetMaxLevel(player)
+		
+		local userLevel = player.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(typeId)
+		local nextLevel = userLevel + 1
+		
+		if userLevel >= maxLevel then
+			return false
+		else
+			---@type UpgradeLevelData
+			local levelData = typeData.LevelData[nextLevel]
+			return self:IsConditionSatisfied(levelData, player)
+		end
+	end
+
+	method boolean IsConditionSatisfied(UpgradeLevelData levelData, Entity player)
+		-- 업그레이드 조건이 만족되었는지 확인
+		local conditionType = levelData.ConditionType
+		if levelData.TypeId == _UpgradeTypeEnum.GrillLevel or levelData.TypeId == _UpgradeTypeEnum.CounterLevel then
+			conditionType = _UpgradeConditionEnum.Achievement
+		end
+		
+		local conditionValue = levelData:GetConditionValue(player)
+		
+		if _UtilLogic:IsNilorEmptyString(conditionType) or _UtilLogic:IsNilorEmptyString(conditionValue) then
+			return true
+			
+		elseif conditionType == _UpgradeConditionEnum.ManagementLevel then
+			local managementLevel = player.PlayerManagement.ManagementLevel
+			local requireLevel = tonumber(conditionValue)
+			
+			return managementLevel >= requireLevel
+		
+		elseif conditionType == _UpgradeConditionEnum.ExpansionLevel then 
+			local expansionLevel = self:ReturnCurrentPlayerValue(player,_UpgradeTypeEnum.ExpansionStep) 
+			local requireLevel = tonumber(conditionValue)
+			return requireLevel <= expansionLevel
+			
+		elseif conditionType == _UpgradeConditionEnum.InteriorLevel then
+			local interiorLevel = self:ReturnCurrentPlayerLevel(player, _UpgradeTypeEnum.InteriorLevel)
+			local requireLevel = tonumber(conditionValue)
+			return requireLevel <= interiorLevel
+			
+		elseif conditionType == _UpgradeConditionEnum.Achievement then
+			local achiId = tonumber(conditionValue)
+			return player.PlayerAchievement:IsAchievementAchieved(achiId)
+			
+		end
+		
+		return true
+	end
+
+	method integer ReturnMaxUpgradeLevelAvailable(Entity player, integer typeId)
+		-- 플레이어가 업그레이드 가능한 최대 레벨의 효과 값을 반환
+		---@type UpgradeTypeData
+		local typeData = self.UpgradeData[typeId]
+		local maxLevel = typeData:GetMaxLevel(player)
+		
+		
+		local maxUpgrade = 0 
+		
+		
+		for i=1 , maxLevel do 
+			
+			---@type UpgradeLevelData
+			local levelData = typeData.LevelData[i]
+		
+			
+			if not self:IsConditionSatisfied(levelData,player) then  
+				break
+			end
+			maxUpgrade = maxUpgrade + 1 
+		end
+		
+		
+		return self:ReturnValueOfTypeLevel(typeId,maxUpgrade, player)
+	end
+
+	method UpgradeTypeData GetData(integer typeId)
+		-- 업그레이드 타입 ID로 업그레이드 타입 데이터를 반환
+		return self.UpgradeData[typeId]
+	end
+
+	method UpgradeLevelData GetLevelData(integer typeId, integer level)
+		-- 업그레이드 타입과 레벨로 레벨 데이터를 반환
+		local typeData = self:GetData(typeId)
+		return typeData.LevelData[level]
+	end
+
+	@ExecSpace("ClientOnly")
+	method string ReturnConditionText(UpgradeLevelData levelData)
+		-- 업그레이드 조건을 로컬라이즈된 텍스트로 반환
+		local conditionType = levelData.ConditionType
+		if levelData.TypeId == _UpgradeTypeEnum.GrillLevel or levelData.TypeId == _UpgradeTypeEnum.CounterLevel then
+			conditionType = _UpgradeConditionEnum.Achievement
+		end
+		
+		local conditionValue = levelData:GetConditionValue(_UserService.LocalPlayer)
+		
+		if conditionType == _UpgradeConditionEnum.ExpansionLevel then
+			return _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Condition"..conditionType, conditionValue)
+			
+		elseif conditionType == _UpgradeConditionEnum.Achievement then
+			if _UtilLogic:IsNilorEmptyString(conditionValue) then
+				return ""
+			end
+			
+			---@type AchievementIdData
+			local idData = _AchievementDataSetLogic.AchiIdData[tonumber(conditionValue)]
+			local achiName = _AchievementLogic:ReturnAchievementNameText(idData.Type, _AchievementLogic:GetFixedTypeValue(_UserService.LocalPlayer, idData.Type, idData.TypeValue))
+			return _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Condition"..conditionType, achiName)
+				
+		elseif conditionType == _UpgradeConditionEnum.ManagementLevel then
+			---@type ManagementLevelData
+			local managementData = _ManagementDataSetLogic.ManagementLevelData[tonumber(conditionValue)]
+			return _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Condition"..conditionType, _GetLocalizationTextLogic:GetText(managementData.NameKey))
+			
+		elseif conditionType == _UpgradeConditionEnum.InteriorLevel then
+			local interiorLevel = math.floor(tonumber(conditionValue))
+			local interiorName = _GetLocalizationTextLogic:GetText("InteriorLevel"..interiorLevel)
+			return _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Condition"..conditionType, interiorName)
+			
+		else
+			if _UtilLogic:IsNilorEmptyString(conditionType) == false then
+				return _GetLocalizationTextLogic:GetText("Condition"..conditionType)
+			else
+				return ""
+			end	
+		end
+	end
+
+	method integer ReturnCurrentPlayerLevel(Entity player, integer typeId)
+		-- 플레이어의 현재 업그레이드 레벨을 반환
+		local playerLevel = player.PlayerUpgrade:ReturnPlayerUpgradeLevelOfType(typeId)
+		---@type UpgradeTypeData
+		local typeData = self.UpgradeData[typeId]
+		---@type UpgradeLevelData
+		local levelData = typeData.LevelData[playerLevel]
+		local level = levelData.Level
+		
+		return level
+	end
+
+	@ExecSpace("Client")
+	method void RequestCloseUpgradeUI()
+		-- 업그레이드 UI를 닫고 관련 UI도 함께 닫기
+		if _UIEntityLogic_RecipeGroup.UIRecipeBook.Enable then
+			_UIEntityLogic_RecipeGroup.UIRecipeBook.UIRecipeBook:Close(true, false)
+		end
+		
+		self.UIUpgradePanel.UIUpgradePanel:Close()
+	end
+
+	method string ReturnGuidePageIdByTabIndex(integer tabId)
+		-- 탭 인덱스에 따른 가이드 페이지 ID를 반환
+		if tabId == 1 then	
+			return "GP18"
+		elseif tabId == 2 then	
+			return "GP02"
+		elseif tabId == 3 then	
+			return "GP10"
+		elseif tabId == 4 then	
+			return "GP07"
+		elseif tabId == 5 then
+			return "GP11"
+		end
+	end
+
+	@ExecSpace("Client")
+	method void MakeUpgradeReport(integer typeId, integer level)
+		-- 업그레이드 완료 시 보고서 메시지를 생성
+		local typeData = self:GetData(typeId)
+		
+		if typeData.ReportId == nil then
+			return
+		end
+		
+		
+		local param1 = typeData.ReportParam1
+		if _UtilLogic:IsNilorEmptyString(param1) then
+			_ReportMessageMaker:RequestAddToReportQueue(typeData.ReportId, "", "", "")
+			return
+			
+		else
+			
+			param1 = self:ReturnReportParamValue(param1, typeId, level)
+			
+			local param2 = typeData.ReportParam2
+			if _UtilLogic:IsNilorEmptyString(param2) then
+				_ReportMessageMaker:RequestAddToReportQueue(typeData.ReportId, param1, "", "")		
+				return
+			end
+			
+			param2 = self:ReturnReportParamValue(param2, typeId, level)
+			_ReportMessageMaker:RequestAddToReportQueue(typeData.ReportId, param1, param2, "")
+			
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method string ReturnReportParamValue(string paramStr, integer typeId, integer level)
+		-- 보고서 파라미터 문자열을 실제 값으로 변환
+		local levelValue = self:ReturnValueOfTypeLevel(typeId, level, _UserService.LocalPlayer)
+		
+		if paramStr == "Level" then
+			return tostring(level)
+			
+		elseif paramStr == "LevelValue" then
+			return _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(levelValue))
+			
+		elseif paramStr == "AppLevelValue" then
+			if typeId == _UpgradeTypeEnum.GrillLevel then
+				return tostring(_KitchenAppService:GetData(_KitchenAppEnumType.Grill..levelValue).EffectValue)		
+				
+			elseif typeId == _UpgradeTypeEnum.DisplaystandLevel then
+				return tostring(_KitchenAppService:GetData(_KitchenAppEnumType.Display..levelValue).EffectValue)
+				
+			elseif typeId == _UpgradeTypeEnum.CounterLevel then
+				return tostring(_KitchenAppService:GetData(_KitchenAppEnumType.Counter..levelValue).EffectValue)
+				
+			end
+		end
+		
+		return paramStr
+	end
+
+	@ExecSpace("Client")
+	method void MakeSubscriptionExpireReport(string itemId)
+		-- 구독 서비스 만료 시 보고서 메시지를 생성
+		local boxName = _LocalizationService:GetText(_ItemDataSetLogic:GetItemData(itemId).NameKey)
+		_ReportMessageMaker:RequestAddToReportQueue(8020, boxName, "", "")
+		
+	end
+
+	method SubscriptionData GetSubscriptionData(string subsId)
+		-- 구독 ID로 구독 데이터를 반환
+		return self.SubscriptionData[subsId]
+	end
+
+	method integer CalcBurgerPriceFromTrainingUpgradeLevel(integer upgradeLevel)
+		-- 트레이닝 업그레이드 레벨에 따른 버거 가격을 계산
+		return upgradeLevel * 100 
+	end
+
+end

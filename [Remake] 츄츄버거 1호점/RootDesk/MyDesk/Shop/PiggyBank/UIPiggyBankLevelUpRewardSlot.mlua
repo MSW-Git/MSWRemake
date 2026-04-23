@@ -1,0 +1,171 @@
+@Component
+script UIPiggyBankLevelUpRewardSlot extends Component
+
+	property TextComponent LevelText = nil
+
+	property SpriteGUIRendererComponent LevelBg = nil
+
+	property SpriteGUIRendererComponent ItemThumnail = nil
+
+	property SpriteGUIRendererComponent RewardItemRender = nil
+
+	property TextComponent CountText = nil
+
+	property Entity Effect = nil
+
+	property Entity SlotDim = nil
+
+	property Entity IconLock = nil
+
+	property Entity RedDot = nil
+
+	property string RewardItemRenderRuid_Disable = "dedf9be979e84c799fa812df4ea9c2f3"
+
+	property string RewardItemRenderRuid_Enable = "36014dce165544d099b7434d3cb9a284"
+
+	property integer SlotIndex = 0
+
+	property string RewardItemRenderRuid_Disable_Level = "d6d35645bee645bcabd4f2d653efb218"
+
+	property string RewardItemRenderRuid_Enable_Level = "ea681d2e77b94a969a5a57876c33708f"
+
+	property boolean canPurchase = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 저금통 레벨업 보상 슬롯의 UI 컴포넌트들을 초기화하고 클릭 이벤트 연결
+		self.LevelBg = self.Entity:GetChildByName("LevelTextBg").SpriteGUIRendererComponent
+		self.LevelText = self.LevelBg.Entity:GetChildByName("LevelText").TextComponent
+		self.RewardItemRender = self.Entity:GetChildByName("RewardItemRender").SpriteGUIRendererComponent
+		self.Effect = self.RewardItemRender.Entity:GetChildByName("Effect_Special")
+		self.ItemThumnail = self.RewardItemRender.Entity:GetChildByName("ItemThumnail").SpriteGUIRendererComponent
+		self.CountText = self.RewardItemRender.Entity:GetChildByName("CountText").TextComponent
+		self.SlotDim = self.RewardItemRender.Entity:GetChildByName("SlotDim")
+		self.IconLock = self.RewardItemRender.Entity:GetChildByName("IconLock")
+		self.RedDot = self.RewardItemRender.Entity:GetChildByName("RedDot")
+		
+		self.RewardItemRender.Entity:ConnectEvent(ButtonClickEvent, function()
+			if self.SlotIndex == 0 then
+				return
+			end
+			local player = _UserService.LocalPlayer
+			local rewardData = _PiggyBankDataLogic:GetPiggyBankRewardData(self.SlotIndex)
+			
+			if self.canPurchase == false then
+				local itemData = _ItemDataSetLogic:GetItemData(rewardData.ItemId)
+				_TooltipService:OpenTooltipWithPadding(_PiggyBankDataLogic.UIPiggyBank.PiggyBankToolTip, itemData.DescriptionKey, itemData.NameKey, self.Entity.UITransformComponent.WorldPosition)
+			else
+			    local maxCount = player.PlayerInventory:IsItemOverMaxCount(rewardData.ItemId, rewardData.ItemCount)
+			    if maxCount > 0 then
+			        _UIPurchasePopupLogic:OpenOverMaxCountPopup(rewardData.ItemId, _ItemDataSetLogic:GetItemData(rewardData.ItemId).NameKey, maxCount, nil, false, true)
+			        return
+			    end
+				
+				_PaidLogic:RequestReceiveReward_PiggyBank(self.SlotIndex, _UserService.LocalPlayer.PlayerComponent.UserId)
+			end
+		
+		
+		 end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init(integer slotId)
+		-- 슬롯 ID에 해당하는 보상 데이터로 UI를 초기화
+		self.SlotIndex = slotId
+		---@type PiggyBankLevelUpRewardData
+		local rewardData = _PiggyBankDataLogic.PiggyBankLevelUpRewardData[self.SlotIndex]
+		
+		if rewardData == nil then
+			_SpecialShopDataLogic:CommonLog('totalCount가 잘못 지정되어 범위 밖의 엔티티를 갱신 요청했다. index - '..self.SlotIndex)
+			return
+		end
+		
+		local itemData = _ItemDataSetLogic:GetItemData(rewardData.ItemId)
+		self.LevelText.Text = _PiggyBankDataLogic.LevelTextDefault..tostring(rewardData.RequiredLevel)
+		self.ItemThumnail.ImageRUID = itemData.IconRUID
+		
+		if string.sub(rewardData.ItemId, 1, 1) == _PiggyBankDataLogic.SpecialRewardIdType then
+			self.CountText.Text = _LocalizationService:GetText("PurchaseRewardCountText")
+		else
+			self.CountText.Text = tostring(rewardData.ItemCount)
+		end
+		
+		self:ResetUIChangedByPlayerData()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ResetUIChangedByPlayerData()
+		-- 플레이어 데이터에 따라 슬롯의 상태와 UI를 업데이트
+		---@type PiggyBankLevelUpRewardData
+		local rewardData = _PiggyBankDataLogic.PiggyBankLevelUpRewardData[self.SlotIndex]
+		
+		if rewardData == nil then
+			_SpecialShopDataLogic:CommonLog('totalCount가 잘못 지정되어 범위 밖의 엔티티를 갱신 요청했다. index - '..self.SlotIndex)
+			self.SlotIndex = 0
+			return
+		end
+		
+		local playerOutGameManager = _UserService.LocalPlayer.PlayerOutgameManager
+		local piggyBankLevel = playerOutGameManager.PiggyBankLevel
+		local rewardReceived = playerOutGameManager:GetPiggyBankRewardReceived(self.SlotIndex)
+		
+		if rewardReceived then
+			self.RewardItemRender.ImageRUID = self.RewardItemRenderRuid_Disable
+			self.LevelBg.ImageRUID = self.RewardItemRenderRuid_Disable_Level
+			
+			self.SlotDim.Enable = true
+			
+			self.canPurchase = false
+			self.IconLock.Enable = false
+			self.RedDot.Enable = false
+			self.Effect.Enable = false
+		elseif piggyBankLevel > rewardData.RequiredLevel then
+			self.RewardItemRender.ImageRUID = self.RewardItemRenderRuid_Enable
+			self.LevelBg.ImageRUID = self.RewardItemRenderRuid_Enable_Level
+			self.RedDot.Enable = true
+			self.canPurchase = true
+			self.SlotDim.Enable = false
+			self.IconLock.Enable = false
+			
+			if string.sub(rewardData.ItemId, 1, 1) == _PiggyBankDataLogic.SpecialRewardIdType then
+				self.Effect.Enable = true
+			else
+				self.Effect.Enable = false
+			end
+		else
+			self.RewardItemRender.ImageRUID = self.RewardItemRenderRuid_Disable
+			self.LevelBg.ImageRUID = self.RewardItemRenderRuid_Disable_Level
+			self.IconLock.Enable = true
+			
+			self.canPurchase = false
+			self.SlotDim.Enable = false
+			self.RedDot.Enable = false
+			
+			if string.sub(rewardData.ItemId, 1, 1) == _PiggyBankDataLogic.SpecialRewardIdType then
+				self.Effect.Enable = true
+			else
+				self.Effect.Enable = false
+			end
+		end
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerPiggyBankLevelChangedEvent(PlayerPiggyBankLevelChangedEvent event)
+		-- 플레이어 저금통 레벨 변경 시 슬롯 UI를 업데이트
+		if self.SlotIndex == 0 then
+			return
+		end
+		self:ResetUIChangedByPlayerData()
+	end
+
+	@EventSender("LocalPlayer")
+	handler HandlePlayerPiggyBankRewardReceivedChangedEvent(PlayerPiggyBankRewardReceivedChangedEvent event)
+		-- 플레이어 저금통 보상 수령 상태 변경 시 슬롯 UI를 업데이트
+		if self.SlotIndex == 0 then
+			return
+		end
+		
+		self:ResetUIChangedByPlayerData()
+	end
+
+end

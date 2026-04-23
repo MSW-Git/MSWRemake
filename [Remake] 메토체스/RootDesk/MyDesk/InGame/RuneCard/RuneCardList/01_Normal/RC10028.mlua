@@ -1,0 +1,115 @@
+@Component
+script RC10028 extends RuneCardComponent
+
+	property number SetPercent = 4
+
+	@ExecSpace("ServerOnly")
+	method void UseConsumableItemHandler(any event)
+		__base:UseConsumableItemHandler(event)
+		
+		-- 소모품을 사용할 때마다 스택이 쌓입니다.
+		-------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		-------------------------------------------------------------
+		if self.SetTeamType == "User" then
+			self:SetRuneStackInfo(self.RuneStack + 1)
+			self:PlayEffect(self.RuneStack, "", "", true, user.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void StartBattleHandler(any event)
+		__base:StartBattleHandler(event)
+		
+		-- 사용한 소모품 1개당 모든 아군의 공격력과 마력이 4%씩 상승합니다.
+		-------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local units = {}
+		local enemy = {}
+		-------------------------------------------------------------
+		if self.SetTeamType == "User" then
+			for _, unit in pairs(teamManager.OwnUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					_StatusChangeLogic:GetBuff(unit, "Multi_PhysicalAttack", self.RuneStack * self.SetPercent, -1)
+					_StatusChangeLogic:GetBuff(unit, "Multi_MagicalAttack", self.RuneStack * self.SetPercent, -1)
+					table.insert(units, unit)
+				end
+			end
+		else
+			-- 스택 임의로 넣어줘야 함 (스테이지 비례)
+			local setStage = gameManager.Stage - 1
+			self:SetRuneStackInfo(_UtilLogic:RandomIntegerRange(setStage * 3, setStage * 3 + gameManager.Round * 1))
+			
+			for _, unit in pairs(teamManager.EnemyUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					_StatusChangeLogic:GetBuff(unit, "Multi_PhysicalAttack", self.RuneStack * self.SetPercent, -1)
+					_StatusChangeLogic:GetBuff(unit, "Multi_MagicalAttack", self.RuneStack * self.SetPercent, -1)
+					table.insert(enemy, unit)
+				end
+			end
+		end
+		
+		units = _UtilLogic:TableToString(units)
+		enemy = _UtilLogic:TableToString(enemy)
+		self:PlayEffect(self.RuneStack, units, enemy, false, user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(number stack, string units, string enemy, boolean Ready)
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		units = _UtilLogic:StringToTable(units)
+		enemy = _UtilLogic:StringToTable(enemy)
+		------------------------------------------------------------
+		if stack < 0 then stack = 0 end
+		
+		if Ready == false then
+			if stack == 0 then return end
+			--룬 카드 발동 연출
+			if #units > 0 then
+				local index = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+				_RuneCardDirector:ShakingCard_Battle(index, false)
+				local value = stack * self.SetPercent
+				_RuneCardDirector:IconToastDirector_Battle(index, {_RuneCardDirectEnum.MagicalAttack, _RuneCardDirectEnum.PhysicalAttack}, {tostring(math.floor(value)).."%",tostring(math.floor(value)).."%"}, false)
+			end
+			
+			if #enemy > 0 then
+				local index = _RuneCardDirector:GetRuneCardIndex(self.Entity, true)
+				_RuneCardDirector:ShakingCard_Battle(index, true)
+				local value = stack * self.SetPercent
+				_RuneCardDirector:IconToastDirector_Battle(index, {_RuneCardDirectEnum.MagicalAttack, _RuneCardDirectEnum.PhysicalAttack}, {tostring(math.floor(value)).."%",tostring(math.floor(value)).."%"}, true)
+			end
+			
+		
+		else
+			local index = _RuneCardDirector:GetRuneCardIndex(self.Entity,false)
+			--룬 카드 발동 연출
+			_RuneCardDirector:ShakingCard_Ready(index)
+			_RuneCardDirector:IconToastDirector_Ready(index, 0, "+1")
+			_RuneCardDirector.RuneCardManagingValue["RC10028"][self.Entity.Id] = stack
+			_RuneCardDirector:CheckRuneCardManagingValue("RC10028", index)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InGameDataLoadHandler(any event)
+		__base:InGameDataLoadHandler(event)
+		----------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		----------------------------------------------------------
+		self:SetDirectorValue(self.RuneStack,user.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetDirectorValue(number stack)
+		-- DB에서 값을 불러왔을 떄 연출용 값들을 세팅하는 함수입니다.
+		local runeindex = _RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+		_RuneCardDirector.RuneCardManagingValue["RC10028"][self.Entity.Id] = stack
+		_RuneCardDirector:CheckRuneCardManagingValue("RC10028", runeindex)
+	end
+
+end

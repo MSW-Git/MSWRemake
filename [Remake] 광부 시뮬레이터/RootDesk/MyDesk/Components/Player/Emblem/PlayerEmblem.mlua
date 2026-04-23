@@ -1,0 +1,308 @@
+@Component
+script PlayerEmblem extends Component
+
+	property SyncTable<number> haveItems
+
+	@Sync
+	property number Rank = 0
+
+	@Sync
+	property number RP = 0
+
+	method void OnBeginPlay()
+		-- 엠블럼 컴포넌트 초기화 및 랜킹 제목 엔티티 생성
+		self._T.tableList = { 	
+			haveItems = self.haveItems,  
+		}
+		
+		self._T.tableType = { 
+			haveItems = "number", 
+		}
+		
+		if self:IsServer() then
+			local rankTitle = _SpawnService:SpawnByModelId(
+				"model://9ca3ce2a-09b6-49cd-ab09-1a09716d3eba",
+				"RankTitle",
+				Vector3.zero,
+				self.Entity		
+			)
+		else
+			self:SetRankTitleEntity()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetTableClient(string tableName, string strValue)
+		-- 서버에서 전송된 테이블 데이터를 클라이언트에 동기화
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local tableValue = _UtilLogic:StringToTable(strValue)
+		
+		for index, value in ipairs(tableValue) do
+			t[index] = value
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void SetTableElementClient(string tableName, number index, string value)
+		-- 서버에서 전송된 특정 테이블 요소를 클라이언트에 동기화
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedValue = _ParsingLogic:ParseByType(value, self._T.tableType[tableName])
+		t[index] = parsedValue
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ClearTableClient(string tableName, string initValue, number tableCount)
+		-- 클라이언트의 테이블을 초기화하여 모든 값을 기본값으로 설정
+		--any type은 슬프게도 아직 다른 공간(Server -> Client / 혹은 반대)의 경우에는 동작하지 않습니다.
+		--string type으로 받아 별도의 ParsingLogic과 OnBeginPlay에서 지정된 Type을 통해 값을 지정합니다.
+		local t = self._T.tableList[tableName]
+		if not t then return end
+		
+		local parsedInitValue = _ParsingLogic:ParseByType(initValue, self._T.tableType[tableName])
+		for index=1, tableCount do
+			t[index] = parsedInitValue
+		end
+		
+		self:ChangedTable(tableName)
+	end
+
+	@ExecSpace("Client")
+	method void ChangedTable(string name)
+		-- 테이블 변경 시 관련 UI 갱신 처리
+		if name == "haveItems" then
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void LoadedData(string haveItemsStr)
+		-- 저장된 유저 데이터를 로드하여 엠블럼 상태 복원
+		local itemTable = _DataService:GetTable("Emblem")
+		
+		if haveItemsStr == nil then
+			for i=1, itemTable:GetRowCount() do
+				self.haveItems[i] = 0
+			end
+		else 
+			local haveItems = _UtilLogic:StringToTable(haveItemsStr)
+			for i=1, itemTable:GetRowCount() do
+				if haveItems[i] == nil then
+					self.haveItems[i] = 0
+				else 
+					self.haveItems[i] = haveItems[i]
+				end
+			end
+		end
+		----------------------------------------------------------------------
+		-- 클라 동기화
+		self:SetTableClient("haveItems", _UtilLogic:TableToString(self.haveItems), self.Entity.OwnerId)
+		----------------------------------------------------------------------
+		self:CalculateRP()
+		self:GetRank()
+	end
+
+	@ExecSpace("Server")
+	method void AddItems(number idx)
+		-- 지정된 엠블럼을 인벤토리에 추가하고 RP 계산
+		self.haveItems[idx] = self.haveItems[idx] + 1
+		self:CalculateRP()
+		
+		local emblemTable = _DataService:GetTable("Emblem")
+		_UIGetLog:AddLog(Color.FromHexCode("#C0FF3A"), emblemTable:GetCell(idx, "name"), 1, false, "ItemType_Emblem", emblemTable:GetCell(idx, "RUID"), self.Entity.OwnerId)
+		--log("엠블렘 획득 로그를 추가해주세요")
+		
+		------------------------------------------------------------------------------
+		-- 데이터 저장
+		self.Entity.PlayerData:SaveData(1)
+		
+		-- 클라이언트 동기화
+		self:SetTableElementClient("haveItems", idx, tostring(self.haveItems[idx]), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void CalculateRP()
+		-- 보유한 엠블럼들의 레벨 합을 계산하여 RP 산출
+		local count = _DataService:GetRowCount("Emblem")
+		local levelSum = 0
+		for i=1, count do
+			local haveAmount = self.haveItems[i]
+		
+			
+			
+			local amountForCal = haveAmount
+			local level = 0
+			while true do 
+				if amountForCal >= level+1 then
+					amountForCal = amountForCal - (level+1)
+					level = level + 1
+				else
+					break
+				end
+			end
+			
+			levelSum = levelSum + level
+		end
+		
+		self.RP = levelSum
+	end
+
+	@ExecSpace("Server")
+	method void GetRank()
+		-- 리더보드를 조회하여 자신의 랜킹 위치 결정
+		local IsInRank = false
+		
+		for i=1, #_LeaderBoard.ppsnTable do
+			if self.Entity.OwnerId == _LeaderBoard.ppsnTable[i] then
+				self.Rank = i
+				IsInRank = true
+				break
+			end
+		end
+		
+		if IsInRank == false then
+			self.Rank = 0
+		end
+		
+		
+		self.Entity.PlayerData:ApplyPlayerStatus()
+	end
+
+	@ExecSpace("Client")
+	method void SetRankTitleEntity()
+		-- 랜킹에 따른 칭호 엔티티 설정 및 표시
+		local rankTitle = self.Entity:GetChildByName("RankTitle")
+		
+		local count = 0
+		while true do
+			rankTitle = self.Entity:GetChildByName("RankTitle")
+			if rankTitle == nil then
+				wait(0.5)
+				count = count + 1
+				
+				if count > 10 then
+					return
+				end
+			else
+				break 
+			end
+		end
+		
+		--log("rank = ", self.Rank)
+		
+		if self.Rank == nil then
+			rankTitle.Enable = false
+			return
+		elseif self.Rank > 0 and self.Rank < 1001 then
+			rankTitle.Enable = true
+		else 
+			rankTitle.Enable = false
+			return
+		end
+		
+		
+		
+		
+		-- 순위에 따라 RUID 및 표시 변경
+		if self.Rank == 1 then
+			rankTitle.NameTagComponent.Name = _LocalizationService:GetText("Emperor")
+			rankTitle.NameTagComponent.NameTagRUID = DataRef("7c79518143d94db5a1a9f950b67a430e")
+			
+		elseif self.Rank >=2 and self.Rank <=5 then
+			rankTitle.NameTagComponent.Name = _LocalizationService:GetText("Ace")
+			rankTitle.NameTagComponent.NameTagRUID = DataRef("923ab48c0d10438a94c6737c63ff75cc")
+		
+		elseif self.Rank >=6 and self.Rank <=30 then
+			rankTitle.NameTagComponent.Name = _LocalizationService:GetText("Challenger")
+			rankTitle.NameTagComponent.NameTagRUID = DataRef("216429770f314724b7e315ca171a3941")
+		
+		elseif self.Rank >=31 and self.Rank <=100 then
+			rankTitle.NameTagComponent.Name = _LocalizationService:GetText("Grandmaster")
+			rankTitle.NameTagComponent.NameTagRUID = DataRef("adca4bcbb62d4f55b22d2e4cfc4142aa")
+		
+		elseif self.Rank >=101 and self.Rank <=1000 then
+			rankTitle.NameTagComponent.Name = _LocalizationService:GetText("Expert")
+			rankTitle.NameTagComponent.NameTagRUID = DataRef("ed0a22d5d8d949ec8c671b97baa26e44")
+		end
+	end
+
+	@ExecSpace("Server")
+	method void PurchaseWithLegacyCoins()
+		-- 레거시 코인을 사용하여 랜덤 엠블럼 구매
+		local havingCoins = self.Entity.PlayerStorage.currencyItems[7]
+		
+		local gettingAmount = math.floor(havingCoins/500)
+		local usingAmount = 500 * gettingAmount
+		
+		self.Entity.PlayerStorage:UseCurrencyItems(7, usingAmount)
+		
+		local emblemTable = _DataService:GetTable("Emblem")
+		local resultTable = {}
+		for i=1, emblemTable:GetRowCount() do
+			resultTable[i] = 0
+		end
+		
+		for i=1, gettingAmount do
+			local randIdx = _UtilLogic:RandomIntegerRange(1, emblemTable:GetRowCount())
+			
+			self.haveItems[randIdx] = self.haveItems[randIdx] + 1
+			resultTable[randIdx] = resultTable[randIdx] + 1
+		end
+		------------------------------------------------------------------------------
+		-- 변경된 RP 반영
+		self:CalculateRP()
+		------------------------------------------------------------------------------
+		-- 데이터 저장
+		self.Entity.PlayerData:SaveData(1)
+		
+		-- 동기화
+		self:SetTableClient("haveItems", _UtilLogic:TableToString(self.haveItems), self.Entity.OwnerId)
+		
+		-- 연출 재생
+		self:PlayExchangeDirection(_UtilLogic:TableToString(resultTable), self.Entity.OwnerId)
+	end
+
+	@ExecSpace("Client")
+	method void PlayExchangeDirection(string resultTableStr)
+		-- 레거시 코인 교환 결과 UI 연출 재생
+		local resultTable = _UtilLogic:StringToTable(resultTableStr)
+		local emblemTable = _DataService:GetTable("Emblem")
+		
+		local panel = _EntityService:GetEntityByPath("/ui/LegacySystemGroup/LegacyToEmblemResultPanel")
+		local list = _EntityService:GetEntityByPath("/ui/LegacySystemGroup/LegacyToEmblemResultPanel/Popup/ListPanel")
+		for i=1, emblemTable:GetRowCount() do
+			local slot = list:GetChildByName("Slot_"..tostring(i))
+			if slot == nil then
+				slot = list:GetChildByName("Slot"):Clone("Slot_"..tostring(i))
+				slot:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = emblemTable:GetCell(i, "RUID")
+			end
+			
+			if resultTable[i] == 0 then
+				slot.Enable = false
+			else 
+				slot.Enable = true
+				slot:GetChildByName("Amount").TextComponent.Text = _ThousandsSeparator:Separate(math.floor(resultTable[i]))
+			end
+		end
+		
+		panel.Enable = true 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성 변경 시 UI 갱신 처리
+		if name == "Rank" then
+			self:SetRankTitleEntity()
+		end
+	end
+
+end

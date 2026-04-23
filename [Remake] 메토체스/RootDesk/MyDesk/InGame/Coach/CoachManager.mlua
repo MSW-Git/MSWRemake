@@ -1,0 +1,487 @@
+@Component
+script CoachManager extends Component
+
+	@TargetUserSync
+	@Description("세팅 화면(코치 보관함의 프리셋 설정 or 게임 준비 화면)에서 쓰이는 코치 ID 목록입니다")
+	property SyncTable<string> SetCoachesID
+
+	@TargetUserSync
+	@Description("세팅 화면(코치 보관함의 프리셋 설정 or 게임 준비 화면)에서 쓰이는 코치 비용 목록입니다")
+	property SyncTable<number> SetCoachesCost
+
+	@TargetUserSync
+	property SyncTable<number, string> SetCoachPresetInfo
+
+	@TargetUserSync
+	property SyncTable<string> SetCoachPresetName
+
+	@TargetUserSync
+	@Description("실제 인게임에 적용되고 있는 코치들의 ID 목록입니다.")
+	@DisplayName("PlayCoachesID")
+	property SyncTable<string> PlayCoachesID
+
+	@TargetUserSync
+	property SyncTable<number> PlayCoachesCost
+
+	@TargetUserSync
+	@Description("플레이어가 코치를 보유하고 있는지 여부입니다. key는 각 코치의 아이디, value는 0 미보유 1 보유 2 마스터코치 보유")
+	property SyncTable<string, integer> PlayerOwnedCoachesID
+
+	@TargetUserSync
+	@Description("현재 로비에서 동행 중인 코치의 아이디입니다.")
+	property string FollowingCoachID = ""
+
+	@TargetUserSync
+	property Entity CurrentFollowingCoachEntity = nil
+
+	property boolean MasterCoachEffect = true
+
+	@TargetUserSync
+	property SyncTable<string, number> NeedDataLoadCoachStack
+
+	@TargetUserSync
+	property SyncTable<string, string> NeedDataLoadCoachStringValue
+
+	@ExecSpace("Server")
+	method void SetCoachID(string coachID, string type, number presetNum)
+		-- 세팅 화면에 쓰이는 함수로 코치를 입력한 type에 맞게 세팅합니다.
+		--------------------------------------------------------------
+		local userEntity = self.Entity
+		local gameMap = userEntity.CurrentMap
+		local coachInfo = _CoachService:GetCoachInfo(coachID)
+		--------------------------------------------------------------
+		-- 리스트에 추가 : insert
+		-- 리스트에서 제거 : remove
+		--------------------------------------------------------------
+		if type == "insert" then
+			if #self.SetCoachesID >= 4 then
+				--_UIToast:ShowMessage("이미 코치가 꽉 찼습니다.")
+				_UIToast:ShowMessageByLocalizingKey("Toast_CoachSetError")
+				return
+			end
+			
+			
+			-- 코치 세팅 추가 (동행)
+			local setCoachCost = coachInfo.Cost 
+			local tempIDs = {}
+			local tempCosts = {}
+			
+			if #self.SetCoachesID == 0 then
+				log("SetCoachID = ", coachID)
+				table.insert(self.SetCoachesID, coachID)
+				table.insert(self.SetCoachesCost, setCoachCost)
+			else
+				log("SetCoachID = ", coachID)
+				local checked = false
+				for i = 1, #self.SetCoachesID do
+					if self.SetCoachesCost[i] < setCoachCost and (not checked) then
+						table.insert(tempIDs, coachID)
+						table.insert(tempCosts, setCoachCost)
+						checked = true
+						table.insert(tempIDs, self.SetCoachesID[i])
+						table.insert(tempCosts, self.SetCoachesCost[i])
+					else
+						table.insert(tempIDs, self.SetCoachesID[i])
+						table.insert(tempCosts, self.SetCoachesCost[i])
+					end
+				end
+				
+				if not checked then
+					table.insert(tempIDs, coachID)
+					table.insert(tempCosts, setCoachCost)
+				end
+				
+				table.clear(self.SetCoachesID)
+				table.clear(self.SetCoachesCost)
+				
+				for i = 1, #tempIDs do
+					table.insert(self.SetCoachesID, tempIDs[i])
+					table.insert(self.SetCoachesCost, tempCosts[i])
+				end
+			end
+		elseif type == "remove" then
+			-- 코치 세팅 해제 (동행 해제)
+			for i = 1, #self.SetCoachesID do
+				if coachID == self.SetCoachesID[i] then
+					table.remove(self.SetCoachesID, i)
+					table.remove(self.SetCoachesCost, i)
+					break
+				end
+			end
+		end
+		
+		-- 바뀐 코치 세팅 데이터로 저장
+	end
+
+	@ExecSpace("Client")
+	method void SetCoachRUID(string type)
+		-- 코치의 RUID를 타입에 맞게 변경합니다.
+		--------------------------------------------------------------
+		local userEntity = self.Entity
+		local gameMap = userEntity.CurrentMap
+		local coachArea = gameMap:GetChildByName("CoachArea")
+		local coachInfo = _DataService:GetTable("CoachInfo")
+		--------------------------------------------------------------
+		if isvalid(coachArea) then
+			for i = 1, 4 do
+				local coachEntity = coachArea:GetChildByName(string.format("Coach_%d", i))
+				local coachTile = coachArea:GetChildByName(string.format("CoachTile_%d", i))
+				local coachID = self.PlayCoachesID[i]
+				if isvalid(coachID) then
+					local ruid = coachInfo:FindRow("CoachID", coachID):GetItem(string.format("%sRUID", type))
+					coachEntity.SpriteRendererComponent.Enable = true
+					coachEntity.SpriteRendererComponent.SpriteRUID = ruid
+					coachEntity.CoachIngameComponent.CoachID = coachID
+					
+					-- 크기 조절
+					local multiple = tonumber(coachInfo:FindRow("CoachID", coachID):GetItem("Scale"))
+					coachEntity.TransformComponent.Scale=Vector3(multiple/1.2,multiple/1.2,1)
+					
+					-- 승리이펙트
+					coachEntity:GetChildByName("Win").Enable = false
+					
+					-- 그림자
+					local shadowscale = coachInfo:FindRow("CoachID", coachID):GetItem("ShadowSize")
+					if shadowscale == "1_small" then
+						coachTile:GetChildByName("Shadow").SpriteRendererComponent.SpriteRUID = "41f9e0733a0042e1aed7dbe571ab3e3c"
+						
+					elseif shadowscale == "1_medium" then
+						coachTile:GetChildByName("Shadow").SpriteRendererComponent.SpriteRUID = "adf3f7ea567b4ee49606e2e01982803b"
+						
+					elseif shadowscale == "1_big" then
+						coachTile:GetChildByName("Shadow").SpriteRendererComponent.SpriteRUID = "b465b2411a78434aacfcd0300332886e"
+						
+					elseif shadowscale == "2_medium" then 
+						coachTile:GetChildByName("Shadow").SpriteRendererComponent.SpriteRUID = "f30b35c79e3445f1af006e1ad8e8e0c1"
+						
+					end
+					--그림자 크기 조절
+					local coachtileScale = coachTile.TransformComponent.Scale.x
+					coachTile:GetChildByName("Shadow").TransformComponent.Scale.x = 1/1.2/coachtileScale
+					coachTile:GetChildByName("Shadow").Enable = true
+					
+					--local pos = _LoadResourcesInfo:GetColliderOffsetScale(coachInfo:FindRow("CoachID", coachID):GetItem("ProfileRUID"))["pos"]
+					--coachTile:GetChildByName("Shadow").TransformComponent.Position = Vector3(pos.x*-1, 0, 0)
+		
+					-- 코치 오프셋 조정
+					if not _UtilLogic:IsNilorEmptyString(coachInfo:FindRow("CoachID", coachID):GetItem("OffsetX")) then
+						coachEntity.TransformComponent.Position.x = coachTile.TransformComponent.Position.x + tonumber(coachInfo:FindRow("CoachID", coachID):GetItem("OffsetX")) 
+					end
+					
+					-- talk애님 관련 코드
+					if type == "Angry" then
+						coachEntity.CoachIngameComponent:TalkAnim(true)
+					else
+						coachEntity.CoachIngameComponent:TalkAnim(false)
+					end
+					
+					-- 이전 RUID와 같은 건지 체크 후, 슬립타이머 작동
+					coachEntity.CoachIngameComponent:CheckRUID(ruid)
+				else
+					coachEntity.CoachIngameComponent.CoachID = ""
+					coachEntity.SpriteRendererComponent.Enable = false
+					-- 그림자
+					coachTile:GetChildByName("Shadow").Enable = false
+					-- talk애님
+					coachEntity.CoachIngameComponent:TalkAnim(false)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetCoachPreset(number presetNumber, string type)
+		-- 프리셋 넘버에 맞는 코치 프리셋을 변경합니다.
+		--------------------------------------------------------------
+		local user = self.Entity
+		local gameMap = user.CurrentMap
+		--------------------------------------------------------------
+		-- presetNumber를 가진 프리셋에 적용합니다.
+		-- 저장 : save
+		-- 불러오기 : load
+		-- 삭제 : remove
+		--------------------------------------------------------------
+		if type == "save" then
+			local coachList = ""
+			for _, coachID in pairs(self.SetCoachesID) do
+				coachList = string.format("%s%s,", coachList, coachID)
+			end
+			if coachList == "" then
+				coachList = "NIL"
+			else
+				coachList = string.sub(coachList, 1, -2)
+			end
+			self.SetCoachPresetInfo[presetNumber] = coachList
+			
+			-- 바뀐 프리셋 유저 데이터로 저장
+			_PlayerDataLogic:SetPlayerCoachPresetsData(user.OwnerId)
+		elseif type == "load" then
+			table.clear(self.SetCoachesID)
+			table.clear(self.SetCoachesCost)
+			
+			if not isvalid(self.SetCoachPresetInfo[presetNumber]) then
+				-- Preset이 아직 안만들어져 있음
+			elseif self.SetCoachPresetInfo[presetNumber] == "NIL" then
+				-- Preset에 아무 코치도 안들어가 있음
+			else
+				local coachIDs = _UtilLogic:Split(self.SetCoachPresetInfo[presetNumber], ",")
+				
+				table.initialize(self.SetCoachesID, coachIDs)
+				
+				for _, coachID in pairs(self.SetCoachesID) do
+					local coachInfo = _CoachService:GetCoachInfo(coachID)
+					local cost = coachInfo.Cost
+					table.insert(self.SetCoachesCost, cost)
+				end
+			end
+		elseif type == "remove" then
+			self.SetCoachPresetInfo[presetNumber] = "NIL"
+			
+			-- 바뀐 프리셋 유저 데이터로 저장
+			_PlayerDataLogic:SetPlayerCoachPresetsData(user.OwnerId)
+		end
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void InitNewGameCoachSet()
+		-- 인게임 시작 전, 장착된 코치의 컴포넌트를 불러옵니다.
+		--------------------------------------------------------------
+		local userEntity = self.Entity
+		local gameManager = userEntity.GameManager
+		local coachListEntity = userEntity:GetChildByName("CoachListEntity")
+		--------------------------------------------------------------
+		local loadValue = ""
+		if gameManager.NeedDataLoad then
+			for idx, coachID in pairs(self.PlayCoachesID) do
+				local coachEntity = coachListEntity:GetChildByName(string.format("Coach_%d", idx))
+				---@type CoachComponent
+				local cComponent = coachEntity:AddComponent(coachID)
+				
+				-- Stack
+				if isvalid(self.NeedDataLoadCoachStack[coachID]) then
+					cComponent:SetCoachStackInfo(self.NeedDataLoadCoachStack[coachID])
+				else
+					cComponent:SetCoachStackInfo(0)
+				end
+				
+				
+				-- StringValue
+				-- idx_value/idx_value..
+				if isvalid(self.NeedDataLoadCoachStringValue[coachID]) then
+					local valueInfoTable = _UtilLogic:Split(self.NeedDataLoadCoachStringValue[coachID], "/")
+					for _, idx_value in pairs(valueInfoTable) do
+						local vInfo = _UtilLogic:Split(idx_value, "_")
+						cComponent:SetStringTypeValue(tonumber(vInfo[1]), vInfo[2])
+					end
+				end
+				
+				
+				loadValue = string.format("%s%s,", loadValue, coachID)
+			end
+		else
+			table.clear(self.PlayCoachesID)
+			table.clear(self.PlayCoachesCost)
+				
+			if gameManager.ModeType=="Tutorial" then
+			--튜토리얼이면 편성한 코치 없이 진입
+			else
+				for idx, coachID in pairs(self.SetCoachesID) do
+					table.insert(self.PlayCoachesID, coachID)
+					local coachEntity = coachListEntity:GetChildByName(string.format("Coach_%d", idx))
+					coachEntity:AddComponent(coachID)
+					loadValue = string.format("%s%s,", loadValue, coachID)
+				end
+				for idx, coachCost in pairs(self.SetCoachesCost) do
+					table.insert(self.PlayCoachesCost, coachCost)
+				end
+			end
+		end
+		
+		if loadValue == "" then
+			loadValue = nil
+		else
+			loadValue = string.sub(loadValue, 1, -2)
+		end
+		
+		
+		
+		userEntity.TeamBattleStatistics:SetCoachesProperty(loadValue)
+		self:SetCoachRUID("Idle", userEntity.OwnerId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ModifyPlayerOwnedCoachesID(string coachID, integer coachType, string source)
+		-- func: 코치 보유 정보를 수정하는 함수 
+			--- coachType: 0 미보유 1 보유 2 마스터코치 보유 
+		------------------------------------------------------------------------
+		
+		-- 유효성 검사 
+		if not isvalid(_CoachService:GetCoachInfo(coachID)) then 
+			log_error("유효하지 않은 코치 id입니다.")
+			return false	
+		end
+		
+		local befCoachType = self.PlayerOwnedCoachesID[coachID] 
+		
+		-- 이미 마스터 코치를 보유했는데 일반 코치로 변경 요청이 들어왔을 때 
+		if befCoachType == 2 and coachType == 1 then 
+			return false
+		end
+		
+		self.PlayerOwnedCoachesID[coachID] = coachType
+		--log(self.Entity.OwnerId, "pick 코치 획득:",coachID,coachType ) 
+		
+		if befCoachType == 0 and coachType ~= 0 then 
+			-- 업적: 코치 100마리 보유하기  
+			_AchievementService:UpdateAchievement("AC001008",1,self.Entity) 
+		end
+		
+		--db저장
+		_PlayerDataLogic:SetPlayerOwnedCoachesData(self.Entity.PlayerComponent.UserId)
+		
+		return true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 서버에서 동기화된 코치 데이터를 클라이언트 UI에 반영하는 함수
+		if name == "SetCoachesID" then
+			table.initialize(_UI_LobbyLevelSelect.SelectedCoaches, self.SetCoachesID)
+			_UI_LobbyLevelSelect:RefreshCurrentSelectedCoaches()
+		elseif name == "FollowingCoachID" then
+			_UI_LobbyCoachInventory.CurrentFollowingCoachID = self.FollowingCoachID
+			_UI_LobbyCoachInventory:RefreshFollowingCoach()
+		end
+	end
+
+	method table GetOwnedCoachList(integer cost)
+		-- cost에 해당하는 보유한 코치 아이디 목록을 반환합니다.
+		------------------------------------------------------
+		local coachList = {}
+		
+		
+		for k,v in pairs(_CoachService.CoachData) do 
+			---@type CoachInfo
+			local coahInfo = v
+			
+			local coachID = coahInfo.CoachID
+			
+			if not isvalid (self.PlayerOwnedCoachesID[coachID]) then 
+				continue
+			end
+			
+			if cost == coahInfo.Cost and self.PlayerOwnedCoachesID[coachID] ~= 0 then
+				table.insert(coachList, coachID)
+			end
+		end
+		
+		return coachList
+	end
+
+	@ExecSpace("Server")
+	method void setCoachEntityOwner(Entity coachEntity)
+		-- 동행 코치 엔티티를 서버에서 설정하고 클라이언트에 동기화하는 함수
+		self.CurrentFollowingCoachEntity = coachEntity
+		self:setCoachEntityOwner_Client(self.CurrentFollowingCoachEntity)
+	end
+
+	@ExecSpace("Client")
+	method void setCoachEntityOwner_Client(Entity coachEntity)
+		-- 클라이언트에서 동행 코치 엔티티를 설정하는 함수
+		self.CurrentFollowingCoachEntity = coachEntity
+	end
+
+	@ExecSpace("Multicast")
+	method void InitFollowingCoach()
+		--------
+		--유저 입장 시 동행 코치를 불러오는 함수입니다.
+		--------
+		self:InitializeFollowingCoach()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitializeFollowingCoach()
+		---------------------
+		-- 유저가 입장할 때마다 호출 되는 함수입니다. (본인 포함)
+		---------------------
+		for st,entity in pairs(_UserService.UserEntities) do
+			-- 새로운 유저가 입장 시, 동행 코치 상태를 동기화해주기 위하여 '본인 제외'하고 모든 유저를 대상으로 아래 코드를 실행합니다.
+			--log(entity.PlayerComponent.Nickname, self.Entity.PlayerComponent.Nickname)
+			if entity == self.Entity then 
+				continue 
+			end
+		
+			_TimerService:SetTimerOnce(function()	_CoachService:RefreshCoach(entity) end,2)
+		end
+	end
+
+	method integer GetHasType(string coachID)
+		-- 지정된 코치의 보유 상태를 반환하는 함수 (0:미보유, 1:보유, 2:마스터코치)
+		if self.PlayerOwnedCoachesID[coachID] == nil then
+			self.PlayerOwnedCoachesID[coachID] = 0
+			return 0
+		end 
+		
+		return self.PlayerOwnedCoachesID[coachID]
+	end
+
+	@ExecSpace("ServerOnly")
+	method integer GetAllOwnedCoachCount()
+		-- 플레이어가 보유한 전체 코치 수를 반환하는 함수
+		local count = 0
+		
+		-- 보유한 코치가 하나도 없다면 
+		if #table.keys(self.PlayerOwnedCoachesID) < 1 then 
+			return count
+		end
+		
+		for _, owned in pairs(self.PlayerOwnedCoachesID) do
+			if owned ~= 0 then 
+				count +=1
+			end
+		end
+		
+		return count
+	end
+
+	@ExecSpace("Server")
+	method void setCoachMasterEffect(boolean onEffect)
+		-- 마스터 코치 이팩트 설정을 제어하는 함수 (현재 비활성화)
+		--self.MasterCoachEffect = onEffect
+	end
+
+	@ExecSpace("Client")
+	method void SetBattleResultRUID(boolean win)
+		-- 배틀 결과에 따라 코치의 반응 애니메이션을 설정하는 함수
+		--------------------------------------------------------------
+		local userEntity = self.Entity
+		local gameMap = userEntity.CurrentMap
+		local coachArea = gameMap:GetChildByName("CoachArea")
+		local coachInfo = _DataService:GetTable("CoachInfo")
+		--------------------------------------------------------------
+		if isvalid(coachArea) then
+			for i = 1, 4 do
+				local coachEntity = coachArea:GetChildByName(string.format("Coach_%d", i))
+				local coachID = self.PlayCoachesID[i]
+				if isvalid(coachID) then
+					if isvalid(coachEntity.CoachIngameComponent) then
+						coachEntity.CoachIngameComponent:BattleResultCoachReaction(win)
+					end
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 맵 입장 시 동행 코치 상태를 초기화하는 함수
+		
+		if enteredMap.Name == "Lobby" then 
+			_CoachService:RefreshCoach(self.Entity)
+			self:InitializeFollowingCoach()
+		end
+	end
+
+end

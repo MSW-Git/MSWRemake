@@ -1,0 +1,2699 @@
+@Component
+script TriggerManager extends Component
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property Duel duel = nil
+
+	property ActionManager actionManager = nil
+
+	property CommandManager commandManager = nil
+
+	property TaskManager taskManager = nil
+
+	property History history = nil
+
+	property any invoker = nil
+
+	property any receiver = nil
+
+	property table args = nil
+
+	method void InvokeTriggers(table invokerArray, table receiverArray, string triggerKey, table args, table eachArgs, table resultTable)
+		-- 트리거를 발동시키고 카드를 열어서 트리거 실행
+		local cardArray = self:ShareOpenCards(invokerArray, receiverArray, triggerKey, args, eachArgs, resultTable)
+		for _, card in ipairs(cardArray) do
+			card:Open()
+			card:SetFace(false)
+		end
+		
+		for _, invoker in ipairs(invokerArray) do
+			self:RunTriggers(triggerKey, invoker, invoker, eachArgs and eachArgs[invoker] or args, resultTable and resultTable[invoker] or nil)
+			for _, receiver in ipairs(receiverArray) do
+				if receiver ~= invoker then
+					self:RunTriggers(triggerKey, invoker, receiver, eachArgs and eachArgs[invoker] or args, resultTable and resultTable[invoker] or nil)
+				end
+			end
+		end
+	end
+
+	method void RunTriggers(string triggerKey, Object invoker, Object receiver, table args, table result)
+		-- 특정 객체의 모든 트리거를 실행
+		if not receiver.triggerNameArray then
+			return
+		end
+		
+		local backupInvoker = self.invoker
+		local backupReceiver = self.receiver
+		local backupArgs = self.args
+		self.invoker = invoker
+		self.receiver = receiver
+		self.args = args
+		
+		local triggerNameArray = _Table:ShallowCopy(receiver.triggerNameArray)
+		for _, triggerName in ipairs(triggerNameArray) do
+			if self:IsTriggerCondition(triggerKey, triggerName, invoker, receiver, args, result) then
+				self:RunTrigger(triggerName, invoker, receiver, args, result)
+			end
+		end
+		
+		self.invoker = backupInvoker
+		self.receiver = backupReceiver
+		self.args = backupArgs
+	end
+
+	method void RunTrigger(string triggerName, any invoker, any receiver, table args, table result)
+		-- 개별 트리거를 실행
+		_Util:Call(self, triggerName, {invoker, receiver, result, _Table:Unpack(args)})
+	end
+
+	method boolean IsTriggerCondition(string triggerKey, string triggerName, Object invoker, Object receiver, table args, table result)
+		-- 트리거 조건을 확인
+		return _Util:Call(self, triggerName .. "Condition", {triggerKey, invoker, receiver, result, _Table:Unpack(args)})
+	end
+
+	method table ShareOpenCards(table invokerArray, table receiverArray, string triggerKey, table args, table eachArgs, table resultTable)
+		-- 트리거로 인해 공개될 카드들을 공유
+		local cardArray = nil
+		if self:IsServer() then
+			local cardSet = {}
+			for _, invoker in ipairs(invokerArray) do
+				for _, receiver in ipairs(receiverArray) do
+					if receiver:IsCard() and receiver.triggerNameArray then
+						for _, triggerName in ipairs(receiver.triggerNameArray) do
+							if self:IsTriggerCondition(triggerKey, triggerName, invoker, receiver, eachArgs and eachArgs[invoker] or args, resultTable and resultTable[invoker] or nil) and
+								_Util:HasAttribute(self, triggerName, "Open") then
+								cardSet[receiver] = true
+							end
+						end
+					end
+				end
+			end
+			cardArray = table.keys(cardSet) 
+			self.commandManager:PushPackage(cardArray)
+		else
+			cardArray = self.commandManager:PopPackage()
+		end
+		
+		return cardArray
+	end
+
+	method void AirStrike(Card invoker, Card receiver)
+		-- 에어 스트라이크 스킬 - 상대 유닛들에게 피해, 핸드가 비어있으면 추가 피해
+		self.taskManager:RunProcess(function()
+				local damage = 2
+				if #receiver.player.hand.cardArray == 0 then
+					damage += 4
+				end
+				self.taskManager:Damage(receiver.player.opponent:GetUnits(), receiver, damage, nil, "AirStrike", 0.075)
+			end, "AirStrike")
+	end
+
+	method boolean AirStrikeCondition(string triggerKey, Card invoker, Card receiver)
+		-- 에어 스트라이크 발동 조건 - 캐스트 시
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ArmorCrash(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertSetMaxHpEnchantment(receiver.player.opponent.field:ShareRandomMinions(2, nil), 1, nil, nil, "ArmorCrash", nil)
+			end, "ArmorCrash")
+	end
+
+	method boolean ArmorCrashCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ArrowBlow(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local resultTable = self.taskManager:Damage({target}, receiver.player, 5, nil, "ArrowBlow", nil)
+				if not resultTable[target].isDead then
+					self.taskManager:Draw({[receiver.player] = 2}, nil, false)
+				end
+			end, "ArrowBlow")
+	end
+
+	method boolean ArrowBlowCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ArrowBomb(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local minionArray = target:GetSelfAndAdjacentMinions(nil)
+				self.taskManager:Damage(minionArray, receiver, 1, nil, "ArrowBomb", 0.1)
+				self.taskManager:Stun(minionArray, nil, nil)
+			end, "ArrowBomb")
+	end
+
+	method boolean ArrowBombCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ArrowRain(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent.field:GetMinions(nil), receiver, 2, nil, "ArrowRain", nil)
+			end, "ArrowRain")
+	end
+
+	method boolean ArrowRainCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Assaulter(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, self.commandManager:ShareRandomIntegerRange(1, 2), nil, "Assaulter", nil)
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "Assaulter")
+	end
+
+	method boolean AssaulterCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void AthenaPierce(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"DoubleShot"})
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "AthenaPierce")
+	end
+
+	method boolean AthenaPierceCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Avenger(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent.field:GetMinions(nil), receiver, 1, nil, "Avenger", nil)
+			end, "Avenger")
+	end
+
+	method boolean AvengerCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void AxeStump(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 1, nil, "AxeStump", nil)
+			end, "AxeStump")
+	end
+
+	method boolean AxeStumpCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Ayan(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver.player.hand:ShareRandomBlueprints(1, self.taskManager.minionSelector)
+				if not _Table:IsEmpty(blueprintArray) then
+					local blueprint = blueprintArray[1]
+					table.insert(blueprint.enchantmentArray, {methodName = "SetMaxHpEnchantment", args = {1}})
+					table.insert(blueprint.enchantmentArray, {methodName = "SetAtkEnchantment", args = {1}})
+					self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+				end
+			end, "Ayan")
+	end
+
+	method boolean AyanCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void BandOfThieves(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(3), receiver, 3, nil, "BandOfThieves", nil)
+			end, "BandOfThieves")
+	end
+
+	method boolean BandOfThievesCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Beetle(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:ShareRandomOurOtherMinions(1, nil)
+				self.taskManager:InsertAddMaxHpEnchantment(minionArray, 2, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment(minionArray, 2, nil, nil, nil, nil)
+			end, "Beetle")
+	end
+
+	method boolean BeetleCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void BellflowerRoot(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local nameArray = self.history:GetThisGameDiscardedCards(receiver.player)
+				if not _Table:IsEmpty(nameArray) then
+					local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", nameArray, 1))
+					local cardTable = self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+					if not _Table:IsEmpty(cardTable) then
+						self.taskManager:InsertAddCostEnchantment(cardTable[receiver.player], -2, nil, nil, nil, nil)
+					end
+				end
+			end, "BellflowerRoot")
+	end
+
+	method boolean BellflowerRootCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void BikerMonkey(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddAtkEnchantment({receiver}, 1, nil, nil, nil, nil)
+			end, "BikerMonkey")
+	end
+
+	method boolean BikerMonkeyCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.category == "Minion" and invoker.player == receiver.player 
+	end
+
+	method void Birk(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment({receiver}, 1, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment({receiver}, 1, nil, nil, nil, nil)
+			end, "Birk")
+	end
+
+	method boolean BirkCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.category == "Minion" and invoker.player == receiver.player.opponent
+	end
+
+	method void Blackbull(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:ShareRandomElementsInArray(self.cardManager:GetCardNamesByTag("Pig"), 2))
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "Blackbull")
+	end
+
+	method boolean BlackbullCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void BlackKitty(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = self.history:GetThisRoundMinionCountByTag(receiver.player, "Pet")}, nil, false)
+			end, "BlackKitty")
+	end
+
+	method boolean BlackKittyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void BlackRatz(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Ratz"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "BlackRatz")
+	end
+
+	method boolean BlackRatzCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void BlackSandDwarf(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:ShareRandomOtherMinions(1, nil)
+				if not _Table:IsEmpty(minionArray) then
+					local minion = minionArray[1]
+					local atk = minion.atk
+					self.taskManager:InsertSetAtkEnchantment(minionArray, receiver.atk, nil, nil, "BlackSandDwarf", nil)
+					self.taskManager:InsertSetAtkEnchantment({receiver}, atk, nil, nil, nil, nil)
+				end
+			end, "BlackSandDwarf")
+	end
+
+	method boolean BlackSandDwarfCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void BlackSheep(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(self.duel:GetMinions(nil), receiver, 2, nil, "BlackSheep", nil)
+			end, "BlackSheep")
+	end
+
+	method boolean BlackSheepCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void BlankShot(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertSetMaxHpEnchantment(receiver.player.opponent.field:GetMinions(nil), 2, nil, nil, "BlankShot", nil)
+				self.taskManager:Discard({receiver.player.hand:GetRightmostCard()})
+			end, "BlankShot")
+	end
+
+	method boolean BlankShotCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Bless(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:GainBarrier(receiver.player.field:GetMinions(nil), "Bless", nil)
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "Bless")
+	end
+
+	method boolean BlessCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void BlueMushroom(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:GainMp({receiver.player}, 1, nil, "BlueMushroom", nil)
+			end, "BlueMushroom")
+	end
+
+	method boolean BlueMushroomCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void BombingFishHouse(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				receiver.temp.stat = receiver.temp.stat and receiver.temp.stat + 1 or 1
+			end, "BombingFishHouse")
+	end
+
+	method boolean BombingFishHouseCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.player == receiver.player
+	end
+
+	method void BombingFishHouseDead(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Goby", "Goby", "Goby"})
+				for _, blueprint in ipairs(blueprintArray) do
+					table.insert(blueprint.enchantmentArray, {methodName = "AddMaxHpEnchantment", args = {receiver.temp.stat or 0}})
+					table.insert(blueprint.enchantmentArray, {methodName = "AddAtkEnchantment", args = {receiver.temp.stat or 0}})
+				end
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+		
+			end, "BombingFishHouseDead")
+	end
+
+	method boolean BombingFishHouseDeadCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Brandish(Card invoker, Card receiver, table result, Unit target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 4, nil, "Brandish", nil)
+			end, "Brandish")
+	end
+
+	method boolean BrandishCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Bruce(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(_Table:RemoveDuplicates(self.history:GetThisGameMinionsByTag(receiver.player, "Mushroom")))
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "Bruce")
+	end
+
+	method boolean BruceCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void BubbleFish(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"BubbleFish"})
+				self.taskManager:Add({[receiver.player.opponent] = blueprintArray}, receiver, nil)
+			end, "BubbleFish")
+	end
+
+	method boolean BubbleFishCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Bubbling(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Slime"})
+				self.taskManager:Add({[receiver.player.opponent] = blueprintArray}, receiver, nil)
+			end, "Bubbling")
+	end
+
+	method boolean BubblingCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Captain(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment({receiver}, 1, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment({receiver}, 1, nil, nil, nil, nil)
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "Captain")
+	end
+
+	method boolean CaptainCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "Discard" and invoker.player == receiver.player
+	end
+
+	method void Cassandra(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", self.cardManager:GetMinionNames(), 1))
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "Cassandra")
+	end
+
+	method boolean CassandraCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Chakra(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:GainMp(self.duel.playerArray, 2, nil, "Chakra", nil)
+			end, "Chakra")
+	end
+
+	method boolean ChakraCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ChiefGrayDead(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"BarnardGray"})
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "ChiefGrayDead")
+	end
+
+	method boolean ChiefGrayDeadCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void ChiefGraySummon(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent.field:GetMinions(nil), receiver, 1, nil, "ChiefGraySummon", nil)
+			end, "ChiefGraySummon")
+	end
+
+	method boolean ChiefGraySummonCondition(string triggerKey, Minion invoker, Component receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void ChiefStan(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local nameArray = {}
+				local oneArray = self.history:GetThisGameMinionsByCost(receiver.player, 1)
+				local twoArray = self.history:GetThisGameMinionsByCost(receiver.player, 2)
+				local threeArray = self.history:GetThisGameMinionsByCost(receiver.player, 3)
+				if not _Table:IsEmpty(oneArray) then
+					table.insert(nameArray, self.commandManager:ShareRandomElementInArray(oneArray))
+				end
+				if not _Table:IsEmpty(twoArray) then
+					table.insert(nameArray, self.commandManager:ShareRandomElementInArray(twoArray))
+				end
+				if not _Table:IsEmpty(threeArray) then
+					table.insert(nameArray, self.commandManager:ShareRandomElementInArray(threeArray))
+				end
+		
+				if not _Table:IsEmpty(nameArray) then
+					local blueprintArray = receiver:GetBlueprintsByNames(nameArray)
+					self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+				end
+			end, "ChiefStan")
+	end
+
+	method boolean ChiefStanCondition(string triggerKey, Duel invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void ChunJi(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddAtkEnchantment(receiver:GetOurOtherMinions(nil), 2, {checkerName = "ChunJi"}, nil, "ChunJi", nil)
+			end, "ChunJi")
+	end
+
+	method boolean ChunJiCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Clang(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({receiver.player.opponent}, receiver, 2, nil, "Clang", nil)
+			end, "Clang")
+	end
+
+	method boolean ClangCondition(string triggerKey, Duel invoker, Minion receiver, table result, table minionArray)
+		if triggerKey == "PostBattle" and _Table:Contains(minionArray, receiver) then
+			for _, minion in ipairs(minionArray) do
+				if minion ~= receiver then
+					return minion.isDead
+				end
+			end
+		end
+		
+		return false
+	end
+
+	method void ClawMachine(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:ShareRandomElementsInArray(self.cardManager:GetMinionNamesByCost(2), 2))
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "ClawMachine")
+	end
+
+	method boolean ClawMachineCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void CloudFox(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:ShareRandomOurOtherMinions(1, nil)
+				if not _Table:IsEmpty(minionArray) then
+					local nameArray = {}
+					for i, minion in ipairs(minionArray) do
+						nameArray[i] = minion.name
+					end
+					local blueprintArray = receiver:GetBlueprintsByNames(nameArray)
+					self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+				end
+			end, "CloudFox")
+	end
+
+	method boolean CloudFoxCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void ClownMonkey(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:GetUnits(), receiver, 1, nil, "ClownMonkey", nil)
+			end, "ClownMonkey")
+	end
+
+	method boolean ClownMonkeyCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Cloy(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local cardTable = self.taskManager:Kick(receiver:GetOurOtherMinions(self.taskManager.petSelector), false, "Cloy", nil)
+				if not _Table:IsEmpty(cardTable) then
+					self.taskManager:InsertAddCostEnchantment(cardTable[receiver.player], -1, nil, nil, nil, nil)
+				end
+			end, "Cloy")
+	end
+
+	method boolean CloyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void CoolieZombie(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:ShareRandomOurOtherMinions(1, nil)
+				self.taskManager:InsertSetVenomEnchantment(minionArray, true, nil, nil, "CoolieZombie", nil)
+			end, "CoolieZombie")
+	end
+
+	method boolean CoolieZombieCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void CorkscrewBlow(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertSetMaxHpEnchantment({target}, 1, nil, nil, "CorkscrewBlow", nil)
+				self.taskManager:MoveMinionToFarLeft(target)
+			end, "CorkscrewBlow")
+	end
+
+	method boolean CorkscrewBlowCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void CrimsonBalrog(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:GetUnits(), receiver, 4, nil, "CrimsonBalrog", nil)
+			end, "CrimsonBalrog")
+	end
+
+	method boolean CrimsonBalrogCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver and #receiver.player.deck.cardArray == 0
+	end
+
+	method void CutthroatManny(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", self.cardManager:GetSkillNamesByTag("Shuriken"), 1))
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "CutthroatManny")
+	end
+
+	method boolean CutthroatMannyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void DangerZoneTaxi(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 7}, nil, false)
+			end, "DangerZoneTaxi")
+	end
+
+	method boolean DangerZoneTaxiCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void DarkCornianDead(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"GreenCornian"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "DarkCornianDead")
+	end
+
+	method boolean DarkCornianDeadCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void DarkCornianSummon(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 2, nil, "DarkCornianSummon", nil)
+			end, "DarkCornianSummon")
+	end
+
+	method boolean DarkCornianSummonCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void DarkLord(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local delta = self.history:GetThisRoundSkillCount(receiver.player)
+				self.taskManager:InsertAddMaxHpEnchantment({receiver}, delta, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment({receiver}, delta, nil, nil, nil, nil)
+			end, "DarkLord")
+	end
+
+	method boolean DarkLordCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void DeathTeddy(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver.player.opponent.field:ShareRandomMinions(2, nil)
+				self.taskManager:Freeze(minionArray, "DeathTeddy", nil)
+				self.taskManager:Stun(minionArray, nil, nil)
+				self.taskManager:Scare(minionArray, nil, nil)
+			end, "DeathTeddy")
+	end
+
+	method boolean DeathTeddyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Deo(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:GetOurOtherMinions(nil)
+				local eachArgs = {}
+				for _, minion in ipairs(minionArray) do
+					eachArgs[minion] = {minion.hp}
+				end
+				self.taskManager:InsertSetAtkEnchantment(minionArray, nil, nil, eachArgs, "Deo", nil)
+			end, "Deo")
+	end
+
+	method boolean DeoCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Disorder(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({target.name})
+				self.taskManager:Kill({target}, "Disorder", nil)
+				while self.duel:HasDeadMinion() do
+					self.taskManager:Dead()
+				end
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, nil, false)
+			end, "Disorder")
+	end
+
+	method boolean DisorderCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Doofus(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:GainBarrier({invoker}, "Doofus", nil)
+			end, "Doofus")
+	end
+
+	method boolean DoofusCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker.player == receiver.player and _Table:Contains(invoker.tagArray, "Pet")
+	end
+
+	method void Doom(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local blueprint = receiver:GetBlueprintByName(self.commandManager:ShareRandomElementInArray({"RedSnail", "BlueSnail", "Snail"}))
+				self.taskManager:Transform({target}, blueprint, nil, "Doom", nil)
+			end, "Doom")
+	end
+
+	method boolean DoomCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void DoubleShot(Card invoker, Card receiver, table result, Unit target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 2, nil, "DoubleShot", nil)
+			end, "DoubleShot")
+	end
+
+	method boolean DoubleShotCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void DragonBlood(Card invoker, Card receiver, table result, Unit target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Heal({target}, 2, nil, "DragonBlood", nil)
+				self.taskManager:Draw({[receiver.player] = 2}, nil, false)
+			end, "DragonBlood")
+	end
+
+	method boolean DragonBloodCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void DragonRoar(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(self.duel:GetMinions(nil), receiver, 4, nil, "DragonRoar", nil)
+			end, "DragonRoar")
+	end
+
+	method boolean DragonRoarCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void DragonsBreath(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver.player.opponent.field:GetMinions(nil)
+				self.taskManager:Damage(minionArray, receiver, 1, nil, "DragonsBreath", nil)
+				self.taskManager:Scare(minionArray, nil, nil)
+			end, "DragonsBreath")
+	end
+
+	method boolean DragonsBreathCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Drain(Card invoker, Card receiver, table result, Unit target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 1, nil, "Drain", nil)
+				self.taskManager:Heal({receiver.player}, 2, nil, nil, nil)
+			end, "Drain")
+	end
+
+	method boolean DrainCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void DrKim(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, self.taskManager.alienSelector, false)
+			end, "DrKim")
+	end
+
+	method boolean DrKimCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void DrKimPostPlay(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment({receiver}, 1, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment({receiver}, 1, nil, nil, nil, nil)
+			end, "DrKimPostPlay")
+	end
+
+	method boolean DrKimPostPlayCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and _Table:Contains(invoker.tagArray, "Alien") and invoker.player == receiver.player
+	end
+
+	method void Duck(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddAtkEnchantment({receiver}, self.commandManager:ShareRandomIntegerRange(1, 3), nil, nil, "Duck", nil)
+			end, "Duck")
+	end
+
+	method boolean DuckCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Elquines(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"IceElemental"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, nil, false)
+			end, "Elquines")
+	end
+
+	method boolean ElquinesCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void EnergyDrain(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local resultTable = self.taskManager:Damage(receiver.player.opponent:GetUnits(), receiver, 1, nil, "EnergyDrain", nil)
+				local totalDamage = 0
+				for _, result in pairs(resultTable) do
+					totalDamage += result.damage
+				end
+				self.taskManager:Heal({receiver.player}, totalDamage, nil, nil, nil)
+			end, "EnergyDrain")
+	end
+
+	method boolean EnergyDrainCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void EnergyOrb(Card invoker, Card receiver, table result, Unit target)
+		self.taskManager:RunProcess(function()
+				local damage = 3
+				if self.history:GetThisRoundCardCount(receiver.player) >= 4 then
+					damage += 3
+				end
+				self.taskManager:Damage({target}, receiver, damage, nil, "EnergyOrb", nil)
+			end, "EnergyOrb")
+	end
+
+	method boolean EnergyOrbCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Explosion(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent.field:GetMinions(nil), receiver, 4, nil, "Explosion", 0.075)
+			end, "Explosion")
+	end
+
+	method boolean ExplosionCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Fairy(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:ShareRandomOurOtherMinions(1, nil)
+				self.taskManager:InsertAddAtkEnchantment(minionArray, 1, nil, nil, nil, nil)
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "Fairy")
+	end
+
+	method boolean FairyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Faust(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local nameArray = _Table:Select(self.history:GetThisGameDeadMinionsByTag(receiver.player, "Monkey"), function(name) return not _Table:Contains(self.cardManager:GetTags(name), "Boss") end)
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:ShareRandomPermutationInArray(nameArray, receiver.player.field:GetEmptySlotCount()))
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "Faust")
+	end
+
+	method boolean FaustCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void FinalAttack(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Kill({target}, "FinalAttack", nil)
+			end, "FinalAttack")
+	end
+
+	method boolean FinalAttackCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void FireArrow(Card invoker, Card receiver, table result, Unit target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 3, nil, "FireArrow", nil)
+			end, "FireArrow")
+	end
+
+	method boolean FireArrowCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void FireBoar(Minion invoker, Minion receiver)
+		for i = 1, 2 do
+			self.taskManager:RunProcess(function()
+					self.taskManager:Damage(receiver.player.opponent.field:ShareRandomMinions(1, nil), receiver, 1, nil, "FireBoar", nil)
+				end, "FireBoar")
+		end
+	end
+
+	method boolean FireBoarCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Firebomb(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({receiver.player.opponent}, receiver, 3, nil, "Firebomb", nil)
+			end, "Firebomb")
+	end
+
+	method boolean FirebombCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.category == "Skill" and invoker.player == receiver.player.opponent
+	end
+
+	method void Flamethrower(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Kill({target}, "Flamethrower", nil)
+				self.taskManager:Discard({receiver.player.hand:GetRightmostCard()})
+			end, "Flamethrower")
+	end
+
+	method boolean FlamethrowerCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void FlamingRaccoon(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({receiver}, receiver, 1, nil, "FlamingRaccoon", nil)
+				self.taskManager:InsertAddAtkEnchantment({receiver}, 2, nil, nil, "FlamingRaccoon", nil)
+			end, "FlamingRaccoon")
+	end
+
+	method boolean FlamingRaccoonCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.player == receiver.player.opponent
+	end
+
+	method void Flyeye(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver.player.opponent.hand:ShareRandomBlueprints(1, self.taskManager.skillSelector)
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "Flyeye")
+	end
+
+	method boolean FlyeyeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Focus(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+				self.taskManager:InsertAddAuraNameEnchantment({receiver.player}, "Focus", {checkerName = "Focus"}, nil, "Focus", nil)
+			end, "Focus")
+	end
+
+	method boolean FocusCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Gaviota(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Seagull"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, nil, false)
+			end, "Gaviota")
+	end
+
+	method boolean GaviotaCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Genesis(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(self.duel:GetMinions(nil), receiver, 8, nil, "Genesis", nil)
+			end, "Genesis")
+	end
+
+	method boolean GenesisCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void GhostStump(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:ShareRandomElementsInArray(self.cardManager:GetMinionNamesByTag("Plant"), 1))
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "GhostStump")
+	end
+
+	method boolean GhostStumpCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void GiantCentipede(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertSetVenomEnchantment(receiver.field:GetMinions(nil), true, nil, nil, "GiantCentipede", 0.1)
+			end, "GiantCentipede")
+	end
+
+	method boolean GiantCentipedeCondition(string triggerkey, Minion invoker, Minion receiver)
+		return triggerkey == "Summon" and invoker == receiver
+	end
+
+	method void GinsengJar(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+			self.taskManager:Heal({receiver.player}, 5, nil, "GinsengJar", nil)
+			end, "GinsengJar")
+	end
+
+	method boolean GinsengJarCondition(string triggerKey, Duel invoker, Minion receiver)
+		return triggerKey == "BeginRound"
+	end
+
+	method void GoblinFire(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprint = receiver:GetBlueprintByName("Goblin")
+				self.taskManager:Transform({receiver}, blueprint, nil, "GoblinFire", nil)
+			end, "GoblinFire")
+	end
+
+	method boolean GoblinFireCondition(string triggerKey, Minion invoker, Minion receiver, table result)
+		return triggerKey == "Damage" and invoker == receiver and result.damage > 0 and not receiver.isDead
+	end
+
+	method void GreenCornian(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 1, nil, "GreenCornian", nil)
+			end, "GreenCornian")
+	end
+
+	method boolean GreenCornianCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void GreenMushroom(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:ShareRandomOurOtherMinions(1, nil)
+				self.taskManager:InsertAddMaxHpEnchantment(minionArray, 1, nil, nil, "GreenMushroom", nil)
+				self.taskManager:InsertSetVenomEnchantment(minionArray, true, nil, nil, nil, nil)
+			end, "GreenMushroom")
+	end
+
+	method boolean GreenMushroomCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void GreenTrixter(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Trixter", "Trixter"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "GreenTrixter")
+	end
+
+	method boolean GreenTrixterCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Grenade(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 3, nil, "Grenade", nil)
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "Grenade")
+	end
+
+	method boolean GrenadeCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Griffey(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertSetAtkEnchantment(receiver:GetOtherMinions(nil), 1, nil, nil, "Griffey", nil)
+			end, "Griffey")
+	end
+
+	method boolean GriffeyCondition(string triggerkey, Minion invoker, Minion receiver)
+		return triggerkey == "Summon" and invoker == receiver
+	end
+
+	method void Harp(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddAuraNameEnchantment({receiver.player.opponent}, "Harp", {checkerName = "Harp"}, nil, "Harp", nil)
+			end, "Harp")
+	end
+
+	method boolean HarpCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Haste(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local cardTable = self.taskManager:Draw({[receiver.player] = 2}, nil, false)
+				local cardArray = self.commandManager:ShareRandomElementsInArray(cardTable[receiver.player], 1)
+				self.taskManager:InsertAddCostEnchantment(cardArray, -1, {checkerName = "Haste"}, nil, "Haste", nil)
+			end, "Haste")
+	end
+
+	method boolean HasteCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Hawk(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Stun(receiver.player.opponent.field:ShareRandomMinions(1, nil), "Hawk", nil)
+			end, "Hawk")
+	end
+
+	method boolean HawkCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Heal(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Heal(receiver.player:GetUnits(), 4, nil, "Heal", nil)
+			end, "Heal")
+	end
+
+	method boolean HealCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Heinz(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+				self.taskManager:InsertAddCostEnchantment(receiver.player.hand:GetCards(nil), -1, nil, nil, "Heinz", nil)
+			end, "Heinz")
+	end
+
+	method boolean HeinzCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Hogul(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddAtkEnchantment({receiver}, 2, nil, nil, nil, nil)
+			end, "Hogul")
+	end
+
+	method boolean HogulCondition(string triggerKey, Duel invoker, Minion receiver, table result, table minionArray)
+		if triggerKey == "PostBattle" and _Table:Contains(minionArray, receiver) then
+			for _, minion in ipairs(minionArray) do
+				if minion ~= receiver then
+					return minion.isDead
+				end
+			end
+		end
+		
+		return false
+	end
+
+	method void HolyShield(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:GainBarrier({target}, "HolyShield", nil)
+				self.taskManager:InsertAddMaxHpEnchantment({target}, 1, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment({target}, 1, nil, nil, nil, nil)
+			end, "HolyShield")
+	end
+
+	method boolean HolyShieldCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Homunscullo(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Scare(receiver.player.opponent.field:GetMinions(nil), "Homunscullo", nil)
+			end, "Homunscullo")
+	end
+
+	method boolean HomunsculloCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Horntail(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent.field:GetMinions(nil), receiver, 3, nil, "Horntail", nil)
+			end, "Horntail")
+	end
+
+	method boolean HorntailCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void HornyMushroom(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddAtkEnchantment(receiver:ShareRandomOurOtherMinions(1, nil), 1, nil, nil, "HornyMushroom", nil)
+			end, "HornyMushroom")
+	end
+
+	method boolean HornyMushroomCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Huckle(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "Huckle")
+	end
+
+	method boolean HuckleCondition(string triggerKey, Duel invoker, Minion receiver)
+		return triggerKey == "BeginRound"
+	end
+
+	method void HyperBody(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment(receiver.player.field:ShareRandomMinions(2, nil), 2, nil, nil, "HyperBody", nil)
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "HyperBody")
+	end
+
+	method boolean HyperBodyCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Hypnotize(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local minion = receiver.player.opponent.field:ShareRandomMinions(1, nil)[1]
+				if isvalid(minion) then
+					self.taskManager:Cross(minion, "Hypnotize")
+				end
+			end, "Hypnotize")
+	end
+
+	method boolean HypnotizeCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Icarus(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "Icarus")
+	end
+
+	method boolean IcarusCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void IceElemental(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Freeze(self.duel:GetMinions(nil), "IceElemental", nil)
+			end, "IceElemental")
+	end
+
+	method boolean IceElementalCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void IceShot(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local minionArray = target:GetSelfAndAdjacentMinions(nil)
+				self.taskManager:Damage(minionArray, receiver, 2, nil, "IceShot", nil)
+				self.taskManager:Freeze(minionArray, nil, nil)
+			end, "IceShot")
+	end
+
+	method boolean IceShotCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void IceSplitter(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 1, nil, "IceSplitter", nil)
+				self.taskManager:Freeze({target}, nil, nil)
+			end, "IceSplitter")
+	end
+
+	method boolean IceSplitterCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void IceStrike(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = self.duel:GetMinions(nil)
+				self.taskManager:Damage(minionArray, receiver, 1, nil, "IceStrike", nil)
+				self.taskManager:Freeze(minionArray, nil, nil)
+			end, "IceStrike")
+	end
+
+	method boolean IceStrikeCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Infinity(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+				self.taskManager:InsertAddTriggerNameEnchantment({receiver.player}, "InfinityBeginRound", nil, nil, "Infinity", nil)
+			end, "Infinity")
+	end
+
+	method void InfinityBeginRound(Duel invoker, Player receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:GainMp({receiver}, 1, nil, "InfinityBeginRound", nil)
+			end, "InfinityBeginRound")
+	end
+
+	method boolean InfinityBeginRoundCondition(string triggerKey, Duel invoker, Player receiver)
+		return triggerKey == "BeginRound"
+	end
+
+	method boolean InfinityCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void IronArrow(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local minionArray = target:GetSelfAndRightMinions(2, nil)
+				local eachArgs = {}
+				for i, minion in ipairs(minionArray) do
+					eachArgs[minion] = {receiver, 4 - i}
+				end
+				self.taskManager:Damage(minionArray, nil, nil, eachArgs, "IronArrow", nil)
+			end, "IronArrow")
+	end
+
+	method boolean IronArrowCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void IronHog(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment(receiver:GetOurOtherMinions(nil), 2, nil, nil, "IronHog", nil)
+			end, "IronHog")
+	end
+
+	method boolean IronHogCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void JaneDoe(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local nameArray = self.history:GetThisGameDeadMinions(receiver.player)
+				if not _Table:IsEmpty(nameArray) then
+					local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", nameArray, 1))
+					self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+				end
+			end, "JaneDoe")
+	end
+
+	method boolean JaneDoeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void JrBalrog(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 6, nil, "JrBalrog", nil)
+			end, "JrBalrog")
+	end
+
+	method boolean JrBalrogCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void JrBoogie(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false) 
+			end, "JrBoogie")
+	end
+
+	method boolean JrBoogieCondition(string triggerKey, Minion invoker, Minion receiver, table result)
+		return triggerKey == "Damage" and invoker == receiver and result.damage > 0
+	end
+
+	method void JrMimic(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player.opponent] = 1}, nil, false)
+			end, "JrMimic") 
+	end
+
+	method boolean JrMimicCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void JrNewtie(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprint = receiver:GetBlueprintByName("NestGolem")
+				self.taskManager:Transform({receiver}, blueprint, nil, "JrNewtie", nil)
+			end, "JrNewtie")
+	end
+
+	method boolean JrNewtieCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.category == "Skill" and invoker.player == receiver.player
+	end
+
+	method void JrWraith(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Kick(receiver.player.opponent.field:ShareRandomMinions(1, nil), false, "JrWraith", nil)
+			end, "JrWraith")
+	end
+
+	method boolean JrWraithCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void JrYeti(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprint = receiver:GetBlueprintByName("Yeti")
+				self.taskManager:Transform({receiver}, blueprint, nil, "JrYeti", nil)
+			end, "JrYeti")
+	end
+
+	method boolean JrYetiCondition(string triggerKey, Duel invoker, Minion receiver)
+		return triggerKey == "BeginRound"
+	end
+
+	method void KingSageCat(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:SortMinions({receiver.player.opponent.field}, self.taskManager.attackComparer)
+			end, "KingSageCat")
+	end
+
+	method boolean KingSageCatCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void KingSlime(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Slime", "Slime"})
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "KingSlime")
+	end
+
+	method boolean KingSlimeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Kino(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local count = self.history:GetThisRoundMinionCountByTag(receiver.player, "Pet")
+				self.taskManager:InsertAddMaxHpEnchantment({receiver}, count, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment({receiver}, count, nil, nil, nil, nil)
+			end, "Kino")
+	end
+
+	method boolean KinoCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Kyrin(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local unit = receiver.player.opponent:ShareRandomUnits(1)[1]
+				local resultTable = self.taskManager:Damage({unit}, receiver.player, 3, nil, "Kyrin", nil)
+				if unit:IsMinion() and resultTable[unit].isDead then
+					self.taskManager:InsertAddMaxHpEnchantment({receiver}, 2, nil, nil, nil, nil)
+					self.taskManager:InsertAddAtkEnchantment({receiver}, 2, nil, nil, nil, nil)
+				end
+			end, "Kyrin")
+	end
+
+	method boolean KyrinCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Lakelis(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:ShareRandomElementsInArray(self.cardManager:GetMinionNamesByCost(1), 1))
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "Lakelis")
+	end
+
+	method boolean LakelisCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.category == "Skill" and invoker.player == receiver.player
+	end
+
+	method void LePetitPrince(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local nameArray = self.history:GetThisRoundDeadMinions(receiver.player)
+				if not _Table:IsEmpty(nameArray) then
+					local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:ShareRandomElementsInArray(nameArray, 1))
+					self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+				end
+			end, "LePetitPrince")
+	end
+
+	method boolean LePetitPrinceCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void LordPirate(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local nameArray = {}
+				for i = 1, self.history:GetThisGameDiscardedCardCount(receiver.player) do
+					nameArray[i] = "BellflowerRoot"
+				end
+				local blueprintArray = receiver:GetBlueprintsByNames(nameArray)
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "LordPirate")
+	end
+
+	method boolean LordPirateCondition(string triggerKey, Duel invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Lucida(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				if receiver.player.hp <= 10 then
+					self.taskManager:InsertAddMaxHpEnchantment({receiver}, 3, nil, nil, nil, nil)
+					self.taskManager:InsertAddAtkEnchantment({receiver}, 3, nil, nil, nil, nil)
+				end
+			end, "Lucida")
+	end
+
+	method boolean LucidaCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void LuckySeven(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 2, nil, "LuckySeven", nil)
+			end, "LuckySeven")
+	end
+
+	method boolean LuckySevenCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Lupin(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 1, nil, "Lupin", nil)
+			end, "Lupin")
+	end
+
+	method boolean LupinCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.category == "Skill" and invoker.player == receiver.player
+	end
+
+	method void Mai(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:ShareRandomOurOtherMinions(1, nil)
+				self.taskManager:InsertAddMaxHpEnchantment(minionArray, 3, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment(minionArray, 3, nil, nil, nil, nil)
+			end, "Mai")
+	end
+
+	method boolean MaiCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void MagicBooster(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local cardTable = self.taskManager:Add({[receiver.player] = 
+					receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", self.cardManager:GetSkillNamesByClass("Magician"), 1))}, receiver, nil)
+				self.taskManager:InsertSetCostEnchantment(cardTable[receiver.player], 1, nil, nil, "MagicBooster", nil)
+			end, "MagicBooster")
+	end
+
+	method boolean MagicBoosterCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Mano(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:GetOtherMinions(nil)
+				local eachArgs = {}
+				for _, minion in ipairs(minionArray) do
+					eachArgs[minion] = {receiver:GetBlueprintByName(self.commandManager:ShareRandomElementInArray({"RedSnail", "BlueSnail", "Snail"}))}
+				end 
+				self.taskManager:Transform(receiver:GetOtherMinions(nil), nil, eachArgs, "Mano", nil)
+			end, "Mano")
+	end
+
+	method boolean ManoCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void ManonDead(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 3, nil, "ManonDead", nil)
+			end, "ManonDead")
+	end
+
+	method boolean ManonDeadCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void ManonSummon(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent.field:GetMinions(nil), receiver, 1, nil, "ManonSummon", nil)
+			end, "ManonSummon")
+	end
+
+	method boolean ManonSummonCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void MarTheFairy(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", self.cardManager:GetMinionNamesByTag("Pet"), 2))
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "MarTheFairy")
+	end
+
+	method boolean MarTheFairyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void MasterSergeantFox(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = self.history:GetThisRoundSkillCount(receiver.player)}, nil, false)
+			end, "MasterSergeantFox")
+	end
+
+	method boolean MasterSergeantFoxCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Mateon(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver:ShareRandomOurOtherMinions(1, self.taskManager.barrierSelector)
+				self.taskManager:InsertAddMaxHpEnchantment(minionArray, 1, nil, nil, "Mateon", nil)
+				self.taskManager:InsertAddAtkEnchantment(minionArray, 2, nil, nil, nil, nil)
+			end, "Mateon")
+	end
+
+	method boolean MateonCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Maya(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment({invoker}, 1, nil, nil, "Maya", nil)
+				self.taskManager:InsertAddAtkEnchantment({invoker}, 1, nil, nil, nil, nil)
+			end, "Maya")
+	end
+
+	method boolean MayaCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker.player == receiver.player and _Table:Contains(invoker.tagArray, "Mushroom")
+	end
+
+	method void Mike(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = math.max(0, 3 - #receiver.player.hand:GetCards(nil))}, nil, false)
+			end, "Mike")
+	end
+
+	method boolean MikeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void MoonBunny(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment({invoker}, 1, nil, nil, "MoonBunny", nil)
+			end, "MoonBunny")
+	end
+
+	method boolean MoonBunnyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker.player == receiver.player and invoker ~= receiver
+	end
+
+	method void MrWetbottom(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Heal({receiver.player}, 7, nil, "MrWetbottom", nil)
+			end, "MrWetbottom")
+	end
+
+	method boolean MrWetbottomCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void MT09(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver:ShareRandomOtherMinions(3, nil), receiver, 3, nil, "MT09", nil)
+			end, "MT09")
+	end
+
+	method boolean MT09Condition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Mushmom(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local damage = #receiver.player.field:GetMinions(self.taskManager.mushroomSelector)
+				self.taskManager:Damage(receiver.player.opponent.field:GetMinions(nil), receiver, damage, nil, "Mushmom", nil)
+			end, "Mushmom")
+	end
+
+	method boolean MushmomCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Nemi(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver.player.field:GetMinions(nil)
+				self.taskManager:InsertAddMaxHpEnchantment(minionArray, 1, nil, nil, "Nemi", nil)
+				self.taskManager:InsertAddAtkEnchantment(minionArray, 1, nil, nil, nil, nil)
+			end, "Nemi")
+	end
+
+	method boolean NemiCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Nependeath(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver:GetOtherMinions(nil), receiver, 1, nil, "Nependeath", nil)
+			end, "Nependeath")
+	end
+
+	method boolean NependeathCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void NestGolem(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local cardArray = receiver.player.deck:GetCards(self.taskManager.dragonSelector)
+				self.taskManager:InsertAddMaxHpEnchantment(cardArray, 2, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment(cardArray, 2, nil, nil, nil, nil)
+			end, "NestGolem") 
+	end
+
+	method boolean NestGolemCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void NineTailedFox(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minion = receiver.player.opponent.field:ShareRandomMinions(1, self.taskManager.npcSelector)[1]
+				if isvalid(minion) then
+					self.taskManager:Cross(minion, "NineTailedFox")
+				end
+			end, "NineTailedFox")
+	end
+
+	method boolean NineTailedFoxCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void NinjaAmbush(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				for i = 1, 4 do
+					self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 1, nil, "NinjaAmbush", nil)
+				end
+			end, "NinjaAmbush")
+	end
+
+	method boolean NinjaAmbushCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void NinjaStorm(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local minionArray = target:GetSelfAndAdjacentMinions(nil)
+				local eachArgs = {}
+				for _, minion in ipairs(minionArray) do
+					if minion == target then
+						eachArgs[minion] = {receiver, 1}
+					else
+						eachArgs[minion] = {receiver, 3}
+					end
+				end
+				self.taskManager:Damage(minionArray, receiver, nil, eachArgs, "NinjaStorm", nil)
+			end, "NinjaStorm")
+	end
+
+	method boolean NinjaStormCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Octopi(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 1, nil, "Octopi", nil)
+			end, "Octopi")
+	end
+
+	method boolean OctopiCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void PaperLanternGhost(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({receiver.player}, receiver, 3, nil, "PaperLanternGhost", nil)
+			end, "PaperLanternGhost")
+	end
+
+	method boolean PaperLanternGhostCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Papulatus(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+			local cardArray
+			if self:IsServer() then
+				cardArray = self.duel:GetHandCards(self.taskManager.minionSelector)
+				self.commandManager:PushPackage(cardArray)
+			else
+				cardArray = self.commandManager:PopPackage()
+			end
+			self.taskManager:Place(cardArray, nil, false, false)
+			end, "Papulatus")
+	end
+
+	method boolean PapulatusCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Patricia(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"BrownTeddy", "PinkTeddy", "PandaTeddy"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "Patricia")
+	end
+
+	method boolean PatriciaCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Pepe(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local yeti
+				for _, minion in ipairs(receiver.field.minionArray) do
+					if minion.name == "Yeti" then
+						yeti = minion
+						break
+					end
+				end
+				
+				if isvalid(yeti) then
+					local player = receiver.player
+					local blueprintArray = receiver:GetBlueprintsByNames({"YetiAndPepe"})
+		
+					self.taskManager:Vanish({receiver, yeti}, "Pepe", nil)
+					self.taskManager:Summon({[player] = blueprintArray}, nil, false)
+				end
+			end, "Pepe")
+	end
+
+	method boolean PepeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Pia(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 2}, nil, false)
+			end, "Pia")
+	end
+
+	method boolean PiaCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver and #receiver.player.field:GetMinions(self.taskManager.mushroomSelector) > 0
+	end
+
+	method void Pianus(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver.player.opponent.field:GetMinions(function(minion) return minion.atk <= 3 end)
+				self.taskManager:Kill(minionArray, "Pianus", nil)
+			end, "Pianus")
+	end
+
+	method boolean PianusCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Pio(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1, [receiver.player.opponent] = 1}, nil, false)
+			end, "Pio")
+	end
+
+	method boolean PioCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void PowerKnockBack(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Stun({target}, "PowerKnockBack", nil)
+				self.taskManager:MoveMinionToFarLeft(target)
+			end, "PowerKnockBack")
+	end
+
+	method boolean PowerKnockBackCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void PowerStance(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddAuraNameEnchantment({receiver.player}, "PowerStance", {checkerName = "PowerStance"}, nil, "PowerStance", nil)
+			end, "PowerStance")
+	end
+
+	method boolean PowerStanceCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void PowerStrike(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 5, nil, "PowerStrike", nil)
+			end, "PowerStrike")
+	end
+
+	method boolean PowerStrikeCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Puppet(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Scarecrow"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, nil, false)
+			end, "Puppet")
+	end
+
+	method boolean PuppetCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void QualmGuardian(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment({receiver}, 6, nil, nil, "QualmGuardian", nil)
+			end, "QualmGuardian")
+	end
+
+	method boolean QualmGuardianCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver and #receiver.player.field:GetMinions(nil) > 1
+	end
+
+	method void Rage(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver.player.field:GetMinions(self.taskManager.damagedSelector)
+				self.taskManager:InsertAddMaxHpEnchantment(minionArray, 2, nil, nil, "Rage", nil)
+				self.taskManager:InsertAddAtkEnchantment(minionArray, 2, nil, nil, nil, nil)
+			end, "Rage")
+	end
+
+	method boolean RageCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Rash(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			
+				local cardArray = receiver.player.hand:GetCards(self.taskManager.minionSelector)
+			 	self.taskManager:InsertAddCostEnchantment(cardArray, 1, nil, nil, nil, nil)
+				self.taskManager:InsertAddMaxHpEnchantment(cardArray, 1, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment(cardArray, 1, nil, nil, nil, nil)
+			end, "Rash")
+	end
+
+	method boolean RashCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void RaulTheKnight(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, self.taskManager.dragonSelector, false)
+			end, "RaulTheKnight")
+	end
+
+	method boolean RaulTheKnightCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void RedDrake(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 3, nil, "RedDrake", nil)
+			end, "RedDrake")
+	end
+
+	method boolean RedDrakeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void RedKentaurus(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddAtkEnchantment({receiver}, 1, nil, nil, "RedKentaurus", nil)
+			end, "RedKentaurus")
+	end
+
+	method boolean RedKentaurusCondition(string triggerKey, Minion invoker, Minion receiver, table result)
+		return triggerKey == "Damage" and invoker.player == receiver.player and result.damage > 0
+	end
+
+	method void Reindeer(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddTriggerNameEnchantment({receiver.player}, "ReindeerPrePlay", {checkerName = "Reindeer"}, nil, "Reindeer", nil)
+			end, "Reindeer") 
+	end
+
+	method boolean ReindeerCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void ReindeerPrePlay(Card invoker, Player receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment({invoker}, 1, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment({invoker}, 1, nil, nil, nil, nil)
+			end, "ReindeerPrePlay") 
+	end
+
+	method boolean ReindeerPrePlayCondition(string triggerKey, Card invoker, Player receiver)
+		return triggerKey == "PrePlay" and invoker.player == receiver and invoker.category == "Minion"
+	end
+
+	method void Resurrection(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:ShareRandomElementsInArray(self.history:GetThisGameDeadMinions(receiver.player), 1))
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, nil, false)
+			end, "Resurrection")
+	end
+
+	method boolean ResurrectionCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void RibbonPig(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 2, nil, "RibbonPig", nil)
+			end, "RibbonPig")
+	end
+
+	method boolean RibbonPigCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Ronnie(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = self.duel:ShareRandomMinions(1, self.taskManager.mushroomSelector)
+				if not _Table:IsEmpty(minionArray) then
+					local minion = minionArray[1]
+					self.taskManager:Kill(minionArray, "Ronnie", nil)
+					self.taskManager:InsertAddMaxHpEnchantment({receiver}, minion.hp, nil, nil, nil, nil)
+					self.taskManager:InsertAddAtkEnchantment({receiver}, minion.atk, nil, nil, nil, nil)
+				end
+			end, "Ronnie")
+	end
+
+	method boolean RonnieCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Rurumo(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local count = self.history:GetThisRoundCardCount(receiver.player) - 1
+				self.taskManager:Damage({receiver.player}, receiver, count, nil, "Rurumo", nil)
+				self.taskManager:GainMp({receiver.player}, count, nil, nil, nil)
+			end, "Rurumo")
+	end
+
+	method boolean RurumoCondition(string triggerKey, Duel invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Rush(Card invoker, Card receiver, table result, Unit target)
+		self.taskManager:RunProcess(function()
+				local cardTable = self.taskManager:Draw({[receiver.player] = 1}, self.taskManager.minionSelector, false)
+				if not _Table:IsEmpty(cardTable) and not _Table:IsEmpty(cardTable[receiver.player]) then
+					local damage = nil
+					if self:IsServer() then
+						damage = cardTable[receiver.player][1].atk
+						self.commandManager:PushPackage(damage)
+					else
+						damage = self.commandManager:PopPackage()
+					end
+					self.taskManager:Damage({target}, receiver, damage, nil, "Rush", nil)
+				end
+			end, "Rush")
+	end
+
+	method boolean RushCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Sabitrama(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = self.duel:ShareRandomMinions(1, self.taskManager.venomSelector)
+				if not _Table:IsEmpty(minionArray) then
+					local minion = minionArray[1]
+					self.taskManager:Kill(minionArray, "Sabitrama", nil)
+					self.taskManager:Draw({[receiver.player] = 2}, nil, false)
+				end
+			end, "Sabitrama")
+	end
+
+	method boolean SabitramaCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Sacrifice(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Kill({target}, "Sacrifice", nil)
+				while self.duel:HasDeadMinion() do
+					self.taskManager:Dead()
+				end
+				self.taskManager:Place(receiver.player.hand:ShareRandomCards(1, self.taskManager.minionSelector), nil, false, false)
+			end, "Sacrifice")
+	end
+
+	method boolean SacrificeCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Scadur(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Kill(self.duel:ShareRandomMinions(1, self.taskManager.bossSelector), "Scadur", nil)
+			end, "Scadur")
+	end
+
+	method boolean ScadurCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Seagull(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 1, nil, "Seagull", nil)
+				self.taskManager:Kick({receiver}, false, nil, nil)
+			end, "Seagull")
+	end
+
+	method boolean SeagullCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.player == receiver.player
+	end
+
+	method void Sentinel(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(self.duel:GetMinions(nil), receiver, 1, nil, "Sentinel", nil)
+			end, "Sentinel")
+	end
+
+	method boolean SentinelCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void SergeantBravo(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Heal({receiver.player}, 4, nil, "SergeantBravo", nil)
+			end, "SergeantBravo")
+	end
+
+	method boolean SergeantBravoCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void ShadowPartner(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+				self.taskManager:InsertAddAuraNameEnchantment({receiver.player}, "ShadowPartner", {checkerName = "ShadowPartner"}, nil, "ShadowPartner", nil)
+			end, "ShadowPartner")
+	end
+
+	method boolean ShadowPartnerCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ShadowStars(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", self.cardManager:GetSkillNamesByTag("Shuriken"), 2))
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "ShadowStars")
+	end
+
+	method boolean ShadowStarsCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Shark(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:GetUnits(), receiver, receiver.atk, nil, "Shark", nil)
+			end, "Shark")
+	end
+
+	method boolean SharkCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void SharpEyes(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver.player.field:GetMinions(nil)
+				self.taskManager:InsertAddMaxHpEnchantment(minionArray, 1, nil, nil, "SharpEyes", nil)
+				self.taskManager:InsertAddAtkEnchantment(minionArray, 1, nil, nil, nil, nil)
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "SharpEyes")
+	end
+
+	method boolean SharpEyesCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Shockwave(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver.player.opponent.field:GetMinions(nil)
+				local eachArgs = {}
+				for _, minion in ipairs(minionArray) do
+					eachArgs[minion] = {receiver, self.commandManager:ShareRandomIntegerRange(2, 3)}
+				end
+				self.taskManager:Damage(minionArray, receiver, nil, eachArgs, "Shockwave", 0.075)
+			end, "Shockwave")
+	end
+
+	method boolean ShockwaveCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Shout(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Stun(receiver.player.opponent.field:GetMinions(nil), "Shout", nil)
+			end, "Shout")
+	end
+
+	method boolean ShoutCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void SilverHawk(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Hawk"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, nil, false)
+			end, "SilverHawk")
+	end
+
+	method boolean SilverHawkCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Skelegon(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Place(receiver.player.hand:ShareRandomCards(1, self.taskManager.dragonSelector), receiver:GetLeftMinion(nil), false, false)
+			end, "Skelegon")
+	end
+
+	method boolean SkelegonCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Snatch(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 3, nil, "Snatch", nil)
+				self.taskManager:MoveMinionToFarRight(target)
+			end, "Snatch")
+	end
+
+	method boolean SnatchCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Snipe(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Kill({target}, "Snipe", nil)
+			end, "Snipe")
+	end
+
+	method boolean SnipeCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void SoGong(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"StrawTargetDummy"})
+				self.taskManager:Summon({[receiver.player.opponent] = blueprintArray}, nil, false)
+			end, "SoGong") 
+	end
+
+	method boolean SoGongCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void SomersaultKick(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local resultTable = self.taskManager:Damage({target}, receiver.player, 2, nil, "SomersaultKick", nil)
+				if resultTable[target].isDead then
+					self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+				end
+			end, "SomersaultKick")
+	end
+
+	method boolean SomersaultKickCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void SoulArrow(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Add({[receiver.player] = 
+					receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", self.cardManager:GetSkillNamesByClass("Bowman"), 2))}, receiver, nil)
+			end, "SoulArrow")
+	end
+
+	method boolean SoulArrowCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Sparker(Card invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(2), receiver, 1, nil, "Sparker", nil)
+			end, "Sparker")
+	end
+
+	method boolean SparkerCondition(string triggerKey, Card invoker, Minion receiver)
+		return triggerKey == "PostPlay" and invoker.player == receiver.player
+	end
+
+	method void Spiruna(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({receiver.player}, receiver.player, 4, nil, "Spiruna", nil)
+				self.taskManager:Draw({[receiver.player] = 2}, self.taskManager.devilSelector, false)
+			end, "Spiruna")
+	end
+
+	method boolean SpirunaCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Steal(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Kick({target}, true, "Steal", nil)
+			end, "Steal")
+	end
+
+	method boolean StealCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Stirge(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({receiver.player.opponent}, receiver, 1, nil, "Stirge", nil)
+			end, "Stirge")
+	end
+
+	method boolean StirgeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Strafe(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({target}, receiver, 4, nil, "Strafe", nil)
+			end, "Strafe")
+	end
+
+	method boolean StrafeCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Stumpy(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"AxeStump", "AxeStump"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "Stumpy")
+	end
+
+	method boolean StumpyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void SunWuKong(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, self.history:GetThisRoundMinionCountByTag(receiver.player, "Pet"), nil, "SunWuKong", nil)
+			end, "SunWuKong")
+	end
+
+	method boolean SunWuKongCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void TaeRoon(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minion = receiver.player.opponent.field:GetRightmostMinion()
+				if isvalid(minion) then
+					self.taskManager:Battle({receiver, minion})
+					if minion.isDead then
+						self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+					end
+				end
+			end, "TaeRoon")
+	end
+
+	method boolean TaeRoonCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void TalkingTree(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment(receiver.player.field:GetMinions(self.taskManager.plantSelector), 3, nil, nil, "TalkingTree", nil)
+			end, "TalkingTree")
+	end
+
+	method boolean TalkingTreeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Tangyoon(Duel invoker, Minion receiver, table result, table minionArray)
+		self.taskManager:RunProcess(function()
+				for _, minion in ipairs(minionArray) do
+					if minion.player == receiver.player then
+						self.taskManager:Heal({minion}, 1, nil, "Tangyoon", nil)
+					end
+				end
+			end, "Tangyoon")
+	end
+
+	method boolean TangyoonCondition(string triggerKey, Duel invoker, Minion receiver, table result, table minionArray)
+		if triggerKey == "PostBattle" and not _Table:Contains(minionArray, receiver) then
+			for _, minion in ipairs(minionArray) do
+				if minion.player ~= receiver.player then
+					return minion.isDead
+				end
+			end
+		end
+		
+		return false
+	end
+
+	method void Tauromacis(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:GetUnits(), receiver, 2, nil, "Tauromacis", nil)
+			end, "Tauromacis")
+	end
+
+	method boolean TauromacisCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void TheRemembererSummon(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local minionArray = receiver.player.field:ShareRandomMinions(1, self.taskManager.devilSelector)
+				if not _Table:IsEmpty(minionArray) then
+					self.taskManager:Kill(minionArray, "TheRemembererSummon", nil)
+					receiver.temp.name = minionArray[1].name
+				end
+			end, "TheRemembererSummon")
+	end
+
+	method boolean TheRemembererSummonCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void TheRemembererDead(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({receiver.temp.name, receiver.temp.name})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "TheRemembererDead")
+	end
+
+	method boolean TheRemembererDeadCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver and not _UtilLogic:IsNilorEmptyString(receiver.temp.name)
+	end
+
+	method void Threaten(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Scare({target}, "Threaten", nil)
+			end, "Threaten")
+	end
+
+	method boolean ThreatenCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ThreeSnails(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"RedSnail", "BlueSnail", "Snail"})
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, nil, false)
+			end, "ThreeSnails")
+	end
+
+	method boolean ThreeSnailsCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ThunderBolt(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local unitArray = receiver.player.opponent:GetUnits()
+				local eachArgs = {}
+				for _, unit in ipairs(unitArray) do
+					eachArgs[unit] = {receiver, self.commandManager:ShareRandomIntegerRange(1, 3)}
+				end
+				self.taskManager:Damage(unitArray, receiver, nil, eachArgs, "ThunderBolt", nil)
+			end, "ThunderBolt")
+	end
+
+	method boolean ThunderBoltCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void ThunderSpear(Card invoker, Card receiver, table result, Minion target)
+		self.taskManager:RunProcess(function()
+				local resultTable = self.taskManager:Damage({target}, receiver, 5, nil, "ThunderSpear", nil)
+				local excessDamage = resultTable[target].excessDamage
+				if excessDamage > 0 then
+					self.taskManager:GainMp({receiver.player}, excessDamage, nil, nil, nil)
+				end
+			end, "ThunderSpear")
+	end
+
+	method boolean ThunderSpearCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Timer(Duel invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+			self.taskManager:Place(receiver.player.hand:ShareRandomCards(1, self.taskManager.minionSelector), nil, false, false)
+			end, "Timer")
+	end
+
+	method boolean TimerCondition(string triggerKey, Duel invoker, Minion receiver)
+		return triggerKey == "BeginRound"
+	end
+
+	method void TripleThrow(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 3, nil, "TripleThrow", nil)
+			end, "TripleThrow")
+	end
+
+	method boolean TripleThrowCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void Tweeter(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Draw({[receiver.player] = 1}, nil, false)
+			end, "Tweeter")
+	end
+
+	method boolean TweeterCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Umti(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Kill(receiver.player.opponent.field:ShareRandomMinions(1, nil), "Umti", nil)
+			end, "Umti")
+	end
+
+	method boolean UmtiCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Utah(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local nameArray = {}
+				for i = 1, self.history:GetThisRoundSkillCount(receiver.player) do
+					nameArray[i] = "RibbonPig"
+				end
+				local blueprintArray = receiver:GetBlueprintsByNames(nameArray)
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "Utah")
+	end
+
+	method boolean UtahCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Vikin(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"JrMimic", "JrMimic"})
+				self.taskManager:Summon({[receiver.player.opponent] = blueprintArray}, nil, false)
+			end, "Vikin") 
+	end
+
+	method boolean VikinCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void WatchmenCrew(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Discard({receiver.player.hand:GetRightmostCard()})
+			end, "WatchmenCrew")
+	end
+
+	method boolean WatchmenCrewCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Werewolf(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage({receiver.player, receiver.player.opponent}, receiver, 4, nil, "Werewolf", nil)
+			end, "Werewolf")
+	end
+
+	method boolean WerewolfCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+	method void Winston(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local cardTable = self.taskManager:Draw({[receiver.player] = #receiver.player.field:GetMinions(self.taskManager.plantSelector)}, nil, false)
+				self.taskManager:InsertAddCostEnchantment(cardTable[receiver.player], -1, nil, nil, "Winston", nil)
+			end, "Winston")
+	end
+
+	method boolean WinstonCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void WonkyTheFairy(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:ShareRandomElementsInArray(self.cardManager:GetMinionNames(), 1))
+				self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+			end, "WonkyTheFairy")
+	end
+
+	method boolean WonkyTheFairyCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void WrathOfTheOctopi(Card invoker, Card receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames({"Octopi", "Octopi", "Octopi"})
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "WrathOfTheOctopi")
+	end
+
+	method boolean WrathOfTheOctopiCondition(string triggerKey, Card invoker, Card receiver)
+		return triggerKey == "Cast" and invoker == receiver
+	end
+
+	method void YetiAndPepe(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:GetUnits(), receiver, 5, nil, "YetiAndPepe", nil)
+			end, "YetiAndPepe")
+	end
+
+	method boolean YetiAndPepeCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Zakum(Minion invoker, Minion receiver)
+		for i = 1, self.history:GetThisGameSkillCountByCostOrMore(receiver.player, 4) do
+			local randomInteger = self.commandManager:ShareRandomIntegerRange(1, 3)
+			if randomInteger == 1 then
+				self.taskManager:RunProcess(function()
+						self.taskManager:Damage(receiver.player.opponent:GetUnits(), receiver, 2, nil, "Zakum_1", nil)
+					end, "Zakum_1")
+			elseif randomInteger == 2 then
+				self.taskManager:RunProcess(function()
+						local blueprintArray = self.commandManager:ShareRandomElementsInArray(receiver:GetBlueprintsByNames({"Puco", "Punco", "Cuzco"}), 1) 
+						self.taskManager:Summon({[receiver.player] = blueprintArray}, receiver:GetLeftMinion(nil), false)
+					end, "Zakum_2")
+			elseif randomInteger == 3 then
+				self.taskManager:RunProcess(function()
+						self.taskManager:InsertAddMaxHpEnchantment({receiver}, 3, nil, nil, nil, nil)
+						self.taskManager:InsertAddAtkEnchantment({receiver}, 3, nil, nil, nil, nil)
+					end, "Zakum_3")
+			end
+		end
+	end
+
+	method boolean ZakumCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Summon" and invoker == receiver
+	end
+
+	method void Zeno(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:InsertAddMaxHpEnchantment({receiver}, 1, nil, nil, nil, nil)
+				self.taskManager:InsertAddAtkEnchantment({receiver}, 1, nil, nil, nil, nil)
+			end, "Zeno")
+	end
+
+	method boolean ZenoCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "LoseBarrier" and invoker.player == receiver.player
+	end
+
+	method void ZombieLupin(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				self.taskManager:Damage(receiver.player.opponent:ShareRandomUnits(1), receiver, 1, nil, "ZombieLupin", nil)
+			end, "ZombieLupin")
+	end
+
+	method boolean ZombieLupinCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker.player == receiver.player and invoker ~= receiver
+	end
+
+	method void ZombieMushroom(Minion invoker, Minion receiver)
+		self.taskManager:RunProcess(function()
+				local blueprintArray = receiver:GetBlueprintsByNames(self.commandManager:SharePrivateRandomElementsInArray(receiver.player, "", self.cardManager:GetMinionNamesByTag("Mushroom"), 1))
+				self.taskManager:Add({[receiver.player] = blueprintArray}, receiver, nil)
+			end, "ZombieMushroom")
+	end
+
+	method boolean ZombieMushroomCondition(string triggerKey, Minion invoker, Minion receiver)
+		return triggerKey == "Dead" and invoker == receiver
+	end
+
+end

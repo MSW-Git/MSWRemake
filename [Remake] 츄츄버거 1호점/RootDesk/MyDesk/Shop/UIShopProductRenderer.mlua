@@ -1,0 +1,243 @@
+@Component
+script UIShopProductRenderer extends Component
+
+	property string productId = ""
+
+	property TextComponentRef ItemNameText = nil
+
+	property TextComponentRef RemainCountText = nil
+
+	property EntityRef ItemImageEntity = nil
+
+	property TextComponentRef PriceText = nil
+
+	property EntityRef BlockBuyComponent = nil
+
+	property EntityRef BlockArchieve = nil
+
+	property Entity SaleEntity = nil
+
+	property TextComponent SalePercentText = nil
+
+	property Color DefaultPriceTextColor = Color(0,0,0,0)
+
+	property Color UnavailablePriceTextColor = Color(0,0,0,0)
+
+	property SpriteGUIRendererComponent CurrencyImageDummy = nil
+
+	method void Init(string productId)
+		-- 상품 ID로 상품 렌더러 UI를 초기화
+		self.productId = productId
+		local productData = _ShopDataLogic:GetShopProductData(productId)
+		if productData == nil then
+			return
+		end
+		
+		local itemData = _ItemDataSetLogic:GetItemData(productData.ItemId)
+		if itemData == nil then
+			return
+		end
+		
+		if isvalid(self.ItemNameText) then
+			self.ItemNameText.Text =   _GetLocalizationTextLogic:GetText(itemData.NameKey)
+		end
+		
+		if isvalid(self.ItemImageEntity) then
+			self.ItemImageEntity.SpriteGUIRendererComponent.ImageRUID = itemData.IconRUID
+			local itemCountText = self.ItemImageEntity:GetChildByName("ItemCountText")
+			if isvalid(itemCountText) then
+				itemCountText.TextComponent.Text = "x" .. tostring(productData.ItemCount)
+			end
+		end
+		
+		self:RefreshUI()
+		
+	end
+
+	method void RefreshUI()
+		-- 상품 UI 요소들을 새로고침하여 최신 상태 반영
+		local privateShop = _UserService.LocalPlayer.PlayerPrivateShop
+		local productData = _ShopDataLogic:GetShopProductData(self.productId)
+		if productData == nil then
+			return
+		end
+		
+		local remainCount = -1
+		if productData.MaxQuantity > 0 then
+			remainCount = privateShop:GetBuyMaxCountFromQuantity(self.productId)
+			self.RemainCountText.Text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("ShopCanBuyCount", _StringUtilLogic:ReturnThousandsSeparatedString(remainCount))
+		else
+			self.RemainCountText.Text = ""
+		end 
+		
+		self:SetBlockComponent(remainCount == 0)
+		
+		if isvalid(self.SaleEntity) then
+			if productData.SaleRate == nil then
+				self.SaleEntity.Enable = false
+			else
+				self.SaleEntity.Enable = true
+				self.SalePercentText.Text = math.floor(productData.SaleRate * 100).."%"
+			end
+		end
+		
+		self:RefreshPriceText()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- UI 컴포넌트 초기화 및 자식 엔티티 참조 설정
+		local itemNameText = self.Entity:GetChildByName("ItemNameText")
+		if isvalid(itemNameText) then
+			self.ItemNameText = itemNameText.TextComponent
+		end
+		
+		local itemInfo = self.Entity:GetChildByName("ItemInfo")
+		if isvalid(itemInfo) then
+			self.RemainCountText = itemInfo:GetChildByName("RemainCountText").TextComponent
+		end
+		
+		local priceText = self.Entity:GetChildByName("PriceText")
+		if isvalid(priceText) then
+			self.PriceText = priceText.TextComponent
+			local currencyImageDummy = priceText:GetChildByName("CurrencyImageDummy")
+			if currencyImageDummy ~= nil then
+				self.CurrencyImageDummy = currencyImageDummy.SpriteGUIRendererComponent
+			end
+		end
+		
+		self.ItemImageEntity = self.Entity:GetChildByName("ItemThumnail")
+		self.BlockBuyComponent = self.Entity:GetChildByName("BlockBuyComponent")
+		self.BlockArchieve = self.Entity:GetChildByName("BlockArchieve")
+		
+		if isvalid(self.BlockBuyComponent) then
+			self.BlockBuyComponent.Enable = false
+		end
+		if isvalid(self.BlockArchieve) then
+			self.BlockArchieve.Enable = false
+		end
+		
+		self.SaleEntity = self.Entity:GetChildByName("SaleEntity")
+		
+		if isvalid(self.SaleEntity) then
+			local salePercentText = self.SaleEntity:GetChildByName("SalePercent")
+			self.SalePercentText = salePercentText.TextComponent
+		end
+		
+		self.UnavailablePriceTextColor = _ColorCodeEnum:GetColor("#fa5246")
+		self.DefaultPriceTextColor = _ColorCodeEnum:GetColor("#7c6747")
+	end
+
+	method void RefreshPriceText()
+		-- 상품 가격 텍스트와 통화 아이콘을 업데이트
+		local productData = _ShopDataLogic:GetShopProductData(self.productId)
+		if productData == nil then
+			return
+		end
+		local shopData = _ShopDataLogic:GetShopData(productData.LinkedShopId)
+		if shopData == nil then return end
+		
+		local ownMoney = 0
+		if shopData.CurrencyType == "Meso" then
+			ownMoney = _UserService.LocalPlayer.PlayerInventory.Money
+		elseif shopData.CurrencyType == "Clover" then
+			ownMoney = _UserService.LocalPlayer.PlayerInventory.ArcaneSymbol
+		elseif shopData.CurrencyType == "Heart" then
+			ownMoney = _UserService.LocalPlayer.PlayerInventory.Heart
+		elseif shopData.CurrencyType == "Diamond" then
+			ownMoney = _UserService.LocalPlayer.PlayerOutgameManager:GetDiamondCount()
+		end
+		
+		self.PriceText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(productData.Price)
+		
+		self:UpdatePriceTextColor(ownMoney, productData.Price)
+		
+		local currenyImage = self.PriceText.Entity:GetChildByName("CurrencyImage")
+		if shopData.CurrencyType == "Meso" then
+			currenyImage.SpriteGUIRendererComponent.ImageRUID = _DataService:GetTable("ItemData"):FindRow("Id","G0001"):GetItem("IconRUID")
+		elseif shopData.CurrencyType == "Clover" then
+			currenyImage.SpriteGUIRendererComponent.ImageRUID =  _DataService:GetTable("ItemData"):FindRow("Id","G0004"):GetItem("IconRUID")
+		elseif shopData.CurrencyType == "Heart" then
+			currenyImage.SpriteGUIRendererComponent.ImageRUID =  _DataService:GetTable("ItemData"):FindRow("Id","G0005"):GetItem("IconRUID")
+		elseif shopData.CurrencyType == "Diamond" then
+			currenyImage.SpriteGUIRendererComponent.ImageRUID =  _DataService:GetTable("ItemData"):FindRow("Id","G1001"):GetItem("IconRUID")
+		else	
+			currenyImage.SpriteGUIRendererComponent.ImageRUID = ""
+		end
+	end
+
+	method void InitSpecialShopItem(SpecialShopProductData data, SpecialShopData shopData)
+		-- 특별 상점 상품으로 UI를 초기화
+		local itemData = _ItemDataSetLogic:GetItemData(data.ItemId)
+		if itemData == nil then
+			return
+		end
+		
+		if isvalid(self.ItemNameText) then
+			self.ItemNameText.Text =   _GetLocalizationTextLogic:GetText(itemData.NameKey)
+		end
+		
+		if isvalid(self.ItemImageEntity) then
+			self.ItemImageEntity.SpriteGUIRendererComponent.ImageRUID = itemData.IconRUID
+		end
+		
+		if isvalid(self.PriceText) then
+			self.PriceText.Text = _StringUtilLogic:ReturnThousandsSeparatedString(data.Price)
+			if self.PriceText.FontColor == self.UnavailablePriceTextColor then
+				self.PriceText.FontColor = self.DefaultPriceTextColor
+			end
+		end
+		
+		if shopData.UseItemId == "G1001" then
+			local ownDiamond = _UserService.LocalPlayer.PlayerOutgameManager:GetDiamondCount()
+			if ownDiamond < data.Price then
+				self.PriceText.FontColor =  self.UnavailablePriceTextColor
+			end
+			self.CurrencyImageDummy.ImageRUID = _ItemDataSetLogic:GetItemData(shopData.UseItemId).IconRUID
+		else
+			self.CurrencyImageDummy.ImageRUID = "a8f3146382c07494d8dbce9b93c1a5c3"
+		end
+	end
+
+	method void SetBlockComponent(boolean blockOn)
+		-- 상품 구매 차단 컴포넌트 활성화/비활성화 설정
+		if self.BlockBuyComponent == nil then
+			return
+		end
+		self.BlockBuyComponent.Enable = blockOn
+		self.Entity.ButtonComponent.Enable = not blockOn
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdatePriceTextColor(integer ownMoney, integer price)
+		-- 소유 자금과 비교하여 가격 텍스트 색상 업데이트
+		if ownMoney < price then
+			self.PriceText.FontColor = self.UnavailablePriceTextColor
+		else
+			self.PriceText.FontColor = self.DefaultPriceTextColor
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 상품 클릭 시 구매 팝업 열기 이벤트 처리
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		
+		if self.Entity.UISpecialShopProduct ~= nil then
+			return
+		end
+		
+		local uiPurchasePopup = _UILobbyManager.UIShopPurchaePopup
+		if uiPurchasePopup == nil then
+			return
+		end
+		uiPurchasePopup.UIShopPurchasePopup:Popup(self.productId)
+	end
+
+end

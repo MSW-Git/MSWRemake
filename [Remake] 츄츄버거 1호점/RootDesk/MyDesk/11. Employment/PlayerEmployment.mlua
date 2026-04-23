@@ -1,0 +1,700 @@
+@Component
+script PlayerEmployment extends Component
+
+	property Entity EmploymentGroup = "1597b6c1-99c0-435f-8490-61eb96a382c0"
+
+	@TargetUserSync
+	property string EmploymentState = ""
+
+	property integer DEFINE_EMPNUM = 5
+
+	property table EmployeeIdRandomBox = {}
+
+	property table NewEmployeeIdList = {}
+
+	property table EmploymentTypeInfo = {}
+
+	property integer EmploymentId = 1
+
+	@TargetUserSync
+	property integer EmploymentLv = 1
+
+	@TargetUserSync
+	property integer MaxEmploymentCount = 0
+
+	property integer RerollCount = 0
+
+	@TargetUserSync
+	property integer ScoutLv = 1
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 고용 관련 데이터를 데이터베이스에 저장하는 함수
+		
+		local employmentTotal = {}
+		employmentTotal["NewEmployeeIdList"] = _UtilLogic:TableToString(self.NewEmployeeIdList)
+		employmentTotal["EmploymentState"] = self.EmploymentState
+		employmentTotal["EmploymentId"] = tostring(self.EmploymentId)
+		employmentTotal["EmploymentLv"] = tostring(self.EmploymentLv)
+		employmentTotal["ScoutLv"] = tostring(self.ScoutLv)
+		employmentTotal["RerollCount"] = tostring(self.RerollCount)
+		
+		saveData["EmploymentData"] = employmentTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 고용 관련 데이터를 로드하는 함수
+		local employmentTable = loadedData["EmploymentData"]
+		if employmentTable == nil then
+			employmentTable = {}
+		end
+		
+		if #table.keys(employmentTable) > 0 then
+			
+			if _UtilLogic:IsNilorEmptyString(employmentTable["EmploymentState"]) then
+				self.EmploymentState = _EmploymentStateEnum.LevelButtonList
+			else
+				self.EmploymentState = employmentTable["EmploymentState"]
+			end
+			
+			if employmentTable["NewEmployeeIdList"] then
+				table.initialize(self.NewEmployeeIdList, _UtilLogic:StringToTable(employmentTable["NewEmployeeIdList"]))
+			end
+			
+			self.EmploymentId = _StringUtilLogic:StringToInt(employmentTable["EmploymentId"])
+			self.EmploymentLv = _StringUtilLogic:StringToInt(employmentTable["EmploymentLv"])
+			if not isvalid(self.EmploymentLv) then
+				self.EmploymentLv = 1
+			end
+			self.ScoutLv = _StringUtilLogic:StringToInt(employmentTable["ScoutLv"])
+			if not isvalid(self.ScoutLv) then
+				self.ScoutLv = 1
+			end
+			self.RerollCount = _StringUtilLogic:StringToInt(employmentTable["RerollCount"])
+			if not isvalid(self.RerollCount) then
+				self.RerollCount = 0
+			end
+			
+		    if self.EmploymentState == _EmploymentStateEnum.OnProcessing then
+		        self:OnFinishRecruiting(self.NewEmployeeIdList, self.EmploymentId, self.Entity.PlayerComponent.UserId)
+		    end
+			
+		else
+			
+		end
+		
+		self:SetEmploymentTypeInfo()
+		
+		if self.EmploymentState == _EmploymentStateEnum.Scout then
+			self.EmploymentState = _EmploymentStateEnum.LevelButtonList
+		end 
+		
+		self:ChangeState(self.EmploymentState)
+		
+		self:SyncEmploymentLv(self.EmploymentLv, self.Entity.PlayerComponent.UserId)
+		if self.EmploymentState == _EmploymentStateEnum.EmployeeList then
+			self:UpdateEmploymentList(self.NewEmployeeIdList, self.EmploymentId, self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 고용 컴포넌트를 초기화하는 함수
+		table.clear(self.NewEmployeeIdList)
+		self.EmploymentState = _EmploymentStateEnum.LevelButtonList
+		self.EmploymentId = 1
+		self.EmploymentLv = 1
+		self.ScoutLv = 1
+		self.RerollCount = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 고용 관련 데이터를 초기화하는 함수
+		local dataSet = _DataService:GetTable("EmploymentDataSet")
+		
+		for i = 1, dataSet:GetRowCount() do
+			local id = dataSet:GetCell(i, "Id")
+			id =  math.tointeger(tonumber(id))
+			local title = dataSet:GetCell(i, "Title")
+			local desc = dataSet:GetCell(i, "Desc")
+			local iconRuid = dataSet:GetCell(i, "IconRuid")
+			self.EmploymentTypeInfo[id] = {["Title"] = title, ["Desc"] = desc, ["IconRuid"] = iconRuid}
+		end
+		
+		local costData =  _DataService:GetTable("EmploymentLevelDataSet")
+		self.MaxEmploymentCount = costData:GetRowCount()
+	end
+
+	@ExecSpace("Server")
+	method void SetEmploymentTypeInfo()
+		-- 고용 타입 정보를 설정하는 함수
+		self:SetEmploymentTypeList(self.EmploymentTypeInfo, self.MaxEmploymentCount, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetEmploymentTypeList(table infoTable, integer maxEmploymentCount)
+		-- 클라이언트에서 고용 타입 목록을 설정하는 함수
+		self.EmploymentTypeInfo = infoTable
+		self.MaxEmploymentCount = maxEmploymentCount
+		_UIGroupManager.EmploymentGroup.UIEmployment:SetEmploymentTypeList(infoTable)
+		self:UpdateHasClover()
+	end
+
+	@ExecSpace("Client")
+	method void SuccessToStartRecruit(integer employmentId)
+		-- 고용 시작이 성공했을 때 처리하는 함수
+		self.EmploymentId = employmentId
+		if employmentId == 2 then
+			self:ChangeState(_EmploymentStateEnum.Scout)
+		else
+			self:ChangeState(_EmploymentStateEnum.OnProcessing)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void CheckCanStartRecruit(integer employmentId)
+		-- 고용을 시작할 수 있는지 확인하는 함수
+		local remainChuchuList = self:ReturnEmploymentChuchuPool(employmentId)
+		if #remainChuchuList < 1 then
+			self:FailToStartRecruit(2, self.Entity.PlayerComponent.UserId)
+			return
+		end
+		
+		if employmentId == 1 then
+			local cost = self:ReturnCostByEmploymentLv()
+			
+			if self.Entity.PlayerInventory:ModifyArcaneSymbol(-cost, "Employment fee","Select employeement type popup") then
+				self:SuccessToStartRecruit(employmentId, self.Entity.PlayerComponent.UserId)
+				 self:OnProcessingRecruit(employmentId) 
+			else
+				self:FailToStartRecruit(1, self.Entity.PlayerComponent.UserId)
+			end
+		else
+			self:SuccessToStartRecruit(employmentId, self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void FailToStartRecruit(integer type)
+		-- 고용 시작이 실패했을 때 처리하는 함수
+		self.EmploymentGroup.UIEmployment:FailRecruiting(type)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnProcessingRecruit(integer employmentId)
+		-- 고용 처리를 시작하는 함수
+		self.EmploymentId = employmentId
+		
+		if self.Entity.PlayerStage.NowStage == 1 then
+			if self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmploymentCount) < 1 then 
+				self:Recruit_Fix( employmentId , _EmployeeTypeEnum.Serving)
+				return
+				
+			elseif self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmploymentCount) < 2 then 
+				self:Recruit_Fix( employmentId , _EmployeeTypeEnum.Cook)
+				return
+			end
+		end
+		
+		local dataSet = _DataService:GetTable("EmployeeDataSet")
+		local empList = {}
+		local empIdRandomBox = self:ReturnEmploymentChuchuPool(employmentId)
+		
+		for i = 1 , self.DEFINE_EMPNUM do
+			if #empIdRandomBox >= 1 then
+				local idx = _UtilLogic:RandomIntegerRange(1, #empIdRandomBox)
+				local newEmployeeId = empIdRandomBox[idx]
+				local row = dataSet:FindRow("Id", newEmployeeId)
+				empList[i] = newEmployeeId
+				table.remove(empIdRandomBox, idx)
+			end
+		end
+		
+		self.NewEmployeeIdList = empList
+		
+		
+		
+		self:LogEmployment("1", "RegionEmployment")
+		self:WaitForRecruit(empList, employmentId)
+	end
+
+	@ExecSpace("Client")
+	method void OnFinishRecruiting(table empList, integer employmentId)
+		-- 고용 처리가 완료되었을 때 처리하는 함수
+		self.EmploymentId = employmentId
+		self:ChangeState(_EmploymentStateEnum.EmployeeList)
+		_SoundService:StopSound(_ResourceManager.SFXTable["Eff_Waiting_Loop_v2"]) 
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Recruit_Fix(integer employmentId, string chuchuType)
+		-- 튜토리얼용 고정 직원 목록을 생성하는 함수
+		local empList ={}
+		
+		if chuchuType == _EmployeeTypeEnum.Serving then 
+			
+			empList[1] = "E0013" 
+			empList[2] = "E0015"
+			empList[3] = "E0018"
+			empList[4] = "E0034" 
+			empList[5] = "E0038" 
+				
+		elseif chuchuType == _EmployeeTypeEnum.Cook then 
+			
+			empList[1] = "E0009" 
+			empList[2] = "E0012"
+			empList[3] = "E0022"
+			empList[4] = "E0025" 
+			empList[5] = "E0030" 
+			
+		else
+		end
+		
+		
+		self.NewEmployeeIdList = empList
+		
+		
+		self:LogEmployment("1", "Tutorial")
+		
+		self:WaitForRecruit(empList,employmentId)
+	end
+
+	@ExecSpace("Server")
+	method void ChangeState(string listType)
+		-- 고용 상태를 변경하는 함수
+		self.EmploymentState = listType
+		
+		if self.EmploymentState == _EmploymentStateEnum.EmployeeList then
+			self:UpdateEmploymentList(self.NewEmployeeIdList, self.EmploymentId, self.Entity.PlayerComponent.UserId)
+			
+		elseif self.EmploymentState == _EmploymentStateEnum.LevelButtonList then
+			self:UpdateHasClover(self.Entity.PlayerComponent.UserId)
+			
+		elseif self.EmploymentState == _EmploymentStateEnum.Scout then
+			self:OpenScoutUI(self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void CheckCanEmployChuchu(string employeeId)
+		-- 선택한 직원을 고용할 수 있는지 확인하는 함수
+		
+		local deposit = _EmployeeService:ReturnDeposit(self.Entity, self.EmploymentId, self.Entity.PlayerComponent.UserId)
+			
+		if self.Entity.PlayerInventory:ModifyMoney(-deposit,"Select employment chuchu","Employment popup") then
+			
+			local source =  ""
+			if self.EmploymentId == 1 then
+				source = "RegionEmployment"
+				
+			elseif self.EmploymentId == 2 then
+				source = "ScoutEmployment"
+			end
+			
+			self.RerollCount = 0
+			
+			self:SuccessToEmployChuchu(employeeId, self.EmploymentLv, self.Entity.PlayerComponent.UserId)
+			
+			self.Entity.EmployeeManager:AddEmployee(employeeId, source)
+			
+			if self.EmploymentId == 1 then
+				self:AddEmploymentLv() 
+				
+			elseif self.EmploymentId == 2 then
+				self:AddScoutLv() 
+			end
+			
+			local tutorialProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmploymentCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.EmploymentCount, tutorialProgress+1)
+			
+			local employeeType = _EmployeeService:GetData(employeeId).Type
+			if employeeType == _EmployeeStatEnumType.Cook then
+				local tutorialProgress2 = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmploymentCook)
+				self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.EmploymentCook, tutorialProgress2+1)
+				
+			elseif employeeType == _EmployeeStatEnumType.Serving then
+				local tutorialProgress2 = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmploymentServing)
+				self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.EmploymentServing, tutorialProgress2+1)
+			end
+			
+			self.Entity.PlayerSettlement:AddValueForSettlement(_SettlementPropertyEnum.M_ChuchuEmployment, deposit)
+			
+			_EventManager:SetReferKeyForEmployment(employeeId, self.Entity.PlayerComponent.UserId)
+			
+		else
+			self:FailToEmployChuchu(self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SuccessToEmployChuchu(string employeeId, integer employmentLv)
+		-- 직원 고용이 성공했을 때 처리하는 함수
+		self:ChangeState(_EmploymentStateEnum.LevelButtonList)
+		self.EmploymentLv = employmentLv 
+		self.RerollCount = 0
+		self.EmploymentGroup.UIEmployment:SuccessEmploy(employeeId)
+		
+	end
+
+	@ExecSpace("Client")
+	method void FailToEmployChuchu()
+		-- 직원 고용이 실패했을 때 처리하는 함수
+		self.EmploymentGroup.UIEmployment:FailEmploy()
+	end
+
+	@ExecSpace("Server")
+	method void OnCancelEmployment(boolean isScout)
+		-- 고용을 취소할 때 처리하는 함수
+		self:ChangeState(_EmploymentStateEnum.LevelButtonList)
+		self.RerollCount = 0
+		if not isScout then
+			self:CancelEmploymentServer()
+			self:CancelEmploymentClient(self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CancelEmploymentServer()
+		-- 서버에서 고용 취소를 처리하는 함수
+		self:LogEmployment("2", "Cancel") 
+	end
+
+	@ExecSpace("Client")
+	method void CancelEmploymentClient()
+		-- 클라이언트에서 고용 취소를 처리하는 함수
+		self.EmploymentGroup.UIEmployment:CancelEmployment()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 서버에서 동기화된 속성을 처리하는 함수
+		if name == "EmploymentState" then
+			self.EmploymentGroup.UIEmployment:ChangeState(value)
+			_ToDoManager:RefreshToDoInfos()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UpdateEmploymentList(table newEmployeeIdList, integer employmentId)
+		-- 고용 직원 목록을 업데이트하는 함수
+		self.EmploymentGroup.UIEmployment:ShowEmployeeList(newEmployeeIdList, employmentId)
+	end
+
+	@ExecSpace("Client")
+	method void UpdateHasClover()
+		-- 고용 비용에 따른 UI 색상 업데이트 함수
+		local myArcane = self.Entity.PlayerInventory.ArcaneSymbol
+		
+		for i = 1, 2 do
+			local text = _EntityService:GetEntityByPath("/ui/EmploymentGroup/Panel/EmploymentSelectPanel/EmploymentTypeScroll/EmploymentLevelButton".._StringUtilLogic:NumToString(i).."/Cost")
+			
+			if isvalid(self.EmploymentTypeInfo[i]) then
+				local cost
+				if i == 1 then
+					cost = self:ReturnCostByEmploymentLv()
+				else
+					cost = self:ReturnCostByScoutLv()
+				end
+				 
+				if tonumber(cost) > myArcane then
+					text.TextComponent.FontColor = _ColorCodeEnum:GetColor("#FA5246") 
+					text.TextComponent.OutlineColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+				else
+					text.TextComponent.FontColor = _ColorCodeEnum:GetColor(_ColorCodeEnum.WhiteFont)
+					text.TextComponent.OutlineColor = _ColorCodeEnum:GetColor("#7B674E")
+				end
+			else
+				self:SetEmploymentTypeInfo()
+			end
+			
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void WaitForRecruit(table empList, integer employmentId)
+		-- 고용 대기 시간을 처리하는 함수
+		local player = self.Entity.PlayerComponent.UserId
+		_SoundService:PlayLoopSound(_ResourceManager.SFXTable["Eff_Waiting_Loop_v2"], 1, player)
+		
+		_TimerService:SetTimerOnce(function() 
+			_SoundService:StopSound(_ResourceManager.SFXTable["Eff_Waiting_Loop_v2"], player) 
+			self:OnFinishRecruiting(empList, employmentId, player) 
+		end, 2)
+	end
+
+	@ExecSpace("Server")
+	method void AddScoutLv()
+		-- 스카웃 레벨을 1 증가시키는 함수
+		self:ModifyScoutLv(self.ScoutLv + 1)
+	end
+
+	@ExecSpace("Server")
+	method void ModifyScoutLv(integer lv)
+		-- 스카웃 레벨을 수정하는 함수
+		if not isvalid(lv) then
+			return
+		end
+		
+		if lv <= 0 then
+			lv = 1
+		end
+		self.ScoutLv = lv
+		self:SyncScoutLv(self.ScoutLv, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncScoutLv(integer lv)
+		-- 스카웃 레벨을 클라이언트에 동기화하는 함수
+		self.ScoutLv = lv
+		_UIGroupManager.EmploymentGroup.UIEmployment:UpdateScountLvText()
+	end
+
+	@ExecSpace("Server")
+	method void OnSelectChuchuInCollection(string chuchuId)
+		-- 컶렉션에서 선택한 츄츄를 처리하는 함수
+		if not isvalid(chuchuId) then
+			self:OnCancelEmployment(true)
+			return
+		end
+		
+		local cost = self:ReturnCostByScoutLv()
+		local costString = _StringUtilLogic:ReturnThousandsSeparatedString(math.tointeger(cost))
+		if self.Entity.PlayerInventory:ModifyArcaneSymbol(-cost, "Employment fee","Select employeement type popup") then
+			local empList = {}
+			table.insert(empList, chuchuId)
+			self.NewEmployeeIdList = empList
+			self.EmploymentId = 2
+			self:OnFinishRecruiting(self.NewEmployeeIdList , self.EmploymentId, self.Entity.PlayerComponent.UserId)
+			self:SuccessToScout(costString, self.Entity.PlayerComponent.UserId)
+			self:LogEmployment("1", "ScoutEmployment")
+			
+		else
+			self:FailToScout(self.Entity.PlayerComponent.UserId)
+			self:OnCancelEmployment(true)
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void AddEmploymentLv()
+		-- 고용 레벨을 1 증가시키는 함수
+		self:ModifyEmploymentLv(self.EmploymentLv + 1)
+	end
+
+	@ExecSpace("Server")
+	method void ModifyEmploymentLv(integer lv)
+		-- 고용 레벨을 수정하는 함수
+		if not isvalid(lv) then
+			return
+		end
+		
+		if lv <= 0 then
+			lv = 1
+		end
+		self.EmploymentLv = lv
+		
+		self:SyncEmploymentLv(self.EmploymentLv, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncEmploymentLv(integer lv)
+		-- 고용 레벨을 클라이언트에 동기화하는 함수
+		self.EmploymentLv = lv
+		_UIGroupManager.EmploymentGroup.UIEmployment:UpdateEmploymentLvText()
+	end
+
+	method integer ReturnCostByEmploymentLv()
+		-- 고용 레벨에 따른 비용을 계산하여 반환하는 함수
+		local employmnetLv = math.min(self.EmploymentLv, self.MaxEmploymentCount)
+		local costData =  _DataService:GetTable("EmploymentLevelDataSet")
+		local row = costData:FindRow("EmployementLevel", _StringUtilLogic:NumToString(employmnetLv))
+		local employmentCost = _StringUtilLogic:StringToInt(row:GetItem("EmployementRandomCost"))
+			
+		return employmentCost
+	end
+
+	method integer ReturnCostByScoutLv()
+		-- 스카웃 레벨에 따른 비용을 계산하여 반환하는 함수
+		local scoutLv = math.min(self.ScoutLv, self.MaxEmploymentCount)
+		local costData =  _DataService:GetTable("EmploymentLevelDataSet")
+		local row = costData:FindRow("EmployementLevel", _StringUtilLogic:NumToString(scoutLv))
+		local scoutCost = _StringUtilLogic:StringToInt(row:GetItem("EmployementScoutCost"))
+			
+		return scoutCost
+	end
+
+	@ExecSpace("Client")
+	method void FailToScout()
+		-- 스카웃이 실패했을 때 처리하는 함수
+		_UIToast:ShowMessage(_LocalizationService:GetText("NoArcaneSymbolToastMsg"))
+		_UIGroupManager:EnableSelectChuchuInCollection(false)
+		
+		_MainMenuRedDotManager:EnableEmploymentRedDot(false)
+	end
+
+	@ExecSpace("Client")
+	method void SuccessToScout(string cost)
+		-- 스카웃이 성공했을 때 처리하는 함수
+		_UIGroupManager:EnableSelectChuchuInCollection(false)
+		
+		local msg = _LocalizationService:GetTextFormat("ScoutSuccessText", cost)
+		_UIToast:ShowMessage(msg)
+	end
+
+	@ExecSpace("Client")
+	method void OpenScoutUI()
+		-- 스카웃 UI를 여는 함수
+		_UIGroupManager.EmploymentGroup.UIEmployment.CanClickTypeSelectOkBtn = true 
+		_UIGroupManager.SelectChuchuInCollection.UISelectChuchuInCollection:OpenUI(nil)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogEmployment(string flowType, string source)
+		-- 고용 관련 로그를 기록하는 함수
+		local userId = self.Entity.PlayerComponent.UserId
+		local logName = _LogEnumType.EmploymentFlow
+		
+		local manageLv = string.format("%d",self.Entity.PlayerManagement.ManagementLevel)
+		local mangeIdx =  self.Entity.PlayerManagement:GetGoalCount()
+		
+		local logFail,value = pcall(
+		function()
+			_LogStorageLogic:LogValue(userId,logName, 
+				_HttpService:JSONEncode(self.NewEmployeeIdList),
+				{
+					flowType = flowType,
+					source = source,
+					manageLevel = manageLv,
+					manageIndex = mangeIdx,
+					playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+				})
+		end)
+		
+		if not logFail then  end
+	end
+
+	method table ReturnEmploymentChuchuPool(integer type)
+		-- 고용 가능한 츄츄 풀을 반환하는 함수
+		local allEmployeeIds = {} 
+		local empIdRandomBox = {}
+		table.clear(self.EmployeeIdRandomBox)
+		
+		if type == 1 then
+			local stg0ChuchuList = _EmployeeService:ReturnStageEmpIdList(0, self.Entity.PlayerComponent.UserId) 
+			local nowStgChuchuList
+			if self.Entity.PlayerStage.NowStage ~= 1 then
+				nowStgChuchuList =  _EmployeeService:ReturnStageEmpIdList(self.Entity.PlayerStage.NowStage, self.Entity.PlayerComponent.UserId)
+			
+				for _, chuchuId in pairs(nowStgChuchuList) do
+					table.insert(allEmployeeIds, chuchuId)
+				end
+			end
+			 
+			for _, chuchuId in pairs(stg0ChuchuList) do
+				table.insert(allEmployeeIds, chuchuId)
+			end
+			
+			
+			for j = 1, #allEmployeeIds do
+				local employeeId = allEmployeeIds[j]
+				
+				if self.Entity.EmployeeManager:CheckEmployeeAlreadyHave(employeeId) == false then
+					table.insert(empIdRandomBox, employeeId) 
+				else
+				end
+			end
+		else
+			local chuchuCollection = self.Entity.ChuchuCollectionDB.ChuchuCollection
+			
+			for id, bool in pairs(chuchuCollection) do
+				if self.Entity.EmployeeManager:CheckEmployeeAlreadyHave(id) then 
+					continue
+				end	
+				if bool == true then
+					table.insert(empIdRandomBox, id) 
+				end
+			end
+			
+		end
+		
+		return empIdRandomBox
+	end
+
+	@ExecSpace("Server")
+	method void RerollList()
+		-- 고용 목록을 다시 뽑는 함수
+		
+		local playerInven = self.Entity.PlayerInventory
+		local rerollCost = self:CalcRerollCost()
+		if playerInven:ModifyMoney(-rerollCost, "Employment Reroll", "Employment") then
+			self:SuccessToStartRecruit(1, self.Entity.PlayerComponent.UserId)
+			self:OnProcessingRecruit(1)
+			self:AddRerollCount()
+			
+		else
+			self:FailToEmployChuchu(self.Entity.PlayerComponent.UserId) 
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void AddRerollCount()
+		-- 리롤 횟수를 증가시키는 함수
+		self.RerollCount += 1
+		self:SyncRerollCount(self.RerollCount, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncRerollCount(integer count)
+		-- 리롤 횟수를 클라이언트에 동기화하는 함수
+		self.RerollCount = count
+		_UIGroupManager.EmploymentGroup.UIEmployment:UpdateRerollText()
+	end
+
+	method integer CalcRerollCost()
+		-- 리롤 비용을 계산하는 함수
+		local count = self.RerollCount
+		
+		local startValue = _GetConfigDataLogic:GetConfigNumDataByKey("EmployementRerollCostStartValue")
+		local maxValue = _GetConfigDataLogic:GetConfigNumDataByKey("EmployementRerollCostMaxValue")
+		local increment = _GetConfigDataLogic:GetConfigNumDataByKey("EmployementRerollCostIncrement")
+		local cost = startValue * math.pow(increment, count)
+		cost = math.min(cost, maxValue)
+		
+		return cost
+	end
+
+	method table CalcEmploymentStartLv()
+		-- 고용 시작 레벨을 계산하는 함수
+		local nowStage = self.Entity.PlayerStage.NowStage
+		local stageValue = _StageDataSetLogic:GetStageData(nowStage).EmployeeInitLevel
+		
+		local lvSum = self.EmploymentLv + self.ScoutLv
+		local v = _GetConfigDataLogic:GetConfigNumDataByKey("RecruitmentPerEmployeeInitLevelUp") 
+		local lvBonus = math.floor(lvSum / v) -1 
+		local maxLv = _GetConfigDataLogic:GetConfigNumDataByKey("EmployeeInitLevelMax") 
+		local maxLvBouns = maxLv - stageValue
+		lvBonus = math.min(lvBonus, maxLvBouns) 
+		
+		local chuchuStartLv = stageValue + lvBonus
+		
+		return {math.floor(chuchuStartLv), stageValue, math.floor(lvBonus)}
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandlePlayerArcaneSymbolChangedEvent(PlayerArcaneSymbolChangedEvent event)
+		-- 플레이어 아케인심볼 변경 이벤트를 처리하는 함수
+		local Current = event.Current
+		local Amount = event.Amount
+		if _UserService.LocalPlayer ~= self.Entity then
+			return
+		end
+		self:UpdateHasClover()
+	end
+
+end

@@ -1,0 +1,108 @@
+@Component
+script RankManager extends Component
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	method string GetMajorRank(integer rankPoint, integer ranking)
+		-- 랭크 점수와 순위를 기반으로 주요 등급 반환 (Legend, Master, Platinum 등)
+		if rankPoint >= 2500 and ranking > 0 and ranking == 1 then
+			return "Legend"
+		end
+		
+		local majorRankArray = {"Iron", "Bronze", "Silver", "Gold", "Platinum", "Master"}
+		return majorRankArray[math.floor((math.min(rankPoint, 2500) - 500) / 400) + 1]
+	end
+
+	method integer GetMinorRank(integer rankPoint)
+		-- 랭크 점수를 기반으로 세부 등급 숫자 반환 (1-4)
+		local majorRank = self:GetMajorRank(rankPoint, 0)
+		if majorRank == "Master" or majorRank == "Legend" then
+			return
+		else
+			return 4 - math.floor(((rankPoint - 500) % 400) / 100)
+		end
+	end
+
+	method string GetRankName(integer rankPoint, integer ranking)
+		-- 완전한 랭크 이름을 현지화된 텍스트로 반환
+		local majorRank = self:GetMajorRank(rankPoint, ranking)
+		if majorRank == "Master" or majorRank == "Legend" then
+			return _LocalizationService:GetText(majorRank)
+		else
+			return string.format("%s %d", _LocalizationService:GetText(majorRank), self:GetMinorRank(rankPoint))
+		end
+	end
+
+	method string GetRankPoint(integer rankPoint)
+		-- 현재 등급 내에서의 포인트를 문자열로 반환
+		local majorRank = self:GetMajorRank(rankPoint, 0)
+		local remainder
+		if majorRank == "Master" or majorRank == "Legend" then
+			remainder = rankPoint - 2500
+		else
+			remainder = rankPoint % 100
+		end
+		
+		return string.format("%d P", remainder)
+	end
+
+	method void GetRankingInfosServerAttribute()
+		-- 랭킹 정보 조회 서버 속성 정의
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetRankingInfos()
+		-- 서버에서 랭킹 데이터를 조회하여 상위 100명 정보 반환
+		if not _Server:IsRequesting() then
+			return
+		end
+		
+		local senderUserId = _Server.sender.Entity.Name
+		_Server.sender = nil
+		
+		local sortableDataStorage = _DataStorageService:GetSortableDataStorage("Ranking")
+		local resultCode, pages = sortableDataStorage:GetSortedAndWait(SortDirection.Descending, 0, 100000)
+		if resultCode ~= 0 then
+			log(resultCode)
+			return
+		end
+		
+		local rankingInfoArray = {}
+		local count = 1
+		while true do
+		    local items = pages:GetCurrentPageDatas()
+		    for _, item in pairs(items) do
+				local userId = item.KeyInfo.Key
+				local nickname = item.KeyInfo.Tag
+				local rankPoint = item.Value
+				
+				table.insert(rankingInfoArray, {nickname = nickname, rankPoint = rankPoint, ranking = count})
+				
+				count += 1
+				if count > 100 then
+					break
+				end
+		    end
+			if count > 100 then
+				break
+			end
+		    
+		    if pages.IsLastPage == true then
+		        break
+		    end
+		    
+		    pages:MoveToNextPageAndWait()
+		end
+		
+		self:GetRankingInfosInSender(rankingInfoArray, senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void GetRankingInfosInSender(table rankingInfoArray)
+		-- 클라이언트에서 받은 랭킹 정보를 UI에 설정하고 표시
+		self.uiManager.RankingModule:SetRankingInfos(rankingInfoArray)
+		self.uiManager.RankingModule:ShowRanking(1)
+	end
+
+end

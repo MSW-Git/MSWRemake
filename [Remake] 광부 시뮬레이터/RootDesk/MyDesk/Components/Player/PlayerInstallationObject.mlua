@@ -1,0 +1,479 @@
+@Component
+script PlayerInstallationObject extends Component
+
+	property SyncTable<number> itemNum
+
+	property SyncTable<number> TimerTable
+
+	property boolean usingTorchPet = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 모든 탐험도구 개수를 0으로 설정
+		for i=1, 4 do
+			self.itemNum[i] = 0
+		end
+		
+		if _UserService.LocalPlayer == self.Entity then
+			self:RefreshNumUI()
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void RefreshNumUI()
+		-- PC와 모바일에서 탐험도구 UI 아이콘과 개수 표시 새로고침
+		local adventureItemsUI = _EntityService:GetEntity("ae308ad9-608a-4516-8d88-5db4c8c51a2c")
+		local itemTable = _DataService:GetTable("AdventureItem")
+		
+		for i=1, 4 do
+			local slot = adventureItemsUI:GetChildByName("Slot_"..tostring(i))
+			
+			local icon = itemTable:GetCell(i, 2)
+			local iconUI = slot:GetChildByName("Icon")
+			local numUI = slot:GetChildByName("Num")
+			
+			iconUI.SpriteGUIRendererComponent.ImageRUID = icon
+			if self.itemNum[i] ~= nil and self.itemNum[i] > 0 then
+				iconUI.SpriteGUIRendererComponent.Color = Color(1, 1, 1, 1)
+			else 
+				iconUI.SpriteGUIRendererComponent.Color = Color(144/255, 144/255, 144/255, 0.5)
+			end
+			
+			numUI.TextComponent.Text = string.format("%.f", self.itemNum[i])
+			
+			
+			if self.Entity.PlayerPet.havePet[1] == nil then
+				return
+			end
+			
+			
+			-- '횃불' 아이템의 경우, '주니어부기(idx=1)' 펫 스킬 효과를 사용할 때에 대한 예외처리 필요
+			if i==3 and self.Entity.PlayerPet.havePet[1] >= 1 and self.Entity.PlayerPet.useSkill[1] == true then
+				if self.usingTorchPet == true then
+					numUI.TextComponent.Text = "on"
+					iconUI.SpriteGUIRendererComponent.Color = Color.white
+				else
+					numUI.TextComponent.Text = "off"
+					iconUI.SpriteGUIRendererComponent.Color.a = 0.2
+				end		
+			end
+			
+		end
+		
+		------------------
+		
+		local adventureItemsMobileUI = _EntityService:GetEntity("eb79dd67-f287-4800-bf8e-a75099a4c0e7")
+		
+		for i=1, 4 do
+			local slot = adventureItemsMobileUI:GetChildByName("Slot_"..tostring(i))
+			
+			local icon = itemTable:GetCell(i, 2)
+			local iconUI = slot:GetChildByName("Icon")
+			local numUI = slot:GetChildByName("Num")
+			
+			if self.itemNum[i] > 0 then
+				iconUI.SpriteGUIRendererComponent.Color = Color(1, 1, 1, 1)
+			else 
+				iconUI.SpriteGUIRendererComponent.Color = Color(144/255, 144/255, 144/255, 0.5)
+			end
+		
+			iconUI.SpriteGUIRendererComponent.ImageRUID = icon
+			numUI.TextComponent.Text = string.format("%d", self.itemNum[i])
+			
+			if i==3 and self.Entity.PlayerPet.havePet[1] >= 1 then
+				if self.usingTorchPet == true then
+					numUI.TextComponent.Text = "on"
+					iconUI.SpriteGUIRendererComponent.Color = Color.white
+				else
+					numUI.TextComponent.Text = "off"
+					iconUI.SpriteGUIRendererComponent.Color.a = 0.2
+				end
+				
+			end
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void UseObject(number itemIdx)
+		-- 지정된 탐험도구 개수를 1 감소시키고 UI 새로고침
+		self.itemNum[itemIdx] = self.itemNum[itemIdx] - 1
+		self:RefreshNumUI()
+	end
+
+	@ExecSpace("Client")
+	method void AddObject(number itemIdx, number amount)
+		-- 1번 펫 보유중+스킬 사용중인 경우, 횃불 대신 마나 회복
+		if itemIdx == 3 and self.Entity.PlayerPet.havePet[1] >= 1 and self.Entity.PlayerPet.useSkill[1] == true then
+			self.Entity.PlayerIngameData.MP = self.Entity.PlayerIngameData.MP + self.Entity.PlayerIngameData.MPMax*0.1*amount
+			if self.Entity.PlayerIngameData.MP > self.Entity.PlayerIngameData.MPMax then
+				self.Entity.PlayerIngameData.MP = self.Entity.PlayerIngameData.MPMax
+			end
+			
+			_EffectService:PlayEffectAttached(
+				"8607b7e6fa57462485787c05aa9533d4",
+				self.Entity,
+				Vector3.zero,
+				0,
+				Vector3.one)
+			
+			_SoundService:PlaySound("c012fd7b9582490aa89837d9fbf6455a", 1)
+			
+			_UIToast:ShowMessage(_LocalizationService:GetText("Message_MPRecoverWhenGetTorch"))
+			return
+		end
+		----------------------------------------------------------------
+		self.itemNum[itemIdx] = self.itemNum[itemIdx] + amount
+		self:RefreshNumUI()
+		------------------------------------------------------------
+		local adventureItemsUI = _EntityService:GetEntity("ae308ad9-608a-4516-8d88-5db4c8c51a2c")
+		local slot = adventureItemsUI:GetChildByName("Slot_"..tostring(math.floor(itemIdx)))
+		local effect = slot:GetChildByName("Effect"):Clone("Effect_clone")
+		
+		
+		local adventureItemsMobileUI = _EntityService:GetEntity("eb79dd67-f287-4800-bf8e-a75099a4c0e7")
+		local slotMB = adventureItemsMobileUI:GetChildByName("Slot_"..tostring(math.floor(itemIdx)))
+		local effectMB = slotMB:GetChildByName("Effect"):Clone("Effect_clone")
+		
+		local destroyEffect = function()
+			effect:Destroy()
+			effectMB:Destroy()
+		end
+		_TimerService:SetTimerOnce(destroyEffect, 1)
+	end
+
+	@ExecSpace("Server")
+	method void SpawnRope(Entity owner, string nameTag)
+		-- 배충 설치 - 플레이어 위치에서 아래 3만큼 떨어진 곳에 10초간 지속
+		local installPos = Vector3(
+			self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y-3,
+			self.Entity.TransformComponent.WorldPosition.z)
+		
+		local rope = _SpawnService:SpawnByModelId("model://f50640bd-7e6e-4de0-a020-e2d69219b4e9",
+			"Rope",
+			installPos,
+			self.Entity.Parent)
+		
+		_CustomLocalizationLogic:SetInstallationObjectsNametag(rope, self.Entity.NameTagComponent.Name, "AdventureItem_Rope")
+		
+		_SoundService:PlaySound("c110c61a3d054427bfd56af2c3de8807", 1, owner.OwnerId)
+		_EffectService:PlayEffect("04cf02b476cd4e86a5e78073a3c92df9", rope, 
+			self.Entity.TransformComponent.WorldPosition, 0, Vector3.one, false)
+		_CustomLocalizationLogic:SendLocalizedFormattedToastMessageFromServer("Message_Installed", {"AdventureItem_Rope"}, self.Entity.OwnerId)
+		-- _UIToast:ShowMessage("밧줄을 설치했습니다.", owner.OwnerId)
+		-----------------------------------------------------
+		local destroySelf = function()
+			_EntityService:Destroy(rope)
+		end
+		
+		_TimerService:SetTimerOnce(destroySelf, 10)
+	end
+
+	@ExecSpace("Server")
+	method void SpawnTrampoline(Entity owner)
+		-- 트램펄린 설치 - 플레이어 위치에서 위 1만큼 올라간 곳에 10초간 지속
+		local installPos = Vector3(
+			self.Entity.TransformComponent.WorldPosition.x,
+			self.Entity.TransformComponent.WorldPosition.y+1,
+			self.Entity.TransformComponent.WorldPosition.z)
+		
+		local Trampoline = _SpawnService:SpawnByModelId("model://24372df4-2482-4d11-93b0-b2cb952ede23",
+			"Trampoline",
+			installPos,
+			self.Entity.Parent)
+		
+		_CustomLocalizationLogic:SetInstallationObjectsNametag(Trampoline, self.Entity.NameTagComponent.Name, "AdventureItem_Trampoline")
+		
+		
+		_SoundService:PlaySound("39b70915ec704c28b46a7bf0a8d922c6", 1, owner.OwnerId)
+		_EffectService:PlayEffect("04cf02b476cd4e86a5e78073a3c92df9", Trampoline, 
+			self.Entity.TransformComponent.WorldPosition, 0, Vector3.one, false)
+		
+		
+		_CustomLocalizationLogic:SendLocalizedFormattedToastMessageFromServer("Message_Installed", {"AdventureItem_Trampoline"}, self.Entity.OwnerId)
+		--_UIToast:ShowMessage("트램펄린을 설치했습니다.", owner.OwnerId)
+		-----------------------------------------------------
+		local destroySelf = function()
+			_EntityService:Destroy(Trampoline)
+		end
+		
+		_TimerService:SetTimerOnce(destroySelf, 10)
+	end
+
+	@ExecSpace("Server")
+	method void UseTorch(Entity owner)
+		-- 이미 스폰된 횃불이 있다면 제거하고, 예약된 타이머도 제거함
+		
+		-- 스폰된 토치가 있는지 검사
+		local spawnedTorch = self.Entity:GetChildByName("Torch")
+		if spawnedTorch ~= nil then
+			spawnedTorch:Destroy()
+			
+			-- 예약된 타이머 제거
+			for i=1, #self.TimerTable do
+				_TimerService:ClearTimer(self.TimerTable[i])
+			end
+			table.clear(self.TimerTable)
+			
+			-- 밝기값 정상화
+			local setBrightnessValue = function()
+				self:SetTorchBrightnessInit(spawnedTorch.Id)
+			end
+			_TimerService:SetTimerOnce(setBrightnessValue, 0.5)
+		end
+		---------------------------------------------
+		-- 토치 소환
+		local torch = _SpawnService:SpawnByModelId("model://ef12128e-59a3-4415-b08d-0b8b129e9194",
+			"Torch",
+			Vector3(0, 0.8, 0),
+			self.Entity)
+		
+		
+		_SoundService:PlaySoundAtPos("d71002617e804d7c9dacb38a1f2d06f7",
+			self.Entity.TransformComponent.WorldPosition,
+			self.Entity,
+			1)
+		
+		_EffectService:PlayEffectAttached("04cf02b476cd4e86a5e78073a3c92df9", self.Entity, Vector3.zero, 0,Vector3.one)
+		
+		-- _UIToast:ShowMessage("횃불을 사용했습니다.", owner.OwnerId)
+		_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_UsedTorch", owner.OwnerId)
+		---------------------------------------------
+		local maintenanceTime = 45
+		
+		local destroyTorch = function()
+			if torch ~= nil then
+				_EntityService:Destroy(torch)
+				_CustomLocalizationLogic:SendLocalizedToastMessageFromServer("Message_TimeOverTorch", owner.OwnerId)
+				-- _UIToast:ShowMessage("횃불 지속시간이 끝났습니다.", owner.OwnerId)
+				
+				-- 밝기값 정상화
+				local setBrightnessValue = function()
+					self:SetTorchBrightnessInit(torch.Id)
+				end
+				_TimerService:SetTimerOnce(setBrightnessValue, 0.5)
+			end
+		end
+		local timer = _TimerService:SetTimerOnce(destroyTorch, maintenanceTime)
+		table.insert(self.TimerTable, timer)
+		---------------------------------------------
+	end
+
+	@ExecSpace("Client")
+	method void UsePotion(Entity owner)
+		-- 체력 회복 물약 사용 - 최대 체력의 15% 회복
+		_SoundService:PlaySound("079256a305124c6cb5d7562431ac3151", 1)
+		
+		_EffectService:PlayEffectAttached("32317a7b7048458fbdba695783694cfc", self.Entity, Vector3.zero, 0,Vector3.one)
+		_UIToast:ShowMessage(_LocalizationService:GetText("Message_UsedPotion"))
+		-- _UIToast:ShowMessage("물약을 사용했습니다.")
+		
+		
+		------------------------------------------------------
+		local hpmax = owner.PlayerIngameData.HPMax
+		local recoverAmount = hpmax*(0.15)
+		owner.PlayerIngameData:RecoverHP(recoverAmount)
+		
+	end
+
+	@ExecSpace("Client")
+	method void DisacardAllItems()
+		-- 모든 탐험도구 버리기 (마을 이동 시 호출)
+		for i=1, 4 do
+			self.itemNum[i] = 0
+		end
+		
+		self:RefreshNumUI()
+	end
+
+	@ExecSpace("Client")
+	method void SetTorchBrightnessInit(string entityId)
+		-- 횟불 삭제 시 해당 조명 객체의 밝기값 초기화
+		_UserService.LocalPlayer.PlayerIngameData.lightsBrightness[entityId] = 1
+	end
+
+	method void OnMapEnter(any enteredMap)
+		-- 맵 입장 시 탐험도구 및 횟불 상태 초기화
+		if string.sub(enteredMap.Name, 1, 4) == "Town" then
+			-- 보유한 탐험도구 모두 제거
+			if self:IsClient() then
+				self:DisacardAllItems()
+			end
+			
+			-- 소환된 횃불 제거
+			if self:IsServer() then
+				local torch = self.Entity:GetChildByName("Torch")
+				if torch ~= nil then
+					torch.TransformComponent:Translate(100, 100)
+					
+					local destroy = function()
+						torch:Destroy()
+						
+						-- 예약되어있는 타이머 제거 (횃불 제거 관련 타이머)
+						if #self.TimerTable > 0 then
+							for i=1, #self.TimerTable do
+								_TimerService:ClearTimer(self.TimerTable[i])
+							end
+							table.clear(self.TimerTable)
+						end
+					end
+					
+					_TimerService:SetTimerOnce(destroy, 0.5)
+				end
+				
+			end	
+			
+			self.usingTorchPet = false
+		elseif string.sub(enteredMap.Name, 1, 4) == "Mine" then
+			if self:IsClient() then
+				if self.usingTorchPet == true then
+					self:UseTorchPet()
+				end
+				self:RefreshNumUI()
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UseTorchPet()
+		-- 1번 펫의 횟불 스킬 온/오프 토글 (지속적으로 MP 소모)
+		if self.usingTorchPet == false then
+			self.usingTorchPet = true 
+			self:SpawnTorchByPetSkill(true)
+		else
+			self.usingTorchPet = false
+			self:SpawnTorchByPetSkill(false)
+		end
+		self:RefreshNumUI()
+		--------------------
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 펫 횟불 사용 중일 때 매 프레임마다 MP 소모 (레벨에 따라 감소)
+		if self.usingTorchPet == true then
+			self.Entity.PlayerIngameData:UseMP((15 + (-3)*self.Entity.PlayerPet.havePet[1])*delta)
+			if self.Entity.PlayerIngameData.MP < 6 then
+				self:UseTorchPet()
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SpawnTorchByPetSkill(boolean spawn)
+		-- 펫 스킬로 횟불 생성/제거 처리
+		if spawn == true then
+			local torch = _SpawnService:SpawnByModelId("model://ef12128e-59a3-4415-b08d-0b8b129e9194",
+				"Torch",
+				Vector3(0, 0.8, 0),
+				self.Entity)
+			
+			
+			_SoundService:PlaySoundAtPos("d71002617e804d7c9dacb38a1f2d06f7",
+				self.Entity.TransformComponent.WorldPosition,
+				self.Entity,
+				1)
+			
+			_EffectService:PlayEffectAttached("04cf02b476cd4e86a5e78073a3c92df9", self.Entity, Vector3.zero, 0,Vector3.one)
+		else 
+			local spawnedTorch = self.Entity:GetChildByName("Torch")
+			if spawnedTorch ~= nil then
+				spawnedTorch:Destroy()
+				
+				-- 예약된 타이머 제거
+				for i=1, #self.TimerTable do
+					_TimerService:ClearTimer(self.TimerTable[i])
+				end
+				table.clear(self.TimerTable)
+				
+				-- 밝기값 정상화
+				local setBrightnessValue = function()
+					self:SetTorchBrightnessInit(spawnedTorch.Id)
+				end
+				_TimerService:SetTimerOnce(setBrightnessValue, 0.5)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Service", "InputService")
+	handler HandleKeyUpEvent(KeyUpEvent event)
+		-- 숫자 키 누려서 각종 탐험도구 사용 (1-4번 키)
+		-- Parameters
+		local key = event.key
+		--------------------------------------------------------
+		if self.Entity.PlayerIngameData.isIngame == false then
+			return
+		end
+		--------------------------------------------------------
+		if _UserService.LocalPlayer ~= self.Entity then
+			return
+		end
+		--------------------------------------------------------
+		if key == KeyboardKey.Alpha1 then	
+			if self.itemNum[1] < 1 then
+				_UIToast:ShowMessage(_LocalizationService:GetText("Message_NotHavingRope"))
+				-- _UIToast:ShowMessage("보유한 밧줄이 없습니다.")
+				return
+			end
+			
+			if self.Entity.RigidbodyComponent:IsOnGround() == false then
+				_UIToast:ShowMessage(_LocalizationService:GetText("Message_AirRope"))
+				-- _UIToast:ShowMessage("공중에서는 밧줄을 설치할 수 없습니다.")
+				return
+			end
+			
+			self:SpawnRope(_UserService.LocalPlayer, nil)
+			self:UseObject(1)
+		--------------------------------------------------------
+		elseif key == KeyboardKey.Alpha2 then
+			if self.itemNum[2] < 1 then
+				_UIToast:ShowMessage(_LocalizationService:GetText("Message_NotHavingTrampoline"))
+				-- _UIToast:ShowMessage("보유한 트램펄린이 없습니다.")
+				return
+			end
+			
+			self:SpawnTrampoline(_UserService.LocalPlayer)
+			self:UseObject(2)
+		
+		--------------------------------------------------------
+		elseif key == KeyboardKey.Alpha3 then
+			if self.Entity.PlayerPet.havePet[1] >= 1 and self.Entity.PlayerPet.useSkill[1] == true then
+				self:UseTorchPet()
+				return
+			end
+			
+			if self.itemNum[3] < 1 then
+				_UIToast:ShowMessage(_LocalizationService:GetText("Message_NotHavingTorch"))
+				-- _UIToast:ShowMessage("보유한 횃불이 없습니다.")
+				return
+			end
+			
+			self:UseTorch(_UserService.LocalPlayer)
+			self:UseObject(3)
+			
+			
+		--------------------------------------------------------
+		elseif key == KeyboardKey.Alpha4 then
+			if self.itemNum[4] < 1 then
+				_UIToast:ShowMessage(_LocalizationService:GetText("Message_NotHavingPotion"))
+				-- _UIToast:ShowMessage("보유한 물약이 없습니다.")
+				return
+			end
+			
+			self:UsePotion(_UserService.LocalPlayer)
+			self:UseObject(4)
+			
+			
+		--------------------------------------------------------
+		elseif key == KeyboardKey.Alpha5 then
+		
+			
+		end
+	end
+
+end

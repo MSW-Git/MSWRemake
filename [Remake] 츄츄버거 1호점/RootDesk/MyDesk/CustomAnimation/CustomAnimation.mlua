@@ -1,0 +1,220 @@
+@Component
+script CustomAnimation extends Component
+
+	property string animation = ""
+
+	property string clip = ""
+
+	property table animationData = {}
+
+	property boolean autoPlay = true
+
+	@HideFromInspector
+	property boolean isPlaying = false
+
+	@HideFromInspector
+	property number time = 0
+
+	@HideFromInspector
+	property number duration = 1
+
+	property boolean loop = false
+
+	property boolean pingpong = false
+
+	property number playRate = 1
+
+	@HideFromInspector
+	property number frameRate = 60
+
+	property number loopDelayFrame = 0
+
+	property boolean entityAutoDisable = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 애니메이션 초기화 및 자동 재생 수행
+		if self:InitClipData() == false then
+			return
+		end
+		
+		if self.autoPlay then
+			self:Play()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임마다 애니메이션 시간 및 상태 업데이트
+		if self.isPlaying == false then
+			return
+		end
+		
+		_CustomAnimationLogic:ApplyAnimation(self.animationData,self.time,self._T.apply)
+		
+		local time = self.time
+		if self.loop then
+			if self.pingpong then
+				time = self:PingPong(time,self.duration)
+			else
+				time = self:Repeat(time,self.duration)
+			end
+		else
+			if self.time >= self.duration then
+				_CustomAnimationLogic:ApplyAnimation(self.animationData,self.duration,self._T.apply)
+				self.time = 0
+				self.isPlaying = false
+				self.Enable = false
+				
+				if self.entityAutoDisable then
+					self.Entity.Enable = false
+				end
+				
+				if not self.loop then
+					_CustomAnimationLogic:SendEvent(CustomAnimationEndEvent())
+				end
+				
+				return
+			end
+		end
+		_CustomAnimationLogic:ApplyAnimation(self.animationData,time,self._T.apply)
+		self.time += delta * self.playRate * self.frameRate / 60
+	end
+
+	method void Play()
+		-- 애니메이션 재생 시작
+		self.isPlaying = true
+		self.time = 0
+		_CustomAnimationLogic:ApplyAnimation(self.animationData,0,self._T.apply)
+		self.Enable = true
+	end
+
+	method number PingPong(number t, number length)
+		-- 핑폰 애니메이션 시간 계산 (앞뒤로 반복)
+		t = self:Repeat(t, length * 2)
+		return length - math.abs(t - length)
+	end
+
+	method number Repeat(number t, number length)
+		-- 루프 애니메이션 시간 계산 (루프 딩레이 고려)
+		if self.loopDelayFrame > 0 and t > length then
+			local loopDelay = self.loopDelayFrame / self.frameRate
+			t -= loopDelay
+			length -= loopDelay
+			return loopDelay + t - (math.floor(t / length) * length)
+		end
+		return t - (math.floor(t / length) * length)
+	end
+
+	method void ChangeAnimationClip(string clip)
+		-- 애니메이션 클립을 변경하고 새로 재생
+		self:Stop()
+		self.clip = clip
+		self._T.apply = nil
+		if self:InitClipData() == false then
+			return
+		end
+		self:Play()
+	end
+
+	method boolean InitClipData()
+		-- 애니메이션 클립 데이터를 초기화하고 콜백 함수 설정
+		self.animationData = _CustomAnimationLogic:GetClip(self.animation,self.clip)
+		if self.animationData == nil then
+			return false
+		end
+		self.duration = self.animationData.length 
+		self.frameRate = self.animationData.frameRate
+		local currentPath = self.Entity.Path
+		local entities = {}
+		self._T.apply = function(path,propertyName,value)
+			local entity = self.Entity
+			
+			if _UtilLogic:IsNilorEmptyString(path) == false then
+				path = currentPath .."/".. path
+			else
+				path = currentPath
+			end 
+			
+			if entities[path] == nil then
+				---@type Entity
+				local target = path == currentPath and self.Entity or _EntityService:GetEntityByPath(path)
+				if isvalid(target) == false then
+					return
+				end
+				entities[path] = {}
+				entities[path].entity = target
+				local uitransform = target.UITransformComponent
+				local transform = target.TransformComponent
+				local spriteGUI = target.SpriteGUIRendererComponent
+				local text = target.TextComponent
+				local canvasGroup = target.CanvasGroupComponent
+				entities[path]["m_AnchoredPosition.x"] = function(value)
+					 uitransform.anchoredPosition.x = value
+				end
+				entities[path]["m_AnchoredPosition.y"] = function(value)
+					 uitransform.anchoredPosition.y = value
+				end
+				entities[path]["m_LocalScale.x"] = function(value)
+					 transform.Scale.x = value
+				end
+				entities[path]["m_LocalScale.y"] = function(value)
+					 transform.Scale.y = value
+				end
+				entities[path]["rotationZ"] = function(value)
+					 transform.ZRotation = value
+				end
+			
+				entities[path]["m_Color.r"] = function(value)
+					 spriteGUI.Color.r = value
+				end
+				entities[path]["m_Color.g"] = function(value)
+					 spriteGUI.Color.g = value
+				end
+				entities[path]["m_Color.b"] = function(value)
+					 spriteGUI.Color.b = value
+				end
+				entities[path]["m_Color.a"] = function(value)
+					if spriteGUI ~= nil then
+						spriteGUI.Color.a = value
+					elseif text ~= nil then
+						text.FontColor.a = value
+					end
+					 
+				end
+				entities[path]["m_SizeDelta.x"] = function(value)
+					uitransform.RectSize.x = value
+				end
+				entities[path]["m_SizeDelta.y"] = function(value)
+					uitransform.RectSize.y = value
+				end
+				entities[path]["m_EffectColor.a"] = function(value)
+					text.FontColor.a = value
+					text.OutlineColor.a = value
+					text.DropShadowColor.a = value
+				end
+				entities[path]["m_Alpha"] = function(value)
+					canvasGroup.GroupAlpha = value
+					target.Visible = value > 0
+				end
+			end
+			entity = entities[path].entity
+			
+			if isvalid(entity) == false then
+				return
+			end
+			if entities[path][propertyName] ~= nil then
+				entities[path][propertyName](value)
+			end
+		end
+		return true
+	end
+
+	method void Stop()
+		-- 애니메이션 정지
+		self.isPlaying = true
+		self.time = 0
+		self.Enable = false
+	end
+
+end

@@ -1,0 +1,813 @@
+@Component
+script UITrainingAuto extends Component
+
+	property SyncTable<integer, Entity> TruckSlotEntities
+
+	property Entity EmployeeScroll = "25bccd0d-d201-458b-831b-fd2b2a925e2e"
+
+	property table SlotHandlers = {}
+
+	property SyncTable<string, Entity> ListSlotEntities
+
+	property string SelectedEmployeeId = ""
+
+	property Entity EmployeeDetail = "7a489e35-011f-4b34-8985-d094b8a39338"
+
+	property SyncTable<integer, string> SelectedChuchuIds
+
+	property Entity ChuchuSlot1 = "77972e0c-f9a1-4681-b3a0-5260265ed6dd"
+
+	property Entity ChuchuSlot2 = "b3cc190a-a2f9-42e9-b6a3-216ed800abc8"
+
+	property Entity ChuchuSlot3 = "2860b820-51b5-4ffc-96ec-14e3189c3764"
+
+	property integer SelectTruckNum = 0
+
+	property Entity HudSlotParent = "2037e5b6-a84d-4f74-9d4d-cd9ff3101899"
+
+	property Entity UpgradePanel = "edeec031-746e-459a-98ad-ad4ff26681ca"
+
+	property table UpgradeIdList = {30003, 30004, 30005}
+
+	property Entity RewardAllBtn = "a22f65ba-2a71-4988-b950-26d6c8749af6"
+
+	property Entity CloverInfoBtn1 = "9f6b2711-f757-436f-84be-477692b7d334"
+
+	property Entity CloverInfoBtn2 = "b09d259f-d640-414f-9dee-fc6dc5d5fcda"
+
+	property Entity CloverInfoBtn3 = "1b0c0081-6d2a-4394-9f0b-f21db6fca973"
+
+	property Entity ResultScroll = "07f656d2-bfe1-46e4-b5c8-0ea8b20a2e15"
+
+	property SyncTable<integer, string> ChuchuIndexTable
+
+	property Entity ChuchuListPopup = "02162014-5221-4d77-b0ad-2dfd0b99226f"
+
+	property Entity ResultPopup = "66c46bf8-e77d-4faa-b5a5-b50ef65ec7a1"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 자동 훈련 UI를 초기화하는 함수
+		local truckScroll = _EntityService:GetEntityByPath("/ui/AutoTrainingGroup/Panel/ParkingPanel")
+		
+		self.TruckSlotEntities[1] = truckScroll:GetChildByName("TruckSlot_1")
+		self.TruckSlotEntities[2] = truckScroll:GetChildByName("TruckSlot_2")
+		self.TruckSlotEntities[3] = truckScroll:GetChildByName("TruckSlot_3")
+		
+		self.ChuchuSlot1:ConnectEvent(ButtonClickEvent, function()
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			self:OpenChuchuListPopup(1)
+		end)
+		
+		self.ChuchuSlot2:ConnectEvent(ButtonClickEvent, function() 
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			self:OpenChuchuListPopup(2) 
+		end)
+		self.ChuchuSlot3:ConnectEvent(ButtonClickEvent, function() 
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			self:OpenChuchuListPopup(3) 
+		end)
+		
+		self._T.UpgradeBtnEntities = {}
+		for i = 1, 3 do
+			local entity = self.UpgradePanel:GetChildByName("UpgradeBtn".._StringUtilLogic:NumToString(i))
+			table.insert(self._T.UpgradeBtnEntities, entity)
+			
+			local truckSlot = self.TruckSlotEntities[i]
+			local lunchBoxNum = _UserService.LocalPlayer.PlayerAutoTrainingManager.RequireLunchBoxNum
+			truckSlot.AutoTrainingTruckSlot:SetOkBtnLunchBoxNum(lunchBoxNum) 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitUI()
+		-- 자동 훈련 UI를 초기화하는 함수
+		self:DisplayEmployeeScroll()
+		local openSlotNum = _UserService.LocalPlayer.PlayerAutoTrainingManager.OpenSlotNum
+		for i = 1, openSlotNum do
+			---@type AutoTrainingSlotData
+			local slotData = _UserService.LocalPlayer.PlayerAutoTrainingManager.AutoTrainingSlotInfoTable[i]
+			if isvalid(slotData) then
+				if slotData.IsOpen == 1 then
+					self:SetTruckSlot(i, slotData.State)
+				end
+			end
+		end
+		self:UpdateTruckChuchuSlot(_UserService.LocalPlayer.PlayerAutoTrainingManager.AutoTrainingSlotInfoTable)
+		self:UpdateUpgradeInfo()
+		_UserService.LocalPlayer.PlayerAutoTrainingManager:UpdateLunchBoxTruckSlotOkButtons() 
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:CloseResultPopup()
+		_UIGroupManager.TrainingAutoGroup.UITrainingAuto:CloseChuchuListPopup()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenUI()
+		-- 자동 훈련 UI를 여는 함수
+		self:InitUI()
+		
+		self.Entity.Enable = true
+		
+		_UIGroupManager:EnableMoneyBarGroup(nil)
+		_UIGroupManager:EnableBackToLobbyBtn(true)
+		_UserService.LocalPlayer.TimeManager:TimeFlowsChange(false)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseUI()
+		-- 자동 훈련 UI를 닫는 함수
+		self.Entity.Enable = false
+		_UserService.LocalPlayer.TimeManager:RequestTimeFlowClient()
+		_UIGroupManager:EnableMoneyBarGroup(nil)
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickRewardAll()
+		-- 모든 보상 버튼 클릭 시 처리하는 함수
+		_UserService.LocalPlayer.PlayerAutoTrainingManager:OnClickRewardAllButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetLockSlots(integer openSlotNum)
+		-- 슬롯의 잠금 상태를 설정하는 함수
+		for i = 1, openSlotNum do
+			local slotEntity = self.TruckSlotEntities[i]
+			slotEntity.AutoTrainingTruckSlot:SetUnlock()
+		end
+		
+		for i = openSlotNum + 1, #self.TruckSlotEntities do
+			local slotEntity = self.TruckSlotEntities[i]
+			slotEntity.AutoTrainingTruckSlot:SetLock()
+		end
+		self:LockParkingAreaEntity()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickOkButton(integer slotNum)
+		-- OK 버튼 클릭 시 처리하는 함수
+		_UserService.LocalPlayer.PlayerAutoTrainingManager:TruckSlotOkButton(slotNum)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnResultOkButton()
+		-- 결과 팝업 OK 버튼 클릭 시 처리하는 함수
+		_UserService.LocalPlayer.PlayerAutoTrainingManager:OnRewardPopupOkButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseResultPopup()
+		-- 결과 팝업을 닫는 함수
+		_EntityService:GetEntityByPath("/ui/AutoTrainingGroup/ResultPopupDim").Enable = false
+		self:DestroyCloverInfoToolTip()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenResultPopup()
+		-- 결과 팝업을 여는 함수
+		_EntityService:GetEntityByPath("/ui/AutoTrainingGroup/ResultPopupDim").Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DisplayEmployeeScroll()
+		-- 직원 스크롤을 표시하는 함수
+		
+		local player = _UserService.LocalPlayer
+		local myEmployees = player.EmployeeManager.EmployeeDetailTable
+		
+		local drawList = {}
+		local drawFirst = {}
+		local drawLast = {}
+		for i, employee in pairs(myEmployees) do
+			local hasTrainingSkill = _EmployeeSkillService:HasSkillOfType(employee.Id, "Training", player)
+			if hasTrainingSkill then
+				table.insert(drawFirst, employee.Id)
+			else
+				table.insert(drawLast, employee.Id)
+			end
+		end
+		
+		for i = 1, #drawFirst do
+			table.insert(drawList, drawFirst[i])
+		end
+		for i = 1, #drawLast do
+			table.insert(drawList, drawLast[i])
+		end
+		
+		for i = 1, #drawList do
+			self.ChuchuIndexTable[i] = drawList[i]
+		end
+		
+		self:RegisterRecycleScrollLayoutCallback()
+		
+		local count = #table.keys(drawList)
+		
+		self.EmployeeScroll.RecycleScrollView:SetTotalCount(count)
+		self.EmployeeScroll.RecycleScrollView:Refresh(true)
+		
+		for i, entity in pairs(self.EmployeeScroll.Children) do
+			if _UtilLogic:Contains(entity.Name, "Item") then
+				local index = entity.UIEmployeeManageListRenderer.Index
+				if index == 1 then
+					local empId = entity.UIEmployeeManageListRenderer.EmployeeId
+					self:RefreshDetail(empId)
+				end
+				if index < 1 or  index > count then
+					entity.Enable = false
+				else
+					entity.Enable = true
+				end
+			end
+		end
+		
+		player.PlayerAutoTrainingManager:OnOpenUI()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshDetail(string employeeId)
+		-- 직원 상세 정보를 새로고침하는 함수
+		self.SelectedEmployeeId = employeeId
+		
+		for i, entity in pairs(self.EmployeeScroll.Children) do
+			if _UtilLogic:Contains(entity.Name, "Item") then
+				local empId = entity.UIEmployeeManageListRenderer.EmployeeId
+				if empId == employeeId then
+					entity.UIEmployeeManageListRenderer:EnableOutline()
+				else
+					entity.UIEmployeeManageListRenderer:DisableOutline()
+				end
+			end
+		end
+		
+		self.EmployeeDetail.UIRecipeEmployeeDetail:Refresh(employeeId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickSelectButton()
+		-- 선택 버튼 클릭 시 처리하는 함수
+		
+		if not _UtilLogic:IsNilorEmptyString(self.SelectedEmployeeId) then
+			local entity = self:ReturnEntityFromEmpId(self.SelectedEmployeeId)
+			if entity:GetChildByName("Disable").Enable then
+				
+				if entity.UIEmployeeManageListRenderer.State == _AutoTrainingUIStateEnum.List_Selected or entity.UIEmployeeManageListRenderer.State == _AutoTrainingUIStateEnum.Default then
+					_UIToast:ShowMessage(_LocalizationService:GetText("AutoTrainingSettingMsg"))
+				else
+					_UIToast:ShowMessage(_LocalizationService:GetText("AutoTrainingAlreadySelected"))
+		
+					return
+				end
+			end
+			
+			self:AddSelectedScroll(self.SelectedEmployeeId)
+			self:CloseChuchuListPopup()
+		else
+			_UIToast:ShowMessage(_LocalizationService:GetText("TrainingSettingSelectChuchu"))
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AddSelectedScroll(string employeeId)
+		-- 선택된 직원을 스크롤에 추가하는 함수
+		_UserService.LocalPlayer.PlayerAutoTrainingManager:SetChuhuInTruck(employeeId, self.SelectTruckNum)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenChuchuListPopup(integer truckNum)
+		-- 캐릭터 목록 팝업을 여는 함수
+		if self.TruckSlotEntities[truckNum].AutoTrainingTruckSlot.isLocked == true then
+			
+			return
+		end
+		
+		self.SelectTruckNum = truckNum
+		
+		local firstEmpId = self.ChuchuIndexTable[1]
+		self:RefreshDetail(firstEmpId)
+		
+		_EntityService:GetEntityByPath("/ui/AutoTrainingGroup/ChuchuListPopupDim").Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CloseChuchuListPopup()
+		-- 캐릭터 목록 팝업을 닫는 함수
+		_EntityService:GetEntityByPath("/ui/AutoTrainingGroup/ChuchuListPopupDim").Enable = false
+		self.SelectTruckNum = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeStateChuchuListSlot(string chuchuId, string state)
+		-- 캐릭터 목록 슬롯의 상태를 변경하는 함수
+		if _UtilLogic:IsNilorEmptyString(chuchuId) then
+			return
+		end
+		
+		local entity = self:ReturnEntityFromEmpId(chuchuId)
+		if not isvalid(entity) then
+			return
+		end
+		entity.UIEmployeeManageListRenderer.State = state
+		entity.UIEmployeeManageListRenderer:ChangeChuchuListSlotState_Auto_Fixed(state)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EmptySelectedSlot(Entity slot)
+		-- 선택된 슬롯을 비우는 함수
+		slot:GetChildByName("Portrait").Enable = false
+		slot:GetChildByName("ImgPlus").Enable = true
+		self.SelectedEmployeeId = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTruckSlot(integer slotNum, string state)
+		-- 트럭 슬롯을 설정하는 함수
+		self.TruckSlotEntities[slotNum].AutoTrainingTruckSlot:ChangeUIOnState(state)
+		_UserService.LocalPlayer.PlayerAutoTrainingManager:UpdateLunchBoxTruckSlotOkButtons()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateTruckChuchuSlot(table infoTable)
+		-- 트럭 캐릭터 슬롯을 업데이트하는 함수
+		
+		local slot
+		
+		for i = 1, 3 do
+			
+			if  i == 1 then
+				slot = self.ChuchuSlot1
+			elseif i == 2 then
+				slot = self.ChuchuSlot2
+			elseif i == 3 then
+				slot = self.ChuchuSlot3
+			end
+			
+			---@type AutoTrainingSlotData
+			local slotInfo = infoTable[i]
+			if not isvalid(slotInfo) or _UserService.LocalPlayer.EmployeeManager:CheckEmployeeAlreadyHave(slotInfo.ChuchuId) == false then
+				self:EmptySelectedSlot(slot)
+				continue
+			end
+			
+			local chuchuId = slotInfo.ChuchuId
+			
+			if _UtilLogic:IsNilorEmptyString(chuchuId) == false then
+				---@type EmployeeData
+				local data = _EmployeeService:GetData(chuchuId)
+				local portraitEntity = slot:GetChildByName("Portrait")
+				_EmployeeUIService:DrawPortraitWithEquip(portraitEntity, portraitEntity, data)
+				portraitEntity.Enable = true
+				slot:GetChildByName("ImgPlus").Enable = false
+			else
+				self:EmptySelectedSlot(slot)
+			end
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateHudSlot(table autoTrainingSlotInfoTable)
+		-- HUD 슬롯을 업데이트하는 함수
+		local parent = self.HudSlotParent
+		for i, slot in pairs(parent.Children) do
+			---@type AutoTrainingSlotData
+			local slotData = autoTrainingSlotInfoTable[i]
+			if isvalid(slotData) then
+				if slotData.IsOpen == 1 then
+					if _UtilLogic:IsNilorEmptyString(slotData.ChuchuId) or _UserService.LocalPlayer.EmployeeManager:CheckEmployeeAlreadyHave(slotData.ChuchuId) == false then
+					else
+						slot.UIEmployeeManageListRenderer:Set(slotData.ChuchuId)
+						slot:GetChildByName("Portrait").Enable = true
+						slot:GetChildByName("Plus").Enable = false
+					end
+				elseif slotData.IsOpen == 0 then
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EmptyHudSlot(Entity slot)
+		-- HUD 슬롯을 비우는 함수
+		slot:GetChildByName("Plus").Enable = true
+		slot:GetChildByName("Portrait").Enable = false
+		slot:GetChildByName("Timer").Enable = false
+		slot:GetChildByName("Lock").Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LockHudSlot(Entity slot)
+		-- HUD 슬롯을 잠그는 함수
+		slot:GetChildByName("Plus").Enable = false
+		slot:GetChildByName("Portrait").Enable = false
+		slot:GetChildByName("Timer").Enable = false
+		slot:GetChildByName("Lock").Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LockParkingAreaEntity()
+		-- 주차장 영역 엔티티를 잠그는 함수
+		local openSlotNum = _UserService.LocalPlayer.PlayerAutoTrainingManager.OpenSlotNum
+		for i = 1, 3 do	
+			local parkingAreaEntity = _LobbyRenovationService:GetParkingAreaEntity()
+			local scooterEntity = parkingAreaEntity:GetChildByName("Scooter_".._StringUtilLogic:NumToString(i))
+			local cover = scooterEntity:GetChildByName("Cover")
+			if i <= openSlotNum then
+				cover.Enable = false
+			else
+				cover.Enable = true
+				cover.SpriteRendererComponent.SortingLayer = scooterEntity.SpriteRendererComponent.SortingLayer
+				cover.SpriteRendererComponent.OrderInLayer = 20
+				local noParkingSign = parkingAreaEntity:GetChildByName("NoParkingSign_".._StringUtilLogic:NumToString(i))
+				local info = parkingAreaEntity:GetChildByName("Info_".._StringUtilLogic:NumToString(i))
+				noParkingSign.Enable = false
+				info.Enable = false
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateTruckSlotOkButtonDim(table autoTrainingSlotInfoTable, boolean enable)
+		-- 트럭 슬롯 OK 버튼 딩 상태를 업데이트하는 함수
+		local openSlotNum = _UserService.LocalPlayer.PlayerAutoTrainingManager.OpenSlotNum
+		for i = 1, openSlotNum do
+			---@type AutoTrainingSlotData
+			local slotData = autoTrainingSlotInfoTable[i]
+			if isvalid(slotData) then
+				if slotData.IsOpen and slotData.State == _AutoTrainingUIStateEnum.Default then
+					self.TruckSlotEntities[i].AutoTrainingTruckSlot:EnableOkButtonDim(enable)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UpdateUpgradeInfo()
+		-- 업그레이드 정보를 업데이트하는 함수
+		local player = _UserService.LocalPlayer
+		
+		for btnNum, upgradeId in pairs(self.UpgradeIdList) do
+			local data = _UpgradeDataSetLogic:GetData(upgradeId)
+			---@type Entity
+			local entity = self._T.UpgradeBtnEntities[btnNum]
+			entity:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = data.IconRUID
+			entity:GetChildByName("Name").TextComponent.Text = _GetLocalizationTextLogic:GetText(data.NameKey)
+			entity:GetChildByName("Level").TextComponent.Text = "Lv."..tostring(_UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, upgradeId))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickUpgradeBtn(integer btnNum)
+		-- 업그레이드 버튼 클릭 시 처리하는 함수
+		local upgradeId = 30003
+		if isvalid(self.UpgradeIdList[btnNum]) then
+			upgradeId = self.UpgradeIdList[btnNum]
+		end
+		
+		_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel:Open(upgradeId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EnableDimRewardAllBtn(boolean enable)
+		-- 모든 보상 버튼의 딩 상태를 설정하는 함수
+		_UIEntityService:SetDimWithIcon(self.RewardAllBtn, enable)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickScooterArea()
+		-- 스쿠터 영역 클릭 시 처리하는 함수
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OpenUI()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenCloverInfoToolTip(integer num)
+		-- 클로버 정보 툴팁을 여는 함수
+		local cloverToolTip = self.ResultPopup:GetChildByName("CloverToolTip"..tostring(num))
+		local btnEntity = self.CloverInfoBtn1
+		if num == 2 then
+			btnEntity = self.CloverInfoBtn2
+		elseif num == 3 then
+			btnEntity = self.CloverInfoBtn3
+		end
+		cloverToolTip.UITransformComponent.WorldPosition = btnEntity.UITransformComponent.WorldPosition + Vector3(6, -7, 0)
+		_TooltipService:OpenTooltip(cloverToolTip, nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetCloverInfoToolTip(table cloverBonusList, integer num)
+		-- 클로버 정보 툴팁을 설정하는 함수
+		_UIGroupManager.TrainingGroup.UITraining:SetCloverInfo(cloverBonusList, self.ResultPopup, num) 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DestroyCloverInfoToolTip()
+		-- 클로버 정보 툴팁을 제거하는 함수
+		for _, tooltip in pairs(self.ResultPopup.Children) do
+			if _UtilLogic:Contains(tooltip.Name, "CloverToolTip") then
+				tooltip:Destroy()
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RegisterRecycleScrollLayoutCallback()
+		-- 리사이클 스크롤 콜백을 등록하는 함수
+		if self.EmployeeScroll.RecycleScrollView.onUpdateCell ~= nil then
+			return
+		end
+		
+		local recycleFunc = function(index, entity)
+			self:RecycleScrollOnUpdateByIndex(index, entity)
+		end
+		self.EmployeeScroll.RecycleScrollView.onUpdateCell = recycleFunc
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RecycleScrollOnUpdateByIndex(integer index, Entity entity)
+		-- 인덱스로 리사이클 스크롤을 업데이트하는 함수
+		local empId = self:CalcEmpIdFromIndex(index)
+		entity.UIEmployeeManageListRenderer:Init_Training(index, empId, true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string CalcEmpIdFromIndex(integer index)
+		-- 인덱스로부터 직원 ID를 계산하는 함수
+		local empId = self.ChuchuIndexTable[index]
+		
+		return empId
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity ReturnEntityFromEmpId(string empId)
+		-- 직원 ID로부터 엔티티를 반환하는 함수
+		local target
+		for i, entity in pairs(self.EmployeeScroll.Children) do
+			if _UtilLogic:Contains(entity.Name, "Item") then
+				if entity.UIEmployeeManageListRenderer.EmployeeId == empId then
+					target = entity
+					break
+				end
+			end
+		end
+		
+		return target
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "2037e5b6-a84d-4f74-9d4d-cd9ff3101899")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- HUD 슬롯 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OpenUI()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "7b4b55dd-e143-4bae-b8d1-7230f0ed98c6")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- UI 닫기 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:CloseUI()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "6e828c78-89fa-4ed3-ac89-fab242363527")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 1번 슬롯 OK 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickOkButton(1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "dae1b904-752c-4851-a227-72d99d4c15d0")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 2번 슬롯 OK 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickOkButton(2)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "4869a1ca-e57c-4bc3-ac53-4f20025cf8b0")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 3번 슬롯 OK 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickOkButton(3)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "465351bb-639d-4bfe-a6cb-38e8462b3980")
+	handler HandleButtonClickEvent6(ButtonClickEvent event)
+		-- 결과 OK 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnResultOkButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "8aed7a07-30cb-413d-a84f-dd843b0e9c51")
+	handler HandleButtonClickEvent7(ButtonClickEvent event)
+		-- 결과 팝업 닫기 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:OnResultOkButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "a22f65ba-2a71-4988-b950-26d6c8749af6")
+	handler HandleButtonClickEvent8(ButtonClickEvent event)
+		-- 모든 보상 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickRewardAll()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "4aa79993-2c51-4ba2-a7b3-e3178b301e20")
+	handler HandleButtonClickEvent9(ButtonClickEvent event)
+		-- 직원 선택 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OnClickSelectButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "6b6ac1cd-3f8f-4384-be5b-705ca439d372")
+	handler HandleButtonClickEvent10(ButtonClickEvent event)
+		-- 캐릭터 목록 닫기 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:CloseChuchuListPopup()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "7ebc5664-41bf-43ff-a206-3b414acce13c")
+	handler HandleButtonClickEvent11(ButtonClickEvent event)
+		-- 직원 업그레이드 버튼 클릭 이벤트 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		if isvalid(self.SelectedEmployeeId) then
+			local category = _EmployeeService:GetData(self.SelectedEmployeeId).Type
+			_EmployeeUpgradeUIServcie:UIOpen(self.SelectedEmployeeId)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "0f5f78c7-d674-4531-9cae-42f4209e16bf")
+	handler HandleButtonClickEvent12(ButtonClickEvent event)
+		-- 상점 열기 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		local uiShop = _UIGroupManager.ShopGroup:GetChildByName("UIShop")
+		uiShop.UIShop:Open("GeneralShop", "5") 
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "b9efee28-baf0-442a-8bb3-6b231fbfd656")
+	handler HandleButtonClickEvent13(ButtonClickEvent event)
+		-- 1번 업그레이드 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		self:OnClickUpgradeBtn(1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "f5eeba01-1574-4b9a-b726-f8683af2a514")
+	handler HandleButtonClickEvent14(ButtonClickEvent event)
+		-- 2번 업그레이드 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		self:OnClickUpgradeBtn(2)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "385520d2-200d-4608-87af-697125fcb8f8")
+	handler HandleButtonClickEvent15(ButtonClickEvent event)
+		-- 3번 업그레이드 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		self:OnClickUpgradeBtn(3)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "02162014-5221-4d77-b0ad-2dfd0b99226f")
+	handler HandleButtonClickEvent16(ButtonClickEvent event)
+		-- 캐릭터 목록 팝업 닫기 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Close"], 1)
+		self:CloseChuchuListPopup()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "3983c275-e831-4cce-b036-8eb01a3536c3")
+	handler HandleButtonClickEvent17(ButtonClickEvent event)
+		-- 상점 열기 버튼 클릭 이벤트 핸들러 2
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		local uiShop = _UIGroupManager.ShopGroup:GetChildByName("UIShop")
+		uiShop.UIShop:Open("GeneralShop", "5") 
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "9f6b2711-f757-436f-84be-477692b7d334")
+	handler HandleButtonClickEvent19(ButtonClickEvent event)
+		-- 1번 클로버 정보 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OpenCloverInfoToolTip(1)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "b09d259f-d640-414f-9dee-fc6dc5d5fcda")
+	handler HandleButtonClickEvent20(ButtonClickEvent event)
+		-- 2번 클로버 정보 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OpenCloverInfoToolTip(2)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "1b0c0081-6d2a-4394-9f0b-f21db6fca973")
+	handler HandleButtonClickEvent21(ButtonClickEvent event)
+		-- 3번 클로버 정보 버튼 클릭 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OpenCloverInfoToolTip(3)
+	end
+
+end

@@ -1,0 +1,274 @@
+@Component
+script StageSlotComponent extends Component
+
+	@HideFromInspector
+	property string stageId = ""
+
+	@HideFromInspector
+	property Entity sprite = nil
+
+	@HideFromInspector
+	property Entity titleText = nil
+
+	@HideFromInspector
+	property Entity descriptionText = nil
+
+	@HideFromInspector
+	property Entity moveButton = nil
+
+	property Entity clearReward = nil
+
+	property Entity accountExpText = nil
+
+	property Entity accountExpPanel = nil
+
+	@HideFromInspector
+	property Entity clearSprite = nil
+
+	property Entity recommendBattlePower = nil
+
+	property Entity questStage = nil
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 UI 요소들 참조 설정 및 이벤트 연결
+		self.sprite = self.Entity:GetChildByName("StageSprite", true)
+		self.clearSprite = self.sprite:GetChildByName("ClearSprite")
+		self.titleText = self.Entity:GetChildByName("StageTitleText", true)
+		self.descriptionText = self.Entity:GetChildByName("StageDescriptionText", true)
+		self.moveButton = self.Entity:GetChildByName("StageMoveButton")
+		local normalMoveButton = self.moveButton:GetChildByName("Normal")
+		local recommendMoveButton = self.moveButton:GetChildByName("Recommend")
+		local disableMoveButton = self.moveButton:GetChildByName("Disable")
+		normalMoveButton:ConnectEvent(ButtonClickEvent, self.OnClick)
+		recommendMoveButton:ConnectEvent(ButtonClickEvent, self.OnClick)
+		local rewardPanel = self.Entity:GetChildByName("RewardPanel")
+		self.clearReward = rewardPanel:GetChildByName("RewardPanel_2")
+		local rewardButton = rewardPanel:GetChildByName("StageClearRewardButton")
+		rewardButton:ConnectEvent(ButtonClickEvent, self.OnRewardButtonClick)
+		
+		local recommendBattlePowerPanel = self.Entity:GetChildByName("RecommendedBattlePower")
+		self.recommendBattlePower = recommendBattlePowerPanel:GetChildByName("RecommendedBattlePowerText")
+		
+		rewardPanel:GetChildByName("RewardPanel_3orMore").Enable = false
+		
+		self.questStage = self.Entity:GetChildByName("QuestStage")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSlot(integer index)
+		-- 스테이지 슬롯 데이터 설정 및 클리어 상태 표시
+		local stageId = _DataService:GetTable("StageData"):GetRow(index + ((_UIGroupManager.uiStageMovePopup.currentChapter - 1) * 10)):GetItem("id")
+		self.stageId = stageId
+		local step = _StageLogic.stageData[self.stageId].step
+		local currentStep = _UserService.LocalPlayer.PlayerInfoComponent.playerInfo.stageStep
+		
+		if step - 1 <= currentStep then
+			self.Entity:GetChildByName("Cover").Enable = false
+		else
+			self.Entity:GetChildByName("Cover").Enable = true
+		end
+		
+		local playerQuest = _UserService.LocalPlayer.PlayerQuestComponent
+		local questData = _QuestLogic.questData[playerQuest.currentQuestId]
+		
+		if isvalid(questData) then
+			local objectiveTypes = _UtilLogic:Split(questData.objectiveType, "/")
+			local objectiveNums = _UtilLogic:Split(questData.objectiveNum, "/")
+			local objectiveIds = _UtilLogic:Split(questData.objectiveId, "/")
+			local stageGuide = _UtilLogic:Split(questData.stageGuide,"/")
+			
+			local guideOn = false
+			for i = 1, #objectiveTypes do
+				local objectiveType = objectiveTypes[i]
+				local objectiveNum = tonumber(objectiveNums[i])
+				local objectiveId = objectiveIds[i]
+				local objectiveCount = _QuestLogic:GetObjectiveCount(playerQuest.currentQuestId, objectiveId)
+				
+				if isvalid(objectiveCount) then
+					if objectiveCount < objectiveNum then
+						if isvalid(stageGuide[i]) then
+							local stages = _UtilLogic:Split(stageGuide[i],"_")
+							for i, stage in pairs(stages) do
+								if stage == self.stageId then
+									guideOn = true
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+			self.questStage.Enable = guideOn
+		else
+			self.questStage.Enable = false
+		end
+		
+		local stageData = _StageLogic.stageData[stageId]
+		self.sprite.SpriteGUIRendererComponent.ImageRUID = stageData.ruid
+		self.titleText.TextComponent.Text = string.format("%s %d - %d", _LocalizeLogic:GetChapterName(tostring(stageData.chapter)), stageData.chapter, stageData.stage)
+		self.recommendBattlePower.TextComponent.Text = string.format("%d", stageData.recommendBattlePower)
+		
+		
+		local normalMoveButton = self.moveButton:GetChildByName("Normal")
+		local recommendMoveButton = self.moveButton:GetChildByName("Recommend")
+		local disableMoveButton = self.moveButton:GetChildByName("Disable")
+		self.clearSprite.Enable = false
+		
+		normalMoveButton.Enable = false
+		recommendMoveButton.Enable = false
+		disableMoveButton.Enable = false
+		
+		if step == currentStep + 1 then
+			recommendMoveButton.Enable = true
+		elseif step <= currentStep then
+			normalMoveButton.Enable = true
+		
+			self.clearSprite.Enable = true
+		else
+			disableMoveButton.Enable = true
+		end
+		
+		self:SetClearRewardButton(step)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClick()
+		-- 스테이지 이동 버튼 클릭 시 스테이지 시작 요청
+		if _UIGroupManager:IsEnableOpenPopup() == false then
+			return
+		end
+		
+		if #_UserService.LocalPlayer.PlayerStorageComponent:GetAllEquippedWeapon() < 1 then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("toast52"))
+			
+			return
+		end
+		
+		local stageId = tonumber(self.stageId)
+		
+		if _WaveLogic.chapterData[stageId] == nil then
+			_UIToast:ShowMessage(_LocalizeLogic:GetText("etcStr229"))
+			
+			return
+		end
+		
+		if _BattleUIManager.loadingUI.Entity.Enable then return end
+		if isvalid(_UserService.LocalPlayer.CurrentMap.BattleMap) then return end
+		
+		
+		_StageLogic:RequestStartStage(stageId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetClearRewardButton(integer stageStep)
+		-- 스테이지 클리어 보상 버튼 상태 설정
+		local currentStep = _UserService.LocalPlayer.PlayerInfoComponent.playerInfo.stageStep
+		local reward1 = self.clearReward:GetChildByName("Reward_1")
+		local reward2 = self.clearReward:GetChildByName("Reward_2")
+		local icon1 = reward1:GetChildByName("RewardIcon")
+		local text1 = reward1:GetChildByName("RewardCount")
+		local icon2 = reward2:GetChildByName("RewardIcon")
+		local text2 = reward2:GetChildByName("RewardCount")
+		local cover1 = reward1:GetChildByName("Cover")
+		local cover2 = reward2:GetChildByName("Cover")
+		local stamp1 = cover1:GetChildByName("Stamp")
+		local stamp2 = cover2:GetChildByName("Stamp")
+		
+		local rewardPanel = self.Entity:GetChildByName("RewardPanel")
+		local rewardButton = rewardPanel:GetChildByName("StageClearRewardButton")
+		
+		stamp1.Enable = false
+		stamp2.Enable = false
+		rewardButton.Enable = true
+		
+		local data = _RewardLogic.stageRewardData[stageStep]
+		
+		if data.itemCategory == "gold" then
+			icon1.SpriteGUIRendererComponent.ImageRUID = _GameConfig:GetConfig().RUID_MESO
+			icon1.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+		elseif data.itemCategory == "essence" then
+			icon1.SpriteGUIRendererComponent.ImageRUID = _GameConfig:GetConfig().RUID_ESSENCE
+			icon1.SpriteGUIRendererComponent.LocalPosition = Vector2(-15, -15)
+		elseif data.itemCategory == "weaponScroll" then
+			icon1.SpriteGUIRendererComponent.ImageRUID = _GameConfig:GetConfig().RUID_SCROLL
+			icon1.SpriteGUIRendererComponent.LocalPosition = Vector2(-15, -15)
+		elseif data.itemCategory == "diamond" then
+			icon1.SpriteGUIRendererComponent.ImageRUID = _GameConfig:GetConfig().RUID_DIAMOND
+			icon1.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+		else
+			local id = data.itemCategory
+			local itemData = _ItemDataLogic.itemData[id]
+			if not isvalid(itemData) then
+				itemData = _ItemDataLogic.equipmentData[id]
+			end
+			
+			icon1.SpriteGUIRendererComponent.ImageRUID = itemData.ruid
+			icon1.SpriteGUIRendererComponent.LocalPosition = Vector2(10, 10)
+		end
+		
+		text1.TextComponent.Text = data.amount
+		
+		if data.itemCategory2 == "gold" then
+			icon2.SpriteGUIRendererComponent.ImageRUID = _GameConfig:GetConfig().RUID_MESO
+			icon2.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+		elseif data.itemCategory2 == "essence" then
+			icon2.SpriteGUIRendererComponent.ImageRUID = _GameConfig:GetConfig().RUID_ESSENCE
+			icon2.SpriteGUIRendererComponent.LocalPosition = Vector2(-15, -15)
+		elseif data.itemCategory2 == "weaponScroll" then
+			icon2.SpriteGUIRendererComponent.ImageRUID = _GameConfig:GetConfig().RUID_SCROLL
+			icon2.SpriteGUIRendererComponent.LocalPosition = Vector2(-15, -15)
+		elseif data.itemCategory2 == "diamond" then
+			icon2.SpriteGUIRendererComponent.ImageRUID = _GameConfig:GetConfig().RUID_DIAMOND
+			icon2.SpriteGUIRendererComponent.LocalPosition = Vector2.zero
+		else
+			local id = data.itemCategory2
+			local itemData = _ItemDataLogic.itemData[id]
+			if not isvalid(itemData) then
+				itemData = _ItemDataLogic.equipmentData[id]
+			end
+			
+			icon2.SpriteGUIRendererComponent.ImageRUID = itemData.ruid
+			icon2.SpriteGUIRendererComponent.LocalPosition = Vector2(10, 10)
+		end
+		
+		text2.TextComponent.Text = data.amount2
+		
+		cover1.Enable = false
+		cover2.Enable = false
+		
+		local playerInfo = _UserService.LocalPlayer.PlayerInfoComponent
+		
+		if isvalid(playerInfo.stageRewardData[stageStep]) and playerInfo.stageRewardData[stageStep].rewarded then
+			cover1.Enable = true
+			cover2.Enable = true
+			stamp1.Enable = true
+			stamp2.Enable = true
+			rewardButton.Enable = false
+		elseif currentStep < stageStep then
+			cover1.Enable = true
+			cover2.Enable = true
+			stamp1.Enable = false
+			stamp2.Enable = false
+			rewardButton.Enable = false
+		end
+		
+		
+		if stageStep == currentStep + 1 then
+			cover1.Enable = false
+			cover2.Enable = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnRewardButtonClick()
+		-- 보상 버튼 클릭 시 스테이지 보상 수령 요청
+		if _UIGroupManager:IsEnableOpenPopup() == false then
+			return
+		end
+		
+		local stageStep = _StageLogic.stageData[self.stageId].step
+		_RewardLogic:RequestGetStageReward(stageStep)
+	end
+
+end

@@ -1,0 +1,119 @@
+@Component
+script COP20002 extends CoachComponent
+
+	@ExecSpace("ServerOnly")
+	method void StartStageHandler(any event)
+		__base:StartStageHandler(event)
+		-- 매 스테이지마다 현재 활성화된 시너지를 가진 유닛들 중 무작위로 유닛을 1기 소환합니다.
+		-----------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		local specialShopManager = user.SpecialShopManager
+		local charShopManager = user.CharacterShopManager_New
+		-----------------------------------------------------
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		local charBySynergyTable = _DataService:GetTable("CharacterListbySynergy")
+		local tableRowCount = synergyTable:GetRowCount()
+		local activateConditionTable = {}
+		
+		
+		-- 1. 시너지 활성화 여부 체크를 위해 최소로 필요한 숫자 테이블 가져오기 (고유 시너지 제외)
+		for i = 1, tableRowCount do
+			local synergyRow = synergyTable:GetRow(i)
+			local synergyID = synergyRow:GetItem("SynergyID")
+			
+			for i = 1, 5 do
+				local count = synergyRow:GetItem(string.format("NeedCount_step%d", i))
+				if isvalid(tonumber(count)) and i ~= 3 then
+					activateConditionTable[synergyID] = tonumber(count)
+					break
+				end
+			end
+		end
+		
+		-- 2. 아군 시너지 체크
+		local synergyIDList = {}
+		
+		for synergyID, count in pairs(teamManager.OnFieldSynergy) do
+			--최소 조건 이상인지 체크 (전직교관 활성화도 체크 필요)
+			if isvalid(activateConditionTable[synergyID]) then
+				if activateConditionTable[synergyID] <= count then
+					if synergyID == "S10024" and (count == 1 or count == 5) then
+						table.insert(synergyIDList, synergyID)
+					else
+						table.insert(synergyIDList, synergyID)
+					end
+				end
+			end
+		end
+		
+		-- 활성화된 시너지가 아예 없으면, Return
+		if #synergyIDList == 0 then
+			return
+		end
+		
+		-- 시너지 하나 선정하고 그 시너지 안에서 코스트에 가장 알맞은 유닛 데려오기
+		local checkSynergyID = synergyIDList[_UtilLogic:RandomIntegerRange(1, #synergyIDList)]
+		
+		
+		-- 2 스테이지 : 2코스트 / 3~4 스테이지 : 3코스트 / 5~6 스테이지 : 4코스트 / 7,8 스테이지 : 5코스트
+		local checkCostMax = math.floor( (gameManager.Stage+3)/2 )
+		local synergyRow = charBySynergyTable:FindRow("SynergyID", checkSynergyID)
+		
+		local charIDList = {}
+		local charListCostGap = 5
+		
+		for i = 1, 9 do
+			local charID = synergyRow:GetItem(string.format("Char_%d", i))
+			if _UtilLogic:IsNilorEmptyString(charID) == true then
+				break
+			end
+			
+			local charCost = math.floor( tonumber( string.sub(charID, 2, 2) ) )
+			
+			if charCost > checkCostMax then
+				break
+			elseif (checkCostMax - charCost) == charListCostGap then
+				table.insert(charIDList, charID)
+			elseif (checkCostMax - charCost) < charListCostGap then
+				charListCostGap = checkCostMax - charCost
+				table.clear(charIDList)
+				table.insert(charIDList, charID)
+			end
+		end
+		
+		-- 캐릭터 소환
+		local checkCharID = charShopManager:ChooseRandomCharacterFromTable(0, charIDList)
+		
+		local function spawnFnc()
+			_UnitSetLogic_New:SpawnUnit(user.OwnerId, checkCharID, 1, "Force")
+			self:PlayAbilityEffect("",user.PlayerComponent.UserId)
+		end
+		
+		_TimerService:SetTimerOnce(spawnFnc, 0.5)
+	end
+
+	@ExecSpace("Client")
+	method void PlayAbilityEffect(string data)
+		__base:PlayAbilityEffect(data)
+		
+		--------------------------------------------------------------
+		local userEntity = _UserService.LocalPlayer
+		local gameMap = userEntity.CurrentMap
+		local coachArea = gameMap:GetChildByName("CoachArea")
+		local coachInfo = _DataService:GetTable("CoachInfo")
+		--------------------------------------------------------------
+		local coachlist=userEntity.CoachManager.PlayCoachesID 
+		
+		for i=1,#coachlist do
+			if coachlist[i] == "COP20002" then
+				local coachEntity = coachArea:GetChildByName(string.format("Coach_%d", i))
+				--발동연출
+				coachEntity.CoachIngameComponent:PlayCoachAbilityEffect(coachlist[i])
+				break
+			end
+		end
+	end
+
+end

@@ -1,0 +1,160 @@
+@Logic
+script RuneCardSetLogic extends Logic
+
+	property Entity DragChaser = "1419bbec-51d6-4d41-8dd9-35946947ad78"
+
+	@Description("현재 드래그중인 엔티티입니다.")
+	property Entity CurrentDraggingEntity = nil
+
+	property integer MouseHoveringSlotIdx = 0
+
+	@ExecSpace("Client")
+	method void SetDraggingEntity(Entity draggingEntity)
+		-- 룬 카드 인벤토리에서 카드를 드래그하기 시작했을 때 호출합니다.
+		-- draggingEnttiy : 드래그하는 룬 카드
+		------------------------------------------------------------------
+		-- 드래그하는 카드의 내용을 DragChaser에 넣습니다.
+		self.CurrentDraggingEntity = draggingEntity
+		
+		local ui_sprite = self.DragChaser:GetChildByName("Sprite_ProductBg"):GetChildByName("Sprite_Product")
+		local ui_cost = self.DragChaser:GetChildByName("Text_Cost")
+		
+		self.DragChaser.SpriteGUIRendererComponent.Color = draggingEntity:GetChildByName("CardBound").SpriteGUIRendererComponent.Color
+		ui_sprite.SpriteGUIRendererComponent.ImageRUID 
+			= draggingEntity:GetChildByName("Sprite_ProductBg"):GetChildByName("Sprite_Product").SpriteGUIRendererComponent.ImageRUID
+		ui_cost.TextComponent.Text 
+			= draggingEntity:GetChildByName("Text_Cost"):GetChildByName("Text").TextComponent.Text
+		------------------------------------------------------------------
+		-- DragChaser를 활성화합니다. (드래그 시작 상태이므로)
+		self.DragChaser.Enable = true
+		draggingEntity.Visible = false
+		------------------------------------------------------------------
+		-- 판매 ui를 활성화합니다.
+		local ui_sell = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/Panel_SellCharacter")
+		ui_sell:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = "1250db83763d8af4ca2432d65e7744bf"
+		ui_sell:GetChildByName("Title").TextComponent.Text =  _LocalizationService:GetText("SellRuneCard")
+		ui_sell:GetChildByName("Price").TextComponent.Text =  _LocalizationService:GetTextFormat("AddCoin", draggingEntity.UI_RuneInventroyItemButton.Cost) -- 코인 ?개
+		ui_sell.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 드래그 중인 룬 카드가 마우스 커서를 따라다니도록 위치를 업데이트하는 함수
+		if isvalid(self.CurrentDraggingEntity) == true then
+			
+			local cursorPos = _InputService:GetCursorPosition()
+			local screenSize = Vector2(_UILogic.ScreenWidth, _UILogic.ScreenHeight)
+			local uiSize = self.DragChaser.Parent.UITransformComponent.RectSize
+			
+			local uiPosX = (cursorPos.x * uiSize.x) / screenSize.x
+			local uiPosY = (cursorPos.y * uiSize.y) / screenSize.y	
+			self.DragChaser.UITransformComponent.anchoredPosition = Vector2(uiPosX, uiPosY)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetDragEnd()
+		-- 판매 UI를 끕니다.
+		local ui_sell = _EntityService:GetEntityByPath("/ui/Arena_ReadyPhase/Panel_SellCharacter")
+		ui_sell.Enable = false
+		
+		-- 사운드
+		_PlaySoundLogic:PlaySound("M0174")
+		------------------------------------------------------------------
+		if isvalid(self.CurrentDraggingEntity) == true then
+			self.CurrentDraggingEntity.Visible = true
+			self.CurrentDraggingEntity = nil
+		end
+		
+		self.DragChaser.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void OnDraggingEnd()
+		-- 룬 카드 드래그가 종료되었을 때 호출합니다.
+		------------------------------------------------------------------
+		-- 마우스가 sellZone위에 있다면 카드 판매 요청
+		local simulator = _CollisionService:GetSimulator(_UserService.LocalPlayer.CurrentMapName)
+		local worldpoint = _InputService:GetCursorPosition()
+		worldpoint = _UILogic:ScreenToWorldPosition(worldpoint)
+		
+		local components = simulator:OverlapPointAll(CollisionGroups.TriggerBox,worldpoint)
+		local sold = false
+		for i=1, #components do
+			local selectEntity = components[i].Entity
+		
+			if isvalid(selectEntity.SellZoneComponent) == true then
+				local cardIdx = tonumber(string.sub(self.CurrentDraggingEntity.Name, 6, -1))
+				_UserService.LocalPlayer.SpecialShopManager:ResellRuneCard_Check(cardIdx)
+				sold = true
+			end
+		end
+		------------------------------------------------------------------
+		-- 아니라면 현재 order로 변경 요청
+		if sold == false then
+			if isvalid(self.CurrentDraggingEntity) == true and self.MouseHoveringSlotIdx ~= 0 then
+				local indexA = tonumber(string.sub(self.CurrentDraggingEntity.Name, 6, -1))
+				local indexB = self.MouseHoveringSlotIdx
+				
+				_UserService.LocalPlayer.TeamManager:SwapRuneCardIndex(indexA, indexB)
+			end
+		end
+		-----------------------------------------------------------------
+		self:SetDragEnd()
+	end
+
+	@ExecSpace("Client")
+	method void SetCurrentMouseHoveringSlot(Entity slot)
+		-- 마우스가 호버링하고 있는 슬롯의 인덱스를 설정하는 함수
+		local idx = tonumber(string.sub(slot.Name, 6, -1))
+		
+		self.MouseHoveringSlotIdx = idx
+	end
+
+	@ExecSpace("ServerOnly")
+	method table GetRuneCardList(string userId, string rGrade, boolean getRuneCheck, boolean shopRuneCheck)
+		-- getRuneCheck : 현재 가진 룬 카드 제외할 지
+		-- shopRuneCheck : 현재 상점의 룬 카드 제외할 지
+		--------------------------------------------------------------------------
+		local user = _UserService:GetUserEntityByUserId(userId)
+		local gameManager = user.GameManager
+		local teamManager = user.TeamManager
+		local spShopManager = user.SpecialShopManager
+		local setVersion = string.format("%.1f", gameManager.ModeSetVersion)
+		
+		local runeDataSet = _DataService:GetTable("RuneInfo")
+		local runeSeasonCheckTable = _DataService:GetTable("RuneCardListBySeason")
+		
+		local runeTable = {}
+		
+		for i=1, runeDataSet:GetRowCount() do
+			local row = runeDataSet:GetRow(i)
+			
+			local grade = row:GetItem("Grade")
+			local runeID = row:GetItem("RuneID")
+			local checked = runeSeasonCheckTable:FindRow("RuneID", runeID):GetItem(setVersion)
+			local getCount = teamManager:GetRuneCardCount(runeID)
+			
+			if checked == "TRUE" and (grade == rGrade or rGrade == "All") then
+				local insert = true
+				if shopRuneCheck then
+					for _, rID in pairs(spShopManager.ShopList_Runes) do
+						if rID == runeID then
+							insert = false
+						end
+					end
+				end
+				if getRuneCheck and (getCount > 0) then
+					insert = false
+				end
+				
+				if insert then
+					table.insert(runeTable, runeID)
+				end
+			end
+		end
+		
+		return runeTable
+	end
+
+end

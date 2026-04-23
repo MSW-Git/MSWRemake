@@ -1,0 +1,204 @@
+@Component
+script MonsterWaveSkill extends Component
+
+	property number speed = 3
+
+	property number life = 15
+
+	property number hp = 10
+
+	property number randomPosition = 0
+
+	property Vector3 randomPositionOffset = Vector3(0,0,0)
+
+	property boolean lastWave = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 몬스터 웨이브 스킬 컴포넌트 초기화 (운동학 컴포넌트 설정)
+		---@type KinematicbodyComponent
+		local kinematic = self.Entity:AddComponent(KinematicbodyComponent)
+		kinematic.EnableJump = false
+		kinematic.EnableShadow = false
+		kinematic.ApplyClimbableRotation = false
+		kinematic.EnableTileCollision = false
+		
+		self._T.kinematic = kinematic
+		self._T.transform = self.Entity.TransformComponent
+		self._T.battleMap = self.Entity.CurrentMap.BattleMap
+		self._T.scaledPos = Vector2.zero
+	end
+
+	method void StartWave(Vector3 spawnPosition, Entity target, number atk, boolean lastWave)
+		-- 웨이브 스킬 시작 (속도, 위치, 자식 오브젝트 초기화)
+		self.lastWave = lastWave
+		
+		
+		local _T = self._T
+		local diff = target.TransformComponent.Position - spawnPosition
+		
+		_T.diffNormal = diff:ToVector2():Normalize()
+		_T.velopcity = _T.diffNormal * self.speed * _GameConfig:GetConfig().SPEED_MASTER
+		_T.vx = _T.velopcity.x
+		_T.vy = _T.velopcity.y
+		
+		---@type KinematicbodyComponent
+		local kinematic = _T.kinematic
+		
+		local scaledPos = self:CalcStartPos(spawnPosition, _T.vx, _T.vy)
+		kinematic:SetPosition(scaledPos)
+		
+		if _T.vx > 0 then
+			_T.transform.Scale.x = -1
+		else
+			_T.transform.Scale.x = 1
+		end
+		
+		for k,v in pairs(self.Entity.Children) do
+			v.MonsterWaveSkillObject.damage = atk
+			v.MonsterWaveSkillObject:Init(self.hp,_T.velopcity)
+			if self.randomPosition > 0 then
+				v.TransformComponent.Position = Vector3(_UtilLogic:RandomDouble() ,_UtilLogic:RandomDouble(),0) * self.randomPosition + self.randomPositionOffset
+			end
+		end
+		
+		if _TimerLogic.pause then
+			kinematic.MoveVelocity.x = 0
+			kinematic.MoveVelocity.y = 0
+		else
+			kinematic.MoveVelocity.x = _T.vx
+			kinematic.MoveVelocity.y = _T.vy
+		end
+		
+		local life = self:CalcLife(scaledPos.x, scaledPos.y, _T.vx, _T.vy)
+		
+		
+		if self.lastWave == false then
+			_MonsterLogic:ChangeMonsterCount(1)
+		end
+		
+		_TimerLogic:SetTimerOnce(function()
+			self:Dead()
+			_PoolingLogic:DestroyEntity(self.Entity)
+		end, life, "MonsterWaveSkill.StartWave")
+	end
+
+	method Vector2 CalcStartPos(Vector3 originalSpawnPosition, number velocityX, number velocityY)
+		-- 웨이브 시작 위치 계산 (맵 경계를 고려한 오프셋 조정)
+		local baseTime = 2
+		
+		---@type BattleMap
+		local battleMap = self._T.battleMap
+		local xTime = -987654321
+		local yTime = -987654321
+		local boundX = 0
+		local boundY = 0
+		
+		local sx = originalSpawnPosition.x
+		local sy = originalSpawnPosition.y
+		
+		if not math.almostequal(velocityX, 0) then
+			if velocityX > 0 then
+				boundX = battleMap.leftBottom.x
+			else
+				boundX = battleMap.rightTop.x
+			end
+			
+			xTime = (boundX - sx) / velocityX
+		end
+		
+		if not math.almostequal(velocityY, 0) then
+			if velocityY > 0 then
+				boundY = battleMap.leftBottom.y
+			else
+				boundY = battleMap.rightTop.y
+			end
+			
+			yTime = (boundY - sy) / velocityY
+		end
+		
+		if xTime > 0 or yTime > 0 then
+			local time = xTime > yTime and xTime or yTime
+			if time > baseTime and time - baseTime > 0.3 then
+				local offsetTime = time - baseTime
+				sx = sx + (velocityX * offsetTime)
+				sy = sy + (velocityY * offsetTime)
+			end
+		end
+		
+		---@type Vector2
+		local rtnTable = self._T.scaledPos
+		rtnTable.x = sx
+		rtnTable.y = sy
+		
+		return rtnTable
+	end
+
+	method number CalcLife(number startPosX, number startPosY, number velocityX, number velocityY)
+		-- 웨이브 생명 주기 계산 (맵 경계에 도달하는 시간 기반)
+		local additionalTime = 2
+		
+		---@type BattleMap
+		local battleMap = self._T.battleMap
+		local xTime = 987654321
+		local yTime = 987654321
+		
+		if math.almostequal(velocityX, 0) then
+			goto SkipCalcX
+		end
+		
+		if velocityX > 0 then
+			local x = battleMap.rightTop.x
+			xTime = (x-startPosX) / velocityX
+		else
+			local x = battleMap.leftBottom.x
+			xTime = (x-startPosX) / velocityX
+		end
+		
+		::SkipCalcX::
+		
+		if math.almostequal(velocityY, 0) then
+			goto SkipCalcY
+		end
+		
+		if velocityY > 0 then
+			local y = battleMap.rightTop.y
+			yTime = (y-startPosY) / velocityY
+		else
+			local y = battleMap.leftBottom.y
+			yTime = (y-startPosY) / velocityY
+		end
+		
+		::SkipCalcY::
+		
+		local rtnLife = math.min(xTime, yTime) + additionalTime
+		return math.min(self.life, rtnLife)
+	end
+
+	method void Dead()
+		-- 웨이브 스킬 사망 처리 (자식 오브젝트 파괴, 몬스터 카운트 감소)
+		for k,v in pairs(self.Entity.Children) do
+			v.MonsterWaveSkillObject:SetDestroy()
+		end
+		if self.lastWave == false then
+			_MonsterLogic:ChangeMonsterCount(-1)
+		end
+	end
+
+	@EventSender("Logic", "TimerLogic")
+	handler HandleTimerChange(TimerChange event)
+		-- 타이머 일시정지/재개 시 웨이브 이동 속도 동기화
+		
+		local pause = event.pause
+		
+		local kinematic = self._T.kinematic
+		if pause then
+			kinematic.MoveVelocity.x = 0
+			kinematic.MoveVelocity.y = 0
+		else
+			kinematic.MoveVelocity.x = self._T.vx
+			kinematic.MoveVelocity.y = self._T.vy
+		end
+	end
+
+end

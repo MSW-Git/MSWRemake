@@ -1,0 +1,230 @@
+@Logic
+script Effect extends Logic
+
+	@ExecSpace("ClientOnly")
+	method table GetLayerOptions(table options, string sortingLayer, integer orderInLayer)
+		-- 이팩트 레이어 옵션을 설정하여 반환
+		options = options or {}
+		options.SortingLayer = sortingLayer
+		options.OrderInLayer = orderInLayer
+		
+		return options
+	end
+
+	@ExecSpace("ClientOnly")
+	method table GetUnitLayerOptions(table options)
+		-- 유닛 레이어에 맞는 이팩트 옵션을 반환
+		return self:GetLayerOptions(options, "Unit", 1)
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity SpawnEffect(string animation, Vector3 position, Entity parent, table options)
+		-- 이팩트 엔티티를 생성하고 반환
+		local sortingLayer = options and options.SortingLayer or "Effect"
+		local orderInLayer = options and options.OrderInLayer or 0
+		local alpha = options and options.Alpha or 1
+		local flipX = options and options.FlipX or false
+		local fadeIn = options and options.FadeIn or false
+		
+		local effectEntity = _SpawnService:SpawnByModelId(_EntryService:GetModelIdByName("Effect"), "Effect", position, parent or _UserService.LocalPlayer.CurrentMap)
+		local spriteRenderer = effectEntity.SpriteRendererComponent
+		spriteRenderer.Color.a = fadeIn and 0 or alpha
+		spriteRenderer.SpriteRUID = animation
+		spriteRenderer.SortingLayer = sortingLayer
+		spriteRenderer.OrderInLayer = orderInLayer
+		spriteRenderer.FlipX = flipX
+		
+		return effectEntity
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayEffect(string animation, Vector3 position, Entity parent, table options)
+		-- 이팩트를 재생하며 페이드 인/아웃 및 스케일 아웃 옵션 지원
+		local fadeIn = options and options.FadeIn or false
+		local fadeOut = options and options.FadeOut or false
+		local scaleOut = options and options.ScaleOut or false
+		
+		local shouldSpawnEffect = fadeIn or fadeOut or scaleOut
+		if not shouldSpawnEffect then
+			if isvalid(parent) then
+				_EffectService:PlayEffectAttached(animation, parent, position, 0, Vector3.one, false, options)
+			else
+				_EffectService:PlayEffect(animation, _UserService.LocalPlayer, position, 0, Vector3.one, false, options)
+			end
+			
+			return
+		end
+		
+		_ResourceService:PreloadAsync({animation}, function()
+				local effectEntity = self:SpawnEffect(animation, position, parent, options)
+				local transform = effectEntity.TransformComponent
+				local spriteRenderer = effectEntity.SpriteRendererComponent
+				local timerArray = {}
+				local tweenerArray = {}
+				local totalDelay =_Resource:GetTotalDelay(animation) - 0.03
+				if fadeIn then
+					local alpha = options and options.Alpha or 1
+					local tweener = _TweenLogic:PlayTween(0, alpha, _Resource:GetStartFrameDelay(animation), EaseType.Linear, function(t)
+							spriteRenderer.Color.a = t
+						end)
+					table.insert(tweenerArray, tweener)
+				end
+				if fadeOut then
+					local alpha = options and options.Alpha or 1
+					local endFrameDelay = _Resource:GetEndFrameDelay(animation)
+					local timer = _TimerService:SetTimerOnce(function()
+							local tweener = _TweenLogic:PlayTween(alpha, 0, endFrameDelay, EaseType.Linear, function(t)
+								spriteRenderer.Color.a = t
+							end)
+							table.insert(tweenerArray, tweener)
+						end, math.max(0, totalDelay - endFrameDelay))
+					table.insert(timerArray, timer)
+				end
+				if scaleOut then
+					local endFrameDelay = _Resource:GetEndFrameDelay(animation)
+					local timer = _TimerService:SetTimerOnce(function()
+							local tweener = _TweenLogic:PlayTween(1, 2, endFrameDelay, EaseType.Linear, function(t)
+								transform.Scale.x = t
+								transform.Scale.y = t
+							end)
+							table.insert(tweenerArray, tweener)
+						end, math.max(0, totalDelay - endFrameDelay))
+					table.insert(timerArray, timer)
+				end
+				_TimerService:SetTimerOnce(function()
+						for _, timer in ipairs(timerArray) do
+							_TimerService:ClearTimer(timer)
+						end
+						for _, tweener in ipairs(tweenerArray) do
+							tweener:Destroy()
+						end
+						effectEntity:Destroy()
+					end, totalDelay)
+			end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveEffect(string animation, Vector2 fromPosition, Vector2 toPosition, number zPosition, number duration, any easeType, table options)
+		-- 이팩트를 생성하여 지정된 경로로 이동시키는 애니메이션
+		local position = Vector3(fromPosition.x, fromPosition.y, zPosition)
+		local effectEntity = self:SpawnEffect(animation, position, nil, options)
+		
+		local tweener = _Tween:MoveTo(effectEntity, toPosition, duration, easeType, true)
+		_TimerService:SetTimerOnce(function()
+				tweener:Destroy()
+				effectEntity:Destroy()
+			end, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveAndSpinEffect(string animation, Vector2 fromPosition, Vector2 toPosition, number zPosition, number angle, number duration, any easeType, table options)
+		-- 이팩트를 이동과 동시에 회전시키는 애니메이션
+		local position = Vector3(fromPosition.x, fromPosition.y, zPosition)
+		local effectEntity = self:SpawnEffect(animation, position, nil, options)
+		
+		local tweener = _Tween:MoveAndSpinTo(effectEntity, toPosition, angle, duration, easeType, true)
+		_TimerService:SetTimerOnce(function()
+				tweener:Destroy()
+				effectEntity:Destroy()
+			end, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ThrowEffect(string animation, Vector2 fromPosition, Vector2 toPosition, number zPosition, number duration, any easeType, table options)
+		-- 이팩트를 던지는 듯한 애니메이션으로 이동시키며 방향에 따라 회전
+		local dx = toPosition.x - fromPosition.x
+		local dy = toPosition.y - fromPosition.y
+		
+		options.FlipX = dx > 0
+		
+		local position = Vector3(fromPosition.x, fromPosition.y, zPosition)
+		local effectEntity = self:SpawnEffect(animation, position, nil, options)
+		
+		local transform = effectEntity.TransformComponent
+		transform.WorldZRotation = math.deg(_Math:Atan2(dy, dx)) + (dx > 0 and 0 or 180)
+		local tweener = _Tween:MoveTo(effectEntity, toPosition, duration, easeType, true)
+		_TimerService:SetTimerOnce(function()
+				tweener:Destroy()
+				effectEntity:Destroy()
+			end, duration)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaySkillEffect(string animation, any unit, Vector3 offset, table options)
+		-- 유닛의 스킬 이팩트를 재생하며 유닛 방향에 따라 조정
+		local position
+		local lookingRight
+		if unit:IsPlayer() then
+			if not isvalid(unit.character) then
+				return
+			end
+			position = unit.character.Entity.TransformComponent.WorldPosition + offset
+			lookingRight = unit.characterParentEntity.TransformComponent.Scale.x < 0
+		elseif unit:IsMinion() then
+			position = unit.minionEntity.TransformComponent.WorldPosition + offset
+			lookingRight = unit.minionEntity.TransformComponent.Scale.x < 0
+		end
+		if not lookingRight then
+			position.x -= 2 * offset.x
+		end
+		
+		options = self:GetUnitLayerOptions(options)
+		options.FlipX = lookingRight
+		
+		self:PlayEffect(animation, position, nil, options)
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer PlaySkillEffectAttached(string animation, any unit, Vector3 offset, table options)
+		-- 유닛에 부착된 스킬 이팩트를 재생하고 이팩트 ID를 반환
+		local entity
+		local lookingRight
+		if unit:IsPlayer() then
+			if not isvalid(unit.character) then
+				return
+			end
+			entity = unit.character.Entity
+			lookingRight = unit.characterParentEntity.TransformComponent.Scale.x < 0
+		elseif unit:IsMinion() then
+			entity = unit.minionEntity
+			lookingRight = unit.minionEntity.TransformComponent.Scale.x < 0
+		end
+		local position = offset:Clone()
+		position.x -= 2 * offset.x
+		
+		self:PlayEffect(animation, position, entity, self:GetUnitLayerOptions(options))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayHitEffect(string animation, Unit unit, Vector3 offset, Unit attacker, table options)
+		-- 공격자와 피격자 사이에 히트 이팩트를 재생
+		local position = attacker:GetOffsettedPosition(unit, offset:ToVector2(), false):ToVector3()
+		position.z = unit.actor.Entity.TransformComponent.WorldPosition.z + offset.z
+		
+		options = self:GetUnitLayerOptions(options)
+		options.FlipX = unit.actor.Entity.TransformComponent.WorldPosition.x - attacker.actor.Entity.TransformComponent.WorldPosition.x > 0
+		
+		self:PlayEffect(animation, position, nil, options)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayHitEffectAttached(string animation, any unit, Vector3 offset, any attacker, table options)
+		-- 유닛에 부착된 히트 이팩트를 재생하며 공격자 방향에 따라 조정
+		local lookingRight
+		if attacker:IsPlayer() then
+			if not isvalid(attacker.character) then
+				return
+			end
+			lookingRight = attacker.characterParentEntity.TransformComponent.Scale.x < 0
+		elseif attacker:IsMinion() then
+			lookingRight = attacker.minionEntity.TransformComponent.Scale.x < 0
+		end
+		offset.y -= 0.28
+		
+		options = self:GetUnitLayerOptions(options)
+		options.FlipX = lookingRight
+		
+		self:PlayEffect(animation, offset, unit.actor.Entity, options)
+	end
+
+end

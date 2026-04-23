@@ -1,0 +1,451 @@
+@Component
+script MyPlayer extends Component
+
+	property boolean isInStorage = false
+
+	property Vector2 cameraOffset = Vector2(2,2)
+
+	property string deviceType = ""
+
+	property string gameKey = ""
+
+	property integer currentGameMode = -1
+
+	property string currentStage = ""
+
+	property table failCount = {}
+
+	@HideFromInspector
+	property integer lastBattleMapChapter = 0
+
+	@HideFromInspector
+	property boolean isClearedBattleMap = false
+
+	property integer previousGameMode = 0
+
+	@HideFromInspector
+	property string showCondition = ""
+
+	@HideFromInspector
+	property integer conditionNum = 0
+
+	property integer tryCount = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnMapEnter(Entity enteredMap)
+		-- 맵 진입 시 처리 (컴포넌트 확인, 이벤트 발송, 카메라 경계 설정)
+		self:CheckMapComponent(enteredMap)
+		
+		self.Entity:SendEvent(OnMapEnter(enteredMap,false))
+		self:RefreshCameraBound(enteredMap)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnMapLeave(Entity leftMap)
+		-- 맵 이탈 시 처리 (배틀/로비 이탈 처리, 풀링 정리)
+		
+		if self.Entity == _UserService.LocalPlayer then
+			if leftMap.BattleMap ~= nil then	
+				self:OnLeaveBattle(leftMap)
+			else
+				self:OnLeaveLobby(leftMap)
+			end	
+			_PoolingLogic:ClearAll()
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void AddComponent(string component, boolean isMobile)
+		-- 플레이어에게 컴포넌트 추가 (디바이스 타입 설정, 이벤트 발송)
+		if _UtilLogic:IsNilorEmptyString(self.deviceType) then
+			self.deviceType = isMobile and "mobile" or "pc"
+		end
+		self.Entity:AddComponent(component)
+		self:SendAddedCommponentEvent(component, self.Entity.PlayerComponent.UserId)
+		
+		if component == "LobbyPlayer" then
+			if self.Entity.MultiBattlePlayer ~= nil then
+				self:RemoveComponent("MultiBattlePlayer")
+				self.Entity.PlayerStorageComponent:ApplyArmorStatus(false)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RemoveComponent(string component)
+		-- 플레이어에서 컴포넌트 제거
+		self.Entity:RemoveComponent(component)
+	end
+
+	method void OnBeginPlay()
+		-- 플레이어 컴포넌트 초기화 (서버/클라이언트 처리, 디바이스 설정)
+		
+		if self:IsServer() then
+			if self.Entity.CurrentMap ~= _GameUtil.townMap.CurrentMap then
+				_TeleportService:TeleportToEntity(self.Entity, _GameUtil.townMap)	
+			end
+			return
+		end
+		
+		self.Entity.AvatarRendererComponent.SortingLayer = _UserService.LocalPlayer.AvatarRendererComponent.SortingLayer
+		self.Entity.AvatarRendererComponent.OrderInLayer = _UserService.LocalPlayer.AvatarRendererComponent.OrderInLayer
+		
+		self._T.transform = self.Entity.TransformComponent
+		self:CheckMapComponent(self.Entity.CurrentMap)
+		self.Entity:SendEvent(OnMapEnter(self.Entity.CurrentMap,true))
+		
+		if self.Entity ~= _UserService.LocalPlayer then
+			
+			
+			
+			
+			local battleMap = self.Entity.CurrentMap.BattleMap
+			if battleMap ~= nil and battleMap.isMultiMode == false then
+				self.Entity.AvatarRendererComponent:SetAlpha(0)
+				self.Entity.NameTagComponent.Enable = false
+				self.Entity.KinematicbodyComponent.EnableShadow = false
+				self.Entity.ChatBalloonComponent.Enable = false
+				
+			else
+				self.Entity.AvatarRendererComponent:SetAlpha(1)
+				self.Entity.NameTagComponent.Enable = true
+				self.Entity.KinematicbodyComponent.EnableShadow = true
+				self.Entity.ChatBalloonComponent.Enable = true
+			end
+		
+			self.Entity.TriggerComponent.Enable = false
+			
+		else
+			if Environment:IsMobilePlatform() then
+				_UserService.LocalPlayer.CameraComponent.ZoomRatio = 65
+				self.deviceType = "mobile"
+				self._T.isShowSuggestLowOption = false
+			else
+				self.deviceType = "pc"
+			end
+		end
+	end
+
+	method void CheckMapComponent(Entity map)
+		-- 맵 컴포넌트 확인 및 배틀/로비 진입 처리
+		if self.Entity == _UserService.LocalPlayer then
+			if map.BattleMap ~= nil then		
+				self:OnEnterBattle(map)
+		
+				if Environment:IsPCPlatform() then
+					_HUDManager.lobbyDashButonPC.Enable = false
+				else
+		
+				end
+				
+			else
+				_BattleUIManager.loadingUI:Hide(5,function()
+					self.Entity.PlayerControllerComponent.Enable = true
+					if 	self.Entity.LobbyPlayer ~= nil then
+						self.Entity.LobbyPlayer:SetMovementSpeed(_BuffLogic:GetSpeed())
+					end
+					
+				end)
+				self:OnEnterLobby(map)
+				
+				if Environment:IsPCPlatform() then
+					_HUDManager.lobbyDashButonPC.Enable = true
+				else
+		
+				end
+			end
+		else
+			
+		end
+		
+		
+		
+	end
+
+	method void OnEnterBattle(Entity map)
+		-- 배틀 맵 진입 처리 (컴포넌트 추가, 맵 초기화, 대화 시스템)
+		if isvalid(map.BattleMap.playerLayer) then
+			self.Entity.AvatarRendererComponent.SortingLayer = map.BattleMap.playerLayer.MapLayerName
+		else
+		end
+		
+		self.Entity.PlayerControllerComponent.Enable = false
+		
+		local mapInit = function()
+			map.BattleMap:Init()
+			self.Entity.PlayerControllerComponent.Enable = true
+		end
+		
+		if map.BattleMap.isMultiMode then
+			self:AddComponent("MultiBattlePlayer",false)
+			map.BattleMap:Init()
+			return
+		end
+		
+		_BattleUIManager.loadingUI:Hide(5,function() 
+			
+				if map.BattleMap.isRaidMode then
+					self:AddComponent("RaidBattlePlayer",false)
+		
+				
+				else
+					self:AddComponent("BattlePlayer",false)		
+				end
+				
+				
+				
+			
+				if map.BattleMap.chapter == _UserService.LocalPlayer.PlayerInfoComponent.playerInfo.chapterStory then
+					
+					if map.BattleMap.chapter == 10001 then
+						mapInit()
+						_TimerLogic:Pause()
+						_DialogDataLogic:StartScene("stage_1_1","normal",function()
+							_TimerLogic:Resume()
+							_UIGroupManager.startWeaponPopup:Show()
+						
+							_UserService.LocalPlayer.PlayerInfoComponent:SetChapterStoryProgress(20001)
+						end)
+					
+					elseif map.BattleMap.chapter == 20001 then
+						mapInit()
+						_TimerLogic:Pause()
+						_DialogDataLogic:StartScene("stage_2_1","normal",function()
+							_TimerLogic:Resume()
+							_UIGroupManager.startWeaponPopup:Show()
+						
+							_UserService.LocalPlayer.PlayerInfoComponent:SetChapterStoryProgress(30001)
+						end)
+					
+					elseif map.BattleMap.chapter == 30001 then
+						mapInit()
+						_TimerLogic:Pause()
+						_DialogDataLogic:StartScene("stage_3_1","normal",function()
+							_TimerLogic:Resume()
+							_UIGroupManager.startWeaponPopup:Show()
+						
+							_UserService.LocalPlayer.PlayerInfoComponent:SetChapterStoryProgress(40001)
+						end)
+					
+					elseif map.BattleMap.chapter == 40001 then
+						mapInit()
+						_TimerLogic:Pause()
+						_DialogDataLogic:StartScene("stage_4_1","normal",function()
+							_TimerLogic:Resume()
+							_UIGroupManager.startWeaponPopup:Show()
+						
+							_UserService.LocalPlayer.PlayerInfoComponent:SetChapterStoryProgress(50001)
+						end)
+					
+					elseif map.BattleMap.chapter == 50001 then
+						mapInit()
+						_TimerLogic:Pause()
+						_DialogDataLogic:StartScene("stage_5_1","normal",function()
+							_TimerLogic:Resume()
+							_UIGroupManager.startWeaponPopup:Show()
+						
+							_UserService.LocalPlayer.PlayerInfoComponent:SetChapterStoryProgress(60001)
+						end)
+					
+					elseif map.BattleMap.chapter == 60001 then
+						mapInit()
+						_TimerLogic:Pause()
+						_DialogDataLogic:StartScene("stage_6_1","normal",function()
+							_TimerLogic:Resume()
+							_UIGroupManager.startWeaponPopup:Show()
+						
+							_UserService.LocalPlayer.PlayerInfoComponent:SetChapterStoryProgress(70001)
+						end)
+					
+					elseif map.BattleMap.chapter == 70001 then
+						mapInit()
+						_TimerLogic:Pause()
+						_DialogDataLogic:StartScene("stage_7_1","normal",function()
+							_TimerLogic:Resume()
+							_UIGroupManager.startWeaponPopup:Show()
+						
+							_UserService.LocalPlayer.PlayerInfoComponent:SetChapterStoryProgress(80001)
+						end)
+					
+					elseif map.BattleMap.chapter == 80001 then
+						mapInit()
+						_TimerLogic:Pause()
+						_DialogDataLogic:StartScene("stage_8_1","normal",function()
+							_TimerLogic:Resume()
+							_UIGroupManager.startWeaponPopup:Show()
+						
+							_UserService.LocalPlayer.PlayerInfoComponent:SetChapterStoryProgress(90001)
+						end)
+					end
+				
+				else				
+					mapInit()
+				end
+				
+		end)
+	end
+
+	method void OnLeaveBattle(Entity map)
+		-- 배틀 맵 이탈 처리 (컴포넌트 제거, 타이머 정리)
+		for i = 1 , #self.Entity.BattlePlayer.repeatTimerTable do
+			_TimerService:ClearTimer(self.Entity.BattlePlayer.repeatTimerTable[i])
+		end
+		if map.BattleMap.isRaidMode and isvalid(self.Entity.RaidBattlePlayer) then
+			self:RemoveComponent("RaidBattlePlayer")
+		elseif isvalid(self.Entity.MultiBattlePlayer) then
+			
+		elseif isvalid(self.Entity.BattlePlayer) then
+			self:RemoveComponent("BattlePlayer")
+		end
+		
+		self.Entity.AvatarRendererComponent.PlayRate = 1
+		
+		_TimerLogic:ClearAll()
+		_Tweener:ClearAll()
+		_PoolingLogic:ClearAll()
+		_MonsterLogic:ClearAll()
+	end
+
+	method void OnEnterLobby(Entity map)
+		-- 로비 맵 진입 처리 (로비 플레이어 컴포넌트 추가)
+		self:AddComponent("LobbyPlayer",Environment:IsMobilePlatform())
+		self.Entity.AvatarRendererComponent.SortingLayer = "Default"
+	end
+
+	method void OnLeaveLobby(Entity map)
+		-- 로비 맵 이탈 처리 (무기 정리, 컴포넌트 제거, DPS 체크 시작)
+		local lobbyPlayer = self.Entity.LobbyPlayer
+		if isvalid(lobbyPlayer) and isvalid(map.BattleMap) then
+			lobbyPlayer:ClearWeapon()
+			
+			if map.BattleMap.isMultiMode then
+				lobbyPlayer:OnEnterMultiMode()
+				
+			end
+			
+		end
+		self:RemoveComponent("LobbyPlayer")
+		_TimerLogic:ClearAll()
+		_Tweener:ClearAll()
+		_PoolingLogic:ClearAll()
+		_MonsterLogic:ClearAll()
+		_DPSLogic:StartCheckDPS()
+		
+	end
+
+	method void SetControl(boolean enable)
+		-- 플레이어 컨트롤 활성화/비활성화 (일시정지, UI 차단 상태 고려)
+		if _TimerLogic.pause then
+			return
+		end
+		
+		if _UIGroupManager:IsOpenPlayerControlBlockPopup() then
+			return
+		end
+		self.Entity.PlayerControllerComponent.Enable = enable
+	end
+
+	method void RefreshCameraBound(Entity enteredMap)
+		-- 맵에 따른 카메라 경계 설정 업데이트
+		self.Entity.CameraComponent.ConfineCameraArea = true
+		if enteredMap.MapComponent.UseCustomBound then
+			self.Entity.CameraComponent.UseCustomBound = true
+			if enteredMap.BattleMap ~= nil then
+				self.Entity.CameraComponent.LeftBottom = enteredMap.BattleMap.leftBottom - self.cameraOffset
+				self.Entity.CameraComponent.RightTop = enteredMap.BattleMap.rightTop + self.cameraOffset
+			else
+				self.Entity.CameraComponent.LeftBottom = enteredMap.MapComponent.LeftBottom
+				self.Entity.CameraComponent.RightTop = enteredMap.MapComponent.RightTop
+			end
+			
+		
+		else
+			self.Entity.CameraComponent.UseCustomBound = false
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 매 프레임 플레이어 Z 위치 업데이트 (Y 좌표 기반 렌더링 순서)
+		---@type TransformComponent
+		local transform = self._T.transform
+		transform.Position.z = transform.Position.y * _GameUtil.orderYRatio
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void SendAddedCommponentEvent(string component)
+		-- 컴포넌트 추가 이벤트 발송
+		self.Entity:SendEvent(AddedComponentEvent(component))
+	end
+
+	method string SetGameInfo(integer mode, string stage)
+		-- 게임 정보 설정 (모드, 스테이지, 고유 키 생성)
+		self.currentGameMode = mode
+		self.currentStage = stage
+		self.gameKey = _GameUtil:CreateGUID()
+		return self.gameKey
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckAndShowRecommendPopUp(string openCondition)
+		-- 추천 팝업 표시 조건 확인 및 표시
+		_UIGroupManager.recommendPopUp:CheckAndShow(openCondition, self.showCondition, self.conditionNum, self.tryCount)
+		self.showCondition = ""
+		self.conditionNum = 0
+		self.tryCount = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleEnterStorageEvent(EnterStorageEvent event)
+		-- 인벤토리 진입 이벤트 처리
+		
+		self.isInStorage = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleExitStorageEvent(ExitStorageEvent event)
+		-- 인벤토리 이탈 이벤트 처리
+		
+		self.isInStorage = false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 엔티티 맵 변경 이벤트 처리 (퀴스트 새로고침, 추천 팝업 표시)
+		
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		
+		if isvalid(Entity) and isvalid(Entity.PlayerDBComponent) and Entity.PlayerDBComponent.dbInited and NewMap.Name == "Town" then
+			_QuestUILogic.questHUD:Refresh()
+			
+			if self.lastBattleMapChapter ~= 0 then
+				self.conditionNum = _StageLogic.stageData[tostring(self.lastBattleMapChapter)].step
+				self.tryCount = 0
+				
+				if self.previousGameMode == _GameConfig:GetConfig().GAMEMODE_BASIC then
+					if self.isClearedBattleMap then
+						self.showCondition = "clearStage"
+						self:CheckAndShowRecommendPopUp("endBattle")
+					else
+						self.showCondition = "failStage"
+						self.tryCount = self.failCount[self.lastBattleMapChapter]
+						self:CheckAndShowRecommendPopUp("endBattle")
+					end
+				elseif self.previousGameMode == _GameConfig:GetConfig().GAMEMODE_LIMITLAND then
+					self.showCondition = "limitLandWave"
+					self:CheckAndShowRecommendPopUp("endBattle")
+				end
+			end
+		end
+	end
+
+end

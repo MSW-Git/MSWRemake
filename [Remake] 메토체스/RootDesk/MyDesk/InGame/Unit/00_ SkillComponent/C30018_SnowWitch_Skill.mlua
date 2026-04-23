@@ -1,0 +1,177 @@
+@Component
+script C30018_SnowWitch_Skill extends Component
+
+	@Sync
+	property number skillAnimLength = 1.71
+
+	@Sync
+	property Entity projectile = nil
+
+	property string attackProjectileRUID = "f55dd57a708e43238b64715c02bb06cc"
+
+	property string hitEffectRUID = "0719861214fa45578488a1083f49df5a"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+		local target = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Farthest")
+		
+		local targetInfo = target.UnitInfo
+		local targetStatus = target.UnitStatus
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", target, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		-- projectile Spwan
+		local spawnTimer = 0
+		local function ProjectileSpawn()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self.projectile = _UnitSetLogic_New:GetProjectileEntity(unitInfo.OwnerId, "Skill")
+				self.projectile:AddComponent(C30018_SnowWitch_SkillprojectileInfo)
+				
+				self.projectile.SpriteRendererComponent.SpriteRUID = self.attackProjectileRUID
+				self.projectile.TransformComponent.Scale = unitInfo.spriteRenderer.TransformComponent.Scale
+				self.projectile.SpriteRendererComponent.FlipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+				
+				self.projectile.C30018_SnowWitch_SkillprojectileInfo:SetProjectile(self.Entity, target, 0.6, 3, 0.3, 0.2)
+				_GeneralDirectorLogic:SetEffectAlpha(self.projectile,unitInfo.OwnerId)
+			end
+		end
+		
+		spawnTimer = _TimerService:SetTimerOnce(ProjectileSpawn, 1.13 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0077",self.Entity.UnitInfo.OwnerId)
+		
+		--연출
+		self:SkillLineEffect(targetUnit,0.45 / skillRate,self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, unitInfo.OwnerId)
+			
+			-- 공중 에어본
+			-- 저지불가 상태가 아니면 기절 및 모션 실행
+			if targetStatus.StatusEffect["SE0016"] == false then
+				self:SetTargetMotion(targetUnit)
+			end
+			
+			-- 데미지
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C30018_Active_SDamage_Magic[unitInfo.level]
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+			
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SkillLineEffect(Entity targetUnit, number time)
+		--자신과 적을 선으로 연결
+		local line1=_SpawnService:SpawnByModelId("model://c37fb349-52e3-4fc5-bb13-848ca95d5b4a","Line1",Vector3(0,0,0),self.Entity.Parent)
+		line1.LineEffectCompo.type="C20011"
+		line1.LineEffectCompo.StartEntity=self.Entity
+		line1.LineEffectCompo.TargetEntity_1=targetUnit
+		
+		local destoryline=function()
+			line1:Destroy()
+		end
+		
+		_TimerService:SetTimerOnce(destoryline,time)
+	end
+
+	@ExecSpace("Server")
+	method void SetTargetMotion(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- 일단 기절
+		_StatusChangeLogic:SetStatus(myUnit, targetUnit, "SE0004", 1)
+		
+		local targetPos = targetStatus.SetPos
+		
+		local setTime = 0.4 * _S01_SkillDescLogic.C30018_Active_DebuffTime_Int[unitInfo.level]
+		local callbackCount = 0
+		local timerID = 0
+		local function ActionFnc()
+			if isvalid(targetStatus) == false then
+				_TimerService:ClearTimer(timerID)
+			end
+			
+			local posY = 0
+			
+			local selfVec = targetStatus.SetPos
+			
+			callbackCount += 0.01
+			if callbackCount <= setTime / 2 then
+				posY = selfVec.y + (4 * (0.2 - callbackCount)^2)
+			elseif callbackCount <= setTime then
+				posY = selfVec.y - (4 * (0.2 - callbackCount)^2)
+			else
+				if isvalid(targetInfo.setTile) then
+					local tilePos = targetInfo.setTile.TransformComponent.WorldPosition
+					posY = tilePos.y
+				end
+				if targetStatus.ActionType == "SnowWitch_Skill_Attacked" then
+					targetStatus:SetActionType("Idle")
+					_TimerService:ClearTimer(targetStatus.ActionTimer)
+					targetStatus.ActionTimer = 0
+				end
+			end
+			
+			targetInfo:SetPosition(targetPos.x, posY, unitInfo.OwnerId)
+			targetStatus.SetPos = Vector2(targetPos.x, posY)
+		end
+		
+		_TimerService:ClearTimer(targetStatus.ActionTimer)
+		targetStatus:SetActionType("SnowWitch_Skill_Attacked")
+		targetStatus.ActionTimer = _TimerService:SetTimerRepeat(ActionFnc, 0.01 / _BTLogic_New.SSpeedValue, 0)
+		timerID = targetStatus.ActionTimer
+	end
+
+end

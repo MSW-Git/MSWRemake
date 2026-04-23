@@ -1,0 +1,124 @@
+@Component
+script StunMineComponent extends MineComponent
+
+	@ExecSpace("ClientOnly")
+	method void Explode()
+		-- 스턴 지뢰 폭발 효과 및 스턴 디버프 적용
+		self.Entity.TriggerComponent.Enable = false
+		self.chasing = false
+		self.Entity.SpriteRendererComponent.PlayRate = 1
+		self.Entity.SpriteRendererComponent.SpriteRUID = "b4e62e4f55814eec857e701f354f5371"
+		
+		self.explodeTimer = _TimerLogic:SetTimerOnce(function()
+				self.activate = true
+			end, 0.48, "StunMineComponent.Explode_activate")
+		
+		_SoundService:PlaySound("c5ef54c702264bc9820e8bc6eacdc413", _SoundLogic.effectRatio)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 스턴 지뢰의 활성화 상태 및 타겟 추적 업데이트
+		if self.activate then
+			local simulator = _CollisionService:GetSimulator(self.Entity)
+			local transform = self.Entity.TransformComponent
+			
+			local overlaps = simulator:OverlapCircleAll(tostring(CollisionGroups.PlayerSkill), transform.WorldPosition:ToVector2(), 3)
+			
+			for i = 1, #overlaps do
+				local entity = overlaps[i].Entity
+				
+				if isvalid(entity.MonsterObject) and entity.Enable then
+					entity.MonsterObject:ApplyStun(5)
+				end
+			end
+			
+			self.activate = false
+			return
+		end
+		
+		if self.Entity.SpriteRendererComponent.SpriteRUID == "b4e62e4f55814eec857e701f354f5371" then return end
+		
+		if (self.Entity.Enable or not isvalid(self.target) or not self.target.Enable) and self.detectTime + 1 < _UtilLogic.ServerElapsedSeconds then 
+			self.chasing = false
+			self:Init()
+			self:DetectTarget()
+			self.detectTime = _UtilLogic.ServerElapsedSeconds
+		end
+		
+		if self.chasing then
+			if isvalid(self.target) and not _TimerLogic.pause and self.target.MonsterObject.Enable then
+				if self.target.MonsterObject:GetPosition().x > self._T.transform.Position.x then
+					if not self.Entity.SpriteRendererComponent.FlipX then
+						self.Entity.SpriteRendererComponent.FlipX = true
+					end
+				else
+					if self.Entity.SpriteRendererComponent.FlipX then
+						self.Entity.SpriteRendererComponent.FlipX = false
+					end
+				end
+				
+				local minePos = self.target.MonsterObject:GetPosition():Clone()
+				local worldPos = self._T.transform.Position:Clone()
+				local distance = minePos:Distance(worldPos)
+				
+				if distance > 0 then
+					self._T.transform.Position = worldPos:Lerp(minePos, delta * self.speed)
+				end
+			else
+				self.chasing = false
+			end
+		else
+			self:Init()
+		end
+	end
+
+	method void Init()
+		-- 스턴 지뢰를 초기 상태로 리셋
+		self.chasing = false
+		self.target = nil
+		self.activate = false
+		
+		self.Entity.SpriteRendererComponent.SpriteRUID = "12e5bf68504a44a29d9fff6e92cda5a9"
+		self.Entity.TriggerComponent.Enable = true
+		self.Entity.TransformComponent.Scale = Vector3.one
+		self.Entity.SpriteRendererComponent.PlayRate = 1
+		
+		_TimerLogic:ClearTimer(self.destroyTimer)
+		_TimerLogic:ClearTimer(self.explodeTimer)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DetectTarget()
+		-- 가장 가까운 몬스터를 탐지하여 추적 대상으로 설정
+		if isvalid(self.target) then return end
+		
+		__base:DetectTarget()
+		
+		if isvalid(self.target) then
+			self.Entity.SpriteRendererComponent.SpriteRUID = "2bd0637dadf049ae815e33c97b10dc1c"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleSpriteAnimPlayerEndFrameEvent(SpriteAnimPlayerEndFrameEvent event)
+		-- 스프라이트 애니메이션 종료 시 지뢰 삭제 처리
+		
+		local FrameIndex = event.FrameIndex
+		local ReversePlaying = event.ReversePlaying
+		local TotalFrameCount = event.TotalFrameCount
+		local AnimPlayer = event.AnimPlayer
+		if self.Entity.SpriteRendererComponent.SpriteRUID == "b4e62e4f55814eec857e701f354f5371" then
+			self.destroyTimer = _TimerLogic:SetTimerOnce(function()
+					_PoolingLogic:DestroyEntity(self.Entity)
+					self:Init()
+				end, 0.48, "StunMineComponent.SpriteAnimPlayerEndFrame_destory")
+			
+			local option = {["SortingLayer"] = "Effect"}
+			_EffectService:PlayEffect("26b937d655fd4b989e285792bdee39a4", self.Entity.CurrentMap, self.Entity.TransformComponent.WorldPosition, 0, Vector3(2.5, 2.5, 1), false, option)
+			self.Entity.SpriteRendererComponent.PlayRate = 0
+		end
+	end
+
+end

@@ -1,0 +1,1496 @@
+@Component
+script EmployeeManager extends Component
+
+	property table EmployeeDetailTable = {}
+
+	property SyncTable<string, integer> EmployeeDetailTableIndexByEmployeeId
+
+	property table EmployeesLocation = {}
+
+	property SyncTable<integer, boolean> ServingEmployeeLocationTable
+
+	property Entity TransferUI = "636b0bd2-39f9-44b4-a67a-9caa486c16a3"
+
+	property table EmployeeOutgameDetailTable = {}
+
+	@TargetUserSync
+	property boolean ForceDelayFlag = false
+
+	property integer OutgameVersion = 1
+
+	property integer IngameVersion = 1
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 직원 데이터를 DB에 저장하는 함수
+		local employeeDB = {}
+		
+		employeeDB["EmployeeDetailTable"] = _HttpService:JSONEncode(self:ConvertEmpDetailToTable(self.EmployeeDetailTable))
+		employeeDB["EmployeesLocation"] = _HttpService:JSONEncode(self:ConvertEmpLocationToTable(self.EmployeesLocation))
+		employeeDB["Version"] = self.IngameVersion
+		
+		saveData["EmployeeData"] = employeeDB
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- DB에서 로드된 직원 데이터를 처리하는 함수
+		local employeeDB = loadedData["EmployeeData"]
+		if employeeDB == nil then
+			employeeDB = {}
+		end
+		
+		local version = employeeDB["Version"]
+		
+		if #table.keys(employeeDB) > 0 then
+			
+			if _UtilLogic:IsNilorEmptyString(employeeDB["EmployeeDetailTable"]) == false then
+				self:ConvertTableToEmpDetail(_HttpService:JSONDecode(employeeDB["EmployeeDetailTable"]), version)
+				
+				self:SyncData(self.EmployeeDetailTable,"EmployeeDetailTable",self.Entity.PlayerComponent.UserId)
+						
+			end
+			
+			if _UtilLogic:IsNilorEmptyString(employeeDB["EmployeesLocation"]) == false then
+				self:ConvertTableToEmployeeLocation(_HttpService:JSONDecode(employeeDB["EmployeesLocation"]), version)
+		
+				self:InitOfDB()
+		
+			end
+		
+		else
+			self:InitOfDB() 
+			self:Init() 
+			self:SyncData(self.EmployeeDetailTable,"EmployeeDetailTable",self.Entity.PlayerComponent.UserId)
+			
+		end
+		
+		--    ---@type EmployeeDetailData
+		
+		self.Entity.PlayerEvent:RefreshAllToDoSecretaryInfo()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 직원 관리자 컴포넌트를 초기화하는 함수
+		self:ClearEmployeeDetailTable() 
+		table.clear(self.EmployeesLocation)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SaveToOutDB(table saveData)
+		-- 직원 외부 데이터를 DB에 저장하는 함수
+		local employeeOutDB = {}
+		
+		employeeOutDB["EmployeeOutgameDetailTable"] = _HttpService:JSONEncode(self:ConvertEmpOutgameDetailToTable(self.EmployeeOutgameDetailTable))
+		employeeOutDB["Version"] = self.OutgameVersion
+		
+		saveData["EmployeeOutgameData"] = employeeOutDB
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromOutDB(table loadedData)
+		-- 외부 DB에서 로드된 직원 데이터를 처리하는 함수
+		local dbTable = loadedData["EmployeeOutgameData"]
+		if dbTable == nil then
+			dbTable = {}
+		end
+		
+		if #table.keys(dbTable) > 0 then
+			if _UtilLogic:IsNilorEmptyString(dbTable["EmployeeOutgameDetailTable"]) == false then
+				self:ConvertTableToEmpOutgameDetail(_HttpService:JSONDecode(dbTable["EmployeeOutgameDetailTable"]), dbTable["Version"])
+				self:SyncData(self.EmployeeOutgameDetailTable,"EmployeeOutgameDetailTable",self.Entity.PlayerComponent.UserId)
+			else
+				self:InitChuchuOutgameDetailData()
+			end
+		else
+			self:InitChuchuOutgameDetailData()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnMapLeave(Entity leftMap)
+		-- 맵을 떠날 때 직원 데이터를 처리하는 함수
+			self:MapLeaveClient(self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void MapLeaveClient()
+		-- 클라이언트에서 맵 떠날 때 처리하는 함수
+		local lobby = _UserService.LocalPlayer.CurrentMap
+		local employees = lobby:GetChildComponentsByTypeName("EmployeeInfoScript")
+		
+		for k,v in pairs (employees) do 	
+			v.Entity:Destroy()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Init()
+		-- 직원 관리자를 초기화하는 함수
+		local startingEmp = self.Entity.PlayerIngameManager.StageStartingEmployee
+		if #startingEmp == 0 or startingEmp == nil then
+			startingEmp = {"E0001", "E0002"}
+		end
+		
+		for i, empId in pairs(startingEmp) do
+			self:AddEmployee(empId,"Tutorial")
+			
+			local empData = _EmployeeService:GetData(empId)
+			self:ChangeLocationToStore(empId, empData.Type, 1)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitOfDB()
+		-- DB 데이터로 직원 관리자를 초기화하는 함수
+		for _,locationData in pairs(self.EmployeesLocation) do 
+			---@type EmployeeLocationData
+			local data = locationData
+			if data.Location == _EmployeeTypeEnum.Cook or data.Location == _EmployeeTypeEnum.Serving then 
+				self:CreateEmployee(data.Id,data.Location,self.Entity.PlayerComponent.UserId)
+				self.Entity.EmployeeUpgradeManager:SetTimerForEmployeeWorkExp(data.Id,data.Location)
+			end		
+		end
+		
+		self:SyncData(self.EmployeesLocation, "EmployeesLocation", self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitChuchuOutgameDetailData()
+		-- 츄츄 외부 상세 데이터를 초기화하는 함수
+		table.clear(self.EmployeeOutgameDetailTable)
+		
+		local dataSet = _DataService:GetTable("EmployeeDataSet")
+		
+		for _,row in pairs(dataSet:GetAllRow()) do 
+		
+			local id = row:GetItem("Id")	
+			local data = EmployeeOutgameDetailData()
+			data:Load(id)
+		
+			self.EmployeeOutgameDetailTable[data.Id] = data
+		end
+		
+		self:SyncData(self.EmployeeOutgameDetailTable,"EmployeeOutgameDetailTable",self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncData(table data, string name)
+		-- 직원 데이터를 클라이언트에 동기화하는 함수
+		if name == "EmployeeDetailTable" then
+			self:SyncEmployeeDetailTable(data)
+			self:CallbackAfterSyncDetailTable(nil)
+		elseif name == "EmployeesLocation" then 
+			if self.ForceDelayFlag == true then
+				self.ForceDelayFlag = false
+			end
+			
+			self.EmployeesLocation = data
+			self:UpdateServingEmployeeLocationTable(true, nil, nil)
+		elseif name == "EmployeeOutgameDetailTable" then
+			self.EmployeeOutgameDetailTable = data
+		end
+	end
+
+	method EmployeeDetailData GetEmployeeDetail(string employeeId)
+		-- 직원 ID로 상세 데이터를 반환하는 함수
+		local index = self.EmployeeDetailTableIndexByEmployeeId[employeeId]
+		
+		if index == nil then
+			for idx, data in pairs(self.EmployeeDetailTable) do
+			    if data.Id == employeeId then 
+			        return data
+			    end
+			    
+			end
+			return nil
+		end
+		
+		return self.EmployeeDetailTable[index]
+		
+	end
+
+	method EmployeeLocationData GetEmployeeLocation(string id)
+		-- 직원 ID로 위치 데이터를 반환하는 함수
+		for idx, data in pairs(self.EmployeesLocation) do
+			
+			if data.Id == id then 
+				return data
+			end
+			
+		end
+	end
+
+	method EmployeeOutgameDetailData GetEmployeeOutgameDetail(string id)
+		-- 직원 ID로 외부 상세 데이터를 반환하는 함수
+		return self.EmployeeOutgameDetailTable[id]
+	end
+
+	method number GetEmployeeDetailIndex(string id)
+		-- 직원 ID로 상세 데이터 인덱스를 반환하는 함수
+		for idx, data in pairs(self.EmployeeDetailTable) do
+			
+			if data.Id == id then 
+				return idx
+			end
+			
+		end
+		
+		return -1
+	end
+
+	method number GetEmployeeLocationIndex(string id)
+		-- 직원 ID로 위치 데이터 인덱스를 반환하는 함수
+		for idx, data in pairs(self.EmployeesLocation) do
+			
+			if data.Id == id then 
+				return idx
+			end
+			
+		end
+		
+		return -1
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ConvertEmpOutgameDetailToTable(any structData)
+		-- 직원 외부 상세 데이터를 테이블로 변환하는 함수
+		local result = {}
+		for id, data in pairs(structData) do
+		
+			---@type EmployeeOutgameDetailData
+			local employeeData = data
+			result[id] = employeeData:ConvertToDBTable_ExceptId()
+		end
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ConvertTableToEmpOutgameDetail(table convertData, number version)
+		-- 테이블 데이터를 직원 외부 상세 데이터로 변환하는 함수
+		table.clear(self.EmployeeOutgameDetailTable)
+		
+		for id, data in pairs(convertData) do
+			local info = EmployeeOutgameDetailData()
+			if version == self.OutgameVersion then
+				info:SetFromTable_Ver2(id, data)
+			else
+				info:SetFromTable(data)
+			end
+			if self.EmployeeOutgameDetailTable[id] ~= nil then
+				break
+			end
+			
+			self.EmployeeOutgameDetailTable[id] = info
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ConvertEmpLocationToTable(table structData)
+		-- 직원 위치 데이터를 테이블로 변환하는 함수
+		local result = {}
+		for id, data in pairs(structData) do
+			---@type EmployeeLocationData
+			local employeeData = data
+			result[id] = employeeData:ConvertToDBTable()
+		end
+		
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ConvertEmpDetailToTable(any structData)
+		-- 직원 상세 데이터를 테이블로 변환하는 함수
+		local result = {}
+		for id, data in pairs(structData) do
+			---@type EmployeeDetailData
+			local employeeData = data
+			result[id] = employeeData:ConvertToDBTable()
+		end
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ConvertTableToEmployeeLocation(table convertData, integer version)
+		-- 테이블 데이터를 직원 위치 데이터로 변환하는 함수
+		table.clear(self.EmployeesLocation)
+		
+		for id, data in pairs(convertData) do
+			local info = EmployeeLocationData()
+			
+			if version == self.IngameVersion then
+				info:SetFromTable_Ver2(data)
+			else
+				info:SetFromTable(data)
+			end
+		
+			if self.EmployeesLocation[id] ~= nil then
+				break
+			end
+			
+			self.EmployeesLocation[id] = info
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean UpdateDetailData(string employeeId, string type, string value)
+		-- 직원 상세 데이터를 업데이트하는 함수
+		local data = _EmployeeService:GetData(employeeId)
+		local userId = self.Entity.PlayerComponent.UserId
+		local targetIndex = -1
+		
+		for idx, detail in pairs(self.EmployeeDetailTable) do
+			
+			if detail.Id == employeeId then 
+				
+				if type == "CookLevel" then 
+					
+					if detail.MaxLevel < tonumber(value) then
+						return false
+					end
+					
+					detail.CookLevel = tonumber(value)
+					
+					
+				elseif type == "ServingLevel"then 
+					
+					if detail.MaxLevel < tonumber(value) then 
+						return false
+					end
+					
+					detail.ServingLevel = tonumber(value)
+				
+				elseif type == "CookExp"then
+		
+					detail.CookExp = tonumber(value)
+						
+				elseif type == "ServingExp"then 
+					
+					detail.ServingExp = tonumber(value)
+					
+				elseif type == "OverLimitLevel" then
+					detail.OverLimitLevel = tonumber(value) 
+					detail.MaxLevel = detail:ReturnMaxLevelFromOverLimitLevel()
+				end
+				
+				targetIndex = idx
+				break
+			end
+		end
+		
+		
+		if targetIndex == -1 then
+			return
+		end
+		
+		self:loggingEmployeeTable(false)
+		self:SyncDetailData(targetIndex, self.EmployeeDetailTable[targetIndex], self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeTrial)
+		
+		return true
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ConvertTableToEmpDetail(table convertData, integer version)
+		-- 테이블 데이터를 직원 상세 데이터로 변환하는 함수
+		self:ClearEmployeeDetailTable()
+		
+		for id, data in pairs(convertData) do
+		
+			local info = EmployeeDetailData()
+			
+			if version == self.IngameVersion then
+				info:SetFromTable_Ver2(data)
+			else
+				info:SetFromTable(data)	
+			end
+			
+			if self.EmployeeDetailTable[id] ~= nil then
+				break
+			end
+			self:ChangeEmployeeDetailTable(id, info)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateLocationData(string employeeId, string location, any index)
+		-- 직원 위치 데이터를 업데이트하는 함수
+		local targetIndex = -1
+		for idx, data in pairs(self.EmployeesLocation) do
+			
+			---@type EmployeeLocationData
+			local locationData = data
+			
+			if locationData.Id == employeeId then 	
+				locationData.Location = location
+				locationData.SlotIdx = index
+				targetIndex = idx
+				break
+			end
+		end	
+		
+		if targetIndex == -1 then
+			return
+		end
+		
+		self:loggingEmployeeTable(true)
+		self:SyncLocationData(targetIndex, self.EmployeesLocation[targetIndex], self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeDeploy)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.Employment)
+	end
+
+	method table ReturnEmployeeMoveSpeed(string empId, boolean isNextOverlimitLevel, EmployeeDetailData employeeDetailData)
+		-- 직원의 이동 속도를 계산하여 반환하는 함수
+		---@type EmployeeData
+		local empData = _EmployeeService:GetData(empId)
+		
+		---@type EmployeeOutgameDetailData
+		local outgameData = _UserService.LocalPlayer.EmployeeManager:GetEmployeeOutgameDetail(empId)
+		
+		local originMoveSpeed = _GetConfigDataLogic:GetConfigNumDataByKey("MoveSpeedDefalut")
+		
+		local equipLevel = outgameData.EquipLevel
+		local equipBonus = 0
+		if equipLevel >= 0 then
+			equipBonus = _GetConfigDataLogic:GetConfigNumDataByKey("MoveSpeedAddedByGetEquip")
+		end
+		
+		local groupId = empData.GroupId
+		local groupLevel = self.Entity.ChuchuCollectionDB:CalcGroupLevel(groupId)
+		local groupBonus = groupLevel * _GetConfigDataLogic:GetConfigNumDataByKey("MoveSpeedAddedByGroupBonus")
+		
+		local stageBonus = 0
+		local stageId = _ChuchuGroupLogic:ReturnStageIdFromGroupId(groupId)
+		local nowStage = _UserService.LocalPlayer.PlayerStage.NowStage
+		if stageId == nowStage then
+			stageBonus = _GetConfigDataLogic:GetConfigNumDataByKey("MoveSpeedAddedByStage")
+		end
+		
+		local overLimitLevel = 0
+		if isvalid(employeeDetailData) then
+			overLimitLevel = employeeDetailData.OverLimitLevel 
+		end
+		if isNextOverlimitLevel then 
+			overLimitLevel += 1
+		end
+		local overLimitBonus = overLimitLevel * _GetConfigDataLogic:GetConfigNumDataByKey("MoveSpeedAddedByOverLimtLevel")
+		
+		local moveSpeed = originMoveSpeed + equipBonus + groupBonus + stageBonus + overLimitBonus
+		local moveSpeedString = ""
+		local bonusList = {equipBonus, groupBonus, stageBonus, overLimitBonus}
+		for i, bonus in pairs(bonusList) do
+			if bonus == 0 then
+				continue
+			end
+			local stringKey = "MoveSpeedBonusString".._StringUtilLogic:NumToString(i) 
+			local addString = _LocalizationService:GetTextFormat(stringKey, bonus)
+			if _UtilLogic:IsNilorEmptyString(moveSpeedString) then
+				moveSpeedString = moveSpeedString..addString
+			else
+				moveSpeedString = moveSpeedString.."\n"..addString
+			end
+		end
+		if moveSpeedString == "" then 
+			moveSpeedString = _LocalizationService:GetText("DefaultMoveSpeed")
+		end
+		
+		return {moveSpeed, moveSpeedString}
+	end
+
+	@ExecSpace("Client")
+	method void RemoveSingleData(integer idx, string name)
+		-- 단일 데이터를 제거하는 함수
+		if name == "EmployeeDetailTable" then 
+			if isvalid(self.EmployeeDetailTable) then
+				local removed = self:RemoveEmployeeDetailTable(idx)
+				local detailChangedEvent = EmployeeDetailChangeEvent()
+				detailChangedEvent:Init(removed.Id)
+				_UserService.LocalPlayer:SendEvent(detailChangedEvent)
+			end
+			
+		elseif name == "EmployeesLocation" then 
+			if isvalid(self.EmployeesLocation) then
+				local removedLocationData = table.remove(self.EmployeesLocation, idx)
+				table.remove(_UIEmployeeManageService.UIManageCompo.employeesLocation, idx)
+				self:UpdateServingEmployeeLocationTable(false, removedLocationData, false)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeLocationToWaiting(string employeeId)
+		-- 직원의 위치를 대기 상태로 변경하는 함수
+		
+		local index = self.Entity.EmployeeManager:GetEmployeeLocationIndex(employeeId)
+		---@type EmployeeLocationData
+		local locationData = self.EmployeesLocation[index]
+		
+		if not isvalid(locationData) or ( locationData.Location == _EmployeeTypeEnum.Waiting )then  
+			return
+		end
+		
+		self.Entity.PlayerLog:EmployeeLocation(employeeId,locationData.Location,_EmployeeTypeEnum.Waiting,"2")
+		
+		locationData.Location = _EmployeeTypeEnum.Waiting
+		locationData.SlotIdx = nil
+		
+		self:UpdateLocationData(employeeId,_EmployeeTypeEnum.Waiting, nil)
+		
+		self:SyncData(self.EmployeesLocation,"EmployeesLocation",self.Entity.PlayerComponent.UserId)
+		
+		self:DestroyEmployee(employeeId,self.Entity.PlayerComponent.UserId)
+		
+		self.Entity.EmployeeUpgradeManager:RemoveTimerOfEmployeeWorkExp(employeeId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeLocationToStore(string employeeId, string location, integer slotIdx)
+		-- 직원의 위치를 상점으로 변경하는 함수
+		
+		
+		local index = self:GetEmployeeLocationIndex(employeeId)
+		
+		---@type EmployeeLocationData
+		local locationData = self.EmployeesLocation[index]
+		if not isvalid(locationData) then 
+			return 
+		
+		end
+		
+		if (locationData.Location == location) and (locationData.SlotIdx == slotIdx) then
+			return
+		end
+		
+		local storeCookArrangeNum = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.GrillCount) 
+		local storServerArrangeNum = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(self.Entity, _UpgradeTypeEnum.CounterCount) 
+		
+		local cookNum =0
+		local servingNum =0  
+		
+		for _,data in pairs(self.EmployeesLocation) do 
+			if data.Location == _EmployeeTypeEnum.Cook then 
+				cookNum = cookNum + 1 
+		
+			elseif data.Location == _EmployeeTypeEnum.Serving then 
+				servingNum = servingNum + 1
+			end
+			
+		end
+		
+		local canChangeLocation = true
+		if canChangeLocation then
+			self.Entity.PlayerLog:EmployeeLocation(employeeId,locationData.Location,location,"1")
+		
+			locationData.Location = location
+			locationData.SlotIdx = slotIdx
+			local mew = self.Entity.EmployeeManager:GetEmployeeDetail(employeeId)
+			
+			self:UpdateLocationData(employeeId,location, slotIdx)
+			
+			self:SyncData(self.EmployeesLocation,"EmployeesLocation",self.Entity.PlayerComponent.UserId)
+			
+			local tutorialProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmployeeSetCount)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.EmployeeSetCount, tutorialProgress+1)
+			
+			local atOnceCount = 0
+			for _, data in pairs(self.EmployeesLocation) do
+				---@type EmployeeLocationData
+				local locData = data
+				if locData.Location == _EmployeeTypeEnum.Cook or locData.Location == _EmployeeTypeEnum.Serving then
+					atOnceCount += 1
+				end
+			end
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.ChuchuAtOnceSetCount)
+			if achiProgress < atOnceCount then
+				self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.ChuchuAtOnceSetCount, atOnceCount)
+				
+				if self.Entity.PlayerStage.NowStage == 1 then
+					self.Entity.CustomerManager:RefreshSpawnTable()	
+				end
+				
+			end
+				
+		    self:DestroyEmployee(employeeId, self.Entity.PlayerComponent.UserId)
+			
+			self:CreateEmployee(employeeId,location, self.Entity.PlayerComponent.UserId)
+			
+			self.Entity.EmployeeUpgradeManager:RemoveTimerOfEmployeeWorkExp(employeeId)
+			self.Entity.EmployeeUpgradeManager:SetTimerForEmployeeWorkExp(employeeId,location)
+			
+		end
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestChangeLocationToWaiting(string employeeId)
+		-- 직원을 대기 위치로 이동 요청하는 함수
+		self:ChangeLocationToWaiting(employeeId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestChangeLocationToStore(string employeeId, string location, integer slotIdx)
+		-- 직원을 상점 위치로 이동 요청하는 함수
+		self:ChangeLocationToStore(employeeId,location,slotIdx)
+	end
+
+	@ExecSpace("Client")
+	method void CreateEmployee(string id, string location)
+		-- 직원을 생성하는 함수
+		local stateScript 
+		local spawnPos = _LobbyEntityLogic.EmployeeSpawnPosServing
+		local orderLayer
+		if isvalid(location) then 
+			if  location == _EmployeeTypeEnum.Serving then 
+				stateScript = "ServingEmployeeAIScript"
+				spawnPos = _LobbyEntityLogic:GetEmployeeSpawnPostion(location)
+				orderLayer = _SortLayerEnumType.ServingEmployee 
+			elseif location == _EmployeeTypeEnum.Cook then 
+				stateScript = "CookEmployeeAIScript"
+				spawnPos = _LobbyEntityLogic:GetEmployeeSpawnPostion(location)
+				orderLayer = _SortLayerEnumType.CookEmployee 
+			end
+		end
+		
+		local posOffset = _UtilLogic:RandomIntegerRange(1,3)
+		local employeeModelId =  _EntryService:GetModelIdByName("Model_SpawnEmployee") 
+		
+		
+		---@type Entity
+		local employee = _SpawnService:SpawnByModelId(employeeModelId,id, spawnPos.TransformComponent.WorldPosition+Vector3(0.1*posOffset,0,0),self.Entity.CurrentMap)
+		
+		employee.SpriteRendererComponent.SpriteRUID =  _EmployeeService:GetData(id).RestRUID
+		employee.SpriteRendererComponent.OrderInLayer = orderLayer
+		employee.SpriteRendererComponent.SortingLayer = "Deco_Object"
+		employee.Visible = false
+		employee.EmployeeInfoScript:Create(id,location)
+		
+		if location ~= _EmployeeTypeEnum.Waiting then 
+			employee:AddComponent(stateScript)	
+			employee.EmployeeMoveScript:ChangeTarget(location)
+			
+			local detailData = self:GetEmployeeDetail(id)
+			self:SetChuchuMoveSpeed(detailData)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddEmployee(string id, string source)
+		-- 직원을 추가하는 함수
+		local alreadyOwned = self:GetEmployeeDetail(id)
+		if isvalid(alreadyOwned) then 
+			return
+		end
+		
+		local data = _EmployeeService:GetData(id) 
+		local userId = self.Entity.PlayerComponent.UserId
+		
+		local detailData = EmployeeDetailData()
+		detailData.Id = id
+		
+		local levelTable = self.Entity.PlayerEmployment:CalcEmploymentStartLv(userId)
+		local level = levelTable[1]
+		detailData.EmploymentLevel = level 
+		if data.Type == _EmployeeTypeEnum.Cook then
+			detailData.CookLevel = level
+		else
+			detailData.ServingLevel = level
+		end 
+		detailData.OverLimitLevel = detailData:ReturnOverLimitLevelFromGrade(data.Grade, userId) 
+		detailData.MaxLevel = _EmployeeService:ReturnMaxLevelByOverLimitLevel(detailData.OverLimitLevel, userId)
+		
+		self:InsertEmployeeDetailTable(detailData)
+		
+		self.Entity.ChuchuCollectionDB:ChangeChuchuCollectionState(id, 1)
+		
+		local locationData = EmployeeLocationData()
+		locationData.Id = id
+		locationData.Location = _EmployeeTypeEnum.Waiting
+		
+		table.insert(self.EmployeesLocation, locationData)
+		
+		local employeeCount = #table.keys(self.EmployeeDetailTable)
+		local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.HaveEmployeeCount)
+		if achiProgress ~= employeeCount then
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.HaveEmployeeCount, employeeCount)
+		end
+		
+		local chuchuLevel = detailData:ReturnChuchuTotalLevel()
+		
+		if data.Type == _EmployeeTypeEnum.Cook then
+			local bestLevel = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.CookEmployeeBestLevel)
+			if bestLevel < chuchuLevel then
+				self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.CookEmployeeBestLevel, chuchuLevel)
+			end
+			
+		elseif data.Type == _EmployeeTypeEnum.Serving then
+			local bestLevel = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.ServingEmployeeBestLevel)
+			if bestLevel < chuchuLevel then
+				self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.ServingEmployeeBestLevel, chuchuLevel)
+			end
+			
+		end
+		
+		local tutProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmployeeBestLevel)
+		if tutProgress < chuchuLevel then
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.EmployeeBestLevel, chuchuLevel)
+		end
+		
+		
+		local chuchuLevelSum = 0
+		for idx, detail in pairs(self.EmployeeDetailTable) do
+			local detailChuchuLevel = detail:ReturnChuchuTotalLevel()
+			chuchuLevelSum = chuchuLevelSum + detailChuchuLevel
+		end
+		self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.HaveEmployeeLevelSum, chuchuLevelSum)
+		
+		
+		local detail = self:GetEmployeeDetail(id)
+		self.Entity.PlayerLog:EmployeeFlow(id, detail, data, source)
+		
+		
+		self:loggingEmployeeTable(true)
+		self:loggingEmployeeTable(false)
+		self:SyncInsertDetailData(detailData, userId)
+		self:SyncInsertLocationData(locationData, userId)	
+		
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeTrial)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.Employment)
+		self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeDeploy)
+	end
+
+	@ExecSpace("Client")
+	method void DestroyEmployee(string employeeId)
+		-- 직원을 제거하는 함수
+		local employee = _UserService.LocalPlayer.CurrentMap:GetChildByName(employeeId)
+		
+		if isvalid(employee)then
+			
+			if isvalid(employee.CookEmployeeAIScript)then 
+				
+				employee.CookEmployeeAIScript.State = "DESTROY"
+				_UserService.LocalPlayer.MenuManager:ResetCookingBurgers(employee.CookEmployeeAIScript.UniqueRecipeID)
+				
+			elseif isvalid(employee.ServingEmployeeAIScript) then 
+				
+				employee.ServingEmployeeAIScript.State = "DESTROY"
+		
+			else
+				
+				employee:Destroy()
+				
+			end
+		end
+	end
+
+	method boolean CheckEmployeeAlreadyHave(string empId)
+		-- 이미 보유한 직원인지 확인하는 함수
+		for i = 1, #self.EmployeeDetailTable do
+			---@type EmployeeDetailData
+			local empData = self.EmployeeDetailTable[i]
+			if empData.Id == empId then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	method boolean CheckHasAllEmployee()
+		-- 모든 직원을 보유했는지 확인하는 함수
+		local myEmps =  #self.EmployeeDetailTable
+		local allEmps = #_EmployeeService.EmployeeData
+		
+		if myEmps == allEmps then
+			return true
+		else
+		
+		
+		
+			return false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EmployeeStateStop()
+		-- 직원 상태를 정지시키는 함수
+		_UserService.LocalPlayer.MenuManager:ResetCookingBurgers(nil)
+		
+		
+		
+		for idx,data in pairs(self.EmployeesLocation) do 
+			
+			---@type EmployeeLocationData
+			local locationData = data
+			local employee = _UserService.LocalPlayer.CurrentMap:GetChildByName(locationData.Id)
+			
+			if isvalid(employee) then 
+				if locationData.Location == _EmployeeTypeEnum.Cook then 
+					if isvalid(employee.CookEmployeeAIScript) then
+						employee.CookEmployeeAIScript.burgerComponent:OffBurgerEntity(true)
+						employee:RemoveComponent("CookEmployeeAIScript")
+					end
+					
+					
+				elseif locationData.Location == _EmployeeTypeEnum.Serving then
+					
+					if isvalid(employee.ServingEmployeeAIScript) then
+						employee.ServingEmployeeAIScript.burgerComponent:OffBurgerEntity(false) 
+						employee:RemoveComponent("ServingEmployeeAIScript")
+					end
+					
+				end
+				
+				employee:RemoveComponent("EmployeeMoveScript")
+				employee.EmployeeInfoScript:Init()
+		
+			end
+		end
+		
+		_UserService.LocalPlayer.KitchenAppManager:InitUseApp()
+		
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EmployeeStateStart()
+		-- 직원 상태를 시작시키는 함수
+		local sapwn = function()
+			
+		
+			for idx,data in pairs(self.EmployeesLocation) do 
+			
+			
+				---@type EmployeeLocationData
+				local locationData = data
+				local employee = _UserService.LocalPlayer.CurrentMap:GetChildByName(locationData.Id)
+				if isvalid(employee) then 
+						employee:AddComponent("EmployeeMoveScript")			
+					if locationData.Location == _EmployeeTypeEnum.Cook then 
+						employee:AddComponent("CookEmployeeAIScript")
+					elseif locationData.Location == _EmployeeTypeEnum.Serving then 
+						employee:AddComponent("ServingEmployeeAIScript")
+					end
+		
+				end
+			end
+		
+		end
+		
+		_TimerService:SetTimerOnce(sapwn,1)
+		
+	end
+
+	@ExecSpace("Client")
+	method void OnButtonClickTransfer(string employeeId)
+		-- 전송 버튼 클릭 시 처리하는 함수
+		
+			self.TransferUI.UITransfer:OpenTransferUI(employeeId)
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method table TransferEmployee(string employeeId, string source)
+		-- 직원을 전송하는 함수
+		local cookCount = 0
+		local servingCount = 0 
+		for i, detail in pairs(self.EmployeeDetailTable) do
+			---@type EmployeeDetailData
+			local empDetail = detail
+			local empData = _EmployeeService:GetData(empDetail.Id)
+			if empData.Type == _EmployeeTypeEnum.Cook then
+				cookCount += 1
+			elseif empData.Type == _EmployeeTypeEnum.Serving then
+				servingCount += 1
+			end
+		end
+		local type = _EmployeeService:GetData(employeeId).Type
+		if type == _EmployeeTypeEnum.Cook and cookCount <= 1 then
+			return {false, 0}
+			
+		elseif type == _EmployeeTypeEnum.Serving and servingCount <= 1 then
+			return {false, 0}
+		end
+		local index = nil
+		for idx, employee in pairs(self.EmployeeDetailTable) do
+			local id = employee.Id
+			if id == employeeId then
+				index = idx
+				break
+			end
+		end
+		
+		local locationIdx = nil
+		for idx, employee in pairs(self.EmployeesLocation) do
+			local id = employee.Id
+			if id == employeeId then
+				locationIdx = idx
+				break
+			end
+		end
+		
+		
+		if isvalid(index) then
+			
+			self:LogEmployeeTrasfer(employeeId, source)
+			
+			local transferRefund = _EmployeeService:ReturnTransferHeart(employeeId, self.Entity)
+			
+			local employeeInfo = self:RemoveEmployeeDetailTable(index)
+			self:RemoveSingleData(index, "EmployeeDetailTable")
+			
+			table.remove(self.EmployeesLocation, locationIdx)
+			self:RemoveSingleData(locationIdx, "EmployeesLocation")
+		
+			local employeeCount = #self.EmployeeDetailTable
+			local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.HaveEmployeeCount)
+			if achiProgress ~= employeeCount then
+				self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.HaveEmployeeCount, employeeCount)
+			end
+			
+			local chuchuLevelSum = 0
+			local targetLevelSum = 0
+			for idx, detail in pairs(self.EmployeeDetailTable) do
+				---@type EmployeeDetailData
+				local empDetail = detail
+				local empData = _EmployeeService:GetData(empDetail.Id)
+				
+				local detailChuchuLevel = empDetail:ReturnChuchuTotalLevel()
+				chuchuLevelSum = chuchuLevelSum + detailChuchuLevel
+						
+				if detailChuchuLevel >= _GetConfigDataLogic:GetConfigNumDataByKey("AchievementEmployeeTargetLevel") then
+					targetLevelSum += 1
+				end
+			end
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.HaveEmployeeLevelSum, chuchuLevelSum)
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.EmployeeTargetLevelCount, targetLevelSum)	
+			
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeTrial)
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.Employment)
+			self.Entity.PlayerEvent:RefreshToDoSecretaryInfo(_ToDoSecretaryEnum.EmployeeDeploy)
+		
+			return {true, transferRefund}
+		else
+			return {false, 0}
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestTransferEmployee(string employeeId, boolean isReward, string source)
+		-- 직원 전송을 요청하는 함수
+		
+		local refundJem = self:ReturnTransferRefundJemCost(employeeId)
+		
+		local result = self:TransferEmployee(employeeId, source)
+		
+		if result[1] == true then	
+			self.Entity.EmployeeUpgradeManager:RemoveTimerOfEmployeeWorkExp(employeeId)
+			self.Entity.PlayerAutoTrainingManager:CheckChuchuAutoTraining(employeeId)
+			self:DestroyEmployee(employeeId,self.Entity.PlayerComponent.UserId)
+			_UIEmployeeManageService:UIRefresh(self.Entity.PlayerComponent.UserId)
+			
+			if isReward then
+				self:RewardTransfer(employeeId, result[2], refundJem) 
+			end
+		else
+			self:FailTransfer(self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RewardTransfer(string employeeId, integer refundHeart, table refundJem)
+		-- 전송 보상을 처리하는 함수
+		local player = self.Entity
+		local jemItemId = refundJem[1]
+		local jemCost = refundJem[2]
+		player.PlayerInventory:ModifyHeart(refundHeart,"Transfer fee","Transfer popup")
+		player.PlayerInventory:AddItem(jemItemId, jemCost, "Transfer fee", "Transfer popup")
+		
+		local items = {}
+		if refundHeart > 0 then 
+			items[_ItemDataEnum.Heart] = refundHeart
+		end
+		
+		if jemCost > 0 then
+			items[jemItemId] = jemCost
+		end
+		
+		self:ShowTransferRewardUI(items)
+		self:FinishTransfer(employeeId, player.PlayerComponent.UserId) 
+	end
+
+	@ExecSpace("Client")
+	method void FinishTransfer(string employeeId)
+		-- 전송을 완료하는 함수
+		_UIGroupManager.TransferGroup.UITransfer:NotifyFinishTransfer(employeeId)
+	end
+
+	@ExecSpace("Client")
+	method void FailTransfer()
+		-- 전송 실패를 처리하는 함수
+		_UIToast:ShowMessage(_LocalizationService:GetText("CantTransferMsg"))
+	end
+
+	@ExecSpace("Server")
+	method void ShowTransferRewardUI(table items)
+		-- 전송 보상 UI를 표시하는 함수
+		if not isvalid(items) then
+			return
+		end
+		
+		if #table.keys(items) < 1 then
+			return
+		end
+		
+		_UIItemRewardService:SetItemRewardUI(items, "Transfer", self.Entity.PlayerComponent.UserId)
+	end
+
+	method integer ReturnTotalSalary()
+		-- 총 급여를 반환하는 함수
+		
+		local totalSalary = 0
+		
+		for _,detail in pairs(self.EmployeeDetailTable) do 
+		
+			if self:GetEmployeeDetail(detail.Id) == nil then
+			end
+			
+			local chuchuLv = _EmployeeService:ReturnChuchuLevel(detail.Id, self.Entity)
+			local chuchuSalary = self:ReturnEmployeeSalary(detail.Id, chuchuLv)
+			
+			totalSalary = totalSalary + chuchuSalary
+		end
+		
+		return totalSalary
+		
+	end
+
+	method integer ReturnDailySalary()
+		-- 일일 급여를 반환하는 함수
+		
+		local dailySalary = 0
+		
+		for _,detail in pairs(self.EmployeeDetailTable) do 
+			
+			---@type EmployeeDetailData
+			local detailData = detail
+		
+			local employeeData = _EmployeeService:GetData(detailData.Id) 
+			local level = detailData.CookLevel
+			if employeeData.Type ~= _EmployeeTypeEnum.Cook then
+				level = detailData.ServingLevel
+			end
+		
+			local chuchuSalary = self:ReturnEmployeeDailySalary(detailData, level)
+			
+			dailySalary = dailySalary + chuchuSalary
+		end
+		
+		return dailySalary
+	end
+
+	method integer ReturnEmployeeDailySalary(EmployeeDetailData detailData, integer chuchuLv)
+		-- 직원의 일일 급여를 반환하는 함수
+		local wage = self:ReturnEmployeeWage(detailData)
+		local chuchuSalary = chuchuLv * ( wage / 30)	
+		
+		if chuchuSalary < 1 then
+			chuchuSalary = 1	
+		end
+		
+		
+		return math.ceil(chuchuSalary)
+	end
+
+	method integer ReturnEmployeeWage(EmployeeDetailData detailData)
+		-- 직원의 기본 급여를 반환하는 함수
+		local overLimitLv = 0
+		if isvalid(detailData) then
+			overLimitLv = detailData.OverLimitLevel 
+		end
+		
+		local gradeCost = _EmployeeService.EmployeeWageDataByOverLimitLevel[overLimitLv]
+		
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(self.Entity.PlayerStage.NowStage).SalaryCostRate
+		local strategyEffect = _StrategyEnum:GetPlayerStrategyEffect(self.Entity, _StrategyEnum.ReduceWage, self.Entity.PlayerStage.NowStage)
+		
+		gradeCost = math.ceil((gradeCost * (1 + stageConfig)) * (1 - strategyEffect))
+		
+		return gradeCost 
+	end
+
+	method integer ReturnEmployeeSalary(string employeeId, integer chuchuLv)
+		-- 특정 직원의 급여를 반환하는 함수
+		local detail = self.Entity.EmployeeManager:GetEmployeeDetail(employeeId)
+		local wage = self:ReturnEmployeeWage(detail)
+		local chuchuSalary = chuchuLv * wage
+		
+		if chuchuSalary < 30 then
+			chuchuSalary = 30	
+		end
+		
+		
+		return math.ceil(chuchuSalary)
+	end
+
+	method integer ReturnEmployeeNextOverLimitWage(string employeeId)
+		-- 직원의 다음 한계돌파 급여를 반환하는 함수
+		
+		local detail = self.Entity.EmployeeManager:GetEmployeeDetail(employeeId)
+		
+		local maxLv = detail.MaxLevel
+		local overLimitLv = detail.OverLimitLevel 
+		local gradeCost = _EmployeeService.EmployeeWageDataByOverLimitLevel[overLimitLv+1]
+		local stageConfig = _BalanceDataSetLogic:GetStageConfigData(self.Entity.PlayerStage.NowStage).SalaryCostRate
+		local strategyEffect = _StrategyEnum:GetPlayerStrategyEffect(self.Entity, _StrategyEnum.ReduceWage, self.Entity.PlayerStage.NowStage)
+		
+		gradeCost = math.ceil((gradeCost * (1 + stageConfig)) * (1 - strategyEffect))
+		
+		return gradeCost
+	end
+
+	method table ReturnTransferRefundJemCost(string employeeId)
+		-- 전송 시 환불될 보석 비용을 반환하는 함수
+		
+		local detail = self.Entity.EmployeeManager:GetEmployeeDetail(employeeId)
+		local jemCost =  _EmployeeUpgradeService:ReturnTransferRefundJemCost(detail.OverLimitLevel)
+		local jemItemId = _EmployeeUpgradeService:ReturnOverLimitJemItemId(employeeId) 
+		
+		return {jemItemId, jemCost}
+	end
+
+	@ExecSpace("Client")
+	method void SyncLocationData(number index, EmployeeLocationData syncData)
+		-- 직원 위치 데이터를 동기화하는 함수
+		self.EmployeesLocation[index] = syncData
+		self:UpdateServingEmployeeLocationTable(false, syncData, true)
+		self:loggingEmployeeTable(true)
+	end
+
+	@ExecSpace("Client")
+	method void SyncDetailData(number index, EmployeeDetailData syncData)
+		-- 직원 상세 데이터를 동기화하는 함수
+		self:ChangeEmployeeDetailTable(index, syncData)
+		self:CallbackAfterSyncDetailTable(syncData)
+		self:loggingEmployeeTable(false)
+	end
+
+	@ExecSpace("Client")
+	method void SyncInsertLocationData(EmployeeLocationData syncData)
+		-- 직원 위치 데이터를 삽입하여 동기화하는 함수
+		table.insert(self.EmployeesLocation, syncData)
+		self:UpdateServingEmployeeLocationTable(false, syncData, true)
+		
+		self:loggingEmployeeTable(true)
+	end
+
+	@ExecSpace("Client")
+	method void SyncInsertDetailData(EmployeeDetailData syncData)
+		-- 직원 상세 데이터를 삽입하여 동기화하는 함수
+		self:InsertEmployeeDetailTable(syncData)
+		self:loggingEmployeeTable(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CallbackAfterSyncDetailTable(EmployeeDetailData employeeDetailData)
+		-- 상세 테이블 동기화 후 콜백 함수
+		if employeeDetailData ~= nil then
+			self:SetChuchuMoveSpeed(employeeDetailData)
+		
+			local detailChangedEvent = EmployeeDetailChangeEvent()
+			detailChangedEvent:Init(employeeDetailData.Id)
+			_UserService.LocalPlayer:SendEvent(detailChangedEvent)
+		else
+			for _, detailData in pairs(self.EmployeeDetailTable) do 
+				self:SetChuchuMoveSpeed(detailData)
+			end
+			
+			local detailChangedEvent = EmployeeDetailChangeEvent()
+			detailChangedEvent:Init(nil)
+			_UserService.LocalPlayer:SendEvent(detailChangedEvent)
+		end
+	end
+
+	method void loggingEmployeeTable(boolean isLocation)
+		-- 직원 테이블을 로깅하는 함수
+	end
+
+	@ExecSpace("ClientOnly")
+	method number SetKitchenAppId(string employeeId)
+		-- 주방 앱 ID를 설정하는 함수
+		local slotIdx = 0
+		for idx,data in pairs(self.EmployeesLocation) do 
+			---@type EmployeeLocationData
+			local locationData = data
+			if locationData.Id == employeeId then
+				slotIdx = locationData.SlotIdx
+				break
+			end
+		end
+		
+		if slotIdx == -1 then
+			return 0
+		end
+			
+		_UserService.LocalPlayer.KitchenAppManager:AssignApp(_KitchenAppEnumType.Counter,slotIdx,self.Entity.Name)
+		
+		return slotIdx
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddEmployeeEquipLevel(string employeeId)
+		-- 직원 장비 레벨을 추가하는 함수
+		if self.EmployeeOutgameDetailTable[employeeId].EquipLevel >= _EmployeeEquipUpgradeDataLogic.MaxUpgradeLevel then
+			_SpecialShopDataLogic:AbnormalLog()
+			return
+		end
+		
+		self.EmployeeOutgameDetailTable[employeeId].EquipLevel += 1
+		
+		local equipLevel = self.EmployeeOutgameDetailTable[employeeId].EquipLevel 
+		local data = _EmployeeEquipUpgradeDataLogic:GetEmployeeEquipUpgrageData(equipLevel)
+		self.EmployeeOutgameDetailTable[employeeId].Skill1Grade = data.Skill1Grade
+		self.EmployeeOutgameDetailTable[employeeId].Skill2Grade = data.Skill2Grade
+		
+		self.Entity.ChuchuCollectionDB:CountCollectionPercent() 
+		
+		self.Entity.PlayerBadge:ChangeProgress(_BadgeEnum.EmployeeEquipUpgradeLevel, self.EmployeeOutgameDetailTable[employeeId].EquipLevel)
+		
+		self:SetEmployeeEquipLevel_ToClient(employeeId, self.EmployeeOutgameDetailTable[employeeId].EquipLevel, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SetEmployeeEquipLevel_ToClient(string employeeId, integer newLevel)
+		-- 클라이언트에 직원 장비 레벨을 설정하는 함수
+		self.EmployeeOutgameDetailTable[employeeId].EquipLevel = newLevel
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetEmployeeEquipLevel_ForCheat(string employeeId, integer equipLevel)
+		-- 치트용 직원 장비 레벨을 설정하는 함수
+		if equipLevel > _EmployeeEquipUpgradeDataLogic.MaxUpgradeLevel then
+			equipLevel = _EmployeeEquipUpgradeDataLogic.MaxUpgradeLevel
+		end
+		
+		self.EmployeeOutgameDetailTable[employeeId].EquipLevel = equipLevel
+		
+		local data = _EmployeeEquipUpgradeDataLogic:GetEmployeeEquipUpgrageData(equipLevel)
+		self.EmployeeOutgameDetailTable[employeeId].Skill1Grade = data.Skill1Grade
+		self.EmployeeOutgameDetailTable[employeeId].Skill2Grade = data.Skill2Grade
+		
+		
+		self.Entity.ChuchuCollectionDB:CountCollectionPercent() 
+		
+		self.Entity.PlayerBadge:ChangeProgress(_BadgeEnum.EmployeeEquipUpgradeLevel, self.EmployeeOutgameDetailTable[employeeId].EquipLevel)
+		
+		
+		self:SetEmployeeEquipLevel_ToClient(employeeId, self.EmployeeOutgameDetailTable[employeeId].EquipLevel, self.Entity.PlayerComponent.UserId)
+	end
+
+	method integer ReturnSkillGrade(string employeeId, integer skillNum)
+		-- 직원의 스킬 등급을 반환하는 함수
+		---@type EmployeeOutgameDetailData
+		local outgameData = self:GetEmployeeOutgameDetail(employeeId)
+		local equipLevel = outgameData.EquipLevel
+		local data = _EmployeeEquipUpgradeDataLogic:GetEmployeeEquipUpgrageData(equipLevel)
+		if not isvalid(data) then
+			return 1 
+		end
+		if skillNum == 2 then
+			return data.Skill2Grade
+		else
+			return data.Skill1Grade
+		end
+	end
+
+	method boolean ReturnHasEquip(string employeeId)
+		-- 직원이 장비를 보유했는지 반환하는 함수
+		local outgameDetail = self:GetEmployeeOutgameDetail(employeeId)
+		if isvalid(outgameDetail) and outgameDetail.EquipLevel >= 0 then
+			return true
+		else
+			return false
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChuchuAddedInCollection(string employeeId)
+		-- 츄츄를 컬렉션에 추가하는 함수
+		if self.EmployeeOutgameDetailTable[employeeId].InCollection == 1 then
+			return
+		end
+		
+		_BadgeEnum:SetStageEmployeeCollectProgress(self.Entity, employeeId)
+		self.EmployeeOutgameDetailTable[employeeId].InCollection = 1
+		self:SyncChuchuInCollection(employeeId, 1, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncChuchuInCollection(string employeeId, integer isInCollection)
+		-- 츄츄 컬렉션 상태를 동기화하는 함수
+		self.EmployeeOutgameDetailTable[employeeId].InCollection = isInCollection
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChuchuSubedInCollection(string employeeId)
+		-- 츄츄를 컬렉션에서 제거하는 함수
+		if self.EmployeeOutgameDetailTable[employeeId].InCollection == 0 then
+			return
+		end
+		
+		self.EmployeeOutgameDetailTable[employeeId].InCollection = 0
+		self:SyncChuchuInCollection(employeeId, 0, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogEmployeeTrasfer(string employeeId, string source)
+		-- 직원 전송을 로그에 기록하는 함수
+		
+		local detail = self:GetEmployeeDetail(employeeId)
+		local data = _EmployeeService:GetData(employeeId)
+		
+		local logName = _LogEnumType.EmployeeFlow
+		local userId = self.Entity.PlayerComponent.UserId
+		local nickname = self.Entity.PlayerComponent.Nickname
+		local outgameData = self.Entity.EmployeeManager:GetEmployeeOutgameDetail(employeeId)
+		local employeeLevel = detail:ReturnTypeLevel(userId) 
+		local employeeName = data.NameKey
+		local salary = self.Entity.EmployeeManager:ReturnEmployeeSalary(employeeId, employeeLevel, userId)
+		
+		local skill1Grade = outgameData.Skill1Grade
+		local skill2Grade = outgameData.Skill2Grade 
+		local skillListString = string.format("(%s, %s), (%s, %s)", data.Skill1Type, skill1Grade, data.Skill2Type, skill2Grade)
+		
+		local refundHeart = _EmployeeService:ReturnTransferHeart(employeeId, self.Entity, userId)
+		local refundJemTable = self.Entity.EmployeeManager:ReturnTransferRefundJemCost(employeeId, userId)
+		local transferFeeString = string.format("(%s, %d) , (%s, %d)", refundJemTable[1], refundJemTable[2], _ItemDataEnum.Heart, refundHeart)
+		
+		local playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+		local equipLevel = tostring(outgameData.EquipLevel)
+		if outgameData.EquipLevel < 0 then
+			equipLevel = "empty"
+		end
+		
+		local logFail,value = pcall(
+		function()
+		
+			_LogStorageLogic:LogValue(userId, logName,
+				_HttpService:JSONEncode({
+					transferFee = transferFeeString,
+					employeeName = employeeName,
+					salary = tostring(salary),
+					skillList = skillListString			
+				 }),
+				{
+					nickname = nickname,
+					employeeId = employeeId,
+					flowType = "2",
+					source = source,
+					manageLevel = tostring(self.Entity.PlayerManagement.ManagementLevel), 
+					manageIndex = self.Entity.PlayerManagement:GetGoalCount(),
+					date = self.Entity.TimeManager:GetTimeText(),
+					playerStageId = playerStageId,
+					equipLevel = equipLevel,
+					utc = _DateTimeLogic:GetUtcNowText(),
+					employeeLevel = tostring(employeeLevel),
+					employeeType = data.Type
+				})
+		end)
+		
+		if not logFail then  end
+	end
+
+	method void ClearEmployeeDetailTable()
+		-- 직원 상세 테이블을 초기화하는 함수
+		table.clear(self.EmployeeDetailTable)
+		table.clear(self.EmployeeDetailTableIndexByEmployeeId)
+	end
+
+	method void InsertEmployeeDetailTable(EmployeeDetailData employeeDetailData)
+		-- 직원 상세 테이블에 데이터를 삽입하는 함수
+		table.insert(self.EmployeeDetailTable, employeeDetailData)
+		self.EmployeeDetailTableIndexByEmployeeId[employeeDetailData.Id] = #self.EmployeeDetailTable
+	end
+
+	method EmployeeDetailData RemoveEmployeeDetailTable(integer index)
+		-- 직원 상세 테이블에서 데이터를 제거하는 함수
+		---@type EmployeeDetailData
+		local employeeDetailData = table.remove(self.EmployeeDetailTable, index)
+		
+		table.clear(self.EmployeeDetailTableIndexByEmployeeId)
+		for k,v in pairs(self.EmployeeDetailTable) do
+			---@type EmployeeDetailData
+			local detailData = v
+			self.EmployeeDetailTableIndexByEmployeeId[detailData.Id] = k
+		end
+		
+		return employeeDetailData
+	end
+
+	method void ChangeEmployeeDetailTable(integer index, EmployeeDetailData employeeDetailData)
+		-- 직원 상세 테이블의 데이터를 변경하는 함수
+		self.EmployeeDetailTable[index] = employeeDetailData
+		self.EmployeeDetailTableIndexByEmployeeId[employeeDetailData.Id] = index
+	end
+
+	method void SyncEmployeeDetailTable(table employeeDetailTable)
+		-- 직원 상세 테이블을 동기화하는 함수
+		
+		self:ClearEmployeeDetailTable()
+		
+		self.EmployeeDetailTable = employeeDetailTable
+		for index,data in pairs(self.EmployeeDetailTable) do
+		    -----@type EmployeeDetailData
+			self.EmployeeDetailTableIndexByEmployeeId[data.Id] = index
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateServingEmployeeLocationTable(boolean isSyncTable, EmployeeLocationData _locationData, boolean isLocated)
+		-- 서빙 직원 위치 테이블을 업데이트하는 함수
+		
+		if isSyncTable == false then
+			if _locationData.Location ~= _EmployeeTypeEnum.Serving then
+				return
+			end
+			
+			self.ServingEmployeeLocationTable[_locationData.SlotIdx] = isLocated
+			return
+		end
+		
+		table.clear(self.ServingEmployeeLocationTable)
+		
+		for _,v in pairs(self.EmployeesLocation) do
+			---@type EmployeeLocationData
+			local locationData = v
+			
+			if locationData.Location ~= _EmployeeTypeEnum.Serving then
+				continue
+			end
+			
+			self.ServingEmployeeLocationTable[locationData.SlotIdx] = true
+		end
+	end
+
+	method void SetChuchuMoveSpeed(EmployeeDetailData detailData)
+		-- 츄츄의 이동 속도를 설정하는 함수
+		---@type EmployeeDetailData
+		local data = detailData
+		local moveSpeed =  self:ReturnEmployeeMoveSpeed(data.Id, false, data)
+		
+		local employeeEntity =_UserService.LocalPlayer.CurrentMap:GetChildByName(data.Id)
+		if isvalid(employeeEntity) then 
+			employeeEntity.MovementComponent.InputSpeed = moveSpeed[1]
+		end
+	end
+
+end

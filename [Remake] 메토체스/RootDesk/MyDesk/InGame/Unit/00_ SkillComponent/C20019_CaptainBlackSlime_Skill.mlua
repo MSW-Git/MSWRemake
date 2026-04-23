@@ -1,0 +1,187 @@
+@Component
+script C20019_CaptainBlackSlime_Skill extends Component
+
+	@Sync
+	property number skillAnimLength = 1
+
+	property string hitEffectRUID = "a6734d148d814e3b907cafa289f2fef2"
+
+	property SyncTable<Entity, number> SetSkillEntity
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		-------------------------------------------------------------------
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		local animComponent = myUnit.UnitAnimationComponent
+		
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		-------------------------------------------------------------------
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		local function hitSkill()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				local enemies = {}
+				if unitInfo.TeamType == "User" then
+					enemies = teamManager.EnemyUnits
+				elseif unitInfo.TeamType == "Enemy" then
+					enemies = teamManager.OwnUnits
+				end
+				
+				local attackEnemies = _BTLogic_New:getTargets(unitInfo.setTile, enemies, "Around_1_1")
+				attackEnemies = _BTLogic_New:getEntities(attackEnemies, "AttackAble")
+				
+				if isvalid(attackEnemies) then
+					for _, enemy in pairs(attackEnemies) do
+						if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+							self:SetSkillDamage(enemy)
+						end
+					end
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(hitSkill, 0.3 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0090",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C20019_Active_SDamage_Magic[unitInfo.level]
+		
+		-- 중독 상태인 적 테이블에 추가
+		if isvalid(self.SetSkillEntity[targetUnit]) then
+			self.SetSkillEntity[targetUnit] += 1
+		else
+			self.SetSkillEntity[targetUnit] = 1
+		end
+		
+		
+		local fncCount = 0
+		local fncTimer = 0
+		local function hitDamage()
+			fncCount += 1
+			if fncTimer >= 5 then
+				_TimerService:ClearTimer(fncTimer)
+			end
+			
+			if _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Magical")
+				
+				if fncCount <= 1 then
+					_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+				else
+					_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], string.format("skill_%d", fncCount) )
+				end
+				self:HitEffect(targetUnit, unitInfo.OwnerId)
+			end
+			
+			if fncCount >= 5 then
+				self.SetSkillEntity[targetUnit] -= 1
+			end
+		end
+		
+		if _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+			fncTimer = _TimerService:SetTimerRepeat(hitDamage, 1, 0)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.hitEffectRUID, targetUnit, Vector3(0, 0.2, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Server")
+	method void TransMissionUnit(Entity deadTile, number stack)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		------------------------------------------------------------
+		local enemies = {}
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		enemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+		local attackEnemy = _BTLogic_New:getTarget(deadTile, enemies, "Nearest")
+		
+		if isvalid(attackEnemy) then
+			for i = 1, stack do
+				self:SetSkillDamage(attackEnemy)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetBattle()
+		table.clear(self.SetSkillEntity)
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Self")
+	handler HandleKillUnit(KillUnit event)
+		-- Parameters
+		local Attacker = event.Attacker
+		local Target = event.Target
+		local DeadTile = event.DeadTile
+		-- local AttackType = event.AttackType
+		---------------------------------------------------------
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		---------------------------------------------------------
+		if Attacker == myUnit then
+			local checkSetSkilled = false
+			local checkSetNum = 0
+			
+			for unit, setNum in pairs(self.SetSkillEntity) do
+				if unit == Target and setNum > 0 then
+					checkSetSkilled = true
+					checkSetNum = setNum
+					break
+				end 
+			end
+			
+			if checkSetSkilled then
+				self:TransMissionUnit(DeadTile, checkSetNum)
+			end
+		end
+	end
+
+end

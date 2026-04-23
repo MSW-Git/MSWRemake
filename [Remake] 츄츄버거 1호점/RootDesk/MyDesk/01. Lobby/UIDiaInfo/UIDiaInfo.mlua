@@ -1,0 +1,350 @@
+@Component
+script UIDiaInfo extends Component
+
+	property Entity freeDia = "ed280822-e06c-4a47-821a-77d887475f9b"
+
+	property Entity paidDia = "67b0c0e7-97fd-4b6f-994f-7bf30224c240"
+
+	property Entity WaytoGetDiaList = "4f08080b-a84b-4645-94fc-7e1d13098017"
+
+	property Entity WaytoGetDia_Origin = "d858c838-0ba4-4ed6-8012-63f793defd39"
+
+	property number recycleScrollContentsCount = 6
+
+	property table WaytoGetDiaListTable = {}
+
+	property table titleTable = {}
+
+	property table iconTable = {}
+
+	property table contents = {}
+
+	property table starterPackList = {}
+
+	property table packageList = {}
+
+	property table diaProductList = {}
+
+	property table bonusCheckList = {}
+
+	property string stagePass = "HowtoGetDia_StagePass"
+
+	property string starterPack = "HowtoGetDia_StarterPack"
+
+	property string package = "HowtoGetDia_Package"
+
+	property string diaProduct = "HowtoGetDia_DiaProduct"
+
+	property string piggyBank = "HowtoGetDia_PiggyBank"
+
+	property string managementLevel = "HowtoGetDia_ManagementLevel"
+
+	property string stageClear = "HowtoGetDia_StageClear"
+
+	property string chuchuCollection = "HowtoGetDia_ChuchuCollecetion"
+
+	property string ingreCollection = "HowtoGetDia_IngreCollecetion"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 다이아 획득 방법 정보를 초기화하고 상점 상품 데이터를 로드하는 함수
+		local dataSet = _DataService:GetTable("UIDiaInfoDataSet")
+		
+		for i =1 , dataSet:GetRowCount() do
+			local index = tonumber(dataSet:GetCell(i,"Index"))
+			local titleText = dataSet:GetCell(i,"NameKey")
+			local iconRuid = dataSet:GetCell(i,"IconRUID")
+			self.titleTable[index] = titleText
+			self.iconTable[titleText] = iconRuid
+			self.WaytoGetDiaListTable[titleText] = true
+		end
+		
+		local starterPackProducts = _SpecialShopDataLogic.SpecialShopProductDataByLinkedShopId[_SpecialShopDataLogic.StarterPackShopId]
+		local itemPackageProducts = _SpecialShopDataLogic.SpecialShopProductDataByLinkedShopId[_SpecialShopDataLogic.ItemPackageShopId]
+		local diamondProducts = _SpecialShopDataLogic.SpecialShopProductDataByLinkedShopId[_SpecialShopDataLogic.DiamondShopId]
+		
+		for i, d in pairs(starterPackProducts) do
+			---@type SpecialShopProductData
+			local data = d
+			table.insert(self.starterPackList, data.Id)
+		end
+		
+		for i, d in pairs(itemPackageProducts) do
+			---@type SpecialShopProductData
+			local data = d
+			
+			if 	data.ProductLevel == 1 then
+				table.insert(self.packageList, data.Id)
+			end
+		end
+		
+		for i, d in pairs(diamondProducts) do
+			---@type SpecialShopProductData
+			local data = d
+			
+			if 	data.ProductLevel == 1 then
+				table.insert(self.diaProductList, data.Id)
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void OpenUI()
+		-- 다이아 정보 UI를 열고 현재 보유 다이아를 표시하는 함수
+		
+		self:SetContents()
+		
+		self.freeDia:GetChildByName("Value").TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(_UserService.LocalPlayer.PlayerOutgameManager.DiamondFree)
+		self.paidDia:GetChildByName("Value").TextComponent.Text = _StringUtilLogic:ReturnThousandsSeparatedString(_UserService.LocalPlayer.PlayerOutgameManager.DiamondPaid)
+		
+		_UIGroupManager:EnableDiaInfoGroup(true)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetContents()
+		-- 플레이어 상태에 따라 다이아 획득 방법 목록을 설정하는 함수
+		local player = _UserService.LocalPlayer
+		
+		table.clear(self.contents)
+		
+		for i =1, #self.titleTable do
+			table.insert(self.contents, self.titleTable[i])
+		end
+		
+		for i = #self.contents, 1, -1 do
+			if player.PlayerStage.NowStage == 1 and (self.contents[i] == self.stageClear or self.contents[i] == self.piggyBank )  then
+				table.remove(self.contents, i)
+				i += 1
+				continue
+			end
+		
+			if not _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.HUDManagement, player) and self.contents[i] == self.managementLevel and player.PlayerStage.NowStage == 1 then
+				table.remove(self.contents, i)
+				i += 1
+			end
+		end
+		
+		self:PurchaseCountCheck()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetScrollView()
+		-- 리사이클 스크롤뷰를 설정하고 아이템을 표시하는 함수
+		self:RegisterRecycleScrollLayoutCallback()
+		
+		self.WaytoGetDia_Origin.Enable = false
+		local itemCount = #self.contents
+		self.WaytoGetDiaList.RecycleScrollView:SetTotalCount(itemCount)
+		self.WaytoGetDiaList.RecycleScrollView:Refresh(true)
+		
+		
+		for i = 1, self.recycleScrollContentsCount do
+			local entityName = "Item".._StringUtilLogic:NumToString(i)
+			local groupEntity = _UIEntityService:GetOrCreateClonedEntityByName(self.WaytoGetDiaList, entityName, self.WaytoGetDia_Origin)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RegisterRecycleScrollLayoutCallback()
+		-- 리사이클 스크롤뷰의 셀 업데이트 콜백을 등록하는 함수
+		if self.WaytoGetDiaList.RecycleScrollView.onUpdateCell ~= nil then
+			return
+		end
+		
+		local recycleFunc = function(index, entity)
+			self:RecycleScrollOnUpdateByIndex(index, entity)
+		end
+		self.WaytoGetDiaList.RecycleScrollView.onUpdateCell = recycleFunc
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RecycleScrollOnUpdateByIndex(integer index, Entity entity)
+		-- 스크롤뷰의 특정 인덱스 아이템을 업데이트하는 함수
+		local title = self.contents[index]
+		local icon = self.iconTable[title]
+		if self.bonusCheckList[title] == nil then
+			self.bonusCheckList[title] = false
+		end
+		local bonus = self.bonusCheckList[title]
+		
+		entity.UIDiaInfoSlot:Init(title, icon, bonus)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MoveUI(string type)
+		-- 선택된 다이아 획득 방법에 따라 해당 UI로 이동하는 함수
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_UIGroupManager:ClearAllUI()
+		
+		if type == self.stagePass then 
+			_BMDropDownLogic.UIStagePass:Open(nil)
+		elseif type == self.starterPack then  
+			_SpecialShopDataLogic.UISpecialShop.UISpecialShop:Open(_SpecialShopDataLogic.StarterPackShopId)
+		elseif type == self.package then 
+			_SpecialShopDataLogic.UISpecialShop.UISpecialShop:Open(_SpecialShopDataLogic.ItemPackageShopId)
+		elseif type == self.managementLevel then 
+			local uiManagement = _EntityService:GetEntityByPath("/ui/ManagementGroup/UIManagement")
+			uiManagement.UIManagement:Open()
+		elseif type == self.stageClear then 
+			_StoreRankingDataSetLogic.UIStoreRanking.UIStoreRanking:Open()
+		elseif type == self.chuchuCollection then 
+			_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:OpenUI(nil)
+		elseif type == self.ingreCollection then 
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Open_Collection"], 1)
+			_UICollectionLogic.uiIngreBunCollection:Open(1)
+		elseif type == self.piggyBank then 
+			_PiggyBankDataLogic.UIPiggyBank:Open()
+		elseif type == self.diaProduct then 
+			_SpecialShopDataLogic.UISpecialShop.UISpecialShop:Open(_SpecialShopDataLogic.DiamondShopId)
+		end
+		
+		self:Close()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Close()
+		-- 다이아 정보 UI를 닫는 함수
+		_UIGroupManager:EnableDiaInfoGroup(false)
+	end
+
+	@ExecSpace("Client")
+	method void PurchaseCountCheck()
+		-- 각 상품의 구매 여부를 확인하여 보너스 표시를 설정하는 함수
+		self.bonusCheckList["HowtoGetDia_StarterPack"] = true
+		self.bonusCheckList["HowtoGetDia_Package"] = true
+		self.bonusCheckList["HowtoGetDia_DiaProduct"] = true
+		self.bonusCheckList["HowtoGetDia_StagePass"] = true
+		self.bonusCheckList["HowtoGetDia_IngreCollecetion"] = true
+		self.bonusCheckList["HowtoGetDia_ManagementLevel"] = true
+		self.bonusCheckList["HowtoGetDia_StageClear"] = true
+		self.bonusCheckList["HowtoGetDia_ChuchuCollecetion"] = true
+		
+		for i, itemId in ipairs(self.starterPackList) do
+			local purchaseCount = _UserService.LocalPlayer.PlayerOutgameManager:GetPurchaseCount(itemId)
+			if purchaseCount >= 1 then
+				self.bonusCheckList[self.starterPack] = false
+				break
+			end
+		end
+		
+		for i, itemId in ipairs(self.packageList) do
+			local purchaseCount = _UserService.LocalPlayer.PlayerOutgameManager:GetPurchaseCount(itemId)
+			if purchaseCount >= 1 then
+				self.bonusCheckList[self.package] = false
+				break
+			end
+		end
+		
+		for i, itemId in ipairs(self.diaProductList) do
+			local purchaseCount = _UserService.LocalPlayer.PlayerOutgameManager:GetPurchaseCount(itemId)
+			if purchaseCount >= 1 then
+				self.bonusCheckList[self.diaProduct] = false
+				break
+			end
+		end
+		
+		self:SortContents()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SortContents()
+		-- 보너스가 있는 항목을 상단으로 정렬하는 함수
+		local sortTable = {}
+		local starterPackIndex
+		local packageIndex
+		local diaProductIndx
+		
+		if self.bonusCheckList[self.diaProduct] then
+			for i, content in pairs(self.contents) do
+		    	if content == self.diaProduct then
+		        	diaProductIndx = i
+		        	break
+		    	end
+			end
+			table.remove(self.contents, diaProductIndx)
+			table.insert(self.contents,2, self.diaProduct)
+		end
+		
+		if self.bonusCheckList[self.package] then
+			for i, content in pairs(self.contents) do
+		    	if content == self.package then
+		        	packageIndex = i
+		        	break
+		    	end
+			end
+			table.remove(self.contents, packageIndex)
+			table.insert(self.contents,2, self.package)
+		end
+		
+		if self.bonusCheckList[self.starterPack] then
+			for i, content in pairs(self.contents) do
+		    	if content == self.starterPack then
+		        	starterPackIndex = i
+		        	break
+		    	end
+			end
+			table.remove(self.contents, starterPackIndex)
+			table.insert(self.contents,2, self.starterPack)
+		end	
+		
+		self:SetScrollView()
+	end
+
+	@EventSender("Entity", "9f57d8fd-5690-4dbc-a9cf-c584303044df")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 다이아 정보 버튼 클릭 시 UI를 여는 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OpenUI() 
+	end
+
+	@EventSender("Entity", "eba519f8-d56c-49b9-8089-b9a4a8a4b872")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 닫기 버튼 클릭 시 UI를 닫는 이벤트 핸들러
+		
+		self:Close()
+	end
+
+	@EventSender("Entity", "a4b69172-48c0-4b95-a366-f92ecb92e6e0")
+	handler HandleButtonClickEvent3(ButtonClickEvent event)
+		-- 직원 장비 상점 버튼 클릭 시 해당 상점을 여는 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SpecialShopDataLogic.UISpecialShop.UISpecialShop:Open(_SpecialShopDataLogic.EmployeeEquipShopId)
+		
+		self:Close()
+	end
+
+	@EventSender("Entity", "536b10a6-fa79-4766-94d2-e7fc4a907ee8")
+	handler HandleButtonClickEvent4(ButtonClickEvent event)
+		-- 재료 컬렉션 버튼 클릭 시 컬렉션 UI를 여는 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Open_Collection"], 1)
+		_UICollectionLogic.uiIngreBunCollection:Open(3)
+		
+		self:Close()
+	end
+
+	@EventSender("Entity", "9dd7bc48-d389-409e-980a-df9dcff46ca2")
+	handler HandleButtonClickEvent5(ButtonClickEvent event)
+		-- 추가 닫기 버튼 클릭 시 UI를 닫는 이벤트 핸들러
+		
+		self:Close()
+	end
+
+end

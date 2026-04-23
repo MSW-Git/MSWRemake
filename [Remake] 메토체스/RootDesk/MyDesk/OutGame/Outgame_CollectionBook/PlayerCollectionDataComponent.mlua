@@ -1,0 +1,339 @@
+@Component
+script PlayerCollectionDataComponent extends Component
+
+	@TargetUserSync
+	property SyncTable<string, number> CharacterCollection
+
+	@TargetUserSync
+	property SyncTable<string, number> SynergyCollection
+
+	@ExecSpace("Server")
+	method void InitializeCollection()
+		-- 컴렉션 데이터 컴포넌트 초기화
+		--log("콜렉션데이터컴포넌트")
+		
+		-- 변신 시스템 초기화
+		--self.Entity.PlayerAvatarChangeCompoenent:Initialize()
+	end
+
+	@ExecSpace("Server")
+	method void InitializeCharacterCollectionData()
+		-- (각 시즌에서) 최초 실행 시 생성하는 함수
+		-- <CharID><수집레벨> 로 받을 것
+		
+		-- 2025.02.18 -- 아이디/수집레벨로 받고, 시즌은 따로 필터링하기로 결정 --- SyncTable로 변경
+		
+			-- 시즌은 CharDictionaryData의 ContainedSeason 사용
+		for i=1, _DataService:GetTable("CharacterInfo"):GetRowCount() do
+			if  _DataService:GetTable("CharacterInfo"):GetCell(i, "CollectionEnable") == "TRUE" then
+				self.CharacterCollection[_DataService:GetTable("CharacterInfo"):GetCell(i, "CharID")] = 0
+			end
+		end
+		
+		-- 데이터 저장
+		_PlayerDataLogic:SetCharCollectionData(self.Entity.PlayerComponent.UserId)
+		
+	end
+
+	@ExecSpace("Server")
+	method void InitializeSynergyCollectionData()
+		-- (각 시즌에서) 최초 실행 시 생성하는 함수?
+		-- <SynergyID><수집레벨> 로 받을 것
+		
+		-- 2025.02.18 -- 아이디/수집레벨로 받고, 시즌은 따로 필터링하기로 결정 --- SyncTable로 변경
+		
+		for i=1, _DataService:GetTable("SynergyInfo"):GetRowCount() do
+			--if  _DataService:GetTable("SynergyInfo"):GetCell(i, "CollectionEnable") == "TRUE" then
+				self.SynergyCollection[_DataService:GetTable("SynergyInfo"):GetCell(i, "SynergyID")] = 0
+			--end
+		end
+		
+		-- 데이터 저장
+		_PlayerDataLogic:SetSynergyCollectionData(self.Entity.PlayerComponent.UserId)
+		
+	end
+
+	@ExecSpace("Server")
+	method void UpdateCharacterCollectionData(SyncTable<string, integer> updateData)
+		-- 게임 중 updateData를 받은 만큼만 업데이트. 데이터를 받고 해당 변수를 수정한 뒤에 데이터 저장을 합니다.
+		-- UI 반영을 위해서 Event를 부릅니다.
+		
+		for cID, grade in pairs(updateData) do
+			
+			self.CharacterCollection[cID] = grade
+			
+			if grade == 3 then -- 3성 달성했을 때
+				self.Entity.AchievementManager:UnLockCharAchievement(cID)
+			end
+			
+			-- 업적: 시즌1의 모든 캐릭터 도감 해금하기
+		--[[	if true then
+				_AchievementService:UpdateProgress_Graduate("AC001005",self:Get_nowCharCount(1),self.Entity)
+			end]]
+		
+		end
+		
+		
+		-- 데이터 저장
+		_PlayerDataLogic:SetCharCollectionData(self.Entity.PlayerComponent.UserId)
+		
+		-- UI 이벤트 보내기
+		if #table.keys(updateData) > 0 then
+			self.Entity:SendEvent(CollectionUpdateEvent(updateData, nil))	-- 에러 아님
+			self:UpdateUI(self.Entity.PlayerComponent.UserId)
+			--_UI_CollectionManager.Button_Collection_RedDot.Enable = true
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetGameOverUnitSet(SyncTable<Entity> ownUnits, string season)
+		-- 게임 오버 되었을 때 유닛 데이터 받아와서 걸러내는 용 (캐릭터유닛)
+		log("GetGameOverUnitSet = ", season)
+		log(ownUnits)
+		
+		-- 업데이트용 테이블 선언하기
+		---@type table
+		local updateData = {}
+		
+		-- ownUnits 중에서 마지막 전장 캐릭터 판단
+		---@type table<Entity>
+		local lastUnits = {}
+		local roundKey = string.format("%d-%d", self.Entity.GameManager.Stage, self.Entity.GameManager.Round)
+		
+		-- 8-3 반복 플레이 처리
+		if roundKey == "8-3" then
+			for i = 5, 1, -1 do
+				roundKey = string.format("%d-%d-%d", self.Entity.GameManager.Stage, self.Entity.GameManager.Round, i)
+				if self.Entity.TeamBattleStatistics.SetRoundResult[roundKey] ~= nil then
+					break
+				end
+			end
+		end
+		
+		log(roundKey)
+		
+		local unitCount = 0
+		for _ in pairs(ownUnits) do
+			unitCount += 1
+		end
+		
+		for i=1, unitCount do
+			-- 수집할 수 없는 유닛이면 패스
+			if _DataService:GetTable("CharacterInfo"):FindRow("CharID", ownUnits[i].UnitInfo.charID):GetItem("CollectionEnable") == "FALSE" then
+				continue
+			end
+			
+			if ownUnits[i].UnitBattleStatistics.SetCharID[roundKey] ~= nil then
+				table.insert(lastUnits, ownUnits[i])
+			end
+		end
+		
+		log(lastUnits)
+		
+		-- 이제 비교해서 updateData를 만들어주기
+		for i=1, #lastUnits do
+			
+			if self.CharacterCollection[lastUnits[i].UnitInfo.charID] < lastUnits[i].UnitInfo.level then
+				
+				-- 2명 이상 있을 때를 위해 쳌~
+				if isvalid(updateData[lastUnits[i].UnitInfo.charID]) then
+					if updateData[lastUnits[i].UnitInfo.charID] < lastUnits[i].UnitInfo.level then
+						updateData[lastUnits[i].UnitInfo.charID] = lastUnits[i].UnitInfo.level
+					end
+				elseif not isvalid(updateData[lastUnits[i].UnitInfo.charID]) then
+					updateData[lastUnits[i].UnitInfo.charID] = lastUnits[i].UnitInfo.level	
+				end
+				
+			end
+		end
+		
+		self:UpdateCharacterCollectionData(updateData)
+	end
+
+	@ExecSpace("Server")
+	method void UpdateSynergyCollectionData(SyncTable<string, integer> updateData)
+		-- 시너지 컴렉션 데이터를 업데이트하고 데이터베이스에 저장 후 UI 이벤트 발송
+		for sID, grade in pairs(updateData) do
+			self.SynergyCollection[sID] = grade
+		
+			-- 업적: 시즌1의 모든 시너지 도감 해금하기
+		--[[	if sData.ContainedSeason["1.0"] == true then 
+				_AchievementService:UpdateProgress_Graduate("AC001006",self:Get_nowSynergyCount(1),self.Entity)
+			end]]
+		end
+		
+		-- 데이터 저장
+		_PlayerDataLogic:SetSynergyCollectionData(self.Entity.PlayerComponent.UserId)
+		
+		
+		-- UI 이벤트 보내기
+		if #table.keys(updateData) > 0 then
+			self.Entity:SendEvent(CollectionUpdateEvent(nil, updateData))	-- 에러 아님
+			self:UpdateUI()
+			--self:UpdateUISyncToClient("SynergyCollection", season, updateData)]]
+		end
+	end
+
+	method void GetGameOverSynergySet(SyncTable<string, number> ownSynergies, string season)
+		-- 게임 오버 되었을 때 유닛 데이터 받아와서 걸러내는 용 (시너지)
+		
+		-- 업데이트용 테이블 선언하기
+		---@type table<string, integer>
+		local updateData = {}
+		
+		-- ownSynergies의 활성화된 단계의 갯수 판단
+		
+		---@type table<string, integer>
+		local levels = {}
+		
+		for sID, activeCount in pairs(ownSynergies) do
+			local row = _DataService:GetTable("SynergyInfo"):FindRow("SynergyID", sID)
+			
+			if row == nil then
+				log_error("데이터가 없어요,,, : 없는 시너지 아이디: ",sID, " 혹시 몰라서 찍는 활성화시너지 키들: ", table.keys(ownSynergies))
+			end
+			
+			
+			local step	= 0
+			for i=1, 5 do
+				if row:GetItem("NeedCount_step"..i) == "-" then continue end
+				
+				local needCount = tonumber(row:GetItem("NeedCount_step"..i))
+				-- 단계에 필요한 숫자보다 내가 모은 시너지 value가 높거나 같으면, 활성화가 되었다는 의미로 count 상승
+				if activeCount >= needCount then
+					step = i
+					--step+= 1
+				else -- 그게 아니면 멈춤
+					break
+				end
+			end
+			
+			levels[sID] = step -- sID 시너지의 활성화 된 단계 = step
+		end
+		
+		-- 이제 활성화 단계랑 비교해서 updateData 만들어주기 (현재 레벨이 더 높으면 업데이트하도록)
+		for k, v in pairs(levels) do
+			if v > self.SynergyCollection[k] then
+				updateData[k] = v
+			end
+		end
+		
+		-- 업데이트된 값이 있다면, 업데이트 함수 호출
+		if #table.keys(updateData) > 0 then
+			self:UpdateSynergyCollectionData(updateData)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer Get_CharMaxCount(string season)
+		-- 딕셔너리 데이터 구조체 부르기
+		local cDataList = _DictionaryDataManager.CharDataList
+		
+		local length = 0
+		
+		for cID, grade in pairs(self.CharacterCollection) do
+			local cData = cDataList[cID]
+			
+			if cData.ContainedSeason[season] then
+				length += 1
+			end
+		end
+		
+		-- 별 3성까지 각각 ~
+		local starCount = 3
+		
+		return length * starCount
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer Get_SynergyMaxCount(string season)
+		-- 딕셔너리 데이터 구조체 부르기
+		local sDataList = _DictionaryDataManager.SynergyDataList
+		
+		local length = 0
+		for sID, grade in pairs(self.SynergyCollection) do
+			local sData = sDataList[sID]
+			
+			if sData.ContainedSeason[season] then
+				-- 총 활성화 단계 갯수
+				for i=1, 5 do
+					if sData.NeedCount_step[i] ~= "-" then
+						length += 1
+					end
+				end
+			end
+			
+		--[[	if sData.ContainedSeason[tostring(season)] then
+				length += 1
+			end]]
+		end
+		
+		return length
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer Get_nowCharCount(string season)
+		-- 딕셔너리 데이터 구조체 부르기
+		local cDataList = _DictionaryDataManager.CharDataList
+		
+		local count = 0
+		
+		for cID, grade in pairs(self.CharacterCollection) do
+			local cData = cDataList[cID]
+			if cData.ContainedSeason[season] then
+				if grade > 0 then -- 레벨이 0보다 높으면 수집되었다는 의미
+					count += math.min(grade,3)
+				end
+			end
+		end
+		
+		return count
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer Get_nowSynergyCount(string season)
+		-- 딕셔너리 데이터 구조체 부르기
+		local sDataList = _DictionaryDataManager.SynergyDataList
+		
+		local count = 0
+		
+		for sID, grade in pairs(self.SynergyCollection) do
+			local sData = sDataList[sID]
+			
+			if sData.ContainedSeason[season] then
+				if grade > 0 then -- 레벨이 0보다 높으면 수집되었다는 의미
+					if grade == 3 then
+						count += 1
+					elseif grade >= 4 then
+						count += (grade-1)
+					else
+						count += grade
+					end
+				end
+			end
+		end
+		
+		return count
+	end
+
+	@ExecSpace("Client")
+	method void UpdateUI()
+		-- 컴렉션 UI를 업데이트하고 새로운 수집 알림 레드닷 표시
+		
+		
+		_UI_CollectionManager.Button_Collection_RedDot.Enable = true
+	end
+
+	@ExecSpace("Server")
+	method boolean Check_AvaliableChange(string charid)
+		-- 캐릭터가 4레벨 이상인지 확인하고 아바타 변경 가능 여부 반환
+		if self.CharacterCollection[charid] >= 4 then
+			self.Entity.PlayerAvatarChangeCompoenent:AvatarChange(charid)
+			return true
+		else
+			return false
+		end
+		
+	end
+
+end

@@ -1,0 +1,150 @@
+@Component
+script LimitLandResultUIComponent extends Component
+
+	property Entity clearWaveText = "9177c31b-1526-4183-9bbd-6e162a7c859f"
+
+	property Entity bestClearWaveText = "ae3e6587-9322-4083-a829-3eddabae8c6c"
+
+	property Entity clearTimeText = "a9fece74-ee59-4564-94d0-adb0c632e55d"
+
+	property Entity killCountText = "6be300e8-50a5-43c5-8791-064e1f8075e3"
+
+	property integer recordedWave = 0
+
+	property any recordedDateTime = nil
+
+	property Entity bestRecordSprite = "f9b7b13c-ae1a-4d0c-9cf2-11b9fa08137f"
+
+	property number clickedExitTime = 0
+
+	@ExecSpace("ClientOnly")
+	method void SetEnable(boolean onOff, boolean isClear)
+		-- 리미트랜드 결과 UI 활성화/비활성화
+		if onOff then
+			local player = _UserService.LocalPlayer
+			local mapCompo = player.CurrentMap.LimitMapComponent
+			
+			self.recordedDateTime = mapCompo.waveClearedMilliSecond
+			self.bestClearWaveText.TextComponent.Text = string.format("%d", player.PlayerInfoComponent.playerInfo.bestLimitLandWave)
+			
+			local limitTime = TimeSpan(_GameConfig:GetConfig().TIMER_LIMITLAND * 1000)
+			local remainTime = TimeSpan(_BattleUIManager.remainSeconds * 1000)
+			local elapsedTime = limitTime - remainTime
+			if elapsedTime < 0 then
+				elapsedTime = 0
+			end
+			
+		
+			self.clearTimeText.TextComponent.Text = string.format("%02d:%02d.%03d", elapsedTime.Minutes, elapsedTime.Seconds, elapsedTime.Milliseconds)
+			if remainTime.TotalMilliseconds <= 0  then
+				self.clearTimeText.TextComponent.Text = string.format("%02d:%02d.000", elapsedTime.Minutes, elapsedTime.Seconds)
+			end
+			
+			self.killCountText.TextComponent.Text = string.format("%d", _StageLogic.killCount)
+			self:SetBestRecordSprite()
+			
+			if isClear then
+		
+				self.clearWaveText.TextComponent.Text = string.format("%d", mapCompo.wave)
+				self.recordedWave = mapCompo.wave
+				
+				self.recordedDateTime = elapsedTime
+			else
+				self.clearWaveText.TextComponent.Text = string.format("%d", mapCompo.wave - 1)
+				self.recordedWave = mapCompo.wave - 1
+			end
+		else
+			if not isvalid(self.recordedDateTime) then
+				local limitTime = TimeSpan(_GameConfig:GetConfig().TIMER_LIMITLAND * 1000)
+				local remainTime = TimeSpan(_BattleUIManager.remainSeconds * 1000)
+				local elapsedTime = limitTime - remainTime
+				self.recordedDateTime = elapsedTime
+			end
+			
+			self:Exit()
+		end
+		
+		self.Entity.Enable = onOff
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetBestRecordSprite()
+		-- 최고 기록 달성 시 스프라이트 표시 설정
+		if self.recordedWave <= 0 then return end
+		
+		local playerInfo = _UserService.LocalPlayer.PlayerInfoComponent
+		
+		if playerInfo.playerInfo.bestLimitLandWave < self.recordedWave then 
+				self.bestRecordSprite.Enable = true
+		elseif playerInfo.playerInfo.bestLimitLandWave == self.recordedWave then 
+			if playerInfo.playerInfo.limitLandRecordedTime ~= "" then
+				local recordedTime = tonumber(playerInfo.playerInfo.limitLandRecordedTime)
+				
+				if recordedTime < 1000 then
+					recordedTime *= 1000
+				end
+				recordedTime = tostring(recordedTime)
+				
+				local previousRecord = TimeSpan(recordedTime)
+				local currentRecord = TimeSpan(tostring(self.recordedDateTime))
+				
+				if currentRecord < previousRecord then 
+					self.bestRecordSprite.Enable = true
+				end
+			else
+				self.bestRecordSprite.Enable = true
+			end
+		else
+			self.bestRecordSprite.Enable = false
+		end
+	end
+
+	@ExecSpace("Client")
+	method void Exit()
+		-- 리미트랜드에서 나가기 처리
+		if self.clickedExitTime + 1 > _UtilLogic.ServerElapsedSeconds then return end
+		self.clickedExitTime = _UtilLogic.ServerElapsedSeconds
+		
+		local player = _UserService.LocalPlayer
+		
+		if self.recordedDateTime.TotalSeconds > _GameConfig:GetConfig().TIMER_LIMITLAND then
+			self.recordedDateTime = TimeSpan(_GameConfig:GetConfig().TIMER_LIMITLAND * 1000)
+		end
+		
+		_GameLogic:ExitLimitLand(self.recordedWave, tostring(self.recordedDateTime))
+		_TimerLogic:Resume()
+		player.BattlePlayer:SetSuperMode(false)
+		
+		local limitTime = TimeSpan(_GameConfig:GetConfig().TIMER_LIMITLAND * 1000)
+		local remainTime = TimeSpan(_BattleUIManager.remainSeconds * 1000)
+		local elapsedTime = limitTime - remainTime
+		
+		_WorldLog:LogIngameFlowExit(_HttpService:JSONEncode(_BuffLogic.selectedCard), _HttpService:JSONEncode(_BuffLogic:GetStats()), player.BattlePlayer.hitInfo,
+			player.MyPlayer.deviceType, tostring(self.recordedWave), _GameConfig:GetConfig().GAMEMODE_LIMITLAND, player, "2", string.format("%02d:%02d:03d", elapsedTime.Minutes, elapsedTime.Seconds, elapsedTime.Milliseconds),_BossBalanceLogic:GetResult())
+		table.clear(_BuffLogic.selectedCard)
+		_BattleUIManager.loadingUI:Show()
+		_UserService.LocalPlayer.BattlePlayer:MoveTown(_WorldLog.FlowType_PlayFlow_Fail, tostring(self.recordedWave))
+		_StageLogic:SendEvent(StageEndEvent())
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- 리미트랜드 결과 UI 초기화
+		self.recordedWave = 0
+		self.recordedDateTime = nil
+		self.clickedExitTime = 0
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "45e91883-089b-4c33-825b-50cf07af0141")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 리미트랜드 나가기 버튼 클릭 이벤트
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopup() == false then
+			return
+		end
+		self:SetEnable(false, _UserService.LocalPlayer.CurrentMap.LimitMapComponent.isClear)
+	end
+
+end

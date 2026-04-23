@@ -1,0 +1,173 @@
+@Logic
+script TrialUILogic extends Logic
+
+	property Entity UITrialFrame = "0b21f462-062a-4852-9bf7-4b918744e660"
+
+	property Entity UITrialSetEmployee = "c1a02911-9c4f-4419-bd73-a9320cba3df9"
+
+	property Entity UITrialRewardPopup = "21f40b17-b0e5-4d17-956d-2593e376f7c5"
+
+	property Entity UITrialSelect = "0172f5d4-c7d4-4649-bc51-fed568319f52"
+
+	@ExecSpace("ClientOnly")
+	method void OpenSelectTrialUI(integer tab)
+		-- Trial 선택 UI를 열고 다른 관련 UI들을 비활성화하는 클라이언트 전용 함수
+		_UIGroupManager:EnableTrialGroup(true)
+		self.UITrialFrame.Enable = false
+		self.UITrialSetEmployee.Enable = false
+		self.UITrialRewardPopup.Enable = false
+		
+		self.UITrialSelect.UITrialSelect:Open(tab)
+	end
+
+	method string ReturnIconRUIDByTargetStat(string targetStat)
+		-- 대상 스탯 타입에 따라 해당하는 아이콘 RUID를 반환하는 함수
+		local ruid
+		if targetStat == _EmployeeStatEnumType.Cook then
+			ruid = "28da28fb1cb745ee8b4976be73de0f68"
+		elseif targetStat == _EmployeeStatEnumType.Serving then
+			ruid = "a2192201dea64700ba74f2575305ddd5"
+		elseif targetStat == "TasteScore" then
+			ruid = _IconRuidEnum.TasteScore
+		end
+		
+		return ruid
+	end
+
+	@ExecSpace("ClientOnly")
+	method void DrawDifficultyStars(string trialId, Entity player, Entity parent, string modelName, boolean isEffOn, TrialDifficultyData overrideData)
+		-- Trial 난이도를 별 아이콘으로 표시하는 클라이언트 전용 함수
+		for i, entity in pairs(parent.Children) do
+			entity.Enable = false
+		end
+		
+		local challengingData = _TrialLogic:GetChallengingTrialData(trialId, player, _TrialUILogic.UITrialSelect.UITrialSelect.SelectTab)
+		if overrideData ~= nil then
+			challengingData = overrideData
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(modelName) then
+			modelName = "Model_IconStar"
+		end
+		
+		for i = 1, #_TrialDataSetLogic:GetTrialData(trialId):GetGradeData(challengingData.Grade).DifficultyData do
+			local star = _UIEntityService:GetOrCreateEntityOfModel(modelName, i, parent)
+			local iconStarOff = star:GetChildByName("IconStarOff")
+			local iconStarOn = star:GetChildByName("IconStarOn")
+			local iconStarEff = star:GetChildByName("IconStarEff")
+			
+			iconStarOff.Enable = true
+			iconStarOn.Enable = false
+			if isvalid(iconStarEff) then
+				iconStarEff.Enable = false
+			end	
+			
+			if i < challengingData.Difficulty then
+				iconStarOn.Enable = true
+			else
+				if i == challengingData.Difficulty then
+					if isEffOn then
+						iconStarEff.Enable = true
+					else
+						iconStarOn.Enable = true
+					end
+				end
+				
+			end
+		end
+	end
+
+	method string GradeColorCode(integer grade)
+		-- Trial 등급에 따른 색상 코드를 반환하는 함수
+		if grade == 0 then
+			return "#c9c9c9"
+		elseif grade == 1 then
+			return "#f4d451"
+		elseif grade == 2 then
+			return "#ea6d30"
+		elseif grade == 3 then
+			return "#705499"
+		end
+	end
+
+	@ExecSpace("Client")
+	method void CheckTrialRedDotEnable(Entity player)
+		-- 플레이어의 능력치를 확인하여 Trial 탭에 빨간 점 표시 여부를 결정하는 클라이언트 함수
+		local tab1Enable = false
+		local tab2Enable = false
+		if _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.MainMenuTrial, player) == false then
+			
+		else
+			for i = 1, #player.PlayerTrial.OfficialTrials do
+				local trialId = player.PlayerTrial.OfficialTrials[i]
+				local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+				local trialType = string.sub(trialId, 1, 1)
+				
+				if trialType == "E" then
+					local challengingData = _TrialLogic:GetChallengingTrialData(trialId, player, _TrialOfficialTypeEnum.Official)
+					local exEmpId = player.PlayerTrial.ExEmployeeIds[trialData.TargetStat]
+					if challengingData ~= nil then
+						for id, detail in pairs(player.EmployeeManager.EmployeeDetailTable) do
+							---@type EmployeeDetailData
+							local empDetail = detail
+							local empData = _EmployeeService:GetData(empDetail.Id)
+							
+							if empData.Type ~= trialData.TargetStat then
+								continue
+							end
+							
+							if empDetail:ReturnTypeLevel() < challengingData.Requirement then
+								continue
+							end
+							
+							if empDetail.Id == exEmpId then
+								continue
+							end
+							
+							tab1Enable = true
+							break
+						end
+					end
+					
+				elseif trialType == "R" then
+					local challengingData = _TrialLogic:GetChallengingTrialData(trialId, player, _TrialOfficialTypeEnum.Official)
+					if challengingData ~= nil then
+						local userValue = _RecipeDataSetLogic:ReturnBestTasteScore(player, trialData.TargetType)
+						if userValue >= challengingData.Requirement then
+							tab1Enable = true
+						end
+					end
+				end
+				
+				if tab1Enable == true then
+					break
+				end
+			end
+				
+			for id, bool in pairs(player.PlayerTrial.UnofficialTrials) do
+				if bool == false and player.PlayerTrial.IsTrialTab2RedDotChecked == false then
+					tab2Enable = true
+					break
+				end
+			end
+			
+		end
+		
+		local uiTrialSelect = _TrialUILogic.UITrialSelect.UITrialSelect
+		uiTrialSelect:SetTabRedDot(_TrialOfficialTypeEnum.Official, tab1Enable)
+		uiTrialSelect:SetTabRedDot(_TrialOfficialTypeEnum.Unofficial, tab2Enable)
+	end
+
+	@EventSender("Entity", "6998ae8e-44d2-41f0-90e6-519fd169f0f6")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- Trial 버튼 클릭 이벤트를 처리하여 Trial 선택 UI를 여는 이벤트 핸들러
+		
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:OpenSelectTrialUI(nil)
+	end
+
+end

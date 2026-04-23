@@ -1,0 +1,346 @@
+@Logic
+script Developer extends Logic
+
+	property CardManager cardManager = "aa80dcbc-1e88-4f95-9e8e-f3e3b9749e7d"
+
+	property CardPackManager cardPackManager = "fe274865-e1d4-4ece-a185-40d5bf7865e3"
+
+	property UIManager uiManager = "89581f5f-f2ca-4453-af02-8a4d31de7d93"
+
+	@ExecSpace("Client")
+	method void Log(string message)
+		log(message)
+	end
+
+	@ExecSpace("Server")
+	method void Reset(Character character, string localeId)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		self:Log("reset start", senderUserId)
+		
+		character:Clear(localeId)
+		
+		_DataStorageService:DeleteSortableDataStorageAndWait("Ranking")
+		
+		local resultCode, pages = _DataStorageService:GetUserDataStoragePagesAndWait()
+		if resultCode ~= 0 then
+			log(resultCode)
+			return
+		end
+		while true do
+			local datas = pages:GetCurrentPageDatas()
+			for _, userDataStorage in pairs(datas) do
+				_DataStorageService:DeleteUserDataStorageAndWait(userDataStorage.UserId)
+			end
+			
+			if pages.IsLastPage == true then
+				break
+			end
+			
+			local loadResultCode = pages:LoadNextPageAndWait()
+			if loadResultCode ~= 0 then
+				break
+			end
+			
+			pages:MoveToNextPageAndWait()
+		end
+		
+		if Environment:IsPublishedPlay() then
+			_MatchmakingService:DeleteLeaderboardAndWait(_Matching:GetOrCreateLeaderBoard().Id)
+		end
+		
+		self:Log("reset end", senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void Clear(Character character, string localeId)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		character:Clear(localeId)
+		
+		self:Log("clear", senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void Meso(Character character, integer delta)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		character:AddMeso(delta, "")
+		
+		self:Log(string.format("meso %d", delta), senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void Complete(Character character)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		character:SetCards(self.cardManager:GetCompleteCollection())
+		
+		self:Log("complete", senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void Time(Character character, string dateTimeString)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(dateTimeString) then
+			_DateTime:ResetKtcNow()
+		else
+			_DateTime:SetKtcNow(DateTime(dateTimeString, "s"))
+		end
+		
+		self:Log(string.format("time %s", _DateTime:KtcNow()), senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void Open(Character character, string cardPackName, integer count)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		local nameTable = {}
+		local fullNameTable = {}
+		local rarityTable = {Rare = 0, Epic = 0, Unique = 0, Legendary = 0}
+		local qualityTable = {Silver = 0, Gold = 0}
+		local variantTable = {Default = 0, Variant = 0}
+		
+		for i = 1, count do
+			for _, info in ipairs(self.cardPackManager:GetInfos(cardPackName)) do
+				local name = info.name
+				local variant = info.variant
+				local quality = info.quality
+				local fullName = string.format("%s%s%s", name, variant, quality)
+				
+				nameTable[name] = nameTable[name] or 0
+				nameTable[name] += 1
+				rarityTable[self.cardManager:GetRarity(name)] += 1
+				qualityTable[quality] += 1
+				variantTable[variant == "Default" and "Default" or "Variant"] += 1
+				fullNameTable[fullName] = fullNameTable[fullName] or 0
+				fullNameTable[fullName] += 1
+			end
+		end
+		
+		self:Log(string.format("open %s %d", cardPackName, count), senderUserId)
+		
+		self:Log(_MSON:FastAnyToString(nameTable), senderUserId)
+		self:Log(_MSON:FastAnyToString(fullNameTable), senderUserId)
+		self:Log(_MSON:FastAnyToString(rarityTable), senderUserId)
+		self:Log(_MSON:FastAnyToString(qualityTable), senderUserId)
+		self:Log(_MSON:FastAnyToString(variantTable), senderUserId)
+	end
+
+	@ExecSpace("Server")
+	method void Mmr(Character character, integer mmr)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		local leaderBoardInfo = _Matching:GetOrCreateLeaderBoard()
+		if leaderBoardInfo == nil then
+			return
+		end
+		
+		local profileCode = character.Entity.PlayerComponent.ProfileCode
+		if mmr == nil then
+			local resultCode, rankInfo = _MatchmakingService:GetRankInfoAndWait(leaderBoardInfo.Id, "1", profileCode)
+			self:Log(string.format("mmr get %d", resultCode == LeaderboardResultCode.Ok and rankInfo.Score or 1500), senderUserId)
+		else
+			_MatchmakingService:SetScoreAndWait(leaderBoardInfo.Id, profileCode, mmr, "")
+			local resultCode, rankInfo = _MatchmakingService:GetRankInfoAndWait(leaderBoardInfo.Id, "1", profileCode)
+			character:SetRank(character.rankPoint, rankInfo.Rank)
+			self:Log(string.format("mmr set %d", mmr), senderUserId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RankPoint(Character character, integer rankPoint)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		local leaderBoardInfo = _Matching:GetOrCreateLeaderBoard()
+		
+		if rankPoint == nil then
+			self:Log(string.format("rankPoint get %d", character.rankPoint), senderUserId)
+		else
+			local userDataStorage = _DataStorageService:GetUserDataStorage(character.Entity.Name)
+			userDataStorage:SetAndWait("rankPoint", _MSON:FastAnyToString(rankPoint))
+			
+			local sortableDataStorage = _DataStorageService:GetSortableDataStorage("Ranking")
+			sortableDataStorage:SetByInfoAndWait(DataStorageKeyInfo(character.Entity.Name, "", character.nickname), rankPoint)
+			
+			local resultCode, sortedPages = sortableDataStorage:GetSortedAndWait(SortDirection.Descending, 0, 100000)
+			if resultCode ~= 0 then
+				log(resultCode)
+				return
+			end
+			
+			local ranking = 0
+			local count = 1
+			while true do
+			    local datas = sortedPages:GetCurrentPageDatas()
+			    for _, data in pairs(datas) do
+					local userId = data.KeyInfo.Key
+					if character.Entity.Name == userId then
+						ranking = count
+						break
+					end
+					count += 1
+					if count > 1 then
+						break
+					end
+			    end
+				if count > 1 or ranking > 0 then
+					break
+				end
+				
+			    if sortedPages.IsLastPage == true then
+			        break
+			    end
+			    
+			    sortedPages:MoveToNextPageAndWait()
+			end
+			
+			character:SetRank(rankPoint, ranking)
+			
+			self:Log(string.format("rankPoint set %d", rankPoint), senderUserId)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void Reprocess(Character character)
+		if not isvalid(character) or character.Entity.Name ~= senderUserId then
+			return
+		end
+		
+		self:Log("reprocess start", senderUserId)
+		
+		local dataSet = _DataService:GetTable("Reprocess")
+		for _, userId in ipairs(dataSet:GetColumn("userId")) do
+			local userDataStorage = _DataStorageService:GetUserDataStorage(userId)
+			local resultCode, userPages = userDataStorage:BatchGetAndWait({"meso"})
+			if resultCode ~= 0 then
+				continue
+			end
+			
+			local meso
+			
+			while true do
+				local userDatas = userPages:GetCurrentPageDatas()
+				for _, data in pairs(userDatas) do
+					local key = data.KeyInfo.Key
+					local str = data.Value
+					local value = str and _MSON:FastStringToAny(str)
+					
+					if key == "meso" then
+						meso = value or 0
+					end
+				end
+				
+				if userPages.IsLastPage == true then
+					break
+				end
+				
+				resultCode = userPages:LoadNextPageAndWait()
+				if resultCode ~= 0 then
+					break
+				end
+				
+				userPages:MoveToNextPageAndWait()
+			end
+			
+			meso += 10000
+			
+			userDataStorage:BatchSetAndWait({
+				meso = _MSON:FastAnyToString(meso)
+			})
+			
+			self:Log(userDataStorage.UserId, senderUserId)
+		end
+		
+		self:Log("reprocess end", senderUserId)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "e5b214f8-01d7-43b2-b93f-59d66a9488d7")
+	handler HandleChatEvent(ChatEvent event)
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ChatComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local Message = event.Message
+		-- local SenderName = event.SenderName
+		local UserId = event.UserId
+		---------------------------------------------------------
+		
+		local character = _UserService.LocalPlayer.Character
+		if character.Entity.Name ~= UserId then
+			return
+		end
+		
+		local args = _UtilLogic:Split(Message, " ")
+		local command = string.lower(args[1])
+		if command == "reset" then
+			if _UtilLogic:IsNilorEmptyString(args[2]) then
+				 self.uiManager.PopupModule:Open("Do you really want to reset?", false, function()
+					self:Reset(character, _LocalizationService.CurrentLocaleId)
+				end, nil) 
+			end
+		elseif command == "clear" then
+			if _UtilLogic:IsNilorEmptyString(args[2]) then
+				 self:Clear(character, _LocalizationService.CurrentLocaleId)
+			end
+		elseif command == "meso" then
+			local delta = tonumber(args[2])
+			if delta ~= nil and _UtilLogic:IsNilorEmptyString(args[3]) then
+				self:Meso(character, delta)
+			end
+		elseif command == "complete" then
+			self:Complete(character)
+		elseif command == "time" then
+			local dateTimeString = args[2]
+			if _UtilLogic:IsNilorEmptyString(args[3]) then
+				if _UtilLogic:IsNilorEmptyString(dateTimeString) then
+					_DateTime:ResetKtcNow()
+				else
+					_DateTime:SetKtcNow(DateTime(dateTimeString, "s"))
+				end
+				self:Time(character, dateTimeString)
+			end
+		elseif command == "open" then
+			local cardPackName = args[2]
+			local count = tonumber(args[3])
+			if not _UtilLogic:IsNilorEmptyString(cardPackName) and count ~= nil and _UtilLogic:IsNilorEmptyString(args[4]) then
+				self:Open(character, cardPackName, count)
+			end
+		elseif command == "mmr" then
+			local mmr = tonumber(args[2])
+			if _UtilLogic:IsNilorEmptyString(args[3]) then
+				self:Mmr(character, mmr)
+			end
+		elseif command == "rankpoint" then
+			local rankPoint = tonumber(args[2])
+			if _UtilLogic:IsNilorEmptyString(args[3]) then
+				self:RankPoint(character, rankPoint)
+			end
+		elseif command == "reprocess" then
+			if _UtilLogic:IsNilorEmptyString(args[2]) then
+				self:Reprocess(character)
+			end
+		end
+	end
+
+end

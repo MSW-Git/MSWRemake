@@ -1,0 +1,221 @@
+@Component
+script PlayerAccount extends Component
+
+	property table accountTable = {}
+
+	property table accountShowTable = {}
+
+	property string userId = ""
+
+	property PlayerAccountUserInterface uiComponent = "f34b3825-f202-4ac7-9b8a-fe5c550c8231"
+
+	property boolean appliedExpBuff = false
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID 설정
+		self.userId = self.Entity.PlayerComponent.UserId
+	end
+
+	method table SetAccountTable(number level, number exp)
+		-- 계정 레벨과 경험치로 계정 테이블 생성
+		local maxLevel = _PlayerAccountLogic.accountMaxLevel
+		local accountData = {}
+		
+		
+		accountData.getReward = {}
+		
+		for i = 1 , maxLevel do
+			if i <= level then
+				accountData.getReward[i] = true
+			else
+				accountData.getReward[i] = false	
+			end
+		end
+		
+		
+		accountData.level = level
+		accountData.exp = exp
+		
+		return accountData
+	end
+
+	@ExecSpace("Server")
+	method void TransferToPlayerData()
+		-- 계정 데이터를 플레이어 DB에 저장
+		
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		if not isvalid(self.accountShowTable[2]) then
+			self:InitAccountShowPopup()
+		end
+		
+		local accountData = {}
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["accountData"] = _HttpService:JSONEncode(self.accountTable)
+		playerData["accountShowTable"] = _HttpService:JSONEncode(self.accountShowTable)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void PlayerAccountExpUp(number value, boolean needApplyBuffBonus, string source, string userId)
+		-- 플레이어 계정 경험치 증가 및 레벨업 처리
+		 
+		if self.appliedExpBuff and needApplyBuffBonus then
+			self.accountTable.exp = self.accountTable.exp + (value * 2)
+			self.appliedExpBuff = false
+		else
+			self.accountTable.exp = self.accountTable.exp + value
+		end
+		
+		
+		if self.accountTable.level < _PlayerAccountLogic.accountMaxLevel then 
+			if self.accountTable.exp >= _PlayerAccountLogic.accountExpData[self.accountTable.level + 1].maxExp then 
+				
+				local extraExp = self.accountTable.exp - _PlayerAccountLogic.accountExpData[self.accountTable.level + 1].maxExp 
+				
+						
+				if extraExp < 0 then
+				end
+		
+				if self.accountTable.getReward[self.accountTable.level + 1] == false then 
+					self.accountTable = self:SetAccountTable(self.accountTable.level + 1, extraExp)	
+					self.Entity:SendEvent(NewbieMissionUpdateEvent("reachAccountLevel", "0", self.accountTable.level))
+					
+					_WorldLog:LogBestRecordFlow(self.userId, self.accountTable.level, "AccountLevel", tostring(self.Entity.PlayerInfoComponent.playerInfo.stageStep))
+					_RankingLogic:SetAccountLevelRecord(self.userId)
+					
+					local rewardTable = _PlayerAccountLogic.accountRewardData[self.accountTable.level]
+					for i = 1 , #rewardTable.rewardType do
+						_PlayerAccountLogic:GiveLevelUpReward(rewardTable.rewardType[i], rewardTable.rewardCount[i], self.userId)
+					end
+					self:SendAccountLevelUpEvent(self.accountTable, self.userId)
+				end
+				
+				if self.accountTable.exp >= _PlayerAccountLogic.accountExpData[self.accountTable.level + 1].maxExp then 
+					self:PlayerAccountExpUp(0, needApplyBuffBonus,source, userId)
+				end
+				
+				_WorldLog:LogAccountFlow("1", "1", value, source, userId)
+			end
+		else
+			_LocalizeLogic:ShowToast("toast290", self.userId)
+		end
+		
+		
+		
+		
+		self:TransferToPlayerData()
+		self:SyncClientAccountData(self.accountTable, self.userId)
+		
+		_WorldLog:LogAccountFlow("0", "0", value, source, userId)
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void SyncClientAccountData(table accountTable)
+		-- 서버에서 클라이언트로 계정 데이터 동기화
+		self.accountTable = accountTable
+		_PlayerAccountLogic:RefreshProfileUI()
+	end
+
+	method void InitAccountData()
+		-- 계정 데이터를 초기값으로 설정
+		self.accountTable = self:SetAccountTable(1, 0)
+		self:SyncClientAccountData(self.accountTable)
+	end
+
+	method void LoadData(table data)
+		-- 저장된 계정 데이터를 로드
+		self.accountTable = data
+		if self:IsClient() then
+			_PlayerAccountLogic:RefreshProfileUI()
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SendAccountLevelUpEvent(table accountTable)
+		-- 계정 레벨업 이벤트를 전송
+		_PlayerAccountLogic:SendEvent(AccountLevelUp(accountTable.level, _PlayerAccountLogic.accountRewardData[accountTable.level]))
+	end
+
+	@ExecSpace("Server")
+	method void SaveGetRewardData(integer level)
+		-- 레벨업 보상 수령 상태를 저장
+		self.accountTable.getReward[level] = true
+		self:SyncClientAccountData(self.accountTable)
+	end
+
+	@ExecSpace("Server")
+	method void InitAccountShowPopup()
+		-- 계정 레벨업 팝업 표시 상태 초기화
+		self.accountShowTable[1] = true 
+		for i = 2 , _PlayerAccountLogic.accountMaxLevel do
+			self.accountShowTable[i] = false
+		end
+		
+		self:SyncClientInAccountShowPopup(self.accountShowTable)
+	end
+
+	@ExecSpace("Server")
+	method void ChangAccountShowPopupData(integer level)
+		-- 특정 레벨의 팝업 표시 상태 변경
+		self.accountShowTable[level] = true
+		self:SyncClientInAccountShowPopup(self.accountShowTable, self.userId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncClientInAccountShowPopup(table table)
+		-- 팝업 표시 상태를 클라이언트에 동기화
+		self.accountShowTable = table
+		
+	end
+
+	@ExecSpace("Server")
+	method void LoadShowData(table table)
+		-- 저장된 팝업 표시 데이터를 로드
+		self.accountShowTable = table
+		self:SyncClientInAccountShowPopup(self.accountShowTable)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEntityMapChangedEvent(EntityMapChangedEvent event)
+		-- 맵 변경 시 계정 레벨업 보상 팝업 표시 처리
+		
+		local NewMap = event.NewMap
+		local OldMap = event.OldMap
+		local Entity = event.Entity
+		if NewMap.Name == "Town" then
+			if not isvalid(self.accountTable.level) then
+				return
+			end
+		
+			local level = self.accountTable.level
+		
+			if not isvalid(self.accountShowTable[level]) then
+				return
+			end
+		
+			if self.accountShowTable[level] == false then 
+				local rewardTable =  _PlayerAccountLogic.accountRewardData[level]
+				_PlayerAccountLogic:InitRewardPopUp(rewardTable, level)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleDBLoadedEvent(DBLoadedEvent event)
+		-- DB 로드 완료 시 계정 레벨업 보상 팝업 표시
+		local ppsn = event.ppsn
+		local level = _UserService.LocalPlayer.PlayerAccount.accountTable.level
+		
+		if self.accountShowTable[level] == false then 
+			local rewardTable =  _PlayerAccountLogic.accountRewardData[level]
+			_PlayerAccountLogic:InitRewardPopUp(rewardTable, level)
+		end
+	end
+
+end

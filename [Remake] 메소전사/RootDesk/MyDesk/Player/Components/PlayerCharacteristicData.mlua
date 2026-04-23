@@ -1,0 +1,370 @@
+@Component
+script PlayerCharacteristicData extends Component
+
+	property number characteristicPoint = 0
+
+	property number accumulatedUsedPoint = 0
+
+	property table charStorage = {}
+
+	property integer canEquipCount = 3
+
+	@HideFromInspector
+	property string userId = ""
+
+	property number extraDropWeaponProb = 0
+
+	property boolean GetAdrenaline = false
+
+	property number speedBuffRate = 0
+
+	@ExecSpace("Server")
+	method void ApplyPlayerCharacteristics()
+		-- 플레이어 특성을 적용하여 무기 장착 수, 스킬, 버프 등을 설정
+		local charStorage = self.charStorage
+		local maximumWeaponCount = charStorage["WeaponType"].level
+		
+		if maximumWeaponCount == 0 then 
+			self.canEquipCount = 3
+		end
+		
+		
+		if maximumWeaponCount == 1 then
+			self.canEquipCount = 4
+		elseif maximumWeaponCount == 2 then
+			self.canEquipCount = 5
+		elseif maximumWeaponCount == 3 then
+			self.canEquipCount = 6
+		end
+		
+		self:SetCanEquipCount(self.canEquipCount, self.userId)
+		
+		if self.charStorage["PetType"].level >= 1 then
+		end
+		if self.charStorage["PetType"].level >= 2 then
+		end
+		
+		if self.charStorage["PhysicsType"].level >= 1 then
+			self:ApplyWalkSpeed(0.1, self.userId)
+			self.speedBuffRate = 0.1
+			
+			if self.Entity.CurrentMapName == "Town" and self.Entity.PlayerDBComponent.dbInited then 
+				self.Entity.PlayerCharacterData:CalculateStatus()
+			end
+		else
+			self:ApplyWalkSpeed(0, self.userId)
+			self.speedBuffRate = 0
+			
+			if self.Entity.CurrentMapName == "Town" and self.Entity.PlayerDBComponent.dbInited then 
+				self.Entity.PlayerCharacterData:CalculateStatus()
+			end
+		end
+		
+		if self.charStorage["LaboratoryType"].level >= 1 then
+			self:ApplyGetBonusDashCount(self.userId) 
+		end
+		
+		if self.charStorage["LaboratoryType"].level >= 2 then
+			self:ApplyCanUseChargingSkill(self.userId) 
+		end
+		
+		if self.charStorage["LaboratoryType"].level >= 3 then
+		end	
+		
+		
+		if self.charStorage["PhysicsType"].level >= 2 then
+			self:ApplyMeditationInClient(self.userId) 
+		end
+		if self.charStorage["PhysicsType"].level >= 3 then
+			self:ApplyAdrenaline(self.userId) 
+		end
+		if self.charStorage["PhysicsType"].level >= 4 then
+			self:ApplyLevelUpRegenHP(self.userId) 
+		end
+		
+		if self.charStorage["RelicType"].level >= 1 then
+			self:ApplyLevelUpBuffListReroll(self.userId) 
+		end
+		
+		if self.charStorage["RelicType"].level >= 2 then
+			self:ApplyStageClearRewardBonus(0.05) 
+		end
+		if self.charStorage["RelicType"].level >= 3 then
+			self:ApplyExtraDropWeaponProbability(5000) 
+		end
+	end
+
+	method table SetPlayerCharacteristic(string characteristicType, number level)
+		-- 플레이어 특성 데이터 테이블 생성
+		local CharacteristicData = {}
+		
+		CharacteristicData.level = level
+		CharacteristicData.type = characteristicType
+		
+		return CharacteristicData
+	end
+
+	@ExecSpace("Multicast")
+	method void ChangePlayerCharacteristicData(string characteristicType, number level, boolean loadDB)
+		-- 플레이어 특성 데이터를 변경하고 클라이언트에 동기화
+		if self:IsClient() then
+			if self.userId ~= _UserService.LocalPlayer.PlayerComponent.UserId then
+				return
+			end
+		end
+		
+		self.charStorage[characteristicType] = self:SetPlayerCharacteristic(characteristicType, level)
+		
+		self:SetCharacteristicData()
+		
+		
+		if self:IsServer() and characteristicType == "LaboratoryType" and level == 3 then
+			self.Entity.PlayerAutoGathering:SetMaxHourTime(12)
+		end
+		
+		if self:IsServer() and characteristicType == "LaboratoryType" and level == 0 then
+			self.Entity.PlayerAutoGathering:SetMaxHourTime(8)
+		end
+		
+		if self:IsClient() and self.Entity == _UserService.LocalPlayer then
+			_MySpecLogic:RefreshSpec()
+			_CharacteristicManager:RefreshCharacteristicSlotList(characteristicType)
+		end
+		
+		
+		if not loadDB then 
+			self:ApplyPlayerCharacteristics()
+			
+			if self:IsServer() then
+				self.Entity:SendEvent(NewbieMissionUpdateEvent("getCharacteristic", string.format("%s_%d", characteristicType, level), 1)) 
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetCharacteristicData()
+		-- 특성 데이터를 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local characteristicData = {}
+		for key, value in pairs(self.charStorage) do
+			table.insert(characteristicData, _HttpService:JSONEncode(value))
+		end
+		characteristicData = _HttpService:JSONEncode(characteristicData)
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["characteristic"] = characteristicData
+		playerData["characteristicPoint"] = self.characteristicPoint
+		playerData["accumulatedUsedPoint"] = self.accumulatedUsedPoint
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitPlayerCharacteristicData()
+		-- 플레이어 특성 데이터를 초기값으로 설정
+		
+		self:ChangePlayerCharacteristicData("WeaponType", 0, true)
+		self:ChangePlayerCharacteristicData("LaboratoryType", 0, true)
+		self:ChangePlayerCharacteristicData("PhysicsType", 0, true)
+		self:ChangePlayerCharacteristicData("RelicType", 0, true)
+		self:ChangePlayerCharacteristicData("PetType", 0, true)
+		
+		for i = 1 , self.accumulatedUsedPoint do 
+			self:AddCharacteristicPoint("Init")
+		end 
+		
+		_CharacteristicManager:RefreshCharacteristicCoin(self.characteristicPoint, self.userId) 
+		self:SetAccumulatedUsedPoint(-self.accumulatedUsedPoint) 
+		
+		self:SetCharacteristicData()
+		self:ApplyPlayerCharacteristics() 
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddCharacteristicPoint(string source)
+		-- 특성 포인트를 1 증가시키고 UI 갱신 및 로그 기록
+		self.characteristicPoint = self.characteristicPoint + 1
+		_CharacteristicManager:RefreshCharacteristicCoin(self.characteristicPoint, self.userId)
+		self.Entity.PlayerCurrencyData:ApplyPlayerCharacteristicPoint(self.characteristicPoint)
+		self:SetCharacteristicData()
+		_WorldLog:LogAssetFlow(self.userId, "characteristicCoin", source , "", _WorldLog.FlowType_Get, 1)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReduceCharacteristicPoint()
+		-- 특성 포인트를 1 차감하고 사용 포인트 누적
+		self.characteristicPoint = self.characteristicPoint -1
+		_CharacteristicManager:RefreshCharacteristicCoin(self.characteristicPoint, self.userId)
+		self:SetAccumulatedUsedPoint(1)
+		self.Entity.PlayerCurrencyData:ApplyPlayerCharacteristicPoint(self.characteristicPoint)
+		self:SetCharacteristicData()
+		_WorldLog:LogAssetFlow(self.userId, "characteristicCoin", "GetCharacteristic", "", _WorldLog.FlowType_Consume, -1)
+	end
+
+	@ExecSpace("Client")
+	method void ApplyWalkSpeed(number value)
+		-- 이동 속도 버프 적용
+		self.speedBuffRate = value
+	end
+
+	@ExecSpace("Client")
+	method void SetCanEquipCount(integer canEquipCount)
+		-- 장착 가능한 무기 개수 설정
+		self.canEquipCount = canEquipCount
+		self.Entity:SendEvent(SetCanEquipCountEvent())
+	end
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID 설정
+		self.userId = self.Entity.PlayerComponent.UserId
+	end
+
+	@ExecSpace("Client")
+	method void ApplyLevelUpRegenHP()
+		-- 레벨업 시 체력 회복 버프 적용
+		if isvalid(self.Entity.BattlePlayer) then
+			self.Entity.BattlePlayer.bonusLvUpHeal = true
+		end	
+	end
+
+	@ExecSpace("Client")
+	method void ApplyGetBonusExp()
+		-- 보너스 경험치 획득 버프 적용
+		if isvalid(self.Entity.BattlePlayer) then
+			self.Entity.BattlePlayer.bonusExpRate = 0.1 
+		end	
+	end
+
+	@ExecSpace("Client")
+	method void ApplyGetBonusDashCount()
+		-- 추가 대시 스태미나 버프 적용
+		_BuffLogic.appliedBuff.extraDashStamina = 60
+		if isvalid(_UserService.LocalPlayer.BattlePlayer) then
+			_UserService.LocalPlayer.BattlePlayer.maxStamina = _UserService.LocalPlayer.BattlePlayer.maxStamina + _BuffLogic.appliedBuff.extraDashStamina
+			_UserService.LocalPlayer.BattlePlayer.stamina = _UserService.LocalPlayer.BattlePlayer.maxStamina
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ApplyLevelUpBuffListReroll()
+		-- 레벨업 버프 리스트 재선택 기능 활성화
+		
+		_BuffLogic.appliedBuff.levelUpEventReroll = true
+	end
+
+	@ExecSpace("Client")
+	method void ApplyExtraDropWeaponProbability(number value)
+		-- 무기 드롭 확률 증가 버프 적용
+		_BuffLogic.appliedBuff.extraEggDropRate = value
+	end
+
+	@ExecSpace("Client")
+	method void ApplyMeditationInClient()
+		-- 명상 버프 적용 (체력 회복 쿨타임 감소)
+		if isvalid(_UserService.LocalPlayer.BattlePlayer) then
+			_BuffLogic.appliedBuff.hpRecoveryCooltime = 8
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ApplyAdrenaline()
+		-- 아드레날린 버프 적용
+		_BuffLogic.appliedBuff.adrenaline = true
+	end
+
+	@ExecSpace("Client")
+	method void SetCharacteristicDataInClient(table itemData, string charType)
+		-- 클라이언트에서 특성 데이터 설정 및 UI 갱신
+		self.charStorage[charType] = itemData
+		_CharacteristicManager:RefreshCharacteristicSlotList(charType)
+	end
+
+	@ExecSpace("Client")
+	method void ApplyStageClearRewardBonus(number value)
+		-- 스테이지 클리어 보상 보너스 적용
+		_BuffLogic.appliedBuff.stageClearRewardBonusRate = value
+	end
+
+	@ExecSpace("Client")
+	method void ApplyCanUseChargingSkill()
+		-- 차징 스킬 사용 가능 버프 적용
+		_BuffLogic.appliedBuff.chargingSkill = true
+	end
+
+	method integer GetConsumedPoint()
+		-- 사용된 특성 포인트 총량 반환
+		return self.accumulatedUsedPoint
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetAccumulatedUsedPoint(number value)
+		-- 누적 사용 포인트 설정 및 클라이언트 동기화
+		self.accumulatedUsedPoint = self.accumulatedUsedPoint + value
+		self:SetAccumulatedUsedPointInCilent(self.accumulatedUsedPoint)
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetAccumulatedUsedPointInCilent(number value)
+		-- 클라이언트에서 누적 사용 포인트 설정
+		self.accumulatedUsedPoint = value
+	end
+
+	@ExecSpace("Server")
+	method void ResetCharacteristicCoin()
+		-- 특성 코인 초기화 및 장비 해제 처리
+		if self.charStorage["WeaponType"].level == 0 and self.charStorage["PetType"].level == 0 
+			and self.charStorage["PhysicsType"].level == 0 and self.charStorage["RelicType"].level == 0 and self.charStorage["LaboratoryType"].level == 0 then
+			_LocalizeLogic:ShowToast("toast238", senderUserId)
+			return
+		end
+		
+		local storage = self.Entity.PlayerStorageComponent
+		local petStorage = self.Entity.PlayerPetStorageComponent
+		local explore = self.Entity.PlayerAutoGathering
+		local price = 100
+		
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		local resetEnable = self:CheckPlayerDiamond(user)
+		local equipmentData = _ItemDataLogic.equipmentData
+		
+		if resetEnable == true then 
+		
+			for key, value in pairs(storage.storage) do
+				if equipmentData[value.originalId] ~= nil then
+					if value.equippedSlotNum >= 4 and equipmentData[value.originalId].category ~= "armor" then
+						storage:UnEquip(value.uniqueKey)
+					end
+				end
+			end
+		
+			for key, value in pairs(petStorage.petInventory) do
+				if value.equippedSlotNum >= 2 then
+					petStorage:UnEquipPet(value.uniqueKey)
+				end
+			end
+		
+			explore:LoadData(0, "")	
+			self:InitPlayerCharacteristicData() 
+			
+			_WealthLogic:RequestReduceWealthFromServer("Diamond", price, user.PlayerComponent.UserId, "ResetCharacterisitc") 
+			
+			_LocalizeLogic:ShowToast("toast236", senderUserId)
+		else
+			_LocalizeLogic:ShowToast("toast237", senderUserId)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean CheckPlayerDiamond(Entity user)
+		-- 플레이어의 다이아몬드 보유량 확인
+		local price = 100
+		if user.PlayerCurrencyData.currencyTable["Diamond"]. amount >= price then
+			return true
+		else
+			return false
+		end
+	end
+
+end

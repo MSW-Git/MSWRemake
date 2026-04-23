@@ -1,0 +1,205 @@
+@Component
+script UIWeaponBuffGatcha extends Component
+
+	property Entity baseSlot = "13f325d1-3bf8-4ab2-8027-ab0597112738"
+
+	property table slots = {}
+
+	property Entity selectedSlot = "efd4ab92-71ca-42d5-a946-afcd4818a4cf"
+
+	property UILevelUpPopup levelUpPopup = "2f9bc163-5c61-4175-b386-71c49bc0094c"
+
+	property number cardIndex = 0
+
+	property Entity selectedSlot2 = "05cb9205-e1ef-44cd-9972-d6d3dfb5e390"
+
+	property boolean isPlaying = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 무기 버프 가차 UI 초기화 (슬롯 배치)
+		self._T.needToSkip = false
+		self.baseSlot.Enable = false
+		
+		local buttonSize = 200
+		local offsetX = buttonSize * -1.5
+		local offsetY = buttonSize * -1.5
+		local grid = { Vector2(0,3),Vector2(1,3),Vector2(2,3),Vector2(3,3),
+					Vector2(3,2),Vector2(3,1),Vector2(3,0),Vector2(2,0),
+					Vector2(1,0),Vector2(0,0),Vector2(0,1),Vector2(0,2)}
+		
+		for i = 1, #grid do
+			
+			local clone = self.baseSlot:Clone(string.format("slot_%d",i))
+		    local x = grid[i].x * buttonSize + offsetX
+		    local y = grid[i].y * buttonSize + offsetY
+		
+			clone.UITransformComponent.anchoredPosition = Vector2(x,y)
+			clone.Enable = true
+			table.insert(self.slots,
+							{
+								entity = clone;
+								pos = Vector2(x,y)
+							})
+			
+		end
+	end
+
+	method void ShuffleWeaponSlot()
+		-- 무기 슬롯 섬글 (랜덤 무기 배치)
+		local possibleGuns = _UserService.LocalPlayer.BattlePlayer:GetEquipPossibleGuns()
+		local possibleGunsCnt = #possibleGuns 
+		local randomSlot = {}
+		for i = 1, #self.slots do
+			local random = _UtilLogic:RandomIntegerRange(1,possibleGunsCnt)
+			table.insert(randomSlot,random)
+		end
+		
+		for k,v in pairs(randomSlot) do
+			self:SetWeaponSprite(possibleGuns[randomSlot[k]],k)
+		end
+		
+		
+	end
+
+	method void SetWeaponSprite(any weaponData, number slot)
+		-- 지정된 슬롯에 무기 스프라이트 설정
+		self.slots[slot].weaponData = weaponData
+		
+		local entity = self.slots[slot].entity
+		---@type SpriteGUIRendererComponent
+		local sprite = entity:GetChildByName("UISprite").SpriteGUIRendererComponent
+		---@type SpriteGUIRendererComponent
+		
+		---@type TextComponent
+		local starText = entity:GetChildByName("Star").TextComponent
+		
+		local weaponId = weaponData.originalId
+		local weaponSpec = _WeaponSpecLogic.weaponData[weaponId] 
+		local equipmentData = _ItemDataLogic.equipmentData[weaponId]
+		
+		
+		
+		if _UtilLogic:IsNilorEmptyString(equipmentData.ruid) == true then
+			sprite.ImageRUID = weaponSpec.ruid
+		else
+			sprite.ImageRUID = equipmentData.ruid
+		end
+		
+		
+		local grade = equipmentData.grade
+		
+		local starCnt = tonumber(equipmentData.star)
+		local starStr = ""
+		for i = 1,starCnt do
+			starStr = starStr .. "★"
+		end
+		starText.Text = starStr
+	end
+
+	method void StartGatcha(number slot, number weaponCnt, any callback)
+		-- 가차 시작 (룰렛 애니메이션과 결과 처리)
+		self.cardIndex = slot
+		self:ShuffleWeaponSlot()
+		self.Entity.Enable = true
+		self.isPlaying = true
+		local random = _UtilLogic:RandomIntegerRange(12*4,12*7)
+		
+		local slotCnt = #self.slots
+		local index = 0
+		local repeatId = 0
+		self.selectedSlot.Enable = true
+		if weaponCnt > 1 then
+			self.selectedSlot2.Enable = true
+		end
+		local framCnt = 0
+		
+		local slot2Random = _UtilLogic:RandomIntegerRange(1,11)
+		for i =1, 12 do
+			if self.slots[random%slotCnt + 1].weaponData.uniqueKey == self.slots[(random+slot2Random - 1)%slotCnt + 1].weaponData.uniqueKey then
+				slot2Random = slot2Random + 1
+			else
+				break
+			end
+		end
+		repeatId = _TimerService:SetTimerRepeat(function() 
+		
+				local deltaSlot = random - index
+		
+				
+				local speed = 1
+				if deltaSlot < 5 then
+					speed = 5
+				elseif deltaSlot < 15 then
+					speed = 3
+				elseif deltaSlot < 20 then
+					speed = 2
+				end
+				if self._T.needToSkip then
+					if deltaSlot > slotCnt then
+						index = index + slotCnt
+						deltaSlot = random - index
+						
+					end		
+					speed = 1	
+				end
+				framCnt = framCnt + 1
+				if framCnt < speed then
+					return
+				else
+					framCnt = 0
+				end
+				local selectedSlot = index % slotCnt 
+				self.selectedSlot.UITransformComponent.anchoredPosition = self.slots[selectedSlot + 1].pos
+				self.selectedSlot2.UITransformComponent.anchoredPosition = self.slots[(selectedSlot + slot2Random)%slotCnt+ 1].pos
+				index = index + 1
+				if index >=random then
+					_TimerService:ClearTimer(repeatId)			
+					wait(1)
+					
+					if weaponCnt == 1 then
+						if callback ~= nil then
+							callback(self.slots[selectedSlot + 1].weaponData.uniqueKey)
+						end		
+					elseif weaponCnt == 2 then
+						if callback ~= nil then
+							callback(self.slots[selectedSlot + 1].weaponData.uniqueKey,self.slots[(selectedSlot + slot2Random)%slotCnt+ 1].weaponData.uniqueKey)
+						end	
+					end		
+					
+					local transform = self.Entity.TransformComponent
+					local canvasGroup = self.Entity.CanvasGroupComponent
+					canvasGroup.BlocksRaycasts = false
+					local endTween = _TweenLogic:MakeTween(0,1,0.5,EaseType.SineEaseIn,function(value) 
+						canvasGroup.GroupAlpha = 1 - value
+						transform.Scale = Vector3(1+value * 0.2,1+value * 0.2,1)
+					end)
+					endTween:SetOnEndCallback(function() 
+						self.selectedSlot.Enable = false
+						self.selectedSlot2.Enable = false
+						self.Entity.Enable = false
+						self._T.needToSkip = false
+						canvasGroup.BlocksRaycasts = true		
+						canvasGroup.GroupAlpha = 1
+						transform.Scale = Vector3.one	
+						self.isPlaying = false
+						_TimerLogic:Resume()
+					end)
+					endTween:Play()
+					
+					
+				end
+		end,0.02)
+		
+	end
+
+	@EventSender("Entity", "63e2ee54-9fb8-4ef4-9696-de0aebe7407b")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 스킵 버튼 클릭 이벤트 처리 (가차 애니메이션 스킵)
+		
+		local Entity = event.Entity
+		
+		self._T.needToSkip = true
+	end
+
+end

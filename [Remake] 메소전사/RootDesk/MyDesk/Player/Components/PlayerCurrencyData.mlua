@@ -1,0 +1,150 @@
+@Component
+script PlayerCurrencyData extends Component
+
+	property table currencyTable = {}
+
+	property Entity goldText = "e41dafb6-9c89-42e0-8ccd-d9e1639d8e79"
+
+	property Entity diamondText = "02214e89-f6ea-49c0-80ef-33a86a87b241"
+
+	property Entity essenceText = "84a1fdeb-4a0b-471b-9107-a62914af9245"
+
+	property Entity goldText_InCharLevelUp = "1a78593a-fb4a-45b1-84bd-bc3861159230"
+
+	property Entity essenseText_inCharLevelUp = "bde8b379-af69-46f9-8329-b9c58838ef2b"
+
+	property string userId = ""
+
+	property Entity weaponScrollText = "5ec3cf72-d5d3-4eeb-9fc8-a6efe972087b"
+
+	property number gold = 0
+
+	property number diamond = 0
+
+	property number essence = 0
+
+	property number weaponScroll = 0
+
+	property number characteristicPoint = 0
+
+	property Entity diamondText_Gacha = "ca7c6aca-6fef-408b-8918-6647ce5d462e"
+
+	property boolean canRequestBatchLevelUp = true
+
+	property boolean canRequestLevelUp = true
+
+	property number fieldGem = 0
+
+	method table SetCurrencyDataTable(string type, number amount)
+		-- 화폐 데이터 테이블을 생성하여 타입과 수량 설정
+		local CurrencyData = {}
+		
+		CurrencyData.type = type
+		CurrencyData.amount = amount
+		
+		return CurrencyData
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddCurrencyData(string currencyType, number value)
+		-- 플레이어 화폐를 증가시키고 UI 갱신
+		
+		self.currencyTable[currencyType] = self:SetCurrencyDataTable(currencyType, self.currencyTable[currencyType].amount + value)
+		
+		self:ApplyPlayerCurrency(self.currencyTable["Gold"].amount, self.currencyTable["Diamond"].amount, self.currencyTable["Essence"].amount, self.currencyTable["WeaponScroll"].amount, self.currencyTable["FieldGem"].amount)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReduceCurrencyData(string currencyType, number value)
+		-- 플레이어 화폐를 차감하고 UI 갱신
+		if self.currencyTable[currencyType].amount - value < 0 then
+			return
+		end
+		self.currencyTable[currencyType] = self:SetCurrencyDataTable(currencyType, self.currencyTable[currencyType].amount - value)
+		self:ApplyPlayerCurrency(self.currencyTable["Gold"].amount, self.currencyTable["Diamond"].amount, self.currencyTable["Essence"].amount, self.currencyTable["WeaponScroll"].amount, self.currencyTable["FieldGem"].amount)
+	end
+
+	@ExecSpace("Server")
+	method void SaveCurrencyData()
+		-- 화폐 데이터를 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local currencyData = {}
+		for key, value in pairs(self.currencyTable) do
+			table.insert(currencyData, _HttpService:JSONEncode(value))
+		end
+		currencyData = _HttpService:JSONEncode(currencyData)
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["currency"] = currencyData
+	end
+
+	@ExecSpace("Server")
+	method void InitCurrencyData()
+		-- 화폐 데이터를 초기값으로 설정
+		self.currencyTable["Gold"] = self:SetCurrencyDataTable("Gold", 0)
+		self.currencyTable["Diamond"] = self:SetCurrencyDataTable("Diamond", 0)
+		self.currencyTable["Essence"] = self:SetCurrencyDataTable("Essence", 0)
+		self.currencyTable["WeaponScroll"] = self:SetCurrencyDataTable("WeaponScroll", 0)
+		self.currencyTable["FieldGem"] = self:SetCurrencyDataTable("FieldGem", 0)
+		
+		self:ApplyPlayerCurrency(self.currencyTable["Gold"].amount, self.currencyTable["Diamond"].amount, self.currencyTable["Essence"].amount, self.currencyTable["WeaponScroll"].amount, self.currencyTable["FieldGem"].amount)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshCurrencyUi(number goldAmount, number diamondAmount, number essenceAmount, number weaponScrollAmount, number fieldGemAmount)
+		-- 클라이언트 UI에 화폐 정보를 갱신하여 표시
+		self.goldText.TextComponent.Text = tostring(_NumberSeparator:ConvertToMetricPrefixString(goldAmount, "ko"))
+		self.diamondText.TextComponent.Text = tostring(math.floor(diamondAmount))
+		self.essenceText.TextComponent.Text = tostring(_NumberSeparator:ConvertToMetricPrefixString(essenceAmount, "ko"))
+		self.weaponScrollText.TextComponent.Text = tostring(_NumberSeparator:ConvertToMetricPrefixString(weaponScrollAmount,"ko"))
+		_MultiHUDManager.textFieldGem.TextComponent.Text = tostring(math.floor(fieldGemAmount))
+		_ShopLogic.fieldShopUI.WealthText.TextComponent.Text = tostring(math.floor(fieldGemAmount)) 
+	end
+
+	method void OnBeginPlay()
+		-- 컴포넌트 초기화 시 사용자 ID 설정
+		self.userId = self.Entity.PlayerComponent.UserId
+	end
+
+	method void ApplyPlayerCurrency(number goldAmount, number diamondAmount, number essenceAmount, number weaponScrollAmount, number fieldGemAmount)
+		-- 화폐 정보를 적용하고 클라이언트에 동기화
+		self.gold = goldAmount
+		self.diamond = diamondAmount
+		self.essence = essenceAmount
+		self.weaponScroll = weaponScrollAmount
+		self.fieldGem = fieldGemAmount
+		
+		if self:IsServer() then
+			self:RefreshCurrencyUi(self.currencyTable["Gold"].amount, self.currencyTable["Diamond"].amount, self.currencyTable["Essence"].amount, self.currencyTable["WeaponScroll"].amount,self.fieldGem, self.userId)
+			self:ApplyPlayerCurrencyInClient(goldAmount, diamondAmount, essenceAmount, weaponScrollAmount, fieldGemAmount,self.currencyTable,self.userId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ApplyPlayerCurrencyInClient(number goldAmount, number diamondAmount, number essenceAmount, number weaponScrollAmount, number fieldGemAmount, table currencyTable)
+		-- 클라이언트에서 화폐 정보 동기화 및 적용
+		self.currencyTable = currencyTable
+		self:ApplyPlayerCurrency(goldAmount, diamondAmount, essenceAmount, weaponScrollAmount,fieldGemAmount)
+	end
+
+	method void ApplyPlayerCharacteristicPoint(number point)
+		-- 특성 포인트를 적용하고 클라이언트에 동기화
+		self.characteristicPoint = point
+		if self:IsServer() then
+			self:ApplyPlayerCharacteristicPointInClient(point, self.userId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ApplyPlayerCharacteristicPointInClient(number point, string id)
+		-- 클라이언트에서 특성 포인트 적용
+		if _UserService.LocalPlayer.PlayerComponent.UserId ~= id then
+			return
+		end
+		self:ApplyPlayerCharacteristicPoint(point)
+	end
+
+end

@@ -1,0 +1,129 @@
+@Component
+script ExpGem extends Component
+
+	property number exp = 1
+
+	@HideFromInspector
+	property Entity draggedPet = nil
+
+	@HideFromInspector
+	property number draggedTime = 0
+
+	@HideFromInspector
+	property number spawnedTime = 0
+
+	property boolean waveClear = false
+
+	method void Init(number exp)
+		-- 경험치 젬 초기화 및 크기 설정
+		self.draggedPet = nil
+		self.draggedTime = 0
+		self._T.transform = self.Entity.TransformComponent
+		if exp > 1 then	
+			self.Entity.TransformComponent.Scale = Vector3(1.5,1.5,1)
+		else
+			self.Entity.TransformComponent.Scale = Vector3.one
+		end
+		self._T.trackingSpeed = (_UtilLogic:RandomDouble() * 0.5 + 0.5) * 7
+		self.waveClear = false
+		self.exp = exp
+		self.spawnedTime = _UtilLogic.ServerElapsedSeconds
+		self._T.player = _UserService.LocalPlayer.BattlePlayer
+		
+	end
+
+	method void Destroy(Entity entity)
+		-- 경험치 젬 파괴 및 경험치 지급 처리
+		if isvalid(entity) then
+			local player = entity.BattlePlayer
+			self.exp = self.exp * _BuffLogic:GetExpRatio()
+		
+			local destroy = player:GainEXP(self.exp)
+			if destroy == false then
+				return
+			end
+			_EffectService:PlayEffect("1387e128c12a4b7b8dcdf00103055ad2",self.Entity,self.Entity.TransformComponent.Position,0,Vector3.one*0.5)
+			_PoolingLogic:DestroyEntity(self.Entity)
+			return
+		end
+		_PoolingLogic:DestroyEntity(self.Entity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 경험치 젬의 이동 및 추적 로직 처리
+		if _TimerLogic.pause then
+			return
+		end
+		if self.waveClear then
+			local diff = self._T.player:GetPosition() - self._T.transform.Position
+			diff.z = 0
+			
+			if diff:Magnitude() < 0.1 then
+				diff = diff:Normalize() * 0.1
+			end
+			
+			if isvalid(diff) and isvalid(self) and isvalid(self.Entity.TransformComponent) then
+				self.draggedTime = self.draggedTime + delta 
+				local speed = self._T.trackingSpeed + self.draggedTime * 5
+				self.Entity.TransformComponent:Translate(diff.x * delta * speed,diff.y * delta * speed)
+			end
+			
+			return
+		end
+		if isvalid(self.draggedPet) then
+			local petPos = self.draggedPet.TransformComponent.WorldPosition:Clone()
+			local worldPos = self._T.transform.Position:Clone()
+			local distance = petPos:Distance(worldPos)
+			self.draggedTime = self.draggedTime + delta 
+			if distance > 0.3 then
+				local speed = 8 + self.draggedTime * 5
+				local deltaMove = delta * speed * (petPos - worldPos)
+				self._T.transform:Translate(deltaMove.x,deltaMove.y)
+				
+			else
+				_SoundService:PlaySound("205510b33adf4509b1565ccd4c77d98b", _SoundLogic.effectRatio)
+				self:Destroy(_UserService.LocalPlayer)
+			end
+			
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 플레이어나 펫과 충돌 시 경험치 젬 획득 처리
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		if _TimerLogic.pause then
+			return
+		end
+		if TriggerBodyEntity == _UserService.LocalPlayer then
+			_SoundService:PlaySound("205510b33adf4509b1565ccd4c77d98b", _SoundLogic.effectRatio)
+			self:Destroy(TriggerBodyEntity)
+		elseif TriggerBodyEntity.CollectingPetComponent ~= nil and self.draggedPet == nil then
+			
+			self.draggedTime = 0
+			self.draggedPet = TriggerBodyEntity
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "WaveLogic")
+	handler HandleWaveEndEvent(WaveEndEvent event)
+		-- 웨이브 종료 시 플레이어에게 자동 이동 시작
+		
+		self.waveClear = true
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "LimitLandWaveLogic")
+	handler HandleWaveEndEvent2(WaveEndEvent event)
+		-- 리밋랜드 웨이브 종료 시 플레이어에게 자동 이동 시작
+		
+		self.waveClear = true
+	end
+
+end

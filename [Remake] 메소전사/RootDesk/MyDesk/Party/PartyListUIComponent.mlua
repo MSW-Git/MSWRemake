@@ -1,0 +1,343 @@
+@Component
+script PartyListUIComponent extends UICommonPopup
+
+	@HideFromInspector
+	property Entity originalSlot = nil
+
+	property Entity topPanel = nil
+
+	property Entity searchPanel = nil
+
+	property Entity listPanel = nil
+
+	property Entity bottomPanel = nil
+
+	property integer currentPageNum = 1
+
+	property integer pagePerCount = 5
+
+	property boolean isSearchingNow = false
+
+	property table searchedIndexs = {}
+
+	property integer autoRequestTimer = 0
+
+	property integer requestInterval = 10
+
+	property Entity createPartyButton = nil
+
+	property integer destroyTimer = 0
+
+	property Entity resetButton = nil
+
+	property table sortedTable = {}
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 파티 리스트 UI 초기화 및 버튼 이벤트 연결
+		self.Entity.Enable = false
+		
+		__base:OnBeginPlay()
+		
+		
+		self.topPanel = self.Entity:GetChildByName("TopPanel")
+		self.searchPanel = self.Entity:GetChildByName("SearchPanel")
+		self.listPanel = self.Entity:GetChildByName("ListPanel")
+		self.originalSlot = self.listPanel:GetChildByName("PartySlot")
+		self.originalSlot.Enable = false
+		
+		self.bottomPanel = self.Entity:GetChildByName("BottomPanel")
+		
+		self.canvasGroup = nil
+		
+		local emptyPanel = self.Entity:GetChildByName("ListPanel_empty")
+		emptyPanel:GetChildByName("text").TextComponent.Text = _LocalizeLogic:GetText("partyStr7")
+		
+		self.topPanel:GetChildByName("CloseButton"):ConnectEvent(ButtonClickEvent, function()
+			self:Hide()
+		end)
+		
+		if Environment:IsPCPlatform() then
+			self.Entity.MoveableUIComponent:SetTouchEntity(self.topPanel, self.Entity)
+		end
+		
+		self.searchPanel:GetChildByName("SearchButton"):ConnectEvent(ButtonClickEvent, function()
+			_PartyLogic:RequestSyncTable()
+			self:SortTable()
+			local keyword = self.searchPanel:GetChildByName("InputText").TextComponent.Text
+			table.clear(self.searchedIndexs)
+			
+			if keyword == "" or keyword == _LocalizeLogic:GetText("partyStr8") then
+				self.isSearchingNow = false
+			else
+				for key, value in pairs(self.sortedTable) do
+					if _UtilLogic:Contains(value.name, keyword) then
+						table.insert(self.searchedIndexs, value.realIndex)
+					end
+				end
+				
+				self.isSearchingNow = true
+			end
+			
+			self:Refresh()
+		end)
+		
+		self.searchPanel:GetChildByName("Reset_Button"):ConnectEvent(ButtonClickEvent, function()
+			_PartyLogic:RequestSyncTable()
+			self.searchPanel:GetChildByName("InputText").TextComponent.Text = ""
+			self.isSearchingNow = false
+			self:Refresh()
+		end)
+		
+		local pagePanel = self.bottomPanel:GetChildByName("PagePanel")
+		local prevButton = pagePanel:GetChildByName("PrevButton")
+		local nextButton = pagePanel:GetChildByName("NextButton")
+		
+		prevButton:ConnectEvent(ButtonClickEvent, function()
+			if self.currentPageNum > 1 then
+				self.currentPageNum -= 1
+				self:Refresh()
+			end
+		end)
+		
+		nextButton:ConnectEvent(ButtonClickEvent, function()
+			if self.currentPageNum < self:GetAllPageNum() then
+				self.currentPageNum += 1
+				self:Refresh()
+			end
+		end)
+		
+		self.createPartyButton = self.bottomPanel:GetChildByName("CreatePartyButton")
+		
+		self.createPartyButton:ConnectEvent(ButtonClickEvent, function()
+			if _PartyLogic:IsInParty(_UserService.LocalPlayer.PlayerComponent.UserId) then
+				_PartyUILogic:GetPartyInfoUI().PartyInfoUIComponent:SetPartyId(_UserService.LocalPlayer.PlayerFieldMapComponent.partyIndex)
+				_PartyUILogic:GetPartyInfoUI().PartyInfoUIComponent:Show()
+			else
+				_PartyUILogic:GetPartyCreateUI().PartyCreateUIComponent:Show(true)
+			end
+		end)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 파티 리스트 그리드뷰 및 버튼 상태 갱신
+		local gridView = self.listPanel.GridViewComponent
+		
+		self:SortTable()
+		gridView.TotalCount = _PartyLogic:GetAllPartyCount()
+		
+		gridView:Refresh(true, true)
+		self:RefreshPageButtons()
+		
+		if _PartyLogic:IsInParty(_UserService.LocalPlayer.PlayerComponent.UserId) then
+			self.createPartyButton.TextComponent.Text = _LocalizeLogic:GetText("partyStr9")
+		else
+		
+			self.createPartyButton.TextComponent.Text = _LocalizeLogic:GetText("partyStr2")
+		end
+		
+			
+		local emptyPanel = self.Entity:GetChildByName("ListPanel_empty")
+		
+		if _PartyLogic:GetAllPartyCount() < 1 and not self.isSearchingNow then
+			emptyPanel:GetChildByName("text").TextComponent.Text = _LocalizeLogic:GetText("partyStr7")
+			emptyPanel.Enable = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Init()
+		-- 그리드뷰 초기화 및 아이템 생성 콜백 설정
+		local emptyPanel = self.Entity:GetChildByName("ListPanel_empty")
+		local gridView = self.listPanel.GridViewComponent
+		
+		gridView.TotalCount = _PartyLogic:GetAllPartyCount()
+		gridView.ItemEntity = self.originalSlot
+		gridView.OnRefresh = function(index, entity)
+			---@type Entity
+			local newEntity = entity
+			
+			if self.isSearchingNow then 
+				local idTable = {}
+				local tempIndex = 1
+				
+				for key, value in pairs(self.searchedIndexs) do
+					idTable[tempIndex] = value
+					tempIndex += 1
+				end
+				
+				local targetIndex = index + 1 + ((self.currentPageNum - 1) * self.pagePerCount)
+				
+				if isvalid(idTable) and isvalid(idTable[targetIndex]) then
+					newEntity.PartyListSlotComponent:SetSlot(idTable[targetIndex])
+				else
+					newEntity.PartyListSlotComponent:Clear()
+				end
+				
+				
+				if #table.keys(self.searchedIndexs) < 1 then
+					emptyPanel.Enable = true
+					emptyPanel:GetChildByName("text").TextComponent.Text = _LocalizeLogic:GetText("partyStr10")
+				else
+					emptyPanel.Enable = false
+				end
+			else 
+				local idTable = {}
+				local tempIndex = 1
+				
+				for key, value in pairs(self.sortedTable) do
+					if isvalid(value.member) then
+						idTable[tempIndex] = value.realIndex
+						tempIndex += 1
+					end
+				end
+				local targetIndex = index + 1 + ((self.currentPageNum - 1) * self.pagePerCount)
+				
+				if isvalid(idTable) and isvalid(idTable[targetIndex]) then
+					newEntity.PartyListSlotComponent:SetSlot(idTable[targetIndex])
+				else
+					newEntity.PartyListSlotComponent:Clear()
+				end
+		
+		
+				if #table.keys(self.sortedTable) < 1 then
+					emptyPanel.Enable = true
+					emptyPanel:GetChildByName("text").TextComponent.Text = _LocalizeLogic:GetText("partyStr7")
+				else
+					emptyPanel.Enable = false
+				end
+			end
+		end
+		
+		table.clear(self.searchedIndexs)
+	end
+
+	method void Show()
+		-- 파티 리스트 UI를 표시하고 자동 새로고침 시작
+		_PartyLogic:RequestSyncTable()
+		_TimerService:ClearTimer(self.autoRequestTimer)
+		_TimerService:ClearTimer(self.destroyTimer)
+		self.requestInterval = 10
+		self:SetRefreshRequestTimer() 
+		self.searchPanel:GetChildByName("InputText").TextComponent.Text = ""
+		self.isSearchingNow = false
+		self.currentPageNum = 1
+		
+		self:Refresh()
+		_PartyUILogic.bg.Enable = true
+		_PartyUILogic.partyGroup.Enable = true
+		
+		__base:Show()
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetAllPageNum()
+		-- 검색 상태에 따라 전체 페이지 수 계산
+		local count = 0
+			
+		if self.isSearchingNow then 
+			count = #table.keys(self.searchedIndexs)
+		else
+			for key, value in pairs(self.sortedTable) do
+				if isvalid(value.name) then
+		
+					count += 1
+		
+				end
+			end
+		end
+			
+		count = math.ceil(count / self.pagePerCount)
+		
+		if count <= 0 then 
+			count = 1
+		end
+		
+		return count
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshPageButtons()
+		-- 페이지 네비게이션 버튼들의 활성화 상태 갱신
+		local pagePanel = self.bottomPanel:GetChildByName("PagePanel")
+		local prevButton = pagePanel:GetChildByName("PrevButton")
+		local nextButton = pagePanel:GetChildByName("NextButton")
+		local pageText = pagePanel:GetChildByName("PageText")
+		
+		prevButton.Enable = true
+		nextButton.Enable = true
+			
+		if self.currentPageNum <= 1 then
+			prevButton.ButtonComponent.Enable = false
+			prevButton.SpriteGUIRendererComponent.Color.a = 0.5
+		else
+			prevButton.ButtonComponent.Enable = true
+			prevButton.SpriteGUIRendererComponent.Color.a = 1
+		end
+		
+		if self.currentPageNum >= self:GetAllPageNum() then
+			nextButton.ButtonComponent.Enable = false
+			nextButton.SpriteGUIRendererComponent.Color.a = 0.5
+		else
+			nextButton.ButtonComponent.Enable = true
+			nextButton.SpriteGUIRendererComponent.Color.a = 1
+		end
+		
+		if self.currentPageNum > self:GetAllPageNum() then
+			self.currentPageNum = 1
+			self:Refresh()
+		end
+		
+		pageText.TextComponent.Text = string.format("%d/%d", self.currentPageNum, self:GetAllPageNum())
+	end
+
+	method void Hide()
+		-- 파티 리스트 UI를 숨기고 관련 UI들 정리
+		_PartyUILogic:GetPartyCreateUI().PartyCreateUIComponent:Hide()
+		_PartyUILogic:GetPartyInfoUI().PartyInfoUIComponent:Hide()
+		__base:Hide()
+		_TimerService:ClearTimer(self.autoRequestTimer)
+		_PartyUILogic:HideBg()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetRefreshRequestTimer()
+		-- 자동 새로고침 타이머 설정 (점진적 간격 증가)
+		self.autoRequestTimer = _TimerService:SetTimerOnce(function()
+			_PartyLogic:RequestSyncTable()
+			self.requestInterval += 5
+			self:SetRefreshRequestTimer()
+			
+			if self.requestInterval > 60 then
+				self.requestInterval = 10
+			end
+		end, self.requestInterval)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SortTable()
+		-- 파티 테이블을 인덱스 순으로 정렬하여 정렬된 테이블 생성
+		local tableCount = #table.keys(_PartyLogic.partyTable)
+		local i = 1
+		local count = 0
+		self.sortedTable = {}
+		
+		while true do
+			if count >= tableCount then break end
+			local party = _PartyLogic.partyTable[i]
+			
+			if isvalid(party) then
+				table.insert(self.sortedTable, party)
+				self.sortedTable[count + 1].realIndex = i
+				count += 1
+			end
+			
+			i += 1
+		end
+		
+		table.sort(self.sortedTable, function(a, b) return a.index < b.index end)
+	end
+
+end

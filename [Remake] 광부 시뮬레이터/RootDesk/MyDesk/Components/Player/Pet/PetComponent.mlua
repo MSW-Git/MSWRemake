@@ -1,0 +1,89 @@
+@Component
+script PetComponent extends Component
+
+	@Sync
+	property EntityRef ownerEntity = nil
+
+	property SyncTable<number> animTimer
+
+	method void OnBeginPlay()
+		-- 펫 컴포넌트 초기화 시 애니메이션과 상태 시스템 설정
+		local stateAnimCompo = self.Entity.StateAnimationComponent
+		local stateCompo = self.Entity.StateComponent
+		
+		
+		for i=1, stateAnimCompo.ActionSheet.Count do
+			stateCompo:AddState(stateAnimCompo.ActionSheet.Keys[i])
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangeState(string state)
+		-- 펫의 상태를 변경하여 절절한 애니메이션 재생
+		if state == "Move" then
+			self.Entity.StateComponent:ChangeState("MOVE")
+		elseif state == "Idle" then
+			self.Entity.StateComponent:ChangeState("STAND")
+		elseif state == "Jump" then
+			self.Entity.StateComponent:ChangeState("JUMP")
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangePos(number lookAt)
+		-- 플레이어의 시선 방향에 따라 펫의 위치를 이동시키고 애니메이션 재생
+		-- move
+		local moveDir = -lookAt
+		self:ChangeState("Move")
+		
+		local goToBehindPlayer = function()
+			self.Entity.TransformComponent:Translate(moveDir*1/60,0)
+		end
+		
+		table.clear(self.animTimer)
+		
+		for i=1, 120 do
+			local animFrame = _TimerService:SetTimerOnce(goToBehindPlayer, i/120)
+			
+			table.insert(self.animTimer, animFrame)
+		end
+		
+		
+		local changeStateToIdle = function()
+			if self.ownerEntity.StateComponent.CurrentStateName == "IDLE" then
+				self:ChangeState("Idle")
+			end
+			
+			-- flip
+			local lookDirX = self.ownerEntity.ExtendPlayerControllerComponent.LookDirectionX
+			self.Entity.SpriteRendererComponent.FlipX = (lookDirX > 0)
+		end
+		
+		_TimerService:SetTimerOnce(changeStateToIdle, 1)
+	end
+
+	@ExecSpace("Server")
+	method void ChangeClimb(boolean currentClimbing)
+		-- 플레이어의 범비나 사다리 타기 상태에 따라 펫의 위치와 이팩트 처리
+		if currentClimbing == true then
+			self.Entity.TransformComponent.Position = Vector3 (0, 0, 0)
+			
+			for i=1, #self.animTimer do
+				_TimerService:ClearTimer(self.animTimer[i])
+			end
+			
+			table.clear(self.animTimer)
+		else
+			local lookX = self.ownerEntity.ExtendPlayerControllerComponent.LookDirectionX
+			self.Entity.TransformComponent.Position = Vector3 (-lookX, 0, 0)
+			self.Entity.SpriteRendererComponent.FlipX = (lookX > 0)
+		end
+		
+		_EffectService:PlayEffectAttached("04c96fc0062c418682c8075beb003a0c", 
+			self.Entity, 
+			Vector3.zero, 
+			0,
+			0.5 * Vector3.one)
+	end
+
+end

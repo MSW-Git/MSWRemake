@@ -1,0 +1,212 @@
+@Component
+script TurnSign extends Component
+
+	property ResourceManager resourceManager = "6c93cf84-def7-4ef2-9b6f-3581aa970c82"
+
+	property Duel duel = nil
+
+	property CommandManager commandManager = nil
+
+	property Entity signEntity = nil
+
+	property Entity imageEntity = nil
+
+	property Entity jobsDoneEntity = nil
+
+	property Entity textEntity = nil
+
+	property TextComponent textComponent = nil
+
+	property ClimbableSpriteRendererComponent rope = nil
+
+	property TransformComponent spark = nil
+
+	property any signTweener = nil
+
+	property any textTweener = nil
+
+	property any countdownTweener = nil
+
+	property any countdownTimer = nil
+
+	property string state = "Idle"
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 턴 사인 초기화 및 터치 이벤트 연결
+		self.imageEntity:ConnectEvent(TouchEvent, function(event)
+			-- Parameters
+			local TouchId = event.TouchId
+			local TouchPoint = event.TouchPoint
+			---------------------------------------------------------
+			
+			if not _Server:IsRequesting() and self.duel.turnSign.state == "EndRound" or self.duel.turnSign.state == "JobsDone" then
+				local player = _UserService.LocalPlayer.Character.player
+				if isvalid(player) then
+					self.commandManager:RunCommand("DeclareEndRound", {player, false}, {})
+				end
+			end
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetState(string toState)
+		-- 턴 사인 상태 변경 및 시각적 업데이트
+		if self.state == toState then
+			return
+		end
+		
+		local fromState = self.state
+		self.state = toState
+		
+		local zRotation
+		local text
+		local color
+		local jobsDone = false
+		
+		if toState == "Idle" then
+			zRotation = 0
+			text = ""
+			color = Color.FromHexCode("#DEA214")
+		end
+		if toState == "EndRound" then
+			zRotation = 15
+			text = "EndRound"
+			color = Color.FromHexCode("#DEA214")
+		end
+		if toState == "JobsDone" then
+			zRotation = 15
+			text = "EndRound"
+			color = Color.FromHexCode("#2CB571")
+			jobsDone = true
+		end
+		if toState == "EnemyTurn" then
+			zRotation = -15
+			text = "EnemyTurn"
+			color = Color.FromHexCode("#9B9B9A")
+		end
+		if toState == "WatchingOur" then
+			zRotation = 15
+			text = "Watching"
+			color = Color.FromHexCode("#9B9B9A")
+		end
+		if toState == "WatchingEnemy" then
+			zRotation = -15
+			text = "Watching"
+			color = Color.FromHexCode("#9B9B9A")
+		end
+		if toState == "Waiting" then
+			zRotation = 0
+			text = "Waiting"
+			color = Color.FromHexCode("#9B9B9A")
+		end
+		if toState == "Battle" then
+			zRotation = 0
+			text = "Battle"
+			color = Color.FromHexCode("#F78427")
+		end
+		
+		self:RotateSign(zRotation)
+		self:SetText(text)
+		self:SetColor(color)
+		self.jobsDoneEntity.Enable = jobsDone
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetStateByTurnPlayer(Player turnPlayer)
+		-- 턴 플레이어에 따라 턴 사인 상태를 자동으로 설정
+		local state
+		local player = _UserService.LocalPlayer.Character.player
+		if isvalid(player) then
+			if player == turnPlayer then
+				if player:JobsDone() then
+					state = "JobsDone"
+				else
+					state = "EndRound"
+				end
+			else
+				state = "EnemyTurn"
+			end
+		else
+			state = turnPlayer.isOurs and "WatchingOur" or "WatchingEnemy"
+		end
+		
+		self:SetState(state)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RotateSign(number zRotation)
+		-- 턴 사인을 지정된 각도로 회전시키는 애니메이션
+		if self.signTweener then
+			self.signTweener:Destroy()
+		end
+		self.signTweener = _TweenLogic:RotateTo(self.signEntity, zRotation - self.signEntity.TransformComponent.ZRotation, 1, EaseType.ElasticEaseOut)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetText(string text)
+		-- 턴 사인의 텍스트를 설정하고 애니메이션 효과 적용
+		self.textComponent.Text = text
+		
+		if self.textTweener then
+			self.textTweener:Destroy()
+		end
+		self.textTweener = _Tween:Damp(self.textEntity, Vector2.one, 0.75, 0.5)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetColor(Color color)
+		-- 턴 사인의 색상을 변경
+		self.imageEntity.SpriteRendererComponent.Color = color
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BeginCountdown(number countdownTime, boolean isOurTurn)
+		-- 턴 제한 시간 카운트다운 시작
+		local yPositionDelta = isOurTurn and 0 or 0.25
+		self.rope.Entity.TransformComponent.Position.y = -0.55 + yPositionDelta
+		self.rope.Entity.Visible = true
+		self.spark.Entity.Visible = true
+		
+		local resource = self.resourceManager:GetResource("Countdown")
+		local spareTime = 0.5
+		self.countdownTweener = _TweenLogic:PlayTween(0, 1, spareTime, EaseType.Linear, function(t)
+				self:PlaceRope(t, isOurTurn)
+			end)
+		self.countdownTimer = _TimerService:SetTimerOnce(function()
+				_SoundService:PlaySound(resource.sound, 1.5)
+				self.countdownTweener = _TweenLogic:PlayTween(countdownTime - spareTime, 0, countdownTime - spareTime, EaseType.Linear, function(t)
+						local value = math.max(0, (t - 1) / (countdownTime - spareTime))
+						self:PlaceRope(value, isOurTurn)
+					end)
+			end, spareTime)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndCountdown(boolean isTimeout)
+		-- 카운트다운 종료 및 타임아웃 처리
+		if self.countdownTweener then
+			self.countdownTweener:Destroy()
+		end
+		_TimerService:ClearTimer(self.countdownTimer)
+		
+		self.rope.Entity.Visible = false
+		self.spark.Entity.Visible = false
+		
+		local resource = self.resourceManager:GetResource("Countdown")
+		_SoundService:StopSound(resource.sound)
+		if isTimeout then
+			_SoundService:PlaySound(resource.timeoutSound, 1.5)
+			_CameraService:GetCurrentCameraComponent():ShakeCamera(1, 0.5)	
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlaceRope(number value, boolean isOurTurn)
+		-- 카운트다운 로프의 위치와 크기를 업데이트
+		local yPositionDelta = isOurTurn and 0 or 0.3
+		self.rope.TiledSize.y = 0.01 + 3.99 * value
+		self.spark.Position.y = -0.35 - 1.3 * value + yPositionDelta
+	end
+
+end

@@ -1,0 +1,159 @@
+@Component
+script C50003_Mihile_Skill extends Component
+
+	property number skillAnimLength = 1.5
+
+	property string HitEffectRUID = "27cd60bd350143b1bf0d29fccac67f62"
+
+	property string HitEffect2RUID = "778b52a102f14c168b5097544e3fc011"
+
+	property number AttackCount = 0
+
+	property Entity HitTarget = nil
+
+	property number SkillTime = 0.5
+
+	property boolean UsedFirstSkill = false
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		self.skillAnimLength = _S01_SkillDescLogic.C50003_Active_SkillLoopTime_Int[unitInfo.level]
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		
+		self.AttackCount += 1
+		
+		if not self.UsedFirstSkill then
+			local shieldAmount = unitStatus.MaxHP * _S01_SkillDescLogic.C50003_Active_Shield_MaxHPPer[unitInfo.level]
+			_StatusChangeLogic:SetShield(myUnit, myUnit, shieldAmount, -1, "Skill")
+			self.HitTarget = targetUnit
+		end
+		
+		if isvalid(self.HitTarget) and isvalid(targetUnit) and self.HitTarget == targetUnit then
+			if not self.UsedFirstSkill then
+				self.UsedFirstSkill = true
+			end
+			
+			animComponent:PlayAnimation(1.5 / skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+			_StatusChangeLogic:SetStatus(myUnit, myUnit, "SE0016", 0.6)
+			
+			unitStatus:SetProperty("state", "Skill", "")
+		
+			local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+			local teamManager = user.TeamManager
+			
+			self:SetSkillDamage(targetUnit, self.AttackCount, "True")
+				
+			local enemies = {}
+			if unitInfo.TeamType == "User" then
+				enemies = teamManager.EnemyUnits
+			elseif unitInfo.TeamType == "Enemy" then
+				enemies = teamManager.OwnUnits
+			end
+			
+			local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+			checkEnemies = _BTLogic_New:getTargets(targetInfo.setTile, checkEnemies, "Around_1_1")
+			
+			if isvalid(checkEnemies) then
+				for _, enemy in pairs(checkEnemies) do
+					if _BTLogic_New:CheckAttackAble(myUnit, enemy, "Skill") then
+						self:SetSkillDamage(enemy, self.AttackCount, "Magical")
+					end
+				end
+			end
+		else
+			-- 시작 타겟이 없으면 종료
+			_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+			self.UsedFirstSkill = false
+			self.HitTarget = nil
+			self.AttackCount = 0
+		end
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0135",self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetSkillDamage(Entity targetUnit, number attackCount, string damageType)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			if damageType == "True" then
+				self:HitEffect(targetUnit, unitInfo.OwnerId)
+				
+				local nowHP = targetStatus.HP
+				
+				local trueDamgagePer = (unitStatus.PhysicalAttack * _S01_SkillDescLogic.C50003_Active_TrueSDamage_Physic[unitInfo.level]) / 100
+				local skillDamage = targetStatus.MaxHP * trueDamgagePer
+				
+				local damageInfo = _StatusChangeLogic:CheckDamage(skillDamage, myUnit, targetUnit, 1, "Magical")
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+				
+				if nowHP > 0 and targetStatus.HP <= 0 then
+					-- Skill로 잡으면 스킬 종료
+					_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+					self.UsedFirstSkill = false
+					self.HitTarget = nil
+					self.AttackCount = 0
+				end
+				
+			elseif damageType == "Magical" then
+				self:HitEfffect2(targetUnit, unitInfo.OwnerId)
+				
+				local skillDamage = unitStatus.PhysicalAttack * _S01_SkillDescLogic.C50003_Active_SDamage_Physic[unitInfo.level]
+				
+				local damageInfo = _StatusChangeLogic:CheckDamage(skillDamage, myUnit, targetUnit, 0, "Magical")
+				_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damageInfo[1], damageInfo[2], "skill")
+			end
+		else
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+			self.UsedFirstSkill = false
+			self.HitTarget = nil
+			self.AttackCount = 0
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		-- Set Attack Effect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["PlayRate"] = 1,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.HitEffectRUID, targetUnit, Vector3.zero, 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void HitEfffect2(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX, ["Color"] = Color(1, 1, 1, _ESCMenuService.skillEffectAlpha/100)}
+		_EffectService:PlayEffectAttached(self.HitEffect2RUID, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+end

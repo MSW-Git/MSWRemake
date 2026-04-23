@@ -1,0 +1,187 @@
+@Logic
+script PlayerAccountLogic extends Logic
+
+	property table accountExpData = {}
+
+	property number accountMaxLevel = 0
+
+	property table accountRewardData = {}
+
+	property TextComponent profile_level = "6ccd3bb0-c856-44ed-84d7-89db2654db73"
+
+	property TextComponent profile_nickName = "07b1d3d5-fd12-4ffc-a1ea-bbfcfe675013"
+
+	property SpriteGUIRendererComponent profile_filledGauge = "0402328d-b697-4f80-a076-c780565effe0"
+
+	property SpriteGUIRendererComponent profile_icon = "46228758-2465-44cc-8c4e-b1216877e1c3"
+
+	property Entity reward_Origin_Slot = "8dc87aef-7702-4ae4-ba21-aa8ec11ccf2b"
+
+	property Entity popup_Levelup = "b9db210a-2897-4c56-bbaf-f60339d52166"
+
+	property table rewardSlotIdTable = {}
+
+	property LevelUpRewardPopup popup = "5de89884-55dc-445b-bfb7-04f1c2fa239f"
+
+	property TextComponent expText = "0402328d-b697-4f80-a076-c780565effe0"
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 계정 관련 데이터 테이블 로드
+		local data = _DataService:GetTable("PlayerAccountExpData") 
+		local rewardData = _DataService:GetTable("PlayerAccountLevelUpRewardData") 
+		
+		self.accountMaxLevel = data:GetRowCount()
+		
+		for i = 1, data:GetRowCount() do
+			local account = {}
+			account.level = i
+			account.maxExp = tonumber(data:GetCell(i, "exp"))
+			self.accountExpData[i] = account
+		end
+		
+		for i = 1 , rewardData:GetRowCount() do
+			local rewardTable = {}
+			local rewardType = {}
+			local rewardCount = {}
+			local rewardRuid = {}
+			
+			rewardTable.level = tonumber(rewardData:GetCell(i, "level"))
+			for j = 1 , 5 do 
+				if rewardData:GetCell(i, "type_"..math.floor(j)) ~= "" then 
+					if rewardData:GetCell(i, "type_"..math.floor(j)) == "" then
+						break
+					end
+					rewardType[j] = rewardData:GetCell(i, "type_"..math.floor(j))
+					rewardCount[j] = tonumber(rewardData:GetCell(i, "count_"..math.floor(j)))
+					rewardRuid[j] = rewardData:GetCell(i, "ruid_"..math.floor(j))
+				end
+			end
+			rewardTable.rewardType = rewardType
+			rewardTable.rewardCount = rewardCount
+			rewardTable.rewardRuid = rewardRuid
+			
+			self.accountRewardData[rewardTable.level] = rewardTable
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshProfileUI()
+		-- 프로필 UI의 계정 정보를 새로고침
+		local accountTable = _UserService.LocalPlayer.PlayerAccount.accountTable
+		
+		self.profile_nickName.Text = _UserService.LocalPlayer.PlayerComponent.Nickname
+		
+		self.profile_level.Text = accountTable.level
+		
+		self.profile_icon.ImageRUID = "456e6ef1471843faac1502ca0809c600"
+		
+		if isvalid(_PlayerAccountLogic.accountExpData[accountTable.level + 1]) then
+			self.profile_filledGauge.FillAmount = accountTable.exp/_PlayerAccountLogic.accountExpData[accountTable.level + 1].maxExp
+			self.expText.Text = string.format("%d/%d", accountTable.exp,_PlayerAccountLogic.accountExpData[accountTable.level + 1].maxExp)
+		else
+			self.profile_filledGauge.FillAmount = 1
+		end
+	end
+
+	@ExecSpace("Client")
+	method void InitRewardPopUp(table rewardTable, integer level)
+		-- 레벨업 보상 팝업을 초기화하고 표시
+		
+		if _UserService.LocalPlayer.PlayerAccount.accountShowTable[level] == false then
+			_UserService.LocalPlayer.PlayerAccount:ChangAccountShowPopupData(level) 
+		else
+			return
+		end
+		
+		for i = 1, #self.rewardSlotIdTable do
+			_EntityService:Destroy(_EntityService:GetEntity(self.rewardSlotIdTable[i]))
+		end
+		table.clear(self.rewardSlotIdTable)
+		
+		for i = 1 , #rewardTable.rewardType do
+			local clone = self.reward_Origin_Slot:Clone("reward"..math.floor(i))
+			
+			if rewardTable.rewardType[i] == "Diamond_CUR" then
+				clone:GetChildByName("ItemSprite", true).UITransformComponent.anchoredPosition.x = -97
+				clone:GetChildByName("ItemSprite", true).UITransformComponent.anchoredPosition.y = -100
+				clone:GetChildByName("ItemTitle", true).TextComponent.Text = _LocalizeLogic:GetText("common_diamond")
+			elseif  rewardTable.rewardType[i] == "CharCoin_CON" then
+				clone:GetChildByName("ItemSprite", true).UITransformComponent.anchoredPosition.x = -102
+				clone:GetChildByName("ItemSprite", true).UITransformComponent.anchoredPosition.y = -105
+				clone:GetChildByName("ItemTitle", true).TextComponent.Text = _LocalizeLogic:GetText("common_characteristicCoin")
+			end
+			clone:GetChildByName("ItemCount", true).TextComponent.Text = rewardTable.rewardCount[i]
+			
+			local ruid = rewardTable.rewardRuid[i]
+			clone:GetChildByName("ItemSprite", true).SpriteGUIRendererComponent.ImageRUID = ruid
+			table.insert(self.rewardSlotIdTable, clone.Id)
+		
+		end
+		self.popup_Levelup:GetChildByName("Title", true).TextComponent.Text = string.format(_LocalizeLogic:GetText("etcStr209"), math.floor(level))
+		self.popup:Show()
+		
+	end
+
+	@ExecSpace("Client")
+	method void CloseRewardPopUp()
+		-- 레벨업 보상 팝업을 닫고 정리
+		for i = 1 , #self.rewardSlotIdTable do
+			local target = _EntityService:GetEntity(self.rewardSlotIdTable[i])
+			target:Destroy()
+		end
+		table.clear(self.rewardSlotIdTable)
+		self.popup:Hide()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GiveLevelUpReward(string rewardType, number rewardCount, string userId)
+		-- 레벨업 보상을 플레이어에게 지급
+		local targetUser = _UserService:GetUserEntityByUserId(userId)
+		local rewardId = string.sub(rewardType, 1, -5) 
+		local rewardCategory = string.sub(rewardType, -3, -1)
+		
+		if rewardCategory == "CUR" then 
+			_WealthLogic:RequestAddWealthFromServer(rewardId, rewardCount, userId,"AccountLevelUpReward","")
+		elseif rewardCategory == "EGG" then 
+			local itemData = _ItemDataLogic.itemData[rewardId]
+			targetUser.PlayerStorageComponent:RequestAddEgg(itemData.id, rewardCount, itemData.id, 1, "", 0,"AccountLevelUpReward")
+		elseif rewardCategory == "CHA" then 
+		elseif rewardCategory == "CON" then
+			targetUser.PlayerCharacteristicData:AddCharacteristicPoint("LevelUpReward") 
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleAccountLevelUp(AccountLevelUp event)
+		-- 계정 레벨업 이벤트 처리
+		local level = event.level
+		local rewardTable = event.rewardTable
+		if _UserService.LocalPlayer.CurrentMapName == "Town" then 
+			self:InitRewardPopUp(rewardTable, level)
+		end
+		
+		self:RefreshProfileUI()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "c3f2bc0e-624a-49b6-8a54-5e669a5dd1b5")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 보상 팝업 닫기 버튼 클릭 처리
+		
+		local Entity = event.Entity
+		self:CloseRewardPopUp()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleOnMapEnter(OnMapEnter event)
+		-- 맵 입장 시 보상 팝업 닫기
+		local currentMap = event.currentMap
+		local userEnter = event.userEnter
+		if currentMap.BattleMap ~= nil then
+			self:CloseRewardPopUp()
+		end
+	end
+
+end

@@ -1,0 +1,228 @@
+@Component
+script MonsterWaveSkillObject extends DestroyableObject
+
+	property string destroyEffect = "0fab48bd885843feb9e0be73a005ac67"
+
+	property number damage = 1
+
+	property number hp = 10
+
+	property Vector2 velocity = Vector2(0,0)
+
+	property number wiggleY = 0.2
+
+	property number wiggleSpeed = 10
+
+	property boolean isInvincible = false
+
+	property number type = 4
+
+	property string appearEffect = ""
+
+	method void OnCollision(Entity target)
+		-- 플레이어와 충돌 시 데미지 처리 및 자기 파괴
+		local player = target.BattlePlayer
+		if isvalid(player) == false then
+			return
+		end
+		
+		if player.shieldCount < 1 and not player.isInvincible then
+			target:SendEvent(BattlePlayerHitEvent())
+		end
+		
+		player:SetDamage(self.damage,self.velocity:Normalize(),0,0,"skill",self.Entity)
+		
+		self:SetDestroy()
+	end
+
+	method void SetDestroy()
+		-- 웨이브 스킬 오브젝트 파괴 및 이팩트 재생
+		if self.isDead == true then return end
+		
+		self.Entity.Enable = false
+		self.isDead = true
+		local transform = self.Entity.TransformComponent
+		
+		if _UtilLogic:IsNilorEmptyString(self.destroyEffect) == false then
+			_EffectService:PlayEffect(self.destroyEffect,self.Entity,transform.WorldPosition,0,transform.Scale)
+		end
+		
+		---@type Tweener
+		local tweener = self._T.tweener
+		
+		if tweener == nil then return end
+		tweener:Destroy()
+		self._T.tweener = nil
+	end
+
+	method void SetDamage(number damage, Vector2 knockback, boolean isCritical, string weaponUniqueKey)
+		-- 웨이브 스킬 오브젝트에게 데미지 적용 및 HP 관리
+		if self.isInvincible then
+			return
+		end
+		
+		local _T = self._T
+		self.hp = self.hp - damage
+		
+		if _OptionLogic.showDamageSkin and damage > 0 then
+			_DamageSkinService:Play(self.Entity, self._T.damageSkin,0,{damage},DamageSkinTweenType.Volcano,isCritical, _T.vectorTwoZero)
+		end
+		
+		if self.hp <= 0 then
+			if _BuffLogic.originalStat.expression then
+				self.exp = 1
+				self:DropGem()
+			end
+			self:SetDestroy()
+			_UserService.LocalPlayer.BattlePlayer.killedWaveMonsterCount += 1
+		end
+	end
+
+	method void Init(number hp, Vector2 velopcity)
+		-- 웨이브 스킬 오브젝트 초기화 (상하 움직임 애니메이션 포함)
+		self._T.maxHp = hp
+		self.hp = hp
+		
+		self.Entity.Enable = true
+		self.isDead = false
+		self.velocity = velopcity
+		
+		local sprite = self.Entity.SpriteRendererComponent
+		
+		sprite.Color.a = _OptionLogic.enemyTransparency
+		if self.Entity.Parent.TransformComponent.Scale.x == 1 then
+			sprite.FlipX = velopcity.x > 0
+		else
+			sprite.FlipX = velopcity.x < 0
+		end
+		
+		
+		if self._T.animationPlay then
+			if (_OptionLogic.animationQuality >= 1) then
+				self._T.animationPlay = false
+				sprite.EndFrameIndex = 0
+			end
+		else
+			if (_OptionLogic.animationQuality == 0) then
+				self._T.animationPlay = true
+				sprite.EndFrameIndex = 2147483647
+			end
+		end
+		
+		self._T.wiggleY = (_UtilLogic:RandomDouble() * 0.5 + 0.5) * self.wiggleY
+		---@type Vector3
+		local pos = self._T.transform.Position
+		pos.y = self._T.originY - self._T.wiggleY
+		
+		local firstMonster = _WaveLogic:GetFirstWave().monster
+		self.damage = _MonsterLogic.monsterData[firstMonster].attack
+		
+		local movePos = pos:ToVector2()
+		movePos.y += self._T.wiggleY * 2
+		
+		---@type Tweener
+		local tweener = _TweenLogic:MoveTo(self.Entity, movePos, 1 / self.wiggleSpeed * math.pi, EaseType.SineEaseInOut)
+		
+		self._T.tweener = tweener
+		
+		tweener.AutoDestroy = false
+		tweener.LoopCount = -1
+		tweener.LoopType = TweenLoopType.PingPong
+		
+		tweener:Restart()
+		
+		local transform = self.Entity.TransformComponent
+		
+		if _UtilLogic:IsNilorEmptyString(self.appearEffect) == false then
+			_EffectService:PlayEffectAttached(self.appearEffect,self.Entity,Vector3.zero,0,transform.Scale)
+			_Tweener:PlayTween(0,1,0.2,_GameUtil:GetRuidTime(self.appearEffect),EaseType.Linear,function(value) 
+				sprite.Color.a = value
+			end,function() end, "MonsterWaveSkillObject_Init")
+		end
+		
+		self._T.vectorTwoZero = Vector2.zero
+		
+		self._T.damageSkin = _ItemDataLogic.decorationData[_UserService.LocalPlayer.PlayerInfoComponent.playerInfo.damageSkin].ruid
+		
+		if not isvalid(self._T.damageSkin) then
+			self._T.damageSkin = "b6b059a7ec8c44ad966363ed20f3926b"
+		end
+	end
+
+	method number GetMaxHp()
+		-- 웨이브 스킬 오브젝트의 최대 HP 반환
+		return self._T.maxHp
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 웨이브 스킬 오브젝트 컴포넌트 초기화
+		self.Entity.SpriteRendererComponent.SortingLayer = "Effect"
+		self._T.transform = self.Entity.TransformComponent
+		self._T.originY = self._T.transform.Position.y
+		self.Entity.TriggerComponent.IsPassive = true
+		self._T.vectorTwoZero = Vector2.zero
+		self._T.maxHp = math.maxinteger
+		self._T.animationPlay = true
+		
+		self._T.damageSkin = _ItemDataLogic.decorationData[_UserService.LocalPlayer.PlayerInfoComponent.playerInfo.damageSkin].ruid
+		
+		if not isvalid(self._T.damageSkin) then
+			self._T.damageSkin = "b6b059a7ec8c44ad966363ed20f3926b"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 웨이브 스킬 오브젝트 파괴 시 트위너 정리
+		---@type Tweener
+		local tweener = self._T.tweener
+		
+		if tweener == nil then return end
+		tweener:Destroy()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 트리거 진입 시 플레이어와의 충돌 처리
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		
+		if TriggerBodyEntity == _UserService.LocalPlayer then
+			self:OnCollision(TriggerBodyEntity)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "TimerLogic")
+	handler HandleTimerChange(TimerChange event)
+		-- 타이머 일시정지/재개 시 트위너와 스프라이트 동기화
+		
+		local pause = event.pause
+		
+		if not self.Entity.Enable or self._T.tweener == nil then return end
+		
+		if pause then
+			self._T.tweener:Pause()
+			self.Entity.SpriteRendererComponent.PlayRate = 0
+		else
+			self._T.tweener:Resume()
+			self.Entity.SpriteRendererComponent.PlayRate = 1
+		end
+	end
+
+	@EventSender("Logic", "BuffLogic")
+	handler HandleBuffCardAttackEvent(BuffCardAttackEvent event)
+		-- 버프 카드 공격 이벤트 처리 (최대 HP 비례 데미지)
+		
+		local amount = event.amount
+		
+		if not isvalid(self.Entity) or self.isDead then
+			return
+		end
+		self:SetDamage(self:GetMaxHp() * amount,Vector2.zero,true,"FingerSnap")
+	end
+
+end

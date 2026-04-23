@@ -1,0 +1,590 @@
+@Logic
+script LobbyRenovationService extends Logic
+
+	property table StageWalls = {}
+
+	property Entity FloorTile = nil
+
+	property Entity PostBox = nil
+
+	property string insideWallCenterTileImg = "insideWall2"
+
+	property table GhostEntity = {}
+
+	property Entity NowInteriorEntity = nil
+
+	property Entity NowKitchenInteriorEntity = nil
+
+	property integer NowStageId = 0
+
+	property Entity ParkingAreaEntity = nil
+
+	property SyncTable<string, Entity> InteriorEntities
+
+	property string insideWallLeftSideTileImg = "insideWall3"
+
+	property string insideWallRightSideTileImg = "insideWall1"
+
+	property string SingleWallTileImg = "SingleWall"
+
+	@ExecSpace("Client")
+	method void SetEntities()
+		-- 로비 리노베이션에 필요한 엔티티들을 설정하는 함수
+		local mapPath = _UserService.LocalPlayer.CurrentMap.Path
+		self.StageWalls = {
+			_EntityService:GetEntityByPath(mapPath.."/RectTileMap_1")
+			,_EntityService:GetEntityByPath(mapPath.."/RectTileMap_2")
+			,_EntityService:GetEntityByPath(mapPath.."/RectTileMap_3")	
+			,_EntityService:GetEntityByPath(mapPath.."/RectTileMap_4")
+			,_EntityService:GetEntityByPath(mapPath.."/RectTileMap_8")
+			,_EntityService:GetEntityByPath(mapPath.."/RectTileMap_11")
+		}
+		
+		self.FloorTile = _EntityService:GetEntityByPath(mapPath.."/RectTileMap_5")
+		
+		self.PostBox = _EntityService:GetEntityByPath(mapPath.."/SubscriptionPostBox")
+		
+		self.GhostEntity = {
+			_EntityService:GetEntityByPath(mapPath.."/RectTileMap_7"),
+			_EntityService:GetEntityByPath(mapPath.."/RectTileMap_9"),
+			_EntityService:GetEntityByPath(mapPath.."/RectTileMap_10")
+		}
+		
+		for _,entity in pairs(self.GhostEntity) do 
+			entity.Enable = false
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void RedesignInterior(integer interiorLv, integer expansionLv, integer decoLv)
+		-- 인테리어를 재설계하는 함수
+		
+		local lobby = _UserService.LocalPlayer.CurrentMap
+		local themeLv = _UpgradeDataSetLogic:GetLevelData(_UpgradeTypeEnum.InteriorLevel, interiorLv):GetUpgradeValue(_UserService.LocalPlayer)
+		local ruid = ""
+		
+		if themeLv == 1 then 
+			ruid = "tileset://9c83666b-7388-4664-a444-3ee19e1e7980"
+		elseif themeLv == 2 then 
+			ruid = "tileset://660f086b-019f-4423-8d9a-874099926c53"
+		elseif themeLv == 3 then 
+			ruid = "tileset://362cff79-7315-493d-bf04-1656dfb05207"
+		end
+		
+		local curWallTile = self.StageWalls[expansionLv]
+		
+		self.FloorTile.RectTileMapComponent.TileSetRUID = ruid
+		curWallTile.RectTileMapComponent.TileSetRUID = ruid
+		
+		local modelId = _EntryService:GetModelIdByName("Model_Floor_Old")
+		local entityName = "Floor_Old"
+		local entity = lobby:GetChildByName(entityName)
+		
+		if interiorLv == 0 then
+			if isvalid(entity) then
+				entity.Enable = true
+			else
+				_SpawnService:SpawnByModelId(modelId, entityName, Vector3(1.01, 5.285, 0), lobby)
+			end
+		else
+			if isvalid(entity) then
+				entity:Destroy()
+			end
+		end
+		
+		 
+		for _, entity in pairs(lobby.Children) do
+			if _UtilLogic:Contains(entity.Name, "Interior") then
+				local success = entity:Destroy(0)
+			end
+		end
+		
+		local decoEntityName = "Interior_Theme"..themeLv.."_Level"..expansionLv
+		local decoModelId = _EntryService:GetModelIdByName(decoEntityName)
+		
+		if isvalid(decoModelId) then
+			local decoEntity = lobby:GetChildByName(decoEntityName)
+			if isvalid(decoEntity) then
+			else
+				decoEntity = _SpawnService:SpawnByModelId(decoModelId, decoEntityName, Vector3.zero, lobby)
+			end
+			
+			self.NowInteriorEntity = decoEntity
+			self.NowInteriorEntity.Enable = true
+			
+			table.clear(self.InteriorEntities)
+			for _, ie in pairs(self.NowInteriorEntity.Children) do
+				self.InteriorEntities[ie.Name] = ie
+				
+				if isvalid(ie) then
+					self:SetInteriorEntityLayer(ie)
+					ie.SpriteRendererComponent.Color.a = 1
+				end
+			end
+			
+			self:UpdateLobbyTileMap(expansionLv, interiorLv)
+			
+			self:UpdateInteriorObject(decoLv, _UserService.LocalPlayer)
+			
+			
+		else
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ExpandLobby(integer expansionLv, integer interiorLv, integer decoLv, integer grillCount, integer displayCount, integer counterCount, Entity player)
+		-- 로비를 확장하는 함수
+		self:UpdateLobbyTileMap(expansionLv, interiorLv) 
+		
+		self:UpdateExteriorObject(expansionLv) 
+		
+		self:UpdatePostBox(expansionLv,player) 
+		
+		_KitchenAppService:VisibleKitAppsEntity(expansionLv,interiorLv,grillCount,displayCount,counterCount) 
+		
+		_PathFinder:InitNodes(expansionLv) 
+		
+		self:RedesignInterior(interiorLv,expansionLv, decoLv) 
+		
+		self:UpdateWaitSeatPos(expansionLv) 
+		
+		player.CustomerManager:UpdateAllWaitCustomerPos(expansionLv) 
+		player.CustomerManager:UpdateCustomerSpawnPos(expansionLv) 
+		
+		self:UpdateAllInnerWall(expansionLv,interiorLv,displayCount,counterCount,player) 
+		
+		self:SendEvent(ExpansionLobbyEvent()) 
+		
+		_LobbyCameraService:SetCamerasForExpansion(expansionLv)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateLobbyTileMap(integer expansionLv, integer interiorLv)
+		-- 로비 타일맵을 업데이트하는 함수
+		
+		for i = 1, #self.StageWalls do 
+			if i == expansionLv then 
+				self.StageWalls[i].Enable = true 
+			else
+				self.StageWalls[i].Enable = false 
+			end
+		end
+		
+		local tilemap = self.FloorTile.RectTileMapComponent
+		
+		local space = {"Kitchen","Cash"}
+		local tileSprite = {"kitchen","cash1","cash2","cash3","HalfFloor"}
+		
+		
+		
+		local isPlane = true 
+		if interiorLv == 0 then
+			isPlane = true
+		elseif interiorLv % 2 == 0 then
+			isPlane = false
+		end
+		
+		for i = 1, #space do
+			local bottomPos = _LobbySpawnPositionLogic.ExpansionTileGroup[space[i]][expansionLv]["Bottom"]
+			local topPos = _LobbySpawnPositionLogic.ExpansionTileGroup[space[i]][expansionLv]["Top"]
+			local sizeX = math.floor(topPos.x - bottomPos.x) 
+			local sizeY = math.floor(topPos.y - bottomPos.y) 
+			
+		
+			for y = 0, sizeY  do
+				for x = 0,  sizeX do	
+				
+					local pos = Vector3(bottomPos.x + x, bottomPos.y + y,0) 
+					
+					local tileImg = tileSprite[1]
+					if isPlane then
+						tileImg = tileSprite[1]
+						if i == 2 and y == 0 then
+							tileImg = tileSprite[4]
+						end
+					else
+						if i == 1 then
+							tileImg = tileSprite[1]
+						else
+							if y == 0 then
+								tileImg = tileSprite[3]
+							elseif y == 1 or y == 2 then
+								tileImg = tileSprite[2]
+							elseif y == 3 then
+								tileImg = tileSprite[5]
+							end
+							
+							if expansionLv == 6 then
+								if y >= 1 and y <= 4 then
+									tileImg = tileSprite[2]
+								elseif y == 5 or y == 6 then
+									tileImg = tileSprite[5]
+								end
+							end
+							
+						end
+						
+					end
+					
+					local cellPos = tilemap:ToCellPosition(pos)
+					
+					local tileInfo = tilemap:GetTile(cellPos)
+					if isvalid(tileInfo) ~= nil then
+						tilemap:SetTile(tileImg, cellPos.x, cellPos.y)
+						
+					end
+					
+				end
+			
+			end
+		
+			
+			if i == 2 then 
+				local startX = bottomPos.x
+				local endX = topPos.x
+				
+				local displayInnerWallY = topPos.y + 2		
+				_LobbyRenovationService:AddBoxTile(expansionLv,Vector2(startX,displayInnerWallY),Vector2(endX,displayInnerWallY),_UserService.LocalPlayer,self.insideWallCenterTileImg)
+		
+				local counterInnerWallY = topPos.y
+				_LobbyRenovationService:AddBoxTile(expansionLv,Vector2(startX,counterInnerWallY),Vector2(endX,counterInnerWallY),_UserService.LocalPlayer,self.insideWallCenterTileImg)
+				
+			end
+		
+		
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdatePostBox(integer level, Entity player)
+		-- 우편함 위치를 업데이트하는 함수
+		local postBoxPos = _EntityService:GetEntityByPath(_UserService.LocalPlayer.CurrentMap.Path.."/PostBoxPos"):GetChildByName(string.format("%d",level))
+		
+		self.PostBox.TransformComponent.WorldPosition = postBoxPos.TransformComponent.WorldPosition
+	end
+
+	@ExecSpace("Client")
+	method void UpdateWaitSeatPos(integer expansionLv)
+		-- 대기석 위치를 업데이트하는 함수
+		local group = _UserService.LocalPlayer.CurrentMap:GetChildByName("KitchenApp_Level"..expansionLv)
+		
+		local offSet = Vector2(-0.25,-0.2)
+		local space = 0.65 
+		
+		
+		local counterIdx 
+		local counterPos 
+		
+		
+		for _,decoEntity in pairs(group.Children) do 
+			if decoEntity.TagComponent.Tags[1] ~= _KitchenAppEnumType.Counter then 
+				continue 
+			end
+		
+			counterIdx = decoEntity.TagComponent.Tags[2]
+			counterPos = decoEntity.TransformComponent.WorldPosition
+		
+			for i=1,6 do 
+				_LobbySpawnPositionLogic:ResetCustomerWaitSeatGroup(tonumber(counterIdx), i, offSet.x + counterPos.x, offSet.y + counterPos.y - (i) * space)
+			end
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateAllInnerWall(integer expansionLv, integer interiorLv, integer displayCount, integer counterCount, Entity player)
+		-- 모든 내부 벽을 업데이트하는 함수
+		local group = _UserService.LocalPlayer.CurrentMap:GetChildByName("KitchenApp_Level"..expansionLv)
+		
+		local kAppsCount = {} 
+		kAppsCount[_KitchenAppEnumType.Display] = displayCount
+		kAppsCount[_KitchenAppEnumType.Counter] = counterCount 
+		
+		for _,decoKApp in pairs(group.Children) do 
+			
+			local appType = decoKApp.TagComponent.Tags[1]
+			local appIdx = tonumber(decoKApp.TagComponent.Tags[2])
+			
+			if appType == _KitchenAppEnumType.Grill then 
+				continue
+			end
+			
+			if appIdx > kAppsCount[appType] then 
+				continue
+			end
+			
+			if interiorLv == 1 and appType == _KitchenAppEnumType.Display then 
+				continue 
+			end
+		
+			
+			local tilePos = decoKApp.TransformComponent.WorldPosition
+		
+			self:RemoveTile(expansionLv,decoKApp.TransformComponent.WorldPosition,player)		
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateInnerWallByAppIdx(string appType, integer appIdx, integer expansionLv, integer interiorLv, Entity player)
+		-- 앱 인덱스별로 내부 벽을 업데이트하는 함수
+		if interiorLv == 1 and appType == _KitchenAppEnumType.Display then 
+			return 
+		end
+		
+		local group = _UserService.LocalPlayer.CurrentMap:GetChildByName("KitchenApp_Level"..expansionLv)
+		
+		local decoKApp = group:GetChildByName("Deco"..appType..appIdx)
+		local tilePos = decoKApp.TransformComponent.WorldPosition
+		
+		self:RemoveTile(expansionLv, tilePos, player)	
+	end
+
+	@ExecSpace("ClientOnly")
+	method void AddBoxTile(integer expansionLv, Vector2 startPos, Vector2 endPos, Entity player, string tileImg)
+		-- 박스 타일을 추가하는 함수
+		local tilemap =  self.StageWalls[expansionLv].RectTileMapComponent
+		
+		local cellPosStart = tilemap:ToCellPosition(startPos.x,startPos.y)
+		local cellPosEnd = tilemap:ToCellPosition(endPos.x,endPos.y)
+		
+		local tileInfoStart = tilemap:GetTile(cellPosStart)
+		local tileInfoEnd = tilemap:GetTile(cellPosEnd)
+		
+		if isvalid(tileInfoStart) and isvalid(tileInfoEnd) then 
+			tilemap:BoxFill(tileImg,cellPosStart,cellPosEnd)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RemoveTile(integer expansionLv, Vector3 tilePos, Entity player)
+		-- 타일을 제거하는 함수
+		---@type RectTileMapComponent
+		local tilemap = self.StageWalls[expansionLv].RectTileMapComponent
+		
+		local cellPos = tilemap:ToCellPosition(tilePos)
+		
+		local tileInfo = tilemap:GetTile(cellPos)
+		
+		if isvalid(tileInfo) ~= nil then
+			tilemap:RemoveTile(cellPos.x, cellPos.y)
+		end
+		
+		local counterCellPosY = 4
+		if tilemap.Entity.Name == "RectTileMap_11" then 
+			counterCellPosY = 6
+		end
+		
+		if cellPos.y == counterCellPosY then
+			local tileImg = self.insideWallLeftSideTileImg
+			local leftTile = tilemap:GetTile(cellPos.x-1, cellPos.y)
+			local left2Tile = tilemap:GetTile(cellPos.x-2, cellPos.y) 
+			if not isvalid(left2Tile) then
+				tileImg = self.SingleWallTileImg
+			end
+			if isvalid(leftTile) then
+				tilemap:SetTile(tileImg, Vector2Int(cellPos.x-1, cellPos.y))
+			end
+			
+			local rightTile = tilemap:GetTile(cellPos.x+1, cellPos.y)
+			if isvalid(rightTile) then
+				tilemap:SetTile(self.insideWallRightSideTileImg, Vector2Int(cellPos.x+1, cellPos.y))
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void UpdateInteriorObject(integer decoLevel, Entity player)
+		-- 인테리어 오브젝트를 업데이트하는 함수
+		
+		
+		local parkingArea = self:GetParkingAreaEntity()
+		local truckClickArea = parkingArea:GetChildByName("TruckBtnArea") 
+		truckClickArea:ConnectEvent(ButtonClickEvent, function()
+			player.PlayerTrainingManager:OnClickTruckArea()
+		end)
+		
+		local scooterClickArea = parkingArea:GetChildByName("ScooterBtnArea") 
+		scooterClickArea:ConnectEvent(ButtonClickEvent, function()
+			player.PlayerAutoTrainingManager:OnClickScooterArea()
+		end)
+		
+		for _, entity in pairs(self.NowInteriorEntity.Children) do
+			entity.Enable = false
+		end 
+		
+		local hiddenArea = self:GetHiddenAreaEntity() 
+		
+		if decoLevel == 0 then
+			parkingArea.Enable = false
+			hiddenArea.Enable = true
+			return
+		end
+		
+		if decoLevel >= 3 then
+			hiddenArea.Enable = false
+			parkingArea.Enable = true
+		else
+			parkingArea.Enable = false
+			hiddenArea.Enable = true
+		end
+		
+		
+		local dataSet = _DataService:GetTable("InteriorEntityData")
+		local entities = dataSet:GetColumn("UpgradeLevel"..tostring(decoLevel))
+		
+		if #entities == 0 then
+			return
+		end
+		
+		for i = 1, #entities do
+			local name = entities[i]
+			if _UtilLogic:IsNilorEmptyString(name) then
+				continue
+			end 
+			local entity = self.NowInteriorEntity:GetChildByName(name)
+			if isvalid(entity) then
+				entity.Enable = true
+				entity.SpriteRendererComponent.Color.a = 1
+				self:SetInteriorEntityLayer(entity)
+				
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateExteriorObject(integer level)
+		-- 외부 오브젝트를 업데이트하는 함수
+		local bgObj = _EntityService:GetEntityByPath(_UserService.LocalPlayer.CurrentMap.Path.."/BackgroundObject")
+		local stageId = _UserService.LocalPlayer.PlayerStage.NowStage
+		
+		
+		local levelAllModelName = "Exterior_Stage"..stageId.."_LevelAll"
+		local objLevelAllEntity = bgObj:GetChildByName(levelAllModelName)
+		if not isvalid(objLevelAllEntity) then
+			local modelId = _EntryService:GetModelIdByName(levelAllModelName)
+			objLevelAllEntity = _SpawnService:SpawnByModelId(modelId, levelAllModelName, Vector3.zero, bgObj)
+		end
+		objLevelAllEntity.Enable = true
+		
+		local maxLevel = 5 
+		
+		for i = 1, maxLevel do
+			i = math.floor(i)
+			local entityName = "Exterior_Stage"..stageId.."_Level"..i
+			local backgroundEntity = bgObj:GetChildByName(entityName)
+			
+			if i < level then
+				if isvalid(backgroundEntity) then
+					backgroundEntity.Enable = false
+					backgroundEntity:Destroy()
+				end
+			else
+				if not isvalid(backgroundEntity) then
+					local modelId = _EntryService:GetModelIdByName(entityName)
+					backgroundEntity = _SpawnService:SpawnByModelId(modelId, entityName, Vector3.zero, bgObj)
+				end
+				backgroundEntity.Enable = true
+			end
+		end
+		
+		bgObj.Enable = true
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateKitchenInterior(integer kitchenInteriorLevel, Entity player)
+		-- 주방 인테리어를 업데이트하는 함수
+		
+		for _, entity in pairs(self.NowKitchenInteriorEntity.Children) do
+			entity.Enable = false
+		end 
+		
+		if kitchenInteriorLevel == 0 then
+			return
+		end
+		
+		local dataSet = _DataService:GetTable("KitchenInteriorEntityData")
+		local entities = dataSet:GetColumn("UpgradeLevel"..tostring(kitchenInteriorLevel))
+		
+		if #entities == 0 then
+			return
+		end
+		
+		for i = 1, #entities do
+			local name = entities[i]
+			if _UtilLogic:IsNilorEmptyString(name) then
+				continue
+			end 
+			local entity = self.NowKitchenInteriorEntity:GetChildByName(name)
+			if isvalid(entity) then
+				entity.Enable = true
+				entity.SpriteRendererComponent.SortingLayer =  "Deco_Object"
+				entity.SpriteRendererComponent.OrderInLayer = _SortLayerEnumType.Grill
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method Entity GetParkingAreaEntity()
+		-- 주차장 엔티티를 가져오는 함수
+		
+		local stageId = _UserService.LocalPlayer.PlayerStage.NowStage
+		local modelName = "Exterior_Stage"..stageId.."_ParkingArea"
+		local backgroundObject = _UserService.LocalPlayer.CurrentMap:GetChildByName("BackgroundObject")
+		local parkingArea = backgroundObject:GetChildByName(modelName)
+		
+		if not isvalid(parkingArea) then
+			local modelId = _EntryService:GetModelIdByName(modelName)
+			parkingArea = _SpawnService:SpawnByModelId(modelId, modelName, Vector3.zero, backgroundObject)
+		end
+		
+		for _, child in pairs(parkingArea.Children) do
+			if isvalid(child.SpriteRendererComponent) then
+				if child.Name == "ParkingArea" then 
+					child.SpriteRendererComponent.SortingLayer = "Level1"
+				else
+					child.SpriteRendererComponent.SortingLayer = "Deco_Object"
+				end
+			end
+		end
+		
+		self.ParkingAreaEntity = parkingArea
+		
+		return parkingArea
+	end
+
+	@ExecSpace("Client")
+	method Entity GetHiddenAreaEntity()
+		-- 숨겨진 영역 엔티티를 가져오는 함수
+		local bgObj = _UserService.LocalPlayer.CurrentMap:GetChildByName("BackgroundObject")
+		local stageId = _UserService.LocalPlayer.PlayerStage.NowStage
+		
+		local hiddenAreaModelName = "Exterior_Stage"..stageId.."_HiddenArea"
+		local hiddenArea = bgObj:GetChildByName(hiddenAreaModelName)
+		if not isvalid(hiddenArea) then
+			local modelId = _EntryService:GetModelIdByName(hiddenAreaModelName)
+			hiddenArea = _SpawnService:SpawnByModelId(modelId, hiddenAreaModelName, Vector3.zero, bgObj)
+		end
+		
+		return hiddenArea
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetInteriorEntityLayer(Entity entity)
+		-- 인테리어 엔티티의 레이어를 설정하는 함수
+		entity.SpriteRendererComponent.SortingLayer =  "Deco_Object"
+		
+		if _UtilLogic:Contains(entity.Name, "Chandelier") then
+			entity.SpriteRendererComponent.SortingLayer = "Player"
+			
+		elseif not _UtilLogic:Contains(entity.Name, "Facility") then 
+			entity.SpriteRendererComponent.OrderInLayer = _SortLayerEnumType.ServingDeco
+		end
+	end
+
+end

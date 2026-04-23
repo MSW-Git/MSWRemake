@@ -1,0 +1,153 @@
+@Component
+script C30013_Kyrin_Skill extends Component
+
+	property number skillAnimLength = 1.08
+
+	@Sync
+	property Entity projectile = nil
+
+	property string attackProjectileRUID = "cf1fbacd85994f1bb196289931bd6178"
+
+	property string HitEffectRUID = "e862ecd74f63407d98442fbf4aac10f9"
+
+	property string Hit2EffectRUID = "a695fad03d8240b8b5ffa890fd092595"
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		local enemies = {}
+		
+		if unitInfo.TeamType == "User" then
+			enemies = teamManager.EnemyUnits
+		elseif unitInfo.TeamType == "Enemy" then
+			enemies = teamManager.OwnUnits
+		end
+		
+		-- projectile Spwan
+		local spawnTimer = 0
+		local function ProjectileSpawn()
+			if not _BTLogic_New:CheckAttackAble(myUnit, targetUnit, "Skill") then
+				local checkEnemies = _BTLogic_New:getEntities(enemies, "AttackAble")
+				targetUnit = _BTLogic_New:getTarget(unitInfo.setTile, checkEnemies, "Nearest")
+			end
+			
+			if isvalid(targetUnit) and _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self.projectile = _UnitSetLogic_New:GetProjectileEntity(unitInfo.OwnerId, "Skill")
+				self.projectile:AddComponent(C30013_Kyrin_SkillprojectileInfo)
+				
+				self.projectile.SpriteRendererComponent.SpriteRUID = self.attackProjectileRUID
+				self.projectile.TransformComponent.Scale = unitInfo.spriteRenderer.TransformComponent.Scale
+				self.projectile.SpriteRendererComponent.FlipX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+				
+				self.projectile.C30013_Kyrin_SkillprojectileInfo:SetProjectile(self.Entity, targetUnit, 1, 4, 0.3, 0.3)
+				_GeneralDirectorLogic:SetEffectAlpha(self.projectile,unitInfo.OwnerId)
+			end
+		end
+		
+		spawnTimer = _TimerService:SetTimerOnce(ProjectileSpawn, 0.7 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0091", self.Entity.UnitInfo.OwnerId)
+		
+		--연출
+		self:SkillLineEffect(targetUnit, 0.7 / skillRate, self.Entity.UnitInfo.OwnerId)
+	end
+
+	method void SetSkillDamage(Entity targetUnit)
+		if isvalid(targetUnit) then
+			local myUnit = self.Entity
+			local unitInfo = myUnit.UnitInfo
+			local unitStatus = myUnit.UnitStatus
+			
+			local targetInfo = targetUnit.UnitInfo
+			local targetStatus = targetUnit.UnitStatus
+			local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+			
+			self:HitEffect(targetUnit, 1, unitInfo.OwnerId)
+			
+			local skillSetDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C30013_Active_SDamage_Magic[unitInfo.level] +
+									unitStatus.PhysicalAttack * _S01_SkillDescLogic.C30013_Active_SDamage_Physic[unitInfo.level]
+			
+			local damageInfo = _StatusChangeLogic:CheckDamage(skillSetDamage, myUnit, targetUnit, 0, "Physical")
+			
+			_StatusChangeLogic:HitDamage(myUnit, targetUnit, damageInfo[1], 0, damageInfo[2], "skill")
+			
+			
+			local firedDamage = unitStatus.MagicalAttack * _S01_SkillDescLogic.C30013_Active_SDamage2_Magic[unitInfo.level] +
+									unitStatus.PhysicalAttack * _S01_SkillDescLogic.C30013_Active_SDamage2_Physic[unitInfo.level] 
+			
+			local damage2Info = _StatusChangeLogic:CheckDamage(firedDamage, myUnit, targetUnit, 0, "Magical")
+			
+			local firedCount = 0
+			local firedTimer = 0
+			local function firedFnc()
+				if _BTLogic_New:CheckAttackAble(targetUnit, targetUnit, "Skill") then
+					firedCount += 1
+					_StatusChangeLogic:HitDamage(myUnit, targetUnit, 0, damage2Info[1], damage2Info[2], "skill")
+					self:HitEffect(targetUnit, 2, unitInfo.OwnerId)
+					
+					if firedCount >= 3 then
+						_TimerService:ClearTimer(firedTimer)
+					end
+				else
+					_TimerService:ClearTimer(firedTimer)
+				end
+			end
+			
+			firedTimer = _TimerService:SetTimerRepeat(firedFnc, 1, 1)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void HitEffect(Entity targetUnit, number type)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		
+		-- Skill hiteffect
+		local filpX = unitInfo.spriteRenderer.SpriteRendererComponent.FlipX
+		local options = {["FlipX"] = filpX,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)}
+		local ruid = ""
+		
+		if type == 1 then
+			ruid = self.HitEffectRUID
+		elseif type == 2 then
+			ruid = self.Hit2EffectRUID
+		end
+		
+		_EffectService:PlayEffectAttached(ruid, targetUnit, Vector3(0, 0.3, 0), 0, Vector3.one, false, options)
+	end
+
+	@ExecSpace("Client")
+	method void SkillLineEffect(Entity targetUnit, number time)
+		--자신과 적을 선으로 연결
+		local line1 = _SpawnService:SpawnByModelId("model://c37fb349-52e3-4fc5-bb13-848ca95d5b4a","Line1",Vector3(0,0,0),self.Entity.Parent)
+		line1.LineEffectCompo.type = "C30013"
+		line1.LineEffectCompo.StartEntity = self.Entity
+		line1.LineEffectCompo.TargetEntity_1 = targetUnit
+		
+		local destoryline = function()
+			line1:Destroy()
+		end
+		
+		_TimerService:SetTimerOnce(destoryline, time)
+	end
+
+end

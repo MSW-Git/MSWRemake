@@ -1,0 +1,629 @@
+@Logic
+script ToDoManager extends Logic
+
+	property Entity ToDoLayout = "21cca797-b240-4db3-93a1-24fd422b56aa"
+
+	property table ToDoData = {}
+
+	property Entity RedDot = "b3e88110-42de-4884-9c11-32754029cddf"
+
+	property Entity ToDoInfoMenuBtn = "d179d290-0a79-4f9d-9f65-7b16e166023a"
+
+	property Entity ToDoInfoMenuPanel = "21912ee4-a40b-41ae-b9a3-fd64baa85ca1"
+
+	property integer NowToDo = 0
+
+	property table ToDoSecretaryData = {}
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 ToDo 관련 데이터셋을 로드하는 함수
+		self:LoadDataSet()
+	end
+
+	method void LoadDataSet()
+		-- EventToDoData와 ToDoSecretaryData 테이블을 로드하여 캐시하는 함수
+		table.clear(self.ToDoData)
+		local dataSet = _DataService:GetTable("EventToDoData")
+		
+		for i = 1, dataSet:GetRowCount() do
+			local data = ToDoData()
+			
+			data:Load(dataSet, i)
+			
+			if self.ToDoData[data.Id] ~= nil then
+				break
+			end
+			
+			self.ToDoData[data.Id] = data
+		end
+		
+		
+		table.clear(self.ToDoSecretaryData)
+		local sDataSet = _DataService:GetTable("ToDoSecretaryData")
+		for i = 1, sDataSet:GetRowCount() do
+			local data = ToDoSecretaryData()
+			data:Load(sDataSet, i)
+			
+			if self.ToDoSecretaryData[data.Id] ~= nil then
+				break
+			end
+			
+			self.ToDoSecretaryData[data.Id] = data
+		end
+		
+		
+		self._T.minEmploymentCost = 9999999999
+		local employmentDataSet = _DataService:GetTable("EmploymentDataSet")
+		for i = 1, employmentDataSet:GetRowCount() do
+			local row = employmentDataSet:GetRow(i)
+			local cost = tonumber(row:GetItem("Cost"))
+			self._T.minEmploymentCost = math.min(self._T.minEmploymentCost, cost)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshToDoList()
+		-- 현재 스테이지에 따라 적절한 ToDo 리스트를 새로고침하는 함수
+		for i, entity in pairs(self.ToDoLayout.Children) do
+			entity.Enable = false
+		end
+		
+		if _UserService.LocalPlayer.PlayerStage.NowStage <= 1 then
+			self:RefreshTutorialToDoList()
+		else
+			self:SetNowToDo()
+			self:RefreshSecretaryToDoList()
+		end
+		
+		local enableRedDot = nil
+		if _UILobbyManager.StoreInfoEnable == true and _UILobbyManager.StoreInfoArea.UIStoreInfoPageManager.CurrentPageNum == 4 then
+			enableRedDot = false
+		end
+		self:SetEnableRedDot(enableRedDot)
+	end
+
+	method ToDoData GetData(integer id)
+		-- 주어진 ID에 해당하는 ToDo 데이터를 반환하는 함수
+		return self.ToDoData[id]
+	end
+
+	@ExecSpace("Client")
+	method void SetEnableRedDot(boolean forceSet)
+		-- ToDo 알림 빨간 점의 표시 여부를 설정하는 함수
+		local player = _UserService.LocalPlayer
+		
+		local enable = false
+		
+		if player.PlayerStage.NowStage <= 1 then
+			for i, data in pairs(_ToDoManager.ToDoData) do
+				---@type ToDoData
+				local todoData = data
+				
+				if player.PlayerEvent.Events[todoData.OpenEvent] == true and player.PlayerAchievement:IsAchievementAchieved(todoData.CompleteAchiId) == false then
+					enable = true
+					break
+				end
+			end
+		else
+			for id, isChecked in pairs(player.PlayerEvent.ToDoSecretaryChecked) do
+				if isChecked == false then
+					enable = true
+					break
+				end
+			end
+		end
+		
+		if forceSet ~= nil then
+			enable = forceSet
+		end
+		
+		
+		self.RedDot.Enable = enable
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenRelatedUI(string uiOpenType, string uiOpenTypeValue)
+		-- ToDo 항목과 연결된 UI를 여는 함수
+		if uiOpenType == "EmployeeManage" then
+			_UIEmployeeManageService:UIOpen()
+			
+		elseif uiOpenType == "Upgrade" then
+			local upgradeType
+			if _UtilLogic:IsNilorEmptyString(uiOpenTypeValue) == false then
+				upgradeType = math.floor(tonumber(uiOpenTypeValue))
+			end
+			_UpgradeDataSetLogic.UIUpgradePanel.UIUpgradePanel:Open(upgradeType)
+				
+		elseif uiOpenType == "Employment" then
+			local uiEmployment = _EntityService:GetEntityByPath("/ui/EmploymentGroup")
+			uiEmployment.UIEmployment:OpenUI()
+			
+		elseif uiOpenType == "Recipe" then
+			_UIGroupManager:EnableRecipeGroup(true)
+			
+		elseif uiOpenType == "Shop" then
+			local uiShop = _EntityService:GetEntityByPath("/ui/UIShopGroup/UIShop")
+			uiShop.UIShop:Open("GeneralShop", nil)
+			
+		elseif uiOpenType == "Management" then
+			local uiManagement = _EntityService:GetEntityByPath("/ui/ManagementGroup/UIManagement")
+			uiManagement.UIManagement:Open()
+			
+		elseif uiOpenType == "Training" then
+			local uiTrainingSetting = _EntityService:GetEntityByPath("/ui/TrainingSettingGroup")
+			uiTrainingSetting.UITrainingSetting:OpenTrainingSettingUI()
+			
+		elseif uiOpenType == "TrainingAuto" then
+			local uiTrainingAuto = _EntityService:GetEntityByPath("/ui/AutoTrainingGroup").UITrainingAuto
+			uiTrainingAuto:OpenUI()
+			
+		elseif uiOpenType == "Trial" then
+			local tab = _TrialOfficialTypeEnum.Official
+			if _UtilLogic:IsNilorEmptyString(uiOpenTypeValue) == false then
+				tab = tonumber(uiOpenTypeValue)
+			end
+			
+			_TrialUILogic:OpenSelectTrialUI(tab)
+			
+		elseif uiOpenType == "VIPOrder" then
+			_VIPOrderDataSetLogic.UIVIPOrderPanel:Open()
+			
+		elseif uiOpenType == "IngreGacha" then
+			_UIEntityLogic_RecipeGroup.UIIngreGachaDim.UIIngreGacha:Open(true)
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetNowToDo()
+		-- 현재 진행해야 할 ToDo를 찾아 설정하는 함수
+		local player = _UserService.LocalPlayer
+		if player.PlayerStage.NowStage > 2 then
+			self.NowToDo = nil
+			return
+		end
+		
+		local nowPlayingEventId = _EventManager.CurrentEventGroupId
+		local nowToDo = 0
+		for i, data in pairs(self.ToDoData) do
+			local todoData = self:GetData(i)
+			if todoData.OpenEvent == nowPlayingEventId then
+				continue
+			end
+			
+			local isEventOccured = player.PlayerEvent:IsEventOccured(todoData.OpenEvent)
+			local isComplete = player.PlayerAchievement:IsAchievementAchieved(todoData.CompleteAchiId)
+			if isEventOccured == true and isComplete == false then
+				nowToDo = i
+				break
+			end
+		end
+		
+		self.NowToDo = nowToDo
+		self:RefreshToDoInfos()
+	end
+
+	@ExecSpace("Client")
+	method void RefreshToDoInfos()
+		-- ToDo 정보 UI를 새로고침하는 함수
+		local player = _UserService.LocalPlayer
+		local todoData = self:GetData(self.NowToDo)
+		if player.PlayerStage.NowStage > 1 then
+			todoData = nil
+			self.NowToDo = nil
+		end
+		
+		
+		_MainMenuDataSetLogic:ClearMenuBtnChild()
+		
+		if todoData == nil then
+			self.ToDoInfoMenuBtn.Enable = false
+			self.ToDoInfoMenuPanel.Enable = false	
+			return
+		end
+		
+		self.ToDoInfoMenuBtn.Enable = true
+		self.ToDoInfoMenuPanel.Enable = true
+		
+		local menuBtnRUID = function(canAchieve)
+			if canAchieve then
+				return "bf10c3fd0b974629a8d88471a6ac6d01"
+			else
+				return "ecd48cb0475c4dd698cca2d77d113ae1"
+			end
+		end
+		
+		local iconRUID = _MainMenuDataSetLogic:GetMenuBtnData(todoData.UIOpenType).IconRUID
+		self.ToDoInfoMenuBtn:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = iconRUID
+		self.ToDoInfoMenuPanel:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = iconRUID
+		
+		self.ToDoInfoMenuPanel:GetChildByName("Text").TextComponent.Text = _GetLocalizationTextLogic:GetText(todoData.ContentsKey)
+		
+		local canToDoAchieved = self:CanToDoAchieved()
+		self.ToDoInfoMenuBtn.SpriteGUIRendererComponent.ImageRUID = menuBtnRUID(canToDoAchieved)
+		
+		local clickHere = _MainMenuDataSetLogic:SetClickHereOnMenuBtn(todoData.UIOpenType)
+	end
+
+	@ExecSpace("ClientOnly")
+	method boolean CanToDoAchieved()
+		-- 현재 ToDo를 달성할 수 있는지 확인하는 함수
+		local player = _UserService.LocalPlayer
+		local todoData = self:GetData(self.NowToDo)
+		
+		if todoData.UIOpenType == "Upgrade" then
+			local upgradeType = tonumber(todoData.UIOpenTypeValue)
+			local upgradeTypeData = _UpgradeDataSetLogic:GetData(upgradeType)
+			local playerLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, upgradeType)
+			local nextLevel = math.min(playerLevel+1, upgradeTypeData:GetMaxLevel(player))
+			local nextLevelData = _UpgradeDataSetLogic:GetLevelData(upgradeType, nextLevel)
+			
+			if player.PlayerInventory.Money >= nextLevelData:GetUpgradeCost(player) then 
+				return true
+			end
+			
+		elseif todoData.UIOpenType == "Management" then
+			local canLevelUp = true
+			for i, bool in pairs(player.PlayerManagement.CurrentGoals) do
+				if bool == false then
+					canLevelUp = false
+					break
+				end
+			end
+			
+			if canLevelUp then
+				return true
+			end
+			
+		elseif todoData.UIOpenType == "Training" then
+			if player.PlayerInventory.LunchBox >= player.PlayerInventory.TrainingEnterLunchBox then
+				return true
+			end
+			
+		elseif todoData.UIOpenType == "Employment" then
+			if player.PlayerEmployment.EmploymentState == _EmploymentStateEnum.LevelButtonList then
+				if player.PlayerInventory.ArcaneSymbol >= self._T.minEmploymentCost then
+					return true
+				end		
+				
+			elseif player.PlayerEmployment.EmploymentState == _EmploymentStateEnum.EmployeeList then
+				local deposit = _GetConfigDataLogic:GetConfigNumDataByKey("TutorialTempDeposit")
+						
+				if player.PlayerInventory.Money >= deposit then
+					return true
+				end
+				
+			end
+			
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshSecretaryToDoList()
+		-- 비서 ToDo 리스트를 새로고침하는 함수
+		local player = _UserService.LocalPlayer
+		local secretaryIds = table.keys(player.PlayerEvent.ToDoSecretaryChecked)
+		table.sort(secretaryIds, function(a, b)
+			return a < b
+		end)
+		
+		for i = 1, #secretaryIds do
+			local secId = secretaryIds[i]
+			local isChecked = player.PlayerEvent.ToDoSecretaryChecked[secId]
+			
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_ToDoItemOrigin", i, self.ToDoLayout)
+			entity.UIToDoItemRenderer:RefreshSecretary(self:GetToDoSecretaryData(secId), isChecked)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshTutorialToDoList()
+		-- 튜토리얼 단계의 ToDo 리스트를 새로고침하는 함수
+		local entityIndex = 1
+		local completed = {}
+		local notCompleted = {}
+		
+		for i = 1, #self.ToDoData do
+			local toDoData = self:GetData(i)
+			local openEvent = toDoData.OpenEvent
+			
+			local isEventOccured = _UserService.LocalPlayer.PlayerEvent:IsEventOccured(openEvent)
+			if isEventOccured == false then
+				continue
+			end
+				
+			local isCompleted = _UserService.LocalPlayer.PlayerAchievement:IsAchievementAchieved(toDoData.CompleteAchiId)
+			if isCompleted then
+				table.insert(completed, toDoData)
+			else
+				table.insert(notCompleted, toDoData)
+			end
+		end
+		
+		for i, todoData in pairs(notCompleted) do
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_ToDoItemOrigin", entityIndex, self.ToDoLayout)
+			entity.UIToDoItemRenderer:Refresh(todoData, false)
+			entityIndex = entityIndex + 1
+		end
+		
+		for i, todoData in pairs(completed) do
+			local entity = _UIEntityService:GetOrCreateEntityOfModel("Model_ToDoItemOrigin", entityIndex, self.ToDoLayout)
+			entity.UIToDoItemRenderer:Refresh(todoData, true)
+			entityIndex = entityIndex + 1
+		end
+		
+		self:SetNowToDo()
+	end
+
+	method ToDoSecretaryData GetToDoSecretaryData(integer id)
+		-- 주어진 ID에 해당하는 비서 ToDo 데이터를 반환하는 함수
+		return self.ToDoSecretaryData[id]
+	end
+
+	method boolean IsToDoSecretaryOccured(Entity player, integer id)
+		-- 비서 ToDo 조건이 만족되었는지 확인하는 함수
+		local secData = self:GetToDoSecretaryData(id)
+		
+		local getTrialPool = function(a)
+			local pool = {}
+			for i = 1, #player.PlayerTrial.OfficialTrials do
+				local trialId = player.PlayerTrial.OfficialTrials[i]
+				local initial = string.sub(trialId, 1, 1)
+				if initial == a then
+					table.insert(pool, trialId)
+				end
+			end
+			
+			return pool
+		end
+		
+		local getEmpLocationCount = function(position)
+			local count = 0
+			for idx, data in pairs(player.EmployeeManager.EmployeesLocation) do
+				---@type EmployeeLocationData
+				local locData = data
+				
+				if locData.Location == position then
+					count += 1
+				end
+			end
+			return count
+		end
+		
+		local getEmpTypeCount = function(empType)
+			local count = 0
+			for i, data in pairs(player.EmployeeManager.EmployeeDetailTable) do
+				---@type EmployeeDetailData
+				local empDetail = data
+				
+				local empData = _EmployeeService:GetData(empDetail.Id)
+				if empData.Type == empType then
+					count += 1
+				end
+			end
+			return count
+		end
+		
+		if secData.Condition == "RecommendedUpgrade" then
+			local upgradeList = _UpgradeDataSetLogic:ReturnTabDatas(0, player)
+			if #upgradeList > 0 then
+				for i = 1, #upgradeList do
+					local upgradeId = upgradeList[i]
+					local upgradeLevel = _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, upgradeId)
+					local levelData = _UpgradeDataSetLogic:GetLevelData(upgradeId, upgradeLevel+1)
+					if player.PlayerInventory.Money >= levelData:GetUpgradeCost(player) then
+						return true
+					end
+				end
+			end	
+		
+		elseif secData.Condition == "Employment" or secData.Condition == "EmployeeDeploy" then
+			local grillCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.GrillCount)
+			local grillEmpCount = getEmpLocationCount(_EmployeeTypeEnum.Cook)
+			local cookEmpCount = getEmpTypeCount(_EmployeeTypeEnum.Cook)
+				
+			local counterCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.CounterCount)
+			local counterEmpCount = getEmpLocationCount(_EmployeeTypeEnum.Serving)
+			local servingEmpCount = getEmpTypeCount(_EmployeeTypeEnum.Serving)
+			
+			
+			if grillEmpCount < grillCount then
+				if cookEmpCount < grillCount then
+					if secData.Condition == "Employment" then
+						return true
+					end
+				else
+					if secData.Condition == "EmployeeDeploy" then
+						return true
+					end
+				end
+			end
+			
+			if counterEmpCount < counterCount then
+				if servingEmpCount < counterCount then
+					if secData.Condition == "Employment" then
+						return true
+					end
+				else
+					if secData.Condition == "EmployeeDeploy" then
+						return true
+					end
+				end
+			end
+			
+		elseif secData.Condition == "EmptyDisplay" then
+			local displayCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.DisplayCount)
+			local setCount = 0
+			for i, id in pairs(player.PlayerRecipe.SetRecipes) do
+				if id ~= nil or id ~= 0 then
+					setCount += 1
+				end
+			end
+			
+			if setCount < displayCount then
+				return true
+			end
+			
+		elseif secData.Condition == "IngreGacha" then
+			local boxItemCount = 0
+			
+			for itemId, data in pairs(_ItemDataSetLogic.ItemData) do
+				if string.sub(itemId, 1, 1) ~= "B" then
+					continue
+				end
+				
+				boxItemCount += player.PlayerInventory:GetItemCount(itemId)
+			end
+			
+			if boxItemCount > 0 then
+				return true
+			end
+			
+		elseif secData.Condition == "Training" then
+			if player.PlayerInventory.LunchBox >= player.PlayerTrainingManager.RequireTokenNum and player.PlayerInventory.TrainingTicket > 1 then
+				return true
+			end
+			
+		elseif secData.Condition == "AutoTraining" then
+			local slotCnt = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.AutoTrainingOpen)
+			if slotCnt > 0 then
+				local emptySlotCnt = 0
+				for i, data in pairs(player.PlayerAutoTrainingManager.AutoTrainingSlotInfoTable) do
+					if i > slotCnt then
+						continue
+					end
+					
+					---@type AutoTrainingSlotData
+					local slotData = data
+					if slotData.State == _AutoTrainingUIStateEnum.Default or slotData.State == _AutoTrainingUIStateEnum.List_Selected then
+						emptySlotCnt += 1
+					end
+				end
+				
+				if emptySlotCnt > 0 and player.PlayerInventory.LunchBox >= player.PlayerAutoTrainingManager.RequireLunchBoxNum then
+					return true
+				end
+			end
+			
+			
+		elseif secData.Condition == "EndAutoTraining" then
+			local slotCnt = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.AutoTrainingOpen)
+			if slotCnt > 0 then
+				for i, data in pairs(player.PlayerAutoTrainingManager.AutoTrainingSlotInfoTable) do
+					---@type AutoTrainingSlotData
+					local slotData = data
+					if slotData.State == _AutoTrainingUIStateEnum.WaitingReward then
+						return true
+					end
+				end
+			end
+			
+		elseif secData.Condition == "RecipeTrial" then
+			local trialList = getTrialPool("R")
+			for i = 1, #trialList do
+				local trialId = trialList[i]
+				local challengingData = _TrialLogic:GetChallengingTrialData(trialId, player, _TrialOfficialTypeEnum.Official)
+				if challengingData ~= nil then
+					local userValue = _RecipeDataSetLogic:ReturnBestTasteScore(player, _TrialDataSetLogic:GetTrialData(trialId).TargetType)
+					if userValue >= challengingData.Requirement then
+						return true
+					end
+				end
+			end
+			
+		elseif secData.Condition == "EmployeeTrial" then
+			local trialList = getTrialPool("E")
+			for i = 1, #trialList do
+				local trialId = trialList[i]
+				local challengingData = _TrialLogic:GetChallengingTrialData(trialId, player, _TrialOfficialTypeEnum.Official)
+				if challengingData ~= nil then
+					local trialData = _TrialDataSetLogic:GetTrialData(trialId)
+					
+					local empIds = {}
+					for _, detail in pairs(player.EmployeeManager.EmployeeDetailTable) do
+						---@type EmployeeDetailData
+						local empDetail = detail
+						local empData = _EmployeeService:GetData(empDetail.Id)
+						
+						if empData.Type ~= trialData.TargetStat then
+							continue
+						end
+						
+						local empLevel = empDetail:ReturnTypeLevel()
+						if empLevel >= challengingData.Requirement then
+							table.insert(empIds, empDetail.Id)
+						end
+					end
+					
+					local exEmpId = player.PlayerTrial.ExEmployeeIds[trialData.TargetStat]
+					
+					if #empIds > 1 then
+						return true
+					end
+					
+					if #empIds == 1 then
+						local empId = empIds[1]
+						if empId ~= exEmpId then
+							return true
+						end
+					end
+					
+				end
+			end
+				
+		elseif secData.Condition == "VIPOrderCount" then
+			if _UtilLogic:IsNilorEmptyString(player.PlayerVIPOrder.NowSeasonMainTag) == false then
+				local maxCount = _UpgradeDataSetLogic:ReturnCurrentPlayerValue(player, _UpgradeTypeEnum.VIPOrderCount)
+				local nowCount = player.PlayerVIPOrder.SeasonCompleteCount
+				if nowCount < maxCount then
+					return true
+				end
+			end
+			
+		elseif secData.Condition == "VIPOrderSeasonReward" then
+			if _UtilLogic:IsNilorEmptyString(player.PlayerVIPOrder.NowSeasonMainTag) == false then
+				for score, get in pairs(player.PlayerVIPOrder.SeasonRewardBox) do
+					if score <= player.PlayerVIPOrder.SeasonCompleteScore and get == false then
+						return true
+					end
+				end
+			end
+			
+		elseif secData.Condition == "UnofficialTrial" then
+			for id, bool in pairs(player.PlayerTrial.UnofficialTrials) do
+				if bool == false then
+					return true
+				end
+			end
+			
+		elseif secData.Condition == "ManagementLevelUp" then
+			local isEveryGoalCompleted = true
+			for k, v in pairs(player.PlayerManagement.CurrentGoals) do
+				if v == false then
+					isEveryGoalCompleted = false
+					break
+				end
+			end
+			
+			if player.PlayerManagement.ManagementLevel == _ManagementDataSetLogic.ManagementMaxLevel then
+				isEveryGoalCompleted = false
+			end
+			
+			if isEveryGoalCompleted == true then
+				return true
+			end
+		end
+		
+		return false
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandlePlayerManagementChangedEvent(PlayerManagementChangedEvent event)
+		-- 플레이어 경영 상태 변경 시 ToDo 정보를 업데이트하는 이벤트 핸들러
+		self:RefreshToDoInfos()
+	end
+
+end

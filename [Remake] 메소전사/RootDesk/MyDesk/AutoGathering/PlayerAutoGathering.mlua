@@ -1,0 +1,355 @@
+@Component
+script PlayerAutoGathering extends Component
+
+	property table GatherRewardTable = {}
+
+	property EntityRef rewardSlot = "6478dcb9-ad9f-49e1-8987-43a3f436ff60"
+
+	property EntityRef start_button = "ee6e198b-9c39-46a8-8494-6a43c259cb07"
+
+	property EntityRef autoGatheringUI = "3bc89ab0-85df-4300-8405-39ad42ed3254"
+
+	property number timer = 0
+
+	property Entity gold = "b62b01c1-3f96-47ff-bd17-b504fab972ec"
+
+	property number accumulateHour = 0
+
+	property number accumulateMinute = 0
+
+	property string userId = ""
+
+	property UIExplorePopup UIAutoGatheringPopup = "386d1ed7-d737-4b4a-ae33-46804055bbf8"
+
+	property Entity playerLevel = "f2b4f0e0-5b0f-4c04-bc21-f13423d81e40"
+
+	property Entity get_button = "85be4376-60de-41f9-8571-ea62aec1f2be"
+
+	@ExecSpace("ServerOnly")
+	method void LoadData(number value, string source)
+		-- 자동 수집 데이터 로드 및 타이머 설정
+		
+		
+		self.GatherRewardTable["lastAutoGatheringTime"].value = value 
+		self:SyncInClient(self.GatherRewardTable)
+		
+		local refresh = function()
+			if type(self.GatherRewardTable["lastAutoGatheringTime"].value == "number") and self.Entity.PlayerDBComponent.dbInited then
+				self:CalculateAccumulateGatheringTime(self.GatherRewardTable["lastAutoGatheringTime"].value) 
+			end
+		end
+		
+		if value == 0 then 
+			self._T.Exploring = false
+			_TimerService:ClearTimer(self.timer)
+			self:CallAutoGatheringPopup("reset", nil, self.userId)
+			return
+		else 
+			self._T.Exploring = true
+			_TimerService:ClearTimer(self.timer)
+			self:CallAutoGatheringPopup("refresh", self:GetTotalMinute(value), self.userId) 
+			self.timer = _TimerService:SetTimerRepeat(refresh, 10, 0)
+			self.Entity:SendEvent(NewbieMissionUpdateEvent("goPatrol", "0", 1))
+			self:TransferToPlayerData()
+		end
+		
+		
+		
+		if value ~= 0 then
+			if source == "Load" then
+				_WorldLog:LogExplore(_WorldLog.FlowType_Explore_Load, self.userId)	
+			elseif source == "Start" then
+				_WorldLog:LogExplore(_WorldLog.FlowType_Explore_Start, self.userId)	
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GetGatheringReward()
+		-- 수집 보상 지급 처리
+		
+		
+		local hour = self:GetTime(self.GatherRewardTable["lastAutoGatheringTime"].value, "hour")
+		local minute = self:GetTime(self.GatherRewardTable["lastAutoGatheringTime"].value, "minute")
+		local totalMinute = self:GetTime(self.GatherRewardTable["lastAutoGatheringTime"].value, "totalMinute")
+		
+		if self.GatherRewardTable["lastAutoGatheringTime"].value == 0 then
+			_LocalizeLogic:ShowToast("toast6", senderUserId)
+			
+			self:LoadData(0 , "reset")
+			return
+		end
+		
+		if totalMinute < 10 then
+			_LocalizeLogic:ShowToast("toast5", senderUserId)
+			
+			return	
+		end
+		
+		if self.GatherRewardTable["lastAutoGatheringTime"].value == 0 then
+			_LocalizeLogic:ShowToast("toast4", senderUserId)
+			
+			return
+		end
+		
+		_TimerService:ClearTimer(self.timer)
+		
+		local currentAccountLevel = self.Entity.PlayerAccount.accountTable.level 
+		local rewardTable = _RewardLogic.gatheringRewardData[currentAccountLevel] 
+		
+		local gold = self:GetGatheringRewardTable(self.GatherRewardTable["gold"])
+		local scroll =  self:GetGatheringRewardTable(self.GatherRewardTable["scroll"])
+		local essence =  self:GetGatheringRewardTable(self.GatherRewardTable["essence"])
+		
+		self:ResetRewardTable()
+		
+		_RewardLogic:GetReward("meso", "", gold, senderUserId, false, "Patrol")
+		_RewardLogic:GetReward("weaponScroll", "", scroll, senderUserId, false, "Patrol")
+		_RewardLogic:GetReward("essence", "", essence, senderUserId, false, "Patrol")
+		
+		self:CallAutoGatheringPopup("reset", nil, self.userId)
+		self:LoadData(0, "End")
+		
+		
+		_WorldLog:LogExplore(_WorldLog.FlowType_Explore_End, senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void CallAutoGatheringPopup(string command, table value)
+		-- 자동 수집 팝업 UI 제어
+		
+		
+		if command == "reset" then
+			self.UIAutoGatheringPopup:ResetAutoGathering()
+			self:ResetRewardTable()
+			
+		elseif command == "refresh" then
+			self.UIAutoGatheringPopup:RefreshRewardSlots(value[1], self.userId)
+			
+		elseif command == "open" then
+			if value[1] == true then 
+				self.UIAutoGatheringPopup.startButton:SetEnable(false)
+			end
+			
+			self.UIAutoGatheringPopup:Show()
+		end
+	end
+
+	@ExecSpace("Server")
+	method void Init()
+		-- 자동 수집 시스템 초기화
+		
+		
+		local value = {}
+		if self.GatherRewardTable["lastAutoGatheringTime"].value == 0 then 
+			value = {false}
+			self:CallAutoGatheringPopup("open", value, senderUserId)	
+		else 
+			value = {true}
+			self:CallAutoGatheringPopup("open", value, senderUserId) 
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CalculateAccumulateGatheringTime(number lastAutoGatheringTime)
+		-- 누적 수집 시간 계산 및 보상 테이블 업데이트
+		
+		local milliesecondGap = _LocalTimeLogic:GetElapsed() - lastAutoGatheringTime
+		local totalMinute = milliesecondGap / (1000 * 60)  
+		local value = {totalMinute}
+		
+		self:AddRewardTable("gold", totalMinute)
+		self:AddRewardTable("scroll", totalMinute)
+		self:AddRewardTable("essence", totalMinute)
+		
+		self:CallAutoGatheringPopup("refresh", value, self.userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddRewardTable(string type, number totalMinute)
+		-- 보상 테이블에 시간에 따른 보상 추가
+		
+		local rewardTable = _RewardLogic.gatheringRewardData[self.Entity.PlayerAccount.accountTable.level]
+		local count = 0
+		
+		if type == "gold" then 
+			count = totalMinute / 10 
+			for i = 1 , #self.GatherRewardTable["gold"].reward do
+				if self.GatherRewardTable["gold"].reward[i] == 0 and i <= count and i <= self.GatherRewardTable["maxHourTime"].value * 6 then 
+					self.GatherRewardTable["gold"].reward[i] = math.floor(rewardTable.gold / 6)
+				end
+			end
+		elseif type == "scroll" then 
+			count = totalMinute / 60
+			for i = 1, #self.GatherRewardTable["scroll"].reward do
+				if self.GatherRewardTable["scroll"].reward[i] == 0 and  i <= count and i <= self.GatherRewardTable["maxHourTime"].value then 
+					self.GatherRewardTable["scroll"].reward[i] = rewardTable.scroll
+				end
+			end
+		elseif type == "essence" then 
+			count = totalMinute / 60 
+			for i = 1, #self.GatherRewardTable["essence"].reward do 
+				if self.GatherRewardTable["essence"].reward[i] == 0 and i <= count and i <= self.GatherRewardTable["maxHourTime"].value then 
+					self.GatherRewardTable["essence"].reward[i] = rewardTable.essence
+				end
+			end
+		end
+		
+		self:SyncInClient(self.GatherRewardTable)
+	end
+
+	method number GetGatheringRewardTable(table gatheringTable)
+		-- 수집 보상 테이블에서 총 보상량 계산
+		local sum = 0
+		local count = 0
+		
+		if not isvalid(gatheringTable) then
+			return sum
+		end
+		
+		for i = 1 , #gatheringTable.reward do
+			sum = sum + gatheringTable.reward[i]
+		end
+		
+		return sum
+	end
+
+	@ExecSpace("Server")
+	method void InitGatheringData()
+		-- 수집 데이터 초기화 (보상 테이블 구조 생성)
+		
+		
+		self.GatherRewardTable["lastAutoGatheringTime"] = {}
+		self.GatherRewardTable["lastAutoGatheringTime"].value = 0
+		self.GatherRewardTable["lastAutoGatheringTime"].key = "lastAutoGatheringTime"
+		
+		self.GatherRewardTable["gold"] = {}
+		self.GatherRewardTable["gold"].reward = {}
+		
+		for i = 1, 72 do
+			self.GatherRewardTable["gold"].reward[i] = 0
+		end
+		self.GatherRewardTable["gold"].key = "gold"
+		
+		self.GatherRewardTable["scroll"] = {}
+		self.GatherRewardTable["scroll"].reward = {}
+		self.GatherRewardTable["scroll"].key = "scroll"
+		
+		self.GatherRewardTable["essence"] = {}
+		self.GatherRewardTable["essence"].reward = {}
+		self.GatherRewardTable["essence"].key = "essence"
+		
+		for i = 1, 12 do
+			self.GatherRewardTable["scroll"].reward[i] = 0 
+			self.GatherRewardTable["essence"].reward[i] = 0 
+		end
+		
+		self:SetMaxHourTime(8)
+		self:SyncInClient(self.GatherRewardTable)
+	end
+
+	method number GetTime(number lastAutoGatheringTime, string type)
+		-- 수집 시작 시간으로부터 경과 시간 계산
+		
+		local milliesecondGap = _LocalTimeLogic:GetElapsed() - lastAutoGatheringTime
+		local totalMinute = milliesecondGap / (1000 * 60)  
+		
+		local hour = math.floor(totalMinute / 60) 
+		local minute = math.floor(totalMinute % 60)
+		
+		if type == "hour" then
+			return hour
+		elseif type == "minute" then
+			return minute
+		elseif type == "totalMinute" then
+			return totalMinute
+		end
+	end
+
+	@ExecSpace("Server")
+	method void SetMaxHourTime(integer maxHour)
+		-- 최대 수집 시간 설정
+		self.GatherRewardTable["maxHourTime"] = {}
+		self.GatherRewardTable["maxHourTime"].key = "maxHourTime"
+		self.GatherRewardTable["maxHourTime"].value = maxHour
+		
+		self:SyncInClient(self.GatherRewardTable)
+		
+		if self._T.Exploring then
+			if type(self.GatherRewardTable["lastAutoGatheringTime"].value == "number") and self.Entity.PlayerDBComponent.dbInited then
+				self:CalculateAccumulateGatheringTime(self.GatherRewardTable["lastAutoGatheringTime"].value) 
+			end
+		end
+	end
+
+	method table GetTotalMinute(number lastAutoGatheringTime)
+		-- 총 수집 시간(분) 계산하여 테이블로 반환
+		local totalMinute = 0
+		
+		local milliesecondGap = _LocalTimeLogic:GetElapsed() - lastAutoGatheringTime 
+		totalMinute = milliesecondGap / (1000 * 60)  
+		local value = {totalMinute} 
+		
+		return value
+	end
+
+	@ExecSpace("Server")
+	method void ResetRewardTable()
+		-- 보상 테이블 초기화 (모든 보상을 0으로 리셋)
+		self.GatherRewardTable["lastAutoGatheringTime"].value = 0
+		
+		for i = 1, 72 do
+			self.GatherRewardTable["gold"].reward[i] = 0
+		end
+		
+		for i = 1, 12 do
+			self.GatherRewardTable["scroll"].reward[i] = 0 
+			self.GatherRewardTable["essence"].reward[i] = 0 
+		end
+		
+		self:SyncInClient(self.GatherRewardTable)
+	end
+
+	@ExecSpace("Server")
+	method void RequestLoadDataInServer()
+		-- 서버에서 수집 데이터 로드 요청 처리
+		local user = _UserService:GetUserEntityByUserId(senderUserId)
+		
+		if user.PlayerAutoGathering.GatherRewardTable["lastAutoGatheringTime"].value ~= 0 then 
+			return 
+		end
+		
+		user.PlayerAutoGathering:LoadData(_LocalTimeLogic:GetElapsed(), "Start") 
+	end
+
+	@ExecSpace("Client")
+	method void SyncInClient(table target)
+		-- 클라이언트에서 수집 데이터 동기화
+		self.GatherRewardTable = target
+	end
+
+	@ExecSpace("Server")
+	method void TransferToPlayerData()
+		-- 수집 데이터를 플레이어 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local gatherData = {}
+		
+		for key, value in pairs(self.GatherRewardTable) do
+			table.insert(gatherData, _HttpService:JSONEncode(value))
+		end
+		gatherData = _HttpService:JSONEncode(gatherData)
+		
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["GatherRewardTable"]  = gatherData
+	end
+
+	method void OnBeginPlay()
+		-- 컴포넌트 시작 시 초기화
+		self.userId = self.Entity.PlayerComponent.UserId
+		self._T.Exploring = false
+	end
+
+end

@@ -1,0 +1,295 @@
+@Component
+script UIHUDDropDown extends Component
+
+	property SyncTable<string, boolean> ItemDraw
+
+	property Entity DropDownButton = nil
+
+	property Entity DropDownBtnIcon = nil
+
+	property Entity DropDownBtnRedDot = nil
+
+	property Entity ItemListEntity = nil
+
+	property number durationPerItem = 0.15
+
+	property integer DrawItemCount = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 드롭다운을 초기화하는 함수
+		self._T.tweeners = {}
+		self._T.timers = {}
+		
+		self.ItemListEntity = self.Entity:GetChildByName("ItemList")
+		
+		for i, child in pairs(self.ItemListEntity.Children) do
+			
+			if child.Name == _HUDDropDownEnum.VIPOrderBtn then
+				self.ItemDraw[child.Name] = false 
+			else
+				self.ItemDraw[child.Name] = true 
+				
+			end
+			
+			if i == 1 then
+				self._T.itemSizeX = child.UITransformComponent.RectSize.x
+			end
+		end
+		
+		self._T.scrollSpacing = self.ItemListEntity.ScrollLayoutGroupComponent.Spacing
+		
+		self._T.itemMaxCount = #self.ItemListEntity.Children
+		self._T.itemMinCount = 1
+		
+		self._T.getDrawCount = function()
+			local cnt = 0
+			for id, bool in pairs(self.ItemDraw) do
+				if bool == true then
+					cnt += 1
+				end
+			end
+			
+			return cnt
+		end
+		
+		self.DropDownButton = self.Entity:GetChildByName("DropDownButton")
+		self._T.dropdownBtnSizeX = self.DropDownButton.UITransformComponent.RectSize.x - 20 
+		
+		self.DropDownBtnIcon = self.DropDownButton:GetChildByName("DropDownIcon")
+		self.DropDownBtnRedDot = self.DropDownButton:GetChildByName("RedDot")
+		self.DropDownBtnRedDot.Enable = false
+		
+		self.DropDownButton:ConnectEvent(ButtonClickEvent, function()
+			if _UIGroupManager:IsEnableOpenPopUp() == false then
+				return
+			end
+			
+			if self._T.isTween == true then
+				return
+			end
+			
+			_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+			
+			if self.DrawItemCount == 1 then
+				local maxCount = 0
+				
+				self:SetDropdownSize(self._T.getDrawCount())
+			else
+				self:SetDropdownSize(1)
+			end	
+		end)
+		
+		self.DrawItemCount = self._T.itemMaxCount
+		self:SetDropdownSize(1)
+		
+	end
+
+	method void SetDropdownSize(integer drawCount)
+		-- 드롭다운 크기를 설정하는 함수
+		if self._T.isTween == true then
+			return
+		end
+		
+		self:ClearTweenerAndTimer()
+		self._T.isTween = true
+		
+		self._T.targetDrawCount = drawCount
+		local maxDrawCount = self._T.getDrawCount()
+		local isDropDownBtnEnable = maxDrawCount > 1
+		
+		local exSize = self.DrawItemCount * self._T.itemSizeX + (self.DrawItemCount-1) * self._T.scrollSpacing
+		local newSizeX = drawCount * self._T.itemSizeX + (drawCount-1) * self._T.scrollSpacing
+		if isDropDownBtnEnable == true then
+			newSizeX += self._T.dropdownBtnSizeX
+		end
+		
+		local totalDuration = math.abs(self.DrawItemCount - drawCount) * self.durationPerItem
+		local t = _TweenLogic:PlayTween(exSize, newSizeX, totalDuration, EaseType.CubicEaseOut, function(t)
+			self.Entity.UITransformComponent.RectSize = Vector2(t, self.Entity.UITransformComponent.RectSize.y)
+			self.DropDownButton.UITransformComponent.anchoredPosition = Vector2.zero
+		end)
+		table.insert(self._T.tweeners, t)
+		
+		local idx = 0
+		
+		for i, entity in pairs(self.ItemListEntity.Children) do
+			local draw = self.ItemDraw[entity.Name] and idx < drawCount
+			
+			local entityEnable = entity.CanvasGroupComponent.GroupAlpha > 0.9
+			
+			if draw == entityEnable then
+				if i == 1 then
+					idx += 1
+				end		
+				continue
+			end
+			
+			entity.CanvasGroupComponent.Interactable = draw
+			entity.CanvasGroupComponent.BlocksRaycasts = draw
+			
+			if drawCount > self.DrawItemCount then
+				local timer = _TimerService:SetTimerOnce(function()
+					
+					local startAlpha = draw == true and 0 or 1
+					local endAlpha = draw == true and 1 or 0
+					local tweener = _TweenLogic:PlayTween(startAlpha, endAlpha, self.durationPerItem/2, EaseType.CubicEaseOut, function(t)
+						entity.CanvasGroupComponent.GroupAlpha = t
+					end)
+					table.insert(self._T.tweeners, tweener)
+					
+					
+				end, idx * self.durationPerItem/2)
+				table.insert(self._T.timers, timer)
+				
+				
+			else
+		        
+				local endAlpha = 0
+				entity.CanvasGroupComponent.GroupAlpha = endAlpha
+				
+			end
+				
+			idx += 1
+		end
+		
+		local t2 = _TimerService:SetTimerOnce(function()
+			self.DrawItemCount = drawCount
+			self.DropDownBtnIcon.SpriteGUIRendererComponent.FlipX = self.DrawItemCount > 1
+			self.DropDownButton.Enable = isDropDownBtnEnable
+			if isDropDownBtnEnable == true and self.DrawItemCount <= 1 then
+				self:CheckDropdownRedDotEnable()
+			else
+				self.DropDownBtnRedDot.Enable = false
+			end
+			
+			local t3 = _TimerService:SetTimerOnce(function()
+				self._T.isTween = false
+				
+				local clearIdx = 0
+				if drawCount == 1 then
+					for i, entity in pairs(self.ItemListEntity.Children) do
+						local draw = self.ItemDraw[entity.Name] and clearIdx < drawCount
+						local entityEnable = entity.CanvasGroupComponent.GroupAlpha > 0.9
+						
+						if draw == entityEnable then
+							if i == 1 then
+								clearIdx += 1
+							end		
+							continue
+						end
+						
+						entity.CanvasGroupComponent.Interactable = draw
+						entity.CanvasGroupComponent.BlocksRaycasts = draw
+						
+						entity.CanvasGroupComponent.GroupAlpha = 0
+						clearIdx += 1
+					end
+				end
+			end, 0.85) 
+			table.insert(self._T.timers, t3)
+		end, totalDuration)
+		table.insert(self._T.timers, t2)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetDrawOfName(string enum, boolean draw)
+		-- 특정 항목의 표시 상태를 설정하는 함수
+		self.ItemDraw[enum] = draw
+		
+		local drawCount = self._T.getDrawCount()
+		self:ClearTweenerAndTimer()
+		self.DrawItemCount = self._T.targetDrawCount
+		self:SetDropdownSize(1)
+		
+		local entity = self.ItemListEntity:GetChildByName(enum)
+		entity.Enable = draw
+	end
+
+	method void ClearTweenerAndTimer()
+		-- 트위너와 타이머를 정리하는 함수
+		for _, timer in pairs(self._T.timers) do
+			_TimerService:ClearTimer(timer)
+		end
+		
+		for _, tweener in pairs(self._T.tweeners) do
+			tweener:Complete()
+		
+		end
+		
+		table.clear(self._T.timers)
+		table.clear(self._T.tweeners)
+		self._T.isTween = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckDropdownRedDotEnable()
+		-- 드롭다운 빨간점 활성화를 확인하는 함수
+		local maxDrawCount = self._T.getDrawCount()
+		local isDropDownBtnEnable = maxDrawCount > 1
+		if isDropDownBtnEnable == false then
+			self.DropDownBtnRedDot.Enable = false
+			return
+		else
+			if self.DrawItemCount > 1 then
+				self.DropDownBtnRedDot.Enable = false
+				return
+			end
+		end
+		
+		for i, child in pairs(self.ItemListEntity.Children) do
+			if i == 1 then
+				continue
+			end
+			
+			if self.ItemDraw[child.Name] == false then
+				continue
+			end
+			
+			local redDot = child:GetChildByName("RedDot")
+			if isvalid(redDot) then
+				if redDot.Enable == true then
+					self.DropDownBtnRedDot.Enable = true
+					return
+				end
+			end
+		end
+		
+		self.DropDownBtnRedDot.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetItemRedDot(string enum, boolean enable)
+		-- 특정 항목의 빨간점을 설정하는 함수
+		local item = self.ItemListEntity:GetChildByName(enum)
+		if isvalid(item) == false then
+			return
+		end
+		
+		if self.ItemDraw[enum] == false then
+			return
+		end
+		
+		local redDot = item:GetChildByName("RedDot")
+		if isvalid(redDot) == false then
+			return
+		end
+		
+		redDot.Enable = enable
+		self:CheckDropdownRedDotEnable()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetTestTimer()
+		-- 테스트 타이머를 설정하는 함수
+		if isvalid(self._T.repeatTimer) == false then
+			self._T.repeatTimer = _TimerService:SetTimerRepeat(function()
+				local nextSize = self.DrawItemCount == 1 and self._T.getDrawCount() or 1
+				self:SetDropdownSize(nextSize)	
+			end, 0.01)
+		else
+			_TimerService:ClearTimer(self._T.repeatTimer)
+		end
+	end
+
+end

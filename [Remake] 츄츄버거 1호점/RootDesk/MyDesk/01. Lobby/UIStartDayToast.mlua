@@ -1,0 +1,185 @@
+@Component
+script UIStartDayToast extends Component
+
+	property Entity BG = nil
+
+	property TextComponent DayText = nil
+
+	property Entity TitleText = nil
+
+	property number interval = 0.1
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 토스트를 비활성화하는 함수
+		self.Entity.Enable = false
+	end
+
+	method void Init()
+		-- UI 컴포넌트들을 초기화하는 함수
+		self.BG = self.Entity:GetChildByName("BG")
+		self._T.bgOriginHeight = self.BG.UITransformComponent.RectSize.y
+		
+		self.DayText = self.BG:GetChildByName("DayText").TextComponent
+		self.TitleText = self.BG:GetChildByName("TitleText")
+		self._T.titleTextOriginSize = self.TitleText.TextComponent.FontSize
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open(integer year, integer month, integer day)
+		-- 하루 시작 토스트를 여는 함수
+		if self.BG == nil then
+			self:Init()
+		end
+		
+		if isvalid(year) == false or isvalid(month) == false or isvalid(day) == false then
+			return
+		end
+		
+		self._T.text = _LocalizationService:GetTranslatorForLocale(_LocalizationService.CurrentLocaleId):GetTextFormat("Date_Format", year, month, day)
+		
+		self.BG.UITransformComponent.RectSize = Vector2(self.BG.UITransformComponent.RectSize.x, 0)
+		self.Entity.CanvasGroupComponent.GroupAlpha = 1
+		self.DayText.Text = ""
+		self.TitleText.Enable = false
+		self.TitleText.TextComponent.FontSize = 0
+		
+		self.Entity.Enable = true
+		
+		self:StartRender()
+	end
+
+	method void StartRender()
+		-- 렌더링을 시작하는 함수
+		local shortDuration = 0.4
+		local duration = 0.7
+		local typeDuration = self.interval * 12 + 1
+		
+		_TweenLogic:PlayTween(0, self._T.bgOriginHeight, shortDuration, EaseType.SineEaseOut, function(t)
+			self.BG.UITransformComponent.RectSize = Vector2(self.BG.UITransformComponent.RectSize.x, t)
+		end)
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Open_Reputation"], 0.6)
+		
+		
+		self._T.timer = _TimerService:SetTimerOnce(function()
+			self.TitleText.Enable = true
+			_TweenLogic:PlayTween(self._T.titleTextOriginSize * 0.5, self._T.titleTextOriginSize, duration, EaseType.BounceEaseOut, function(t)
+				self.TitleText.TextComponent.FontSize = t
+			end)
+			
+			self._T.timer = _TimerService:SetTimerOnce(function()
+				_SoundService:PlaySound(_ResourceManager.SFXTable["ShowHintPaper"], 1)
+		
+				self:PlayTypeWriter(self.DayText, self._T.text)
+				
+				self._T.timer = _TimerService:SetTimerOnce(function()
+					_TweenLogic:PlayTween(1, 0, duration, EaseType.Linear, function(t)
+						self.Entity.CanvasGroupComponent.GroupAlpha = t
+					end)
+					
+					self._T.timer = _TimerService:SetTimerOnce(function()
+						self.Entity.Enable = false
+					end, duration)
+					
+				end, typeDuration)		
+				
+			end, duration)
+			
+		end, shortDuration * 0.7)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnEndPlay()
+		-- 게임 종료 시 타이머를 정리하는 함수
+		if isvalid(self._T.timer) == true then
+			_TimerService:ClearTimer(self._T.timer)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void TypeWriter(table plainText, table richMap, table richInfo, number interval, any outputCallback)
+		-- 타이프라이터 효과를 실행하는 함수
+		local typedText = ""
+		local currentIndex = 1
+		
+		local function step()
+			if currentIndex > #table.keys(plainText) then 
+				self:EndTypeWriter()
+				return 
+			end
+			
+			local drawData = plainText[table.keys(plainText)[currentIndex]]
+			local drawIdx = drawData[1]
+			local char = drawData[2]
+				
+			if _UtilLogic:IsNilorEmptyString(char) then
+				self:EndTypeWriter()
+				return
+			end
+			
+			local richIdx = richMap[drawIdx] or nil
+			if richIdx then
+				local nowRich = richInfo[richIdx]
+				local nowRichStart = nowRich[1]
+				local nowRichEnd = nowRich[2]
+				char = nowRichStart..char..nowRichEnd
+			end
+			
+			typedText = typedText..char
+				
+			outputCallback(typedText)
+			
+			currentIndex += 1
+			
+			if currentIndex <= #plainText then
+				self._T.Timer = _TimerService:SetTimerOnce(step, interval)
+			else
+				self:EndTypeWriter()
+			end
+			
+		end
+		
+		step()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PlayTypeWriter(TextComponent textComp, string text)
+		-- 타이프라이터 효과를 재생하는 함수
+		self._T.OriginText = text
+		self._T.IsTyping = true
+		
+		local data = _EventDialogManager:ParseDialog(text)
+		
+		local plainText = data[1]
+		local richMap = data[2]
+		local richInfo = data[3]
+		
+		self._T.TargetTextComp = textComp
+		self._T.TargetTextComp.Text = ""
+		
+		self:TypeWriter(plainText, richMap, richInfo, self.interval, function(t)
+			self._T.TargetTextComp.Text = t
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EndTypeWriter()
+		-- 타이프라이터 효과를 종료하는 함수
+		self._T.IsTyping = false
+		self._T.OriginText = ""
+		self._T.TargetTextComp = nil
+		
+		_TimerService:ClearTimer(self._T.Timer)
+		self._T.Timer = 0
+	end
+
+	@EventSender("Service", "InputService")
+	handler HandleKeyDownEvent(KeyDownEvent event)
+		-- 키 입력 이벤트를 처리하는 핸들러
+		
+		 local key = event.key
+		
+	end
+
+end

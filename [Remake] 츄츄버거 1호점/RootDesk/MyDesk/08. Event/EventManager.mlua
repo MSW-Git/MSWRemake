@@ -1,0 +1,469 @@
+@Logic
+script EventManager extends Logic
+
+	property string CurrentEventGroupId = ""
+
+	property integer CurrentEventIndex = 0
+
+	property number MoveNextDelay = 0.2
+
+	property boolean CanMoveNext = false
+
+	property integer CanMoveNextTimer = 0
+
+	property integer AutoMoveNextTimer = 0
+
+	property integer AutoMoveNextDelay = 10
+
+	property any CallbackAfterEndEvent = nil
+
+	@ExecSpace("Client")
+	method void CallEvent(string eventGroupId)
+		-- 이벤트를 시작하고 시간 흐름을 정지시키는 함수
+		local player = _UserService.LocalPlayer
+		local eventGroupData = _EventDataSetLogic:GetEventGroupData(eventGroupId)
+		
+		player.TimeManager:TimeFlowsChange(false)
+		
+		self.CurrentEventGroupId = eventGroupId
+		self.CurrentEventIndex = 1
+		
+		_UIGroupManager:EnableBackToLobbyBtn(false)
+		
+		self:CallDialog(self.CurrentEventGroupId, self.CurrentEventIndex)
+	end
+
+	@ExecSpace("Client")
+	method void EndEvent()
+		-- 이벤트를 종료하고 후속 처리를 수행하는 함수
+		_UserService.LocalPlayer.PlayerEvent:RequestClearEventData(self.CurrentEventGroupId)
+		
+		local eventQueue = _UserService.LocalPlayer.PlayerEvent.EventQueue
+		if #eventQueue > 0 then
+			if eventQueue[1] == self.CurrentEventGroupId then
+				_UserService.LocalPlayer.PlayerEvent:RequestRemoveFromEventQueue(eventQueue[1])
+			end
+				
+			_TimerService:SetTimerOnce(function()
+				_UserService.LocalPlayer.PlayerEvent:RequestRemoveAndCallEventFromEventQueue(eventQueue[1])
+			end, 2)
+			
+		end
+		
+		if #table.keys(_UserService.LocalPlayer.PlayerStage.StageRewardQueue) > 0 then
+			local callback = function()
+				local stageClearDialog = _StageDataSetLogic:GetStageData(_UserService.LocalPlayer.PlayerStage.NowStage).DialogInProgress[6]
+				_UIDialogLogic:MakeDialog(stageClearDialog, function()
+					_UserService.LocalPlayer.PlayerStage:RequestDrawStageClearRewardQueue()
+				end)
+			end
+			
+			if self.CurrentEventGroupId == "Y0004" then 
+				_UIItemRewardService:SetCloseUICallback(callback) 
+			elseif self.CurrentEventGroupId == "Y1001" then 
+				callback() 
+			end
+		end
+		
+		if self.CurrentEventGroupId == "T1001" then
+			local stageStartDialog = _StageDataSetLogic:GetStageData(_UserService.LocalPlayer.PlayerStage.NowStage).DialogInProgress[0]
+			_UIDialogLogic:MakeDialog(stageStartDialog, function()
+				_TimerService:SetTimerOnce(function()
+					_UserService.LocalPlayer.PlayerEvent:RequestCallEvent("T1002")
+				end, 1)
+			end)
+			
+		elseif self.CurrentEventGroupId == _TutorialEventEnum.EnterStage2[1] then
+			_BoosterPackDataLogic.UIBoosterPack:OpenAndRegisterPiggyBankOpenCallback()
+			
+		end
+		
+		_SoundService:StopSound(_ResourceManager.SFXTable["Firework"])
+		_EventUIManager.ConfettiSpawner.UIEventConfettiSpawner:EndSpawnConfetties()
+		_LobbyEntityLogic.ExpansionParticles.Enable = false
+		
+		self.CurrentEventIndex = 0
+		self.CurrentEventGroupId = nil
+		_EventUIManager:Close()
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+		
+		if isvalid(self.CallbackAfterEndEvent) == true then
+			self.CallbackAfterEndEvent()
+			self.CallbackAfterEndEvent = nil
+		end
+		
+		_ToDoManager:RefreshToDoList()
+		
+		if _CameraService:GetCurrentCameraComponent() ~= _LobbyCameraService.lobbyCameras["MovingCamera"] then
+			_CameraService.TransitionBlendTime = 0
+			_CameraService:SwitchCameraTo(_LobbyCameraService.lobbyCameras["MovingCamera"])
+			_LobbyCameraService:ChangeCameraTo("FullView")
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CallDialog(string eventGroupId, integer index)
+		-- 특정 인덱스의 이벤트 다이얼로그를 호출하는 함수
+		if _UIGroupManager.EventGroup.Enable == false then
+			_EventUIManager:Open()
+		end
+		
+		---@type EventGroupData
+		local groupData = _EventDataSetLogic.EventGroupData[eventGroupId]
+		
+		---@type EventDialogData
+		local dialogData = groupData.Dialogs[index]
+		if dialogData == nil then
+			self:EndEvent()
+			return
+		end
+		
+		_EventUIManager:SetDialogUI(dialogData)
+		_UIGroupManager:EnableBackToLobbyBtn(nil)
+	end
+
+	@ExecSpace("Client")
+	method void MoveNextDialog()
+		-- 다음 다이얼로그로 넘어가거나 타이핑을 스킵하는 함수
+		if self.CanMoveNext == false then
+			if _EventDialogManager.IsTyping == true then
+				_EventDialogManager:SkipTypeWriter()
+			end
+			return
+		end
+		
+		_SoundService:StopSound(_ResourceManager.SFXTable["Firework"])
+		_EventUIManager.ConfettiSpawner.UIEventConfettiSpawner:EndSpawnConfetties()
+		_LobbyEntityLogic.ExpansionParticles.Enable = false
+		_EventUIManager:ResetEntitiesRUID()
+		
+		wait(0.02)
+		
+		self.CurrentEventIndex = self.CurrentEventIndex + 1
+		self:CallDialog(self.CurrentEventGroupId, self.CurrentEventIndex)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SetEventOccurByAchiId(integer achiId, Entity player)
+		-- 업적 ID에 따라 발생할 이벤트를 설정하는 함수
+		local groupIds = self:ReturnOccuredEventGroupId(achiId)
+		table.sort(groupIds, function(a, b) return a < b end)
+		
+		
+		for i = 1, #groupIds do
+			local groupId = groupIds[i]
+				---@type EventGroupData
+			local groupData = _EventDataSetLogic.EventGroupData[groupId]
+			if groupData == nil then continue end
+			
+			if groupId == "T5301" or groupId == "T5302" or groupId == "T6003" then
+				if player.PlayerStage.NowStage == 1 then
+					continue
+				end
+			elseif groupId == "T7001" then
+				if player.PlayerStage.NowStage == 1 then
+					continue
+				end
+			end
+			
+			if groupData.funcTimingName == "AfterCondition" then
+				local param = groupData.funcTimingParam[1]
+					
+				if param == "DayChanged" then
+					player.PlayerEvent:AddToDayEventQueue(groupId)
+					
+				else
+					local timerDelay = tonumber(groupData.funcTimingParam[1])
+					
+					player.PlayerEvent:AddToEventQueue(groupId)
+					
+					_TimerService:SetTimerOnce(function()
+						player.PlayerEvent:RequestRemoveAndCallEventFromEventQueue(groupId)
+					end, timerDelay)
+				end
+			end
+		end
+	end
+
+	method SyncTable<string> ReturnOccuredEventGroupId(integer achiId)
+		-- 업적 ID에 해당하는 이벤트 그룹 ID들을 반환하는 함수
+		local ids = {}
+		for k, v in pairs(_EventDataSetLogic.EventGroupData) do
+			---@type EventGroupData
+			local groupData = v
+			if groupData.Condition == achiId then
+				table.insert(ids, k)
+			end
+		end
+		
+		return ids
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CallEventOnDayChanged(Entity player)
+		-- 하루가 지날 때 대기 중인 이벤트를 호출하는 함수
+		local playerEvent = player.PlayerEvent
+		
+		
+		if #playerEvent.DayEventQueue > 0 then
+			for i, eventId in pairs(playerEvent.DayEventQueue) do
+				local result = playerEvent:RequestCallEvent(eventId)
+				
+				if result == true then
+					table.remove(playerEvent.DayEventQueue, i) 
+					return
+				end
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetEventReferKeyData(string eventGroupId, string referKey)
+		-- 이벤트의 참조키 데이터를 설정하는 함수
+		
+		if referKey ~= nil then
+			---@type EventGroupData
+			local eventGroupData = _EventDataSetLogic.EventGroupData[eventGroupId]
+			_UserService.LocalPlayer.PlayerEvent.EventReferKey[eventGroupId] = referKey
+			_UserService.LocalPlayer.PlayerEvent:RequestSetEventReferKey(eventGroupId, referKey)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetCanMoveNext(boolean canMoveNext)
+		-- 다음 다이얼로그로 넘어갈 수 있는지 설정하고 자동 진행 타이머를 관리하는 함수
+		_TimerService:ClearTimer(_EventManager.AutoMoveNextTimer)
+		if string.sub(self.CurrentEventGroupId, 1, 1) ~= "T" then 
+			_EventManager.AutoMoveNextTimer = _TimerService:SetTimerOnce(function()
+				_EventManager:MoveNextDialog()
+			end, _EventManager.AutoMoveNextDelay)
+		end
+		
+		self.CanMoveNext = canMoveNext
+		_EventUIManager:SetCanMoveNextText(canMoveNext)
+	end
+
+	@ExecSpace("Client")
+	method void SetCallbackFunction(string eventGroupId)
+		-- 이벤트 종료 후 실행할 콜백 함수를 설정하는 함수
+		local eventGroupData = _EventDataSetLogic:GetEventGroupData(eventGroupId)
+		for i = 1, #eventGroupData.funcRewardPairs do
+			local rewardData = eventGroupData.funcRewardPairs[i]
+			local rewardId = rewardData[1]
+			if rewardId == "CallbackEventTime" then
+				local params = rewardData[2]
+				local newEventId = params[1]
+				local timing = tonumber(params[2])
+			
+				local callback = function()
+					_UserService.LocalPlayer.PlayerEvent:RequestAddToDayEventQueue(newEventId)
+				end
+			
+				local timer = _TimerService:SetTimerOnce(function()
+						callback()
+				end, timing)
+				
+			elseif rewardId == "CallbackOpenUI" then
+				local params = rewardData[2]
+				local uiType = params[1]
+				
+				self.CallbackAfterEndEvent = function()
+					if uiType == "ToDo" then
+						if not _UILobbyManager.StoreInfoEnable then
+							_UILobbyManager:ShowStoreInfoArea()
+						end
+						_UILobbyManager.StoreInfoArea.UIStoreInfoPageManager:SetTabPage(4)
+					end
+				end
+			
+			elseif rewardId == "CallbackRefreshUI" then
+				local params = rewardData[2]
+				local uiType = params[1]
+				
+				self.CallbackAfterEndEvent = function()
+					if uiType == "Ranking" then
+						_StoreRankingDataSetLogic.UIStoreRanking.UIStoreRanking:RefreshRank1Data()
+						_StoreRankingDataSetLogic.UIStoreRanking.UIStoreRanking:RefreshReexamButton()
+						_StoreRankingDataSetLogic.UIStoreRanking.UIStoreRanking:RefreshRankingStatus()
+					end
+				end
+				
+			end
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void SetReferKeyForEmployment(string employeeId)
+		-- 고용 이벤트에서 직원 ID를 참조키로 설정하는 함수
+		if self.CurrentEventGroupId ~= "T1006" then
+			self:SetEventReferKeyData("C9001", employeeId)
+			_TimerService:SetTimerOnce(function()
+				_UserService.LocalPlayer.PlayerEvent:RequestCallEvent("C9001")
+			end, 0.2)
+		end
+	end
+
+	@EventSender("Entity", "2fb25222-329e-46fa-84e2-dfee7da39e1a")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 이벤트 UI의 버튼 클릭을 처리하는 핸들러
+		
+		local Entity = event.Entity
+		if _UIGroupManager:IsEnableOpenPopUp() == false then
+			return
+		end
+		
+		_SoundService:PlaySound(_ResourceManager.SFXTable["Click"], 1)
+		self:MoveNextDialog()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleTutorialTriggerEvent(TutorialTriggerEvent event)
+		-- 튜토리얼 트리거 이벤트를 처리하여 해당 튜토리얼 이벤트를 호출하는 핸들러
+		local key = event.key
+		local player = _UserService.LocalPlayer
+		local userId = player.PlayerComponent.UserId
+		
+		if key == _TutorialEventEnum.CustomerPurchase[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.CustomerPurchase[1])
+			
+		elseif key == _TutorialEventEnum.TipDrop[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.TipDrop[1])
+			
+		elseif key == _TutorialEventEnum.CanUpgradeTipStorage[2] then
+			if player.PlayerEvent:IsEventOccured(_TutorialEventEnum.TipDrop[1]) == false then
+				return
+			end
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.CanUpgradeTipStorage[1])
+			
+		elseif key == _TutorialEventEnum.TrialPrepareEnter[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.TrialPrepareEnter[1])
+			
+		elseif key == _TutorialEventEnum.TrialWin[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.TrialWin[1])
+			
+		elseif key == _TutorialEventEnum.VIPOrderEnter[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.VIPOrderEnter[1])
+			
+		elseif key == _TutorialEventEnum.VIPOrderRecipeListEnter[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.VIPOrderRecipeListEnter[1])
+			
+		elseif key == _TutorialEventEnum.EmployeeUpgradeEnter[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EmployeeUpgradeEnter[1])
+			
+		elseif key == _TutorialEventEnum.EnterTransfer[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EnterTransfer[1])
+				
+		elseif key == _TutorialEventEnum.EnterEmployeeCollection[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EnterEmployeeCollection[1])
+			
+		elseif key == _TutorialEventEnum.BuyEmployeeEquip[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.BuyEmployeeEquip[1])
+		
+		elseif key == _TutorialEventEnum.ChangeMenuSetting[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.ChangeMenuSetting[1])
+			
+		elseif key == _TutorialEventEnum.EnterStage2[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EnterStage2[1])
+			
+		elseif key == _TutorialEventEnum.EmployeeOverLimit[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EmployeeOverLimit[1])
+			
+		elseif key == _TutorialEventEnum.EmployeeMaxLevel[2] then
+			
+			if _UIGroupManager.EmployeeUpgradeGroup.Enable == false then
+				return
+			end
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EmployeeMaxLevel[1])
+			
+		elseif key == _TutorialEventEnum.ExchangeSettingEnter[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.ExchangeSettingEnter[1])
+			
+		elseif key == _TutorialEventEnum.ExchangeEnter[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.ExchangeEnter[1])
+			
+		elseif key == _TutorialEventEnum.EnterRankingUI[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EnterRankingUI[1])
+			
+		end
+		
+		if key == _TutorialEventEnum.TrainingSettingEnter2[2] then
+			if player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.TrainingEndCount) < 1 and player.PlayerStage.NowStage == 1 then
+				return
+			end
+			
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.TrainingSettingEnter2[1])
+		end
+		
+		
+		if _UpgradeDataSetLogic:ReturnCurrentPlayerLevel(player, _UpgradeTypeEnum.TipStorageLevel) < 1 then
+			return
+		end
+		
+		if key == _TutorialEventEnum.ChickenTagFeedback[2] then
+			player.PlayerAchievement:RequestChangeProgress(_TutorialAchievementTypeEnum.CustomerChickenFeedback, 1)
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.ChickenTagFeedback[1])
+			
+		elseif key == _TutorialEventEnum.StartRecipeMaking[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.StartRecipeMaking[1])
+			
+		elseif key == _TutorialEventEnum.EndRecipeMaking[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EndRecipeMaking[1])
+			
+		elseif key == _TutorialEventEnum.BunFirstGet[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.BunFirstGet[1])
+			
+		elseif key == _TutorialEventEnum.IngreBoxFirstGet[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.IngreBoxFirstGet[1])
+			
+		end
+		
+		if player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.RecipeMakeCount) < 1 then
+			return
+		end
+		
+		if key == _TutorialEventEnum.TrainingEnter[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.TrainingEnter[1])
+			
+		elseif key == _TutorialEventEnum.TrainingGetHint[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.TrainingGetHint[1])
+			
+		elseif key == _TutorialEventEnum.TrainingSelectSpot[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.TrainingSelectSpot[1])
+			
+		elseif key == _TutorialEventEnum.TrainingSettingEnter[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.TrainingSettingEnter[1])
+			
+		end
+		
+		if player.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.TrainingEndCount) < 1 then
+			return
+		end
+		
+		if key == _TutorialEventEnum.CustomerFeedback[2] then
+			player.PlayerAchievement:RequestChangeProgress(_TutorialAchievementTypeEnum.CustomerFaceFeedback, 1)
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.CustomerFeedback[1])
+			
+		elseif key == _TutorialEventEnum.EmployeeLackOfStat[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EmployeeLackOfStat[1])
+		end
+		
+		if player.PlayerManagement.ManagementLevel < 1 then
+		    return
+		end
+		
+		if player.PlayerManagement.ManagementLevel < 2 then
+			return
+		end
+		
+		if key == _TutorialEventEnum.EnterStageSetting[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EnterStageSetting[1])
+			
+		elseif key == _TutorialEventEnum.EnterEndStageSetting[2] then
+			player.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EnterEndStageSetting[1])
+		end
+		
+	end
+
+end

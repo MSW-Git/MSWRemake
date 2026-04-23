@@ -1,0 +1,168 @@
+@Component
+script ExpGem_Improved extends Component
+
+	property number exp = 1
+
+	method void OnBeginPlay()
+		-- 경험치 젬 컴포넌트 초기화 및 변수 설정
+		self._T.transform = self.Entity.TransformComponent
+		self._T.triggerComponent = self.Entity.TriggerComponent
+		self._T.playerEntity = _UserService.LocalPlayer
+		self.Entity.SpriteRendererComponent.SortingLayer = _UserService.LocalPlayer.AvatarRendererComponent.SortingLayer
+		self._T.firstFunc = function()
+			-- self:Step()
+		end
+	end
+
+	method void Init(number exp)
+		-- 경험치 젬의 크기와 추적 속도 설정
+		local _T = self._T
+		---@type TransformComponent
+		local transform = _T.transform
+		if exp > 1 then	
+			transform.Scale =  Vector3(0.9,0.9,1)
+		else
+			transform.Scale = Vector3(0.7,0.7,1)
+		end
+		_T.trackingSpeed = (_UtilLogic:RandomDouble() * 0.5 + 0.5) * 7
+		self.exp = exp
+		
+		_T.battlePlayer = _T.playerEntity.BattlePlayer
+		
+		_T.triggerComponent.Enable = true
+		
+		transform.Position.z = (transform.Position.y ) * _GameUtil.orderYRatio
+		self.Entity.SpriteRendererComponent.Color.a = _OptionLogic.expTransparency
+	end
+
+	method void Destroy(Entity entity)
+		-- 경험치 젬을 파괴하고 플레이어에게 경험치 지급
+		local _T = self._T
+		local myEntity = self.Entity
+		if isvalid(entity) and isvalid(_T.battlePlayer) then
+			---@type BattlePlayer
+			local player = _T.battlePlayer
+			local exp = self.exp
+			
+			exp *= _BuffLogic:GetExpRatio()
+			
+			local destroy = player:GainEXP(exp)
+			if destroy == false then
+				_T.triggerComponent.Enable = true
+				myEntity:AttachTo(entity.CurrentMap)
+				return
+			end
+			_EffectService:PlayEffect("1387e128c12a4b7b8dcdf00103055ad2", entity.CurrentMap, _T.transform.WorldPosition, 0, Vector3.one * 0.5)
+		end
+		
+		_PoolingLogic:DestroyEntity(myEntity)
+		myEntity:AttachTo(entity.CurrentMap)
+	end
+
+	method void StartTweener()
+		-- 경험치 젬이 플레이어에게 이동하는 트위닝 시작
+		local _T = self._T
+		local entity = self.Entity
+		
+		if entity.Enable == false or _T.tween then
+			return
+		end
+		
+		entity:AttachTo(_T.playerEntity)
+		---@type Vector3
+		local startPos = _T.transform.Position
+		local distance = startPos:Magnitude()
+		local duration = distance / (10 * _TimerLogic.timeScale)
+		local delay = _UtilLogic:RandomDouble() * 0.3
+		
+		duration = duration > 0.5 and duration or 0.5
+		duration *= (_UtilLogic:RandomDouble() * 0.5 + 0.5)
+		
+		local tween = _TweenLogic:MoveTo(entity, Vector2.zero, duration + delay, EaseType.QuadEaseInOut)
+		tween:SetOnEndCallback(self.GemFinished)
+		tween.Delay = delay
+		tween:Play()
+		_T.tween = tween
+		_T.triggerComponent.Enable = false
+	end
+
+	method void GemFinished()
+		-- 경험치 젬 수집 완료 처리
+		
+		local _T = self._T
+		if _TimerLogic.pause then
+			_T.Padding = true
+		end
+		
+		_SoundService:PlaySound("205510b33adf4509b1565ccd4c77d98b", _SoundLogic.effectRatio)
+		self:Destroy(_T.playerEntity)
+		if _T.tween ~=nil then
+			_T.tween:Destroy()
+		end
+		_T.tween = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnDestroy()
+		-- 컴포넌트 파괴 시 트위너 정리
+		---@type Tweener
+		local tweener = self._T.tween
+		
+		if tweener == nil then return end
+		tweener:Destroy()
+		self._T.tween = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTriggerEnterEvent(TriggerEnterEvent event)
+		-- 플레이어나 수집 펫과 충돌 시 경험치 젬 수집 처리
+		
+		local TriggerBodyEntity = event.TriggerBodyEntity
+		
+		if _BattleUIManager.levelUpPopup.isShow then return end
+		
+		if TriggerBodyEntity == _UserService.LocalPlayer then
+			self:GemFinished()
+		elseif TriggerBodyEntity.CollectingPetComponent ~= nil then
+			self:StartTweener()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "WaveLogic")
+	handler HandleWaveEndEvent(WaveEndEvent event)
+		-- 웨이브 종료 시 경험치 젬 자동 수집 시작
+		
+		self:StartTweener()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Logic", "LimitLandWaveLogic")
+	handler HandleWaveEndEvent2(WaveEndEvent event)
+		-- 리밋랜드 웨이브 종료 시 경험치 젬 자동 수집 시작
+		
+		self:StartTweener()
+	end
+
+	@EventSender("Logic", "TimerLogic")
+	handler HandleTimerChange(TimerChange event)
+		-- 타이머 일시정지/재개 시 트위너 상태 동기화
+		
+		local pause = event.pause
+		
+		if pause and self._T.tween  then	
+			self._T.tween:Pause()
+		elseif not pause then			
+			if self._T.Padding then
+				
+				wait(0.001) 
+				self._T.Padding = false
+				self:GemFinished()
+			elseif self._T.tween then
+				self._T.tween:Resume()
+			end
+		end
+	end
+
+end

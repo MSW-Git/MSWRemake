@@ -1,0 +1,109 @@
+@Component
+script RC20029 extends RuneCardComponent
+
+	property number SetTimer = 0
+
+	property number SetTime = 4
+
+	property number SetMinusHPPercent = 5
+
+	property number SetMPAmount = 10
+
+	@ExecSpace("ServerOnly")
+	method void StartBattleHandler(any event)
+		__base:StartBattleHandler(event)
+		
+		-- 가장 마력이 높은 캐릭터가 6초마다 최대 체력의 5%를 소모해 공격 속도 20%를 증가시킵니다.
+		--------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		local gameManager = user.GameManager
+		--------------------------------------------------------------
+		local checkedUnits = {}
+		
+		if self.SetTeamType == "User" then
+			for _, unit in pairs(teamManager.OwnUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					table.insert(checkedUnits, unit)
+				end
+			end
+		else
+			for _, unit in pairs(teamManager.EnemyUnits) do
+				if unit.UnitAIWanderComponent.Enable then
+					table.insert(checkedUnits, unit)
+				end
+			end
+		end
+		
+		-- 공격 속도 올려주는 함수
+		-- 현재 체력이 5% 이하인 유닛은 포함 X
+		local function upAttackSpeedFnc()
+			if isvalid(user) == false then
+				_TimerService:ClearTimer(self.SetTimer)
+				return
+			end
+			
+			---@type Entity
+			local setUnit
+			
+			for _, unit in pairs(checkedUnits) do
+				if unit.UnitAIWanderComponent.setBattle and unit.UnitStatus.HP > unit.UnitStatus.MaxHP * 0.05 then
+					if not isvalid(setUnit) then
+						setUnit = unit
+					elseif setUnit.UnitStatus.MagicalAttack < unit.UnitStatus.MagicalAttack then
+						setUnit = unit
+					end
+				end
+			end
+			
+			if isvalid(setUnit) then
+				_StatusChangeLogic:SetVariableStatus(setUnit, setUnit, "HP", -setUnit.UnitStatus.MaxHP * self.SetMinusHPPercent / 100, "rune")
+				_StatusChangeLogic:SetVariableStatus(setUnit, setUnit, "MP", self.SetMPAmount, "rune")
+				self:PlayEffect(setUnit, user.PlayerComponent.UserId)
+			end
+			
+			if gameManager.PhaseType ~= "Battle" then
+				_TimerService:ClearTimer(self.SetTimer)
+			end
+			
+			
+		end
+		
+		self.SetTimer = _TimerService:SetTimerRepeat(upAttackSpeedFnc, self.SetTime, 0)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void EndRoundHandler(any event)
+		__base:EndRoundHandler(event)
+		
+		-- 타이머 종료
+		--------------------------------------------------------------
+		_TimerService:ClearTimer(self.SetTimer)
+	end
+
+	@ExecSpace("Client")
+	method void PlayEffect(Entity unit)
+		------------------------------------------------------------
+		local user = self.Entity.Parent.Parent
+		local teamManager = user.TeamManager
+		------------------------------------------------------------
+		local stringHPValue = string.format("-%d%%", self.SetMinusHPPercent)
+		local stringMPValue = string.format("%d%%", self.SetMPAmount)
+		
+		--룬 카드 발동 연출
+		if unit.UnitInfo.TeamType == "User" then
+			local index=_RuneCardDirector:GetRuneCardIndex(self.Entity, false)
+			_RuneCardDirector:ShakingCard_Battle(index, false)
+			_RuneCardDirector:IconToastDirector_Battle(index,{_RuneCardDirectEnum.MP, _RuneCardDirectEnum.HP},{stringMPValue, stringHPValue},false)
+			
+		else
+			local index=_RuneCardDirector:GetRuneCardIndex(self.Entity,true)
+			_RuneCardDirector:ShakingCard_Battle(index, true)
+			_RuneCardDirector:IconToastDirector_Battle(index,{_RuneCardDirectEnum.MP, _RuneCardDirectEnum.HP},{stringMPValue, stringHPValue},true)
+		end
+		
+		--룬 카드 효과 연출
+		unit.UnitAnimationComponent:PlayHitDirection()
+	end
+
+end

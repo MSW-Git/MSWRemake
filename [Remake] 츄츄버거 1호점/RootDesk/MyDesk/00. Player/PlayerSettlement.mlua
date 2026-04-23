@@ -1,0 +1,747 @@
+@Component
+script PlayerSettlement extends Component
+
+	property table SettlementDatas = {}
+
+	@TargetUserSync
+	property integer ResignWarningCount = 0
+
+	property integer RESIGN_WARNING_LIMIT = 3
+
+	property integer RESIGN_CHUCHU_COUNT = 1
+
+	@TargetUserSync
+	property SyncTable<string, integer> LeaveCustomerTag
+
+	@TargetUserSync
+	property integer LeaveCustomerAttractive = 0
+
+	@TargetUserSync
+	property integer BestRecipeEarnings = 0
+
+	@TargetUserSync
+	property integer EarningLevel = 0
+
+	@TargetUserSync
+	property integer PiggyBankEarnings = 0
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 정산 데이터를 데이터베이스에 저장
+		local dataTotal = {}
+		dataTotal["SettlementDatas"] = _HttpService:JSONEncode(self:ConvertSettlementDataToTable(self.SettlementDatas))
+		dataTotal["ResignWarningCount"] = self.ResignWarningCount
+		dataTotal["BestRecipeEarnings"] = self.BestRecipeEarnings
+		dataTotal["EarningLevel"] = self.EarningLevel
+		
+		saveData["SettlementData"] = dataTotal
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- 데이터베이스에서 정산 데이터를 로드하여 초기화
+		local dataTable = loadedData["SettlementData"]
+		if dataTable == nil then
+			dataTable = {}
+		end
+		
+		if #table.keys(dataTable) > 0 then
+				
+			if _UtilLogic:IsNilorEmptyString(dataTable["SettlementDatas"]) == false then
+				self:ConvertTableToSettlementData(_HttpService:JSONDecode(dataTable["SettlementDatas"]))
+				self:RequestSyncSettlementDatas(self.SettlementDatas, self.Entity.PlayerComponent.UserId)
+			end
+			
+			self.BestRecipeEarnings = tonumber(dataTable["BestRecipeEarnings"])
+			if self.BestRecipeEarnings == nil then
+				self.BestRecipeEarnings = 0
+			end
+			_BalanceDataSetLogic:SetEarningLevelByEarningRecord(self.Entity)
+			_LobbyHUDService:UpdateBestEarningRecord(self.BestRecipeEarnings, 0, self.Entity.PlayerComponent.UserId)
+			
+			self.ResignWarningCount = tonumber(dataTable["ResignWarningCount"])
+				
+		else	
+			_BalanceDataSetLogic:SetEarningLevelByEarningRecord(self.Entity)
+			_LobbyHUDService:UpdateBestEarningRecord(self.BestRecipeEarnings, 0, self.Entity.PlayerComponent.UserId)
+			
+			local utc = self.Entity.TimeManager.Utc
+			self:CreateNewMonthSettlementData(utc.Year, utc.Month)	
+			self:ResetPiggyBankEarings()
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void InitComponent()
+		-- 정산 컴포넌트의 모든 데이터를 초기화
+		table.clear(self.SettlementDatas)
+		table.clear(self.LeaveCustomerTag)
+		self.LeaveCustomerAttractive = 0
+		self.BestRecipeEarnings = 0
+		self.EarningLevel = 0
+		self.ResignWarningCount = 0
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Settlement(any utc)
+		-- 월별 정산을 실행하여 수입과 지출을 계산하고 결과에 따른 처리 수행
+		
+		---@type SettlementData
+		local lastSettlementData = self.SettlementDatas[#self.SettlementDatas]
+		if lastSettlementData == nil then
+		end
+		local expense = lastSettlementData.M_AccumSalary + lastSettlementData.M_AccumMaintenance
+		
+		local result = self.Entity.PlayerInventory:SubMoneyUnderZero(expense,"Settlement store manage fee","Settlement popup")
+		
+		if result == true then
+			local emergencyFundMLevel = _GetConfigDataLogic:GetConfigNumDataByKey("EmergencyFundManagementLevelLimit")
+			local emergencyFundOfferCount = _GetConfigDataLogic:GetConfigNumDataByKey("EmergencyFundOfferCount")
+			local userEmergencyCount = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.EmergencyFundCount)
+			if self.Entity.PlayerStage.NowStage <= 2 then
+				if self.Entity.PlayerManagement.ManagementLevel <= emergencyFundMLevel and userEmergencyCount < emergencyFundOfferCount then
+					if self.Entity.PlayerAchievement:IsAchievementAchieved(_TutorialAchievementTypeEnum.IsMinusBudgetOccured) then
+						local emergencyFund = _GetConfigDataLogic:GetConfigNumDataByKey("EmergencyFundManagementLevel"..self.Entity.PlayerManagement.ManagementLevel)
+						self.Entity.PlayerInventory:ModifyMoney(emergencyFund, "Emergency fund", "Settlement popup")
+						_EventManager:SetEventReferKeyData(_TutorialEventEnum.EmergencyFundEventId, _StringUtilLogic:ReturnThousandsSeparatedString(emergencyFund), self.Entity.PlayerComponent.UserId)
+						self.Entity.PlayerEvent:RequestCallEvent(_TutorialEventEnum.EmergencyFundEventId)
+						
+						self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.EmergencyFundCount, userEmergencyCount+1)
+					end
+				else
+					self.ResignWarningCount = self.ResignWarningCount + 1		
+					self:CheckForResignEvent()
+				end
+			else
+				self.ResignWarningCount = self.ResignWarningCount + 1		
+				self:CheckForResignEvent()
+			end
+				
+			self:ReplaceValueForSettlement(_SettlementPropertyEnum.IsMinusBudget, 1)
+			local warningAchi = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.MinusBudget)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.MinusBudget, warningAchi + 1)	
+			
+		else
+			self.ResignWarningCount = 0
+		end
+		
+		
+		
+		
+		local recipeTotal = lastSettlementData.P_RecipeTotal
+		if self.BestRecipeEarnings == nil then
+			self.BestRecipeEarnings = 0
+		end
+		
+		if self.Entity.PlayerCheatComponent:HasAuthority() then
+			self.Entity.PlayerDebugMonitor:ResetDebugMonitorMonthlyReputation(self.Entity.PlayerComponent.UserId)
+		end
+		
+		
+		if recipeTotal > self.BestRecipeEarnings then
+			self:ChangeRecipeEarningRecord(recipeTotal)
+			_ReportMessageMaker:RequestAddToReportQueue(6004, _StringUtilLogic:ReturnThousandsSeparatedString(recipeTotal), "", "", self.Entity.PlayerComponent.UserId)
+		else
+			_ReportMessageMaker:RequestAddToReportQueue(6003, _StringUtilLogic:ReturnThousandsSeparatedString(recipeTotal), "", "", self.Entity.PlayerComponent.UserId)
+		end
+		
+		local lastEarnings = lastSettlementData:ReturnEarnings()
+		local accumEarningsProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.AccumEarnings)
+		self.Entity.PlayerAchievement:RequestChangeProgress(_AchievementTypeEnum.AccumEarnings, accumEarningsProgress+lastEarnings)
+		
+		local wageProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.MonthlyWage)
+		if lastSettlementData.M_AccumSalary > wageProgress then
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.MonthlyWage, lastSettlementData.M_AccumSalary)
+		end
+		
+		local customerCount = lastSettlementData.CustomerCount
+		local burgerCount = lastSettlementData.BurgerCount
+		
+		local customerProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_RecordAchievementTypeEnum.MonthlyCustomerCount)
+		if customerProgress < customerCount then
+			self.Entity.PlayerAchievement:ChangeProgress(_RecordAchievementTypeEnum.MonthlyCustomerCount, customerCount)
+		end
+		
+		local burgerProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_RecordAchievementTypeEnum.MonthlyBurgerCount)
+		if burgerProgress < burgerCount then
+			self.Entity.PlayerAchievement:ChangeProgress(_RecordAchievementTypeEnum.MonthlyBurgerCount, burgerCount)
+		end
+		
+		self.Entity.PlayerManagement.YearlyIncome = self.Entity.PlayerManagement.YearlyIncome + lastSettlementData.P_RecipeTotal
+		
+		self:CreateNewMonthSettlementData(utc.Year, utc.Month)
+		
+		local nowIndex = #self.SettlementDatas - 1
+		_SettlementUIService:OpenUISettlement(self.SettlementDatas[nowIndex], self.Entity.PlayerComponent.UserId)
+		
+		local settle = {}
+		table.insert(settle,{})
+		
+		local resultIncome = lastSettlementData:ReturnNetIncome()
+		local flowType 
+		if resultIncome == 0 then 
+			flowType = "3" 
+		elseif resultIncome < 0 then 
+			flowType = "2" 
+		else 
+			flowType = "1" 
+		end
+		
+		
+		local success,value = pcall(function()
+			_LogStorageLogic:LogValue(self.Entity.PlayerComponent.UserId,
+				_LogEnumType.SettlementFlow,
+				_HttpService:JSONEncode({
+					earnings =  tostring(lastSettlementData:ReturnEarnings()), 
+					expense = tostring(lastSettlementData:ReturnExpense()),
+					netIncome = tostring(lastSettlementData:ReturnNetIncome()),
+					training = tostring(lastSettlementData.P_Training),
+					pEtc = tostring(lastSettlementData.P_Etc),
+					employment = tostring(lastSettlementData.M_ChuchuEmployment),
+					upgrade = tostring(lastSettlementData.M_Upgrade),
+					mEtc = tostring(lastSettlementData.M_Etc),
+					customerCount = tostring(lastSettlementData.CustomerCount),
+					burgerCount = tostring(lastSettlementData.BurgerCount),
+					salary = tostring(lastSettlementData.M_AccumSalary),
+					maintenance = tostring(lastSettlementData.M_AccumMaintenance),
+				}),
+				{
+					flowType = flowType,
+					recipeTotal = tostring(lastSettlementData.P_RecipeTotal),
+					manageLevel = tostring(self.Entity.PlayerManagement.ManagementLevel),
+					manageIndex = self.Entity.PlayerManagement:GetGoalCount(),
+					date = self.Entity.TimeManager:GetTimeText(),
+					playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+				})
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("Client")
+	method void RequestSyncSettlementDatas(table settlementDatas)
+		-- 서버에서 정산 데이터를 클라이언트에 동기화하고 UI 업데이트
+		self.SettlementDatas = settlementDatas
+		
+		if _UILobbyManager.StoreInfoRecordPage.Enable then
+			local curData = self.SettlementDatas[#self.SettlementDatas]
+			if isvalid(curData) then
+				_UILobbyManager.StoreInfoRecordPage.UIStoreInfoRecordPage:RefreshData(curData)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table ConvertSettlementDataToTable(table structData)
+		-- 정산 데이터 구조체를 테이블 형태로 변환하여 DB 저장용으로 준비
+		local result = {}
+		for id, data in pairs(structData) do
+		
+			---@type SettlementData
+			local sData = data
+			result[id] = sData:ConvertToTable()
+		end
+		
+		
+		return result
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ConvertTableToSettlementData(table convertData)
+		-- 테이블 데이터를 정산 데이터 구조체로 변환하여 로드
+		for id, data in pairs(convertData) do
+			local info = SettlementData()
+			info:SetFromTable(data)
+			if self.SettlementDatas[id] ~= nil then
+				break
+			end
+			
+			self.SettlementDatas[id] = info
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CreateNewMonthSettlementData(integer year, integer month)
+		-- 새로운 월의 정산 데이터를 생성하고 최대 7개월 기록 유지
+		local result = {}
+		result["Year"] = year
+		result["Month"] = month
+		result[_SettlementPropertyEnum.P_RecipeTotal] = 0
+		result[_SettlementPropertyEnum.P_Training] = 0
+		result[_SettlementPropertyEnum.P_Etc] = 0
+		result[_SettlementPropertyEnum.M_ChuchuEmployment] = 0
+		result[_SettlementPropertyEnum.M_StoreManaging] = 0
+		result[_SettlementPropertyEnum.M_Upgrade] = 0
+		result[_SettlementPropertyEnum.M_Etc] = 0
+		result[_SettlementPropertyEnum.BurgerCount] = 0
+		result[_SettlementPropertyEnum.CustomerCount] = 0
+		result[_SettlementPropertyEnum.IsMinusBudget] = 0
+		result[_SettlementPropertyEnum.NoneWaitingCustomer] = 0
+		result[_SettlementPropertyEnum.M_AccumSalary] = 0
+		result[_SettlementPropertyEnum.M_AccumMaintenance] = 0
+		result[_SettlementPropertyEnum.ObtainedMoney] = 0
+		result[_SettlementPropertyEnum.ObtainedHeart] = 0
+		result[_SettlementPropertyEnum.ObtainedClover] = 0
+		
+		local data = SettlementData()
+		data:SetFromTable(result)
+		
+		table.insert(self.SettlementDatas, data)
+		
+		
+		if #self.SettlementDatas > 7 then
+			---@type SettlementData
+			local settlementData = self.SettlementDatas[1]
+			table.remove(self.SettlementDatas, 1)
+			
+		end
+		
+		self:RequestSyncSettlementDatas(self.SettlementDatas, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddValueForSettlement(string enum, integer addValue)
+		-- 정산 데이터의 특정 항목에 값을 추가하고 관련 처리 수행
+		---@type SettlementData
+		local settlementData = self.SettlementDatas[#self.SettlementDatas]
+		if settlementData == nil then
+			_TimerService:SetTimerOnce(function()
+				self:AddValueForSettlement(enum, addValue)
+			end, 0.5)
+			return
+		end
+		
+		local dataTable = settlementData:ConvertToTable()
+		if dataTable[enum] == nil then
+			dataTable[enum] = 0
+		end
+		dataTable[enum] = dataTable[enum] + addValue
+		
+		
+		settlementData:SetFromTable(dataTable)
+		self.SettlementDatas[#self.SettlementDatas] = settlementData
+		
+		if enum == _SettlementPropertyEnum.CustomerCount or enum == _SettlementPropertyEnum.M_AccumSalary or enum == _SettlementPropertyEnum.M_AccumMaintenance then
+			self:RequestRefreshStoreInfoRecordPage(settlementData, self.Entity.PlayerComponent.UserId)
+		elseif enum == _SettlementPropertyEnum.P_RecipeTotal then
+			if self.BestRecipeEarnings == nil then
+				self.BestRecipeEarnings = 0
+			end
+			
+			if dataTable[enum] > self.BestRecipeEarnings then
+				self:ChangeRecipeEarningRecord(dataTable[enum])	
+			end
+			
+			if self.Entity.PlayerStage.NowStage > 1 then
+				_PaidLogic:AddEarnings_PiggyBank(addValue, self.Entity.PlayerComponent.UserId)
+			end
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ReplaceValueForSettlement(string enum, integer replaceValue)
+		-- 정산 데이터의 특정 항목 값을 대체
+		---@type SettlementData
+		local settlementData = self.SettlementDatas[#self.SettlementDatas]
+		if isvalid(settlementData) == false then
+			return
+		end
+		
+		local dataTable = settlementData:ConvertToTable()
+		
+		dataTable[enum] = replaceValue
+		
+		settlementData:SetFromTable(dataTable)
+		self.SettlementDatas[#self.SettlementDatas] = settlementData
+	end
+
+	@ExecSpace("Server")
+	method void RequestAddValueForSettlement(string enum, integer addValue)
+		-- 클라이언트에서 정산 데이터 값 추가 요청을 받아 처리
+		self:AddValueForSettlement(enum, addValue)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddTableValueForSettlement(string enum, number keyValue, integer addCount)
+		-- 정산 데이터의 테이블 형태 항목에 키-값 쌍으로 데이터를 추가
+		---@type SettlementData
+		local settlementData = self.SettlementDatas[#self.SettlementDatas]
+		
+		local dataTable = settlementData:ConvertToTable()
+		local localTable = {}
+		table.initialize(localTable, _UtilLogic:StringToTable(dataTable[enum]))
+		
+		if localTable[keyValue] == nil then
+			localTable[keyValue] = 0
+		end
+		localTable[keyValue] = localTable[keyValue] + addCount
+		
+		dataTable[enum] = _UtilLogic:TableToString(localTable)
+		
+		settlementData:SetFromTable(dataTable)
+		self.SettlementDatas[#self.SettlementDatas] = settlementData
+	end
+
+	@ExecSpace("Server")
+	method void RequestAddTableValueForSettlement(string enum, number keyValue, integer addCount)
+		-- 클라이언트에서 정산 데이터 테이블 값 추가 요청을 받아 처리
+		self:AddTableValueForSettlement(enum, keyValue, addCount)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CheckForResignEvent()
+		-- 사임 경고 상황을 확인하고 직원 수에 따라 자동 사임 및 경고 처리
+		self:ResignWarningAlert(self.Entity.PlayerComponent.UserId)
+		
+		local employeeCount = #self.Entity.EmployeeManager.EmployeeDetailTable
+		
+		local cookCount = 0
+		local servingCount = 0 
+		for i, detail in pairs(self.Entity.EmployeeManager.EmployeeDetailTable) do
+			---@type EmployeeDetailData
+			local empDetail = detail
+			local empData = _EmployeeService:GetData(empDetail.Id)
+			if empData.Type == _EmployeeTypeEnum.Cook then
+				cookCount += 1
+			elseif empData.Type == _EmployeeTypeEnum.Serving then
+				servingCount += 1
+			end
+		end
+		
+		
+		if self.ResignWarningCount > 0 then
+			local isTransferUnlocked = _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.EmployeeManageTransferBtn, self.Entity)
+			
+			if isTransferUnlocked == false then
+				_ReportMessageMaker:RequestAddToReportQueue(6011, tostring(self.ResignWarningCount), "", "", self.Entity.PlayerComponent.UserId)
+			else
+				if cookCount <= 1 and servingCount <= 1 then
+					_ReportMessageMaker:RequestAddToReportQueue(6011, tostring(self.ResignWarningCount), "", "", self.Entity.PlayerComponent.UserId)
+				else
+					_ReportMessageMaker:RequestAddToReportQueue(6006, tostring(self.ResignWarningCount), tostring(self.RESIGN_WARNING_LIMIT), "", self.Entity.PlayerComponent.UserId)
+				end
+			end
+		end
+		
+		if self.ResignWarningCount >= self.RESIGN_WARNING_LIMIT then
+			
+			local empType = nil
+			
+			if _UIButtonUnlockLogic:IsButtonUnlocked(_ButtonUnlockEnum.EmployeeManageTransferBtn, self.Entity) == false then
+				return 
+			end
+			
+			if cookCount <= 1 and servingCount <= 1 then
+				return 
+			end
+			
+		    if cookCount <= 1 then
+				empType = _EmployeeTypeEnum.Serving
+			elseif servingCount <= 1 then
+				empType = _EmployeeTypeEnum.Cook
+			end
+			
+			local randomId = _EmployeeService:ReturnRandomCharId(self.Entity, empType)
+			
+			if self.Entity.PlayerStage.NowStage <= 1 then
+				local emergencyMLevel = _GetConfigDataLogic:GetConfigNumDataByKey("EmergencyFundManagementLevelLimit")
+				local resignProtectCount = _GetConfigDataLogic:GetConfigNumDataByKey("ResignProtectOfferCount")
+				local userProtectCount = self.Entity.PlayerAchievement:ReturnAchievementProgress(_TutorialAchievementTypeEnum.ResignProtectCount)
+				if self.Entity.PlayerManagement.ManagementLevel <= emergencyMLevel and userProtectCount < resignProtectCount then
+					_EventManager:SetEventReferKeyData(_TutorialEventEnum.ResignProtectEventId, randomId, self.Entity.PlayerComponent.UserId)
+					self.Entity.PlayerEvent:RequestCallEvent(_TutorialEventEnum.ResignProtectEventId)
+					
+					self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.ResignProtectCount, userProtectCount+1)
+				else
+					self.Entity.EmployeeManager:RequestTransferEmployee(randomId, false,"Resign")
+						
+					_EventManager:SetEventReferKeyData("F9001", randomId, self.Entity.PlayerComponent.UserId)
+					self.Entity.PlayerEvent:RequestCallEvent("F9001")
+					
+				end
+				
+			else
+				self.Entity.EmployeeManager:RequestTransferEmployee(randomId, false,"Resign")
+					
+				_EventManager:SetEventReferKeyData("F9001", randomId, self.Entity.PlayerComponent.UserId)
+				self.Entity.PlayerEvent:RequestCallEvent("F9001")
+			end
+			
+			
+			self.ResignWarningCount = 0
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ResignWarningAlert()
+		-- 모든 직원에게 사임 경고 피드백 UI를 표시
+		for i, employeeDetail in pairs(self.Entity.EmployeeManager.EmployeeDetailTable) do
+			local employeeId = employeeDetail.Id
+			
+			local entity = _UserService.LocalPlayer.CurrentMap:GetChildByName(employeeId)
+			if isvalid(entity) then
+				entity.EmployeeInfoScript.PeedbackUI.Enable = true
+				_EmployeeUIService:PeedbackUIUpdate("ResignWarning",nil,entity)		
+				
+				entity.EmployeeInfoScript.PeedbackTimer = _TimerService:SetTimerOnce(function()
+					if isvalid(entity) == false then return end
+					if isvalid(entity.EmployeeInfoScript) == false then return end
+					_EmployeeUIService:PeedbackUIClose(entity)
+				end, 3)
+			end	
+			
+		
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestSyncSettlementDataFromServer()
+		-- 서버에서 클라이언트로 정산 데이터 동기화 요청을 처리
+		self:RequestSyncSettlementDatas(self.SettlementDatas, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 동기화된 속성에 따라 관련 이벤트 발생 및 UI 업데이트
+		local player = self.Entity
+		if name == "BestRecipeEarnings" then
+			if _SettlementUIService.UISettlement.Enable then
+				_SettlementUIService.UISettlement.UISettlementPanel:Refresh()
+			end
+			
+			local recordChangedEvent = BestEarningRecordChangedEvent()
+			recordChangedEvent:Init(value, 0)
+			player:SendEvent(recordChangedEvent)
+			
+		elseif name == "EarningLevel" then
+			local earningLevelChangedEvent = EarningLevelChangedEvent()
+			earningLevelChangedEvent:Init(value)
+			player:SendEvent(earningLevelChangedEvent)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RequestRefreshStoreInfoRecordPage(SettlementData settlementData)
+		-- 상점 정보 기록 페이지를 새로고침
+		if _UILobbyManager.StoreInfoRecordPage.Enable then
+			if isvalid(settlementData) then
+				_UILobbyManager.StoreInfoRecordPage.UIStoreInfoRecordPage:RefreshData(settlementData)
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeRecipeEarningRecord(integer changedValue)
+		-- 레시피 최고 수익 기록을 변경하고 관련 성과 및 이벤트 처리
+		local exRecord = self.BestRecipeEarnings
+		self.BestRecipeEarnings = changedValue
+		
+		_BalanceDataSetLogic:SetEarningLevelByEarningRecord(self.Entity)
+		
+		local recordChangedEvent = BestEarningRecordChangedEvent()
+		recordChangedEvent:Init(self.BestRecipeEarnings, self.BestRecipeEarnings - exRecord)
+		self.Entity:SendEvent(recordChangedEvent)
+		
+		local achiProgress = self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.MonthlyEarnings)
+		if self.BestRecipeEarnings > achiProgress then 
+			self.Entity.PlayerAchievement:ChangeProgress(_AchievementTypeEnum.MonthlyEarnings, self.BestRecipeEarnings)
+			self.Entity.PlayerAchievement:ChangeProgress(_TutorialAchievementTypeEnum.BestRecipeEarnings, self.BestRecipeEarnings)
+		end
+		
+		self.Entity.PlayerBadge:ChangeProgress(_BadgeEnum.BestRecipeEarnings, changedValue)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void AddPiggyBankEarnings(integer earnings)
+		-- 저금통 수익을 추가하고 필요 조건 달성 시 저금통 포인트 증가
+		if not self.Entity.PlayerOutgameManager:IsPiggyBankFull() then
+			
+			self.PiggyBankEarnings += earnings
+			local bestRecipeEarnings = _StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage):GetStageEarningLevelData(self.EarningLevel).BestRecipeEarnings
+			
+			---@type PiggyBankLevelData
+			local levelData = _PiggyBankDataLogic.PiggyBankLevelData[self.Entity.PlayerOutgameManager.PiggyBankLevel]
+			local myManagementLevel = self.Entity.PlayerManagement.ManagementLevel
+			local configKey = string.format("PiggyBankBestEarningConstantManageLv%d", myManagementLevel)
+			local BestEarningConstantManage = _GetConfigDataLogic:GetConfigNumDataByKey(configKey)
+			local requiredEarnings = math.tointeger(bestRecipeEarnings * BestEarningConstantManage * levelData.RequiredEarningRate) 
+			
+			if requiredEarnings <= self.PiggyBankEarnings then
+				self.PiggyBankEarnings -= requiredEarnings
+				self.Entity.PlayerOutgameManager:AddPiggyBankPoint()
+			end
+			
+			if self.Entity.PlayerCheatComponent:HasAuthority() then
+				self.Entity.PlayerDebugMonitor:UpdatePiggyBankInfo(requiredEarnings, self.PiggyBankEarnings)
+			end
+		end
+		
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ResetPiggyBankEarings()
+		-- 저금통 수익을 초기화하고 디버그 모니터 업데이트
+		self.PiggyBankEarnings = 0
+		
+		
+		if self.Entity.PlayerCheatComponent:HasAuthority() then
+			
+			local bestRecipeEarnings = _StageDataSetLogic:GetStageData(self.Entity.PlayerStage.NowStage):GetStageEarningLevelData(self.EarningLevel).BestRecipeEarnings
+			local levelData = _PiggyBankDataLogic.PiggyBankLevelData[self.Entity.PlayerOutgameManager.PiggyBankLevel]
+			local myManagementLevel = self.Entity.PlayerManagement.ManagementLevel
+			local configKey = string.format("PiggyBankBestEarningConstantManageLv%d", myManagementLevel)
+			local BestEarningConstantManage = _GetConfigDataLogic:GetConfigNumDataByKey(configKey)
+			local requiredEarnings = math.tointeger(bestRecipeEarnings * BestEarningConstantManage * levelData.RequiredEarningRate) 
+			
+			self.Entity.PlayerDebugMonitor:UpdatePiggyBankInfo(requiredEarnings, self.PiggyBankEarnings)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MonthlySnapLog()
+		-- 월별 스냅샷 로그를 기록하여 게임 데이터 분석용 정보 수집
+		---@type SettlementData
+		local lastSettlementData = self.SettlementDatas[#self.SettlementDatas]
+		
+		
+		local success,value = pcall(function()
+			local userId = self.Entity.PlayerComponent.UserId
+			local nickname = self.Entity.PlayerComponent.Nickname
+			local date = self.Entity.TimeManager:GetTimeText()
+		
+			_LogStorageLogic:LogValue( 
+				userId,
+			   _LogEnumType.MonthlySnap,
+				_HttpService:JSONEncode(
+				{
+					uGrillLevel = tostring(_UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.GrillLevel)),
+					uCounterLevel = tostring(_UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.CounterLevel)),
+					uDisplayLevel = tostring(_UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.DisplaystandLevel)),
+					uTrainingUpgrade = tostring(_UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.TrainingUpgrade)),
+					uLunchBoxGainSpeed = tostring(_UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.LunchBoxGainSpeed)),
+					uVIPOrderCount = tostring(_UpgradeDataSetLogic:ReturnCurrentPlayerLevel(self.Entity, _UpgradeTypeEnum.VIPOrderCount)),
+					aMenuSellPrice = tostring(self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.MenuSellPrice)),
+					aRecipeTasteGrade = tostring(self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.RecipeTasteGrade)),
+					aTrainingCount = tostring(self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.TrainingCount)),
+					aAutoTrainingCount = tostring(self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.AutoTrainingCount)),
+					aVIPOrderRecipeCount = tostring(self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.VIPRecipeOrderSuccessCount)),
+					aVIPOrderIngreCount = tostring(self.Entity.PlayerAchievement:ReturnAchievementProgress(_AchievementTypeEnum.VIPIngreOrderSuccessCount))
+				}),
+				{
+					nickname = nickname,
+					year = tostring(lastSettlementData.Year),
+					month = tostring(lastSettlementData.Month),
+					playerStageId = tostring(self.Entity.PlayerStage.NowStage),
+					manageLevel = tostring(self.Entity.PlayerManagement.ManagementLevel),
+					manageIndex = self.Entity.PlayerManagement:GetGoalCount(),
+					earningLevel = tostring(self.EarningLevel),
+					recipeEarnings = tostring(lastSettlementData.P_RecipeTotal),
+					earnings = tostring(lastSettlementData:ReturnEarnings()),
+					expense = tostring(lastSettlementData:ReturnExpense()),
+					customerCount = tostring(lastSettlementData.CustomerCount),
+					reputation = tostring(self.Entity.PlayerInventory.Reputation),
+					recipeAttractive = tostring(self.Entity.CustomerManager:CalcAttractiveRecipe()),
+					storeAttractive = tostring(self.Entity.CustomerManager:CalcAttractiveExpension() 
+						+ self.Entity.CustomerManager:CalcAttractiveInterior() + self.Entity.CustomerManager:CalacAttractiveDeco()),
+					bunSkinBonusRate = tostring(_IngredientDataSetLogic:GetBunSkinBonusRate(self.Entity)),
+					empCollectionRate = tostring(math.floor(self.Entity.ChuchuCollectionDB.CollectionPercent*100)/100)
+				}
+			)
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void MonthlyResourceLog()
+		-- 월별 자원 로그를 기록하여 자원 획득 및 소비 현황 추적
+		---@type SettlementData
+		local lastSettlementData = self.SettlementDatas[#self.SettlementDatas]
+		
+		local success,value = pcall(function()
+			local userId = self.Entity.PlayerComponent.UserId
+			local nickname = self.Entity.PlayerComponent.Nickname
+			local date = self.Entity.TimeManager:GetTimeText()
+		
+			_LogStorageLogic:LogValue( 
+				userId,
+			   _LogEnumType.MonthlyResource,
+				string.format("%d/%d", lastSettlementData.Year, lastSettlementData.Month),
+				{
+					nickname = nickname,
+					year = tostring(lastSettlementData.Year),
+					month = tostring(lastSettlementData.Month),
+					playerStageId = tostring(self.Entity.PlayerStage.NowStage),
+					manageLevel = tostring(self.Entity.PlayerManagement.ManagementLevel),
+					manageIndex = self.Entity.PlayerManagement:GetGoalCount(),
+					earningLevel = tostring(self.EarningLevel),
+					obtainedMoney = tostring(lastSettlementData.ObtainedMoney),
+					obtainedHeart = tostring(lastSettlementData.ObtainedHeart),
+					obtainedClover = tostring(lastSettlementData.ObtainedClover)
+				}
+			)
+			
+		end)
+		
+		if not success then  end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void UpdateEarningLevel(integer level)
+		-- 수익 레벨을 업데이트
+		self.EarningLevel = level
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RequestOpenUIOfflineReward()
+		-- 오프라인 보상 UI를 열기 위해 로그아웃 시간과 보상 금액을 계산
+		
+		local maxRewardTime = _OfflineRewardLogic:GetMaxRewardTime()
+		local clearedStageList = {}
+		for stageId, progress in pairs(self.Entity.PlayerStage.StageProgress) do
+			if progress >= _StageDataSetLogic:GetStageClearProgress(stageId) then
+				table.insert(clearedStageList, stageId)
+			end
+		end
+		
+		local stageEnterElapsed = _DateTimeLogic:GetUtcNowElapsed()
+		local rewardTimeSec = _OfflineRewardLogic:GetRewardTimeSec(self.Entity.PlayerOutgameManager.LogoutTimeElapsed, stageEnterElapsed, maxRewardTime)
+		local rewardAmount = _OfflineRewardLogic:GetOfflineRewardAmount(rewardTimeSec, self.Entity, clearedStageList)
+		self._T.rewardTimeSec = rewardTimeSec
+		self._T.rewardAmount = rewardAmount
+		
+		self._T.stageEnterElapsed = stageEnterElapsed
+		
+		self.Entity.PlayerOutgameManager.LeftOfflineReward = rewardAmount
+		
+		_OfflineRewardLogic:OpenUI(rewardTimeSec, rewardAmount, clearedStageList, maxRewardTime, self.Entity.PlayerComponent.UserId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestGetOfflineReward()
+		-- 클라이언트에서 오프라인 보상 수령 요청을 받아 처리
+		if senderUserId ~= self.Entity.PlayerComponent.UserId then
+			return
+		end
+		
+		if self._T.rewardAmount == nil then
+			return
+		end
+		
+		if self._T.rewardAmount <= 0 then
+			return
+		end
+		
+		self.Entity.PlayerInventory:ModifyMoney(self._T.rewardAmount, "Offline Reward", "GetOfflineReward popup")
+		_OfflineRewardLogic:OfflineRewardLog(self.Entity, self._T.rewardTimeSec, self.BestRecipeEarnings, self._T.rewardAmount, self._T.stageEnterElapsed)
+		
+		self.Entity.PlayerOutgameManager.LeftOfflineReward = 0
+		
+		self._T.rewardAmount = nil
+		self._T.rewardTimeSec = nil
+	end
+
+end

@@ -1,0 +1,292 @@
+@Component
+script GuideToRulesManager extends Component
+
+	@TargetUserSync
+	property SyncTable<string, boolean> WatchedGuideList
+
+	property any GuidePopupDataset = nil
+
+	property Entity UI_GuidePopup = "e4fde7fa-698a-45c2-b124-4f21983d85c9"
+
+	property string SelectedCategory = ""
+
+	property string WatchedID = ""
+
+	@TargetUserSync
+	property SyncTable<string, number> IngameRulesNumber
+
+	property any InGameRulesDataset = nil
+
+	method void OnBeginPlay()
+		-- 게임 시작 시 가이드 팝업과 게임 규칙 데이터셋을 초기화
+		
+		self.GuidePopupDataset = _DataService:GetTable("GuidePopupDataset")
+		self.InGameRulesDataset = _DataService:GetTable("InGameRulesData")
+		self.UI_GuidePopup = _EntityService:GetEntityByPath("/ui/TutorialGuideGroup/GuideToRulesPopup")
+		
+		for i=1,self.GuidePopupDataset:GetRowCount() do
+			self.WatchedGuideList[self.GuidePopupDataset:GetRow(i):GetItem("GuidePopupID")] = true
+		end
+		
+		local count = 1
+		
+		for i = 1,self.InGameRulesDataset:GetRowCount() do
+			local style = self.InGameRulesDataset:GetRow(i):GetItem("Style")
+			if style == "MainText" then
+				local localKey = self.InGameRulesDataset:GetRow(i):GetItem("CategoryLocalKey")
+				self.IngameRulesNumber[localKey] = count
+				count = count + 1
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void InitGuideList()
+		-- 모든 가이드 팝업을 미시청 상태로 초기화
+		--가이드 팝업을 모두 안 본 상태로 초기화시키는 함수입니다.
+		------------------------------------------
+		for i=1,self.GuidePopupDataset:GetRowCount() do
+			self.WatchedGuideList[self.GuidePopupDataset:GetRow(i):GetItem("GuidePopupID")] = false
+		end
+	end
+
+	@ExecSpace("Server")
+	method void PopupWatched(string PopupID)
+		-- 특정 가이드 팝업을 시청했음을 기록
+		--가이드 팝업을 봤다면, 가이드 리스트 테이블에 본 항목을 등록합니다.
+		-------------------------------
+		self.WatchedGuideList[PopupID] = true
+	end
+
+	@ExecSpace("Client")
+	method void ActivatePopupMessage(string PopupID)
+		-- 가이드 팝업을 활성화합니다.
+		--------------------------------------
+		self.SelectedCategory = self.GuidePopupDataset:FindRow("GuidePopupID",PopupID):GetItem("Category")
+		self.WatchedID = PopupID
+		local guideText =  self.UI_GuidePopup:GetChildByName("GuideText")
+		local popupText = _LocalizationService:GetText(self.GuidePopupDataset:FindRow("GuidePopupID",PopupID):GetItem("Text"))
+		local category = self.GuidePopupDataset:FindRow("GuidePopupID",PopupID):GetItem("Category")
+		
+		guideText.TextComponent.Text = popupText
+		--self.UI_GuidePopup:SetEnable(true)
+	end
+
+	@ExecSpace("Server")
+	method void OffGuideList()
+		--가이드 팝업을 모두 본 상태로 변경하는 함수입니다.
+		------------------------------------------
+		for i=1,self.GuidePopupDataset:GetRowCount() do
+			self.WatchedGuideList[self.GuidePopupDataset:GetRow(i):GetItem("GuidePopupID")] = true
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "e4fde7fa-698a-45c2-b124-4f21983d85c9")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 게임 규칙 버튼 클릭 시 사전을 열고 해당 카테고리로 이동
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		_DictionaryManager:OnOpenDictionary()
+		_DictionaryManager:OnSelectCategory_1st(2)
+		local idxNum = self.IngameRulesNumber[self.GuidePopupDataset:FindRow("GuidePopupID",self.WatchedID):GetItem("Category")]
+		_DictionaryManager:OnSelectCategory_3rd(idxNum)
+		_DictionaryManager:UpdateUI_GameRulesList(1,self.SelectedCategory)
+		self.UI_GuidePopup:SetEnable(false)
+		self:PopupWatched(self.WatchedID)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "3c952479-5a1a-4ed0-9211-12e67983b0bb")
+	handler HandleButtonClickEvent2(ButtonClickEvent event)
+		-- 팝업 닫기 버튼 클릭 시 시청 완료로 표시
+		--------------- Native Event Sender Info ----------------
+		-- Sender: ButtonComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		-- local Entity = event.Entity
+		---------------------------------------------------------
+		self:PopupWatched(self.WatchedID)
+	end
+
+	@EventSender("Self")
+	handler HandleNotEnoughCoin(NotEnoughCoin event)
+		-- 코인 부족 시 코인 관련 가이드 팝업을 표시
+		if self.WatchedGuideList["Coin"] == false then
+			self:ActivatePopupMessage("Coin",self.Entity.OwnerId)
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleRoundStart(RoundStart event)
+		-- 라운드 시작 시 스테이지별 가이드 팝업을 표시
+		-- Parameters
+		local RoundType = event.RoundType
+		local Round = event.Round
+		local Stage = event.Stage
+		local user = self.Entity
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		if gameManager.Stage == 1 and gameManager.Round == 1 then
+			if self.WatchedGuideList["Shop"] == false then
+				self:ActivatePopupMessage("Shop",self.Entity.OwnerId)
+			end
+		elseif gameManager.Stage == 1 and gameManager.Round == 2 then
+			if #user.CoachManager.PlayCoachesID > 0 then
+				self:ActivatePopupMessage("Coach",self.Entity.OwnerId)
+			end
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleBattleEnd(BattleEnd event)
+		-- 전투 종료 시 팀 파워 부족 상황에서 가이드 팝업을 표시
+		-- Parameters
+		-- local RoundType = event.RoundType
+		---------------------------------------------------------
+		local user = self.Entity
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		if gameManager.MyUnitCount <= 0 then
+			if self.WatchedGuideList["TeamPowerBoost"] == false then
+				self:ActivatePopupMessage("TeamPowerBoost",self.Entity.OwnerId)
+			end
+		
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleBuyUnit(BuyUnit event)
+		-- 유닛 구매 시 배치 가이드나 비용 관련 가이드를 표시
+		-- Parameters
+		-- local Unit = event.Unit
+		local CharID = event.CharID
+		---------------------------------------------------------
+		local user = self.Entity
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		if gameManager.Stage == 1 and gameManager.Round == 1 then
+			if self.WatchedGuideList["Placement"] == false then
+				self:ActivatePopupMessage("Placement",self.Entity.OwnerId)
+			end
+		elseif tonumber(string.sub(CharID,2,2)) >= 3 then
+			if self.WatchedGuideList["Cost"] == false then
+				self:ActivatePopupMessage("Cost",self.Entity.OwnerId)
+			end
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleMergeUnit(MergeUnit event)
+		-- 유닛 합성 시 업그레이드 가이드를 표시
+		-- Parameters
+		-- local MergedUnit = event.MergedUnit
+		-- local TargetLevel = event.TargetLevel
+		---------------------------------------------------------
+		local user = self.Entity
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		
+		if self.WatchedGuideList["Upgrade"] == false then
+			self:ActivatePopupMessage("Upgrade",self.Entity.OwnerId)
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleBuyItem(BuyItem event)
+		-- 아이템 구매 시 아이템 관련 가이드를 표시
+		local user = self.Entity
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		if self.WatchedGuideList["Item"] == false then
+			self:ActivatePopupMessage("Item",self.Entity.OwnerId)
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleRerollCharacterShop(RerollCharacterShop event)
+		-- 상점 리롤 시 리롤 관련 가이드를 표시
+		-- Parameters
+		-- local RerollCost = event.RerollCost
+		---------------------------------------------------------
+		local user = self.Entity
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		if gameManager.Stage >= 1 and gameManager.Round ~= 1 then
+			if self.WatchedGuideList["Reroll"] == false then
+				self:ActivatePopupMessage("Reroll",self.Entity.OwnerId)
+			end
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleBuyEXP(BuyEXP event)
+		-- 경험치 구매 시 팀 레벨 관련 가이드를 표시
+		local user = self.Entity
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		
+		if self.WatchedGuideList["TeamLevel"] == false then
+			self:ActivatePopupMessage("TeamLevel",self.Entity.OwnerId)
+		end
+	end
+
+	@EventSender("Self")
+	handler HandleLevelUpTeam(LevelUpTeam event)
+		-- 팀 레벨업 시 팀 레벨 관련 가이드를 표시
+		-- Parameters
+		-- local SetLevel = event.SetLevel
+		---------------------------------------------------------
+		local user = self.Entity
+		local gameManager = user.GameManager
+		---------------------------------------------------------
+		
+		if self.WatchedGuideList["TeamLevel"] == false then
+			self:ActivatePopupMessage("TeamLevel",self.Entity.OwnerId)
+		end
+	end
+
+	@EventSender("Self")
+	handler HandlePlaceUnit(PlaceUnit event)
+		-- 유닛 배치 시 시너지 관련 가이드를 표시
+		-- Parameters
+		-- local CharID = event.CharID
+		---------------------------------------------------------
+		if self.Entity.TeamManager:CheckActiveSynergy() > 0 then
+			if self.WatchedGuideList["Synergy"] == false then
+				self:ActivatePopupMessage("Synergy",self.Entity.OwnerId)
+			end
+		end
+		
+		
+	end
+
+	@EventSender("Self")
+	handler HandleBuyRuneCard(BuyRuneCard event)
+		-- 룬 카드 구매 시 룬 카드 관련 가이드를 표시
+		-- Parameters
+		-- local RuneID = event.RuneID
+		---------------------------------------------------------
+		if self.WatchedGuideList["RuneCard"] == false then
+			self:ActivatePopupMessage("RuneCard",self.Entity.OwnerId)
+		end
+		
+		
+	end
+
+	@EventSender("Self")
+	handler HandleLockShop(LockShop event)
+		if self.WatchedGuideList["Lock"] == false then
+			self:ActivatePopupMessage("Lock",self.Entity.OwnerId)
+		end
+	end
+
+end

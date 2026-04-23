@@ -1,0 +1,239 @@
+@Logic
+script PlaySoundLogic extends Logic
+
+	property table SoundTable = {}
+
+	property boolean IsInitialized = false
+
+	property table IsPlayingSound = {}
+
+	property integer TrackNumber = 1
+
+	property table BGMTable = {}
+
+	property table CharacterSoundTable = {}
+
+	property table temptable = {}
+
+	property Entity common = "5f3872d6-b638-48c0-852a-55a142088fd3"
+
+	property number BGMVolume = 1
+
+	property number SFXVolume = 1
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 사운드 테이블 로드
+		self:LoadTable()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LoadTable()
+		-- 사운드 및 BGM 데이터를 메모리에 캐싱
+		local dataSet = _DataService:GetTable("SoundRUID")
+		
+		local columnNameTable = dataSet.Columns:ToTable()
+		local rows = dataSet:GetAllRow()
+		
+		for i, row in pairs(rows) do
+			local id = row:GetItem("ID")
+			
+			local obj = {}
+			self.SoundTable[id] = obj
+			
+			for k, colName in pairs(columnNameTable) do
+				if colName ~= "ID" then
+					obj[colName] = row:GetItem(colName)
+				end
+			end
+		end
+		
+		local BGMdataSet = _DataService:GetTable("BGMSoundTest")
+		
+		for i = 1,11 do
+			table.insert(self.BGMTable,BGMdataSet:GetCell(i,1))
+		end
+		
+		self:PlayBGM_Ver2(9)
+		
+	end
+
+	@ExecSpace("Client")
+	method void PlaySound(string type)
+		-- 사운드 타입에 따라 효과음 재생 (중첩 및 우선순위 처리)
+		--플레이할 사운드가 중첩가능한지 확인
+		--중첩 가능하다 =>지금 재생 중인 사운드가 중첩가능한지 확인 => 중첩 가능하면 재생, 불가능하면 리턴
+		--중첩 불가능하다 => 현재 재생중인 모든 사운드 스탑 -> 재생
+		
+		--로딩화면이 사라지지 않은 상태라면 아무 효과음도 재생할 수 없음(임시)
+		local loadingui = _EntityService:GetEntity("3d4f4f25-3a3c-45c6-97c5-e27c8fbf34cc")--/ui/LoadingGroup
+		if loadingui.Enable then return end
+		if _UtilLogic:IsNilorEmptyString(self.SoundTable[type]["RUID"]) then log_error("사운드가 없습니다.") return end
+		
+		if self.SoundTable[type]["AvailableSameTime"] == "FALSE" then --전달받은 사운드가 중첩불가?
+			for i = 1, #self.IsPlayingSound do -- 재생중인 사운드 모두 정지(우선순위 판정해서 처리)
+				local temptype = self.IsPlayingSound[i]
+		
+				if tonumber(self.SoundTable[type]["Priority"]) < tonumber(self.SoundTable[self.IsPlayingSound[i]]["Priority"]) then
+					_SoundService:StopSound(self.SoundTable[temptype]["RUID"])
+				elseif tonumber(self.SoundTable[type]["Priority"]) >= tonumber(self.SoundTable[self.IsPlayingSound[i]]["Priority"]) then
+					return
+				end
+				--_SoundService:StopSound(self.SoundTable[temptype]["RUID"])
+			end
+			if self.SoundTable[type]["Repeat"] == "FALSE" then
+				_SoundService:PlaySound(self.SoundTable[type]["RUID"], tonumber(self.SoundTable[type]["volume"])*self.SFXVolume) --전달받은 사운드만 재생
+			else
+				_SoundService:PlayLoopSound(self.SoundTable[type]["RUID"], tonumber(self.SoundTable[type]["volume"])*self.SFXVolume) --전달받은 사운드만 재생
+			end
+			table.insert(self.IsPlayingSound, type)
+		else
+			--현재 재생중인 사운드 중 중첩불가 사운드가 있는지?
+			for i = 1 , #self.IsPlayingSound do
+				local temptype = self.IsPlayingSound[i]
+				if self.SoundTable[temptype]["AvailableSameTime"] == "FALSE" then
+					return -- 있으면 종료
+				end
+			end
+			
+			if self.SoundTable[type]["Repeat"] == "FALSE" then
+				_SoundService:PlaySound(self.SoundTable[type]["RUID"], tonumber(self.SoundTable[type]["volume"])*self.SFXVolume) --전달받은 사운드만 재생
+			else
+				_SoundService:PlayLoopSound(self.SoundTable[type]["RUID"], tonumber(self.SoundTable[type]["volume"])*self.SFXVolume) --전달받은 사운드만 재생
+			end
+			table.insert(self.IsPlayingSound,type)
+		end
+		
+		local removetable= function()
+			for i = 1, #self.IsPlayingSound do
+				if self.IsPlayingSound[i] == type then
+					table.remove(self.IsPlayingSound,i)
+					break
+				end
+			end
+		end
+		
+		_TimerService:SetTimerOnce(removetable, tonumber(self.SoundTable[type]["durationTime"]))
+	end
+
+	@ExecSpace("Client")
+	method void StopSound(string type)
+		-- 지정된 타입의 사운드 정지
+		_SoundService:PauseSound(self.SoundTable[type]["RUID"])
+		for i = 1, #self.IsPlayingSound do
+			if self.IsPlayingSound[i] == type then
+				table.remove(self.IsPlayingSound,i)
+				break
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void PlayBGM_Ver2(integer Stage)
+		-- 스테이지에 맞는 배경음악 재생 (페이드 효과 포함)
+		if self.TrackNumber == Stage then return end -- 같은 곡 요청오면 그대로 리턴
+		
+		--페이드인
+		local currentvolume = self.common.SoundComponent.Volume*self.BGMVolume
+		self:FadeInFadeOut(false, 1, currentvolume, 0)
+		
+		local changesound = function()
+			self.common.SoundComponent.AudioClipRUID = self.BGMTable[Stage]
+			self:FadeInFadeOut(true, 1, 0, 0.5*self.BGMVolume)
+			self.common.SoundComponent:Play()
+		end
+		
+		_TimerService:SetTimerOnce(changesound, 1)
+		
+		self.TrackNumber = Stage
+	end
+
+	@ExecSpace("Client")
+	method void PlayTileSettingSound()
+		-- 유닛 배치 시 스테이지별 효과음 재생
+		-- 유닛을 타일에 놓을 때 재생하는 효과음
+		local indexkey = ""
+		for Id, obj in pairs(_BackgroundChangeLogic.Background) do
+			if obj["Stage"] == _UserService.LocalPlayer.GameManager.Stage then
+				local index = _UtilLogic:RandomIntegerRange(1, 2) -- 재생할 사운드 인덱스
+				indexkey = obj["Sound_"..tostring(math.floor(index))]
+				break
+			end
+		end
+		
+		if _UtilLogic:IsNilorEmptyString(indexkey) then return end
+		
+		self:PlaySound(indexkey)
+		
+	end
+
+	@ExecSpace("Client")
+	method void FadeInFadeOut(boolean IsFadeIn, number durationTime, number startvolume, number tovolume)
+		-- 배경음악 볼륨 페이드 인/아웃 처리
+		--배경음악 볼륨 페이드인/아웃을 직접 합니다.
+		
+		if IsFadeIn == false then -- 사운드 페이드인
+			local index = 1
+			local quantity = startvolume - tovolume
+			local volumefadein = function()
+				self.common.SoundComponent.Volume = startvolume - index*quantity / 60
+				index += 1
+			end
+			
+			for i = 1, 60 do
+				_TimerService:SetTimerOnce(volumefadein, durationTime*i/60)
+			end
+			
+		else -- 사운드 페이드아웃
+			local index = 1
+			local quantity = tovolume - startvolume
+			local volumefadeout = function()
+					self.common.SoundComponent.Volume = startvolume + index*quantity / 60
+				index += 1
+			end
+			
+			for i = 1, 60 do
+				_TimerService:SetTimerOnce(volumefadeout, durationTime*i/60)
+			end
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SetBgmVolume(number volume)
+		-- 배경음악 볼륨 설정
+		self.common.SoundComponent.Volume = 0.5*volume
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "84d09d88-ee13-4b35-b68a-5ef2efb5d989")
+	handler HandleSliderValueChangedEvent(SliderValueChangedEvent event)
+		-- BGM 볼륨 슬라이더 값 변경 처리
+		--------------- Native Event Sender Info ----------------
+		-- Sender: SliderComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local Value = event.Value
+		---------------------------------------------------------
+		self:SetBgmVolume(Value)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Entity", "412de330-b267-454f-a2d2-07501c568ac2")
+	handler HandleSliderValueChangedEvent2(SliderValueChangedEvent event)
+		-- SFX 볼륨 슬라이더 값 변경 처리
+		--------------- Native Event Sender Info ----------------
+		-- Sender: SliderComponent
+		-- Space: Client
+		---------------------------------------------------------
+		
+		-- Parameters
+		local Value = event.Value
+		---------------------------------------------------------
+		self.SFXVolume = Value
+		
+	end
+
+end

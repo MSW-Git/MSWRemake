@@ -1,0 +1,626 @@
+@Component
+script ChuchuCollectionDB extends Component
+
+	@TargetUserSync
+	property SyncTable<string, boolean> ChuchuCollection
+
+	@TargetUserSync
+	property SyncTable<integer, integer> StageCollectionReward
+
+	@TargetUserSync
+	property SyncTable<string, boolean> ChuchuCollectionGetReward
+
+	@TargetUserSync
+	property SyncTable<integer, integer> GroupLevelRewardTable
+
+	property table StageCollectionProgress = {}
+
+	property number CollectionPercent = 0
+
+	property number ChuchuCollectionCloverBonus = 0
+
+	property integer ChuchuCollectionRewardDiaCount = 50
+
+	property number ChuchuCountWeight = 1
+
+	property number EquipCountWeight = 3
+
+	@TargetUserSync
+	property integer CollectionLv1RewardDiaCount = 1000
+
+	@TargetUserSync
+	property integer CollectionLv2RewardDiaCount = 2000
+
+	@TargetUserSync
+	property integer CollectionLv1Percent = 50
+
+	@TargetUserSync
+	property integer CollectionLv2Percent = 100
+
+	property integer Version = 1
+
+	@ExecSpace("ServerOnly")
+	method void SaveToDB(table saveData)
+		-- 츄츄 컬렉션 데이터를 DB에 저장하는 함수
+		local dbTable = {}
+		
+		dbTable["ChuchuCollection"] = _StringUtilLogic:StringBoolToString(self.ChuchuCollection)
+		dbTable["StageCollectionReward"] = _StringUtilLogic:IntIntToString(self.StageCollectionReward)
+		dbTable["ChuchuCollectionGetReward"] = _StringUtilLogic:StringBoolToString(self.ChuchuCollectionGetReward)
+		dbTable["GroupLevelRewardTable"] = _StringUtilLogic:IntIntToString(self.GroupLevelRewardTable)
+		
+		dbTable["Version"] = self.Version
+		saveData["ChuchuCollectionDB"] = dbTable
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnLoadedDataFromDB(table loadedData)
+		-- DB에서 로드된 데이터를 컬렉션에 적용하는 함수
+		local dbTable = loadedData["ChuchuCollectionDB"]
+		if dbTable == nil then
+			dbTable = {}
+		end
+		
+		if #table.keys(dbTable) > 0 then
+			if dbTable["Version"] == self.Version then
+				if dbTable["ChuchuCollection"] then
+					table.initialize(self.ChuchuCollection, _StringUtilLogic:StringBoolToTable(dbTable["ChuchuCollection"]))
+				end
+				
+				if dbTable["StageCollectionReward"] then
+					table.initialize(self.StageCollectionReward, _StringUtilLogic:IntIntToTable(dbTable["StageCollectionReward"]))
+				end
+				
+				if dbTable["ChuchuCollectionGetReward"] then
+					table.initialize(self.ChuchuCollectionGetReward, _StringUtilLogic:StringBoolToTable(dbTable["ChuchuCollectionGetReward"]))
+				end
+				
+				if dbTable["GroupLevelRewardTable"] then
+					table.initialize(self.GroupLevelRewardTable, _StringUtilLogic:IntIntToTable(dbTable["GroupLevelRewardTable"]))
+				end
+			else
+				if dbTable["ChuchuCollection"] then
+					table.initialize(self.ChuchuCollection, _UtilLogic:StringToTable(dbTable["ChuchuCollection"]))
+				end
+				
+				if dbTable["StageCollectionReward"] then
+					table.initialize(self.StageCollectionReward, _UtilLogic:StringToTable(dbTable["StageCollectionReward"]))
+				end
+				
+				if dbTable["ChuchuCollectionGetReward"] then
+					table.initialize(self.ChuchuCollectionGetReward, _UtilLogic:StringToTable(dbTable["ChuchuCollectionGetReward"]))
+				end
+				
+				if dbTable["GroupLevelRewardTable"] then
+					table.initialize(self.GroupLevelRewardTable, _UtilLogic:StringToTable(dbTable["GroupLevelRewardTable"]))
+				end
+			end
+		else
+			table.clear(self.ChuchuCollection)
+			table.clear(self.StageCollectionReward)
+			table.clear(self.ChuchuCollectionGetReward)
+			table.clear(self.GroupLevelRewardTable)
+		end
+		
+		self.ChuchuCountWeight = _GetConfigDataLogic:GetConfigNumDataByKey("ChuchuCollectionPointPerChuChu")
+		self.EquipCountWeight =  _GetConfigDataLogic:GetConfigNumDataByKey("ChuchuCollectionPointPerEquip")
+		if not isvalid(self.ChuchuCountWeight) then
+			self.ChuchuCountWeight = 1
+		end
+		if not isvalid(self.EquipCountWeight) then
+			self.EquipCountWeight = 3
+		end
+		self:CountCollectionPercent() 
+		self:CountStageCollectionPercent(nil)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ChangeChuchuCollectionState(string employeeId, integer state)
+		-- 츄츄 컬렉션 상태를 변경하는 함수 (수집/해제)
+		
+		if state ==  1 then
+			if self.ChuchuCollection[employeeId] == true then
+		
+				return
+			end
+		
+			self.ChuchuCollection[employeeId] = true
+			self.Entity.EmployeeManager:ChuchuAddedInCollection(employeeId)
+			
+		elseif state == 0 then
+		
+			if self.ChuchuCollection[employeeId] == false then
+				return
+			end
+			self.ChuchuCollection[employeeId] = false
+			self.Entity.EmployeeManager:ChuchuSubedInCollection(employeeId)
+		end
+		
+		self:CountCollectionPercent() 
+		
+		local data = _EmployeeService:GetData(employeeId)
+		local groupData = _ChuchuGroupLogic:GetChuchuGroupData(data.GroupId)
+		self:CountStageCollectionPercent(groupData.StageId) 
+		
+		self:LogChuchuCollection(employeeId)
+	end
+
+	@ExecSpace("Server")
+	method void CountStageCollectionPercent(integer stageId)
+		-- 스테이지별 컬렉션 진행률을 계산하는 함수
+		local player = self.Entity
+		
+		local countFuntion = function(stgId)
+			
+			local maxCount = 0
+			local count = 0
+			local groupList = _ChuchuGroupLogic:RetrunGroupIdsFromStageId(stgId, player.PlayerComponent.UserId)
+			for i, groupId in pairs(groupList) do
+				local chuchuList = _EmployeeService:ReturnChuchuIdListByGroupId(groupId)
+				for j, chuchuId in pairs(chuchuList) do
+					maxCount += 1
+					if self.ChuchuCollection[chuchuId] == true then
+						count += 1
+					end
+				end
+			end
+			local percent = count / maxCount
+			self.StageCollectionProgress[stgId] = {count, maxCount, percent}
+			
+			self:SyncStageCollectionProgress(stgId, count, maxCount, percent)
+			
+		end
+		
+		if isvalid(stageId) then
+			countFuntion(stageId)
+		else
+			for i = 1, _StageDataSetLogic.LastStageNum do
+				if i == 1 then i = 0 end
+				countFuntion(i)
+			end
+		end
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnSyncProperty(string name, any value)
+		-- 프로퍼티 동기화 시 UI 업데이트를 처리하는 함수
+		if name == "CollectionPercent" or name == "ChuchuCollectionCloverBonus" then
+		elseif name == "ChuchuCollection" or name == "ChuchuCollectionGetReward" or name == "GroupLevelRewardTable" then
+			_UIGroupManager.SelectChuchuInCollection.UISelectChuchuInCollection:UpdateChuchuList("All")
+			self:UpdateCollectionRedDot()
+			
+		elseif name == "StageCollectionReward" then
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void CountCollectionPercent()
+		-- 전체 컬렉션 달성률과 클로버 보너스를 계산하는 함수
+		local player = self.Entity
+		local chuchuData = _EmployeeService.EmployeeData
+		local maxCount = #table.keys(chuchuData) * (self.EquipCountWeight + self.ChuchuCountWeight) 
+		local count = 0
+		for i, data in pairs(chuchuData) do
+			---@type EmployeeData
+			local employeeData = data
+			local emploeeId = employeeData.Id
+			if self.ChuchuCollection[emploeeId] == true then
+				count += self.ChuchuCountWeight
+			end
+			if player.EmployeeManager:ReturnHasEquip(emploeeId, player.PlayerComponent.UserId) then
+				count += self.EquipCountWeight
+			end 
+		end
+		
+		local percent = (count / maxCount)  
+		self.CollectionPercent = percent * 100 
+		local collectionBonus = math.floor(_GetConfigDataLogic:GetConfigNumDataByKey("ChuchuCollectionCloverBonusMaxRate") * percent * 1000) 
+		self.ChuchuCollectionCloverBonus = collectionBonus / 1000
+		
+		self:UpdateCollectionPercent(self.CollectionPercent, self.ChuchuCollectionCloverBonus, player.PlayerComponent.UserId)
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateCollectionPercent(number collectionPercent, number collectionCloverBonus)
+		-- 클라이언트에서 컬렉션 퍼센트 UI를 업데이트하는 함수
+		self.CollectionPercent = collectionPercent
+		self.ChuchuCollectionCloverBonus = collectionCloverBonus
+		
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:UpdateCollectionPercent()
+	end
+
+	@ExecSpace("Server")
+	method void GroupLevelReward(integer groupId, integer groupLevel)
+		-- 그룹 레벨 달성 보상을 지급하는 함수
+		local level = self:CalcGroupLevel(groupId) 
+		local groupData = _ChuchuGroupLogic:GetChuchuGroupData(groupId)
+		
+		if groupLevel <= level then 
+			
+			local isReward = self:CheckIsRewardGroupLevelReward(groupId, groupLevel) 
+			if isReward == false then
+				---@type GroupCollectionRewardData
+				local rewardData = _GroupCollectionRewardDataSetLogic.GroupCollectionRewardData[groupLevel]
+				local rewardId = rewardData:ReturnRewardIdFromType(groupData.GroupRewardType)
+				local rewardCount = rewardData.RewardItemCount
+				
+				local overCount = self.Entity.PlayerInventory:IsItemOverMaxCount(rewardId, rewardCount, self.Entity.PlayerComponent.UserId)
+				if overCount > 0 then
+					self:ToastItemOverMaxCount(rewardId, overCount, self.Entity.PlayerComponent.UserId)
+				else
+					self.Entity.PlayerInventory:AddItem(rewardId, rewardCount, "GroupLevelReward", "ChuchuCollection")
+				
+					self:UpdateOnGroupLevelReward(groupId, groupLevel)
+					
+					self:AfterRewardGroupLevel(groupId, groupLevel, rewardCount, self.Entity.PlayerComponent.UserId)
+				end
+				
+			else
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void SyncStageCollectionProgress(integer stageId, integer count, integer maxCount, number percent)
+		-- 스테이지 컬렉션 진행률을 클라이언트에 동기화하는 함수
+		
+		self.StageCollectionProgress[stageId] = {count, maxCount, percent}
+		if _UIGroupManager.ChuchuCollectionGroup.Enable then
+			 _UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:UpdateStageCollectionGauge(stageId)
+		end
+	end
+
+	method integer CalcGroupLevel(integer groupId)
+		-- 그룹의 현재 레벨을 계산하는 함수 (장비 레벨 기준)
+		
+		local groupLevel = 0
+		local equipLevelList = {}
+		local chuchuList = _EmployeeService:ReturnChuchuIdListByGroupId(groupId)
+		local chuchuNum = #table.keys(chuchuList)
+		for i, chuchuId in pairs(chuchuList) do
+			local inCollection = self.ChuchuCollection[chuchuId]
+			if inCollection then
+				local outgameData = self.Entity.EmployeeManager:GetEmployeeOutgameDetail(chuchuId, self.Entity.PlayerComponent.UserId)
+				local equipLevel = outgameData.EquipLevel
+				equipLevelList[i] = equipLevel
+			else
+				return 0
+			end
+			
+		end
+		
+		local conditionLevelList = {0, 2, 4, 6, 8} 
+		
+		for i = 1, chuchuNum do
+			local equipLevel = equipLevelList[i]
+			if equipLevel >= conditionLevelList[1] then
+			else 
+				return 1
+			end
+			
+		end
+		
+		for i = 1, chuchuNum do
+			local equipLevel = equipLevelList[i]
+			if equipLevel >= conditionLevelList[2] then
+			else 
+				return 2
+			end
+			
+		end
+		
+		for i = 1, chuchuNum do
+			local equipLevel = equipLevelList[i]
+			if equipLevel >= conditionLevelList[3] then
+			else 
+				return 3
+			end
+			
+		end
+		
+		for i = 1, chuchuNum do
+			local equipLevel = equipLevelList[i]
+			if equipLevel >= conditionLevelList[4] then
+			else 
+				return 4
+			end
+			
+		end
+		
+		for i = 1, chuchuNum do
+			local equipLevel = equipLevelList[i]
+			if equipLevel >= conditionLevelList[5] then
+			else 
+				return 5
+			end
+		end
+		
+		
+		return 6
+	end
+
+	@ExecSpace("Client")
+	method void AfterRewardGroupLevel(integer groupId, integer groupLevel, integer count)
+		-- 그룹 레벨 보상 지급 후 UI 업데이트를 처리하는 함수
+		self:UpdateOnGroupLevelReward(groupId, groupLevel)
+		
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:AfterRewardGroupLevel(groupLevel, count)
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:UpdateChuchuGroupSlot(groupId) 
+		
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:UpdateGroupLevelRewardList(groupId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogChuchuCollection(string employeeId)
+		-- 츄츄 컬렉션 관련 로그를 기록하는 함수
+		local userId = self.Entity.PlayerComponent.UserId
+		local nickname = self.Entity.PlayerComponent.Nickname
+		local data = _EmployeeService:GetData(employeeId, userId)
+		
+		local employeeGroupId = tostring(data.GroupId)
+		local employeeStageId = _ChuchuGroupLogic:GetChuchuGroupData(data.GroupId, userId).StageId
+		local playerStageId = tostring(self.Entity.PlayerStage.NowStage)
+		local playerLevel = self.Entity.PlayerStage:GetPlayerLastStageProgress(userId)
+		local collectionCloverBouns = self.ChuchuCollectionCloverBonus * 100
+		
+		local stageProgress = self.StageCollectionProgress[employeeStageId]
+		
+		if not isvalid(stageProgress) then
+			return
+		end
+		
+		local stageProgressString = string.format("%d / %d", stageProgress[1], stageProgress[2]) 
+		local stageProgressPercent = stageProgress[3] * 100
+		
+		local collectionData = {
+			collectionProgressPercent = string.format("%.2f", self.CollectionPercent).."%",
+			collectionCloverBouns = string.format("%.2f", collectionCloverBouns).."%",
+			stageProgressPercent = string.format("%.2f", stageProgressPercent).."%",
+			stageProgress = stageProgressString,
+		}
+		
+		local logFail, value = pcall(
+			
+		function()
+				
+			_LogStorageLogic:LogValue(userId, 
+				_LogEnumType.EmployeeCollectionFlow,
+				_HttpService:JSONEncode(collectionData),
+				{	
+					nickname = nickname,
+					employeeId = employeeId,
+					employeeGroupId = employeeGroupId,
+					employeeStageId = tostring(employeeStageId),
+					playerStageId = playerStageId,
+					playerLevel = playerLevel
+				})
+		end)
+		
+		if not logFail then  end 
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogChuchuEquipPurchase(string employeeId)
+		-- 츄츄 장비 구매 로그를 기록하는 함수
+		local userId = self.Entity.PlayerComponent.UserId
+		local nickname = self.Entity.PlayerComponent.Nickname
+		local data = _EmployeeService:GetData(employeeId, userId)
+		local employeeGroupId = tostring(data.GroupId)
+		local employeeType = data.Type
+		local employeeName = data.NameKey
+		local equipName = data.EquipNameKey
+		local ingameData = self.Entity.EmployeeManager:GetEmployeeDetail(employeeId, userId)
+		local employeeLevel = "empty"
+		if isvalid(ingameData) then
+			employeeLevel = tostring(ingameData:ReturnTypeLevel(userId))
+		end
+		
+		local infoData = {
+			employeeName = employeeName,
+			employeeLevel = employeeLevel,
+			equipName = equipName
+		}
+		
+		local logFail, value = pcall(
+			
+		function()
+				
+			_LogStorageLogic:LogValue(userId, 
+				_LogEnumType.EmployeeEquipBuy,
+				_HttpService:JSONEncode(infoData),
+				{	
+					nickname = nickname,
+					employeeId = employeeId,
+					employeeGroupId = employeeGroupId,
+					employeeType = employeeType
+				})
+		end)
+		
+		if not logFail then  end 
+	end
+
+	@ExecSpace("ServerOnly")
+	method void LogChuchuEquipUpgrade(string employeeId, string resultType, string assetId, string assetCount, string upgradeProb, string assetBeforeCount, string equipLevelBefore, string equipLevel)
+		-- 츄츄 장비 업그레이드 로그를 기록하는 함수
+		
+		
+		local userId = self.Entity.PlayerComponent.UserId
+		local nickname = self.Entity.PlayerComponent.Nickname
+		local profileCode = self.Entity.PlayerComponent.ProfileCode
+		local data = _EmployeeService:GetData(employeeId, userId)
+		local employeeGroupId = tostring(data.GroupId)
+		local employeeType = data.Type
+		local employeeName = data.NameKey
+		local equipName = data.EquipNameKey
+		local ingameData = self.Entity.EmployeeManager:GetEmployeeDetail(employeeId, userId)
+		local employeeLevel = "empty"
+		if isvalid(ingameData) then
+			employeeLevel = tostring(ingameData:ReturnTypeLevel(userId))
+		end
+		local outgameData = self.Entity.EmployeeManager:GetEmployeeOutgameDetail(employeeId, userId)
+		local equipLevelAfter = outgameData.EquipLevel 
+		local assetAfterCount = self.Entity.PlayerInventory:GetItemCount(assetId, userId)
+		local playerStageId = self.Entity.PlayerStage.NowStage
+		local playerLevel = self.Entity.PlayerStage:GetPlayerLastStageProgress(userId)
+		
+		local infoData = {
+			employeeName = employeeName,
+			employeeLevel = employeeLevel,
+			equipName = equipName
+		}
+		
+		local logFail, value = pcall(
+			
+		function()
+				
+			_LogStorageLogic:LogValue(userId, 
+				_LogEnumType.EmployeeEquipUpgrade,
+				_HttpService:JSONEncode(infoData),
+				{	
+					nickname = nickname,
+					employeeId = employeeId,
+					employeeGroupId = employeeGroupId,
+					employeeType = employeeType,
+					equipLevel = equipLevel,
+					resultType = resultType,
+					assetId = assetId,
+					upgradeChance = upgradeProb,
+					playerStageId = tostring(playerStageId),
+					playerLevel = playerLevel,
+					utc = _DateTimeLogic:GetUtcNowText(),
+					profileCode = profileCode,
+					equipLevelBefore = equipLevelBefore,
+					assetCount = assetCount,
+					assetBeforeCount = assetBeforeCount,
+					assetAfterCount = tostring(assetAfterCount),
+					equipLevelAfter = tostring(equipLevelAfter)
+				})
+		end)
+		
+		if not logFail then  end 
+	end
+
+	@ExecSpace("Server")
+	method void GiveChuchuCollectionReward(string empId)
+		-- 츄츄 컬렉션 달성 보상을 지급하는 함수
+		if self.ChuchuCollection[empId] == false then
+			return
+		end
+		if self.ChuchuCollectionGetReward[empId] == true then
+			return
+		end
+		
+		local overCount = self.Entity.PlayerInventory:IsItemOverMaxCount(_ItemDataEnum.DiaFree, self.ChuchuCollectionRewardDiaCount, self.Entity.PlayerComponent.UserId)
+		if overCount > 0 then
+			self:ToastItemOverMaxCount(_ItemDataEnum.DiaFree, overCount, self.Entity.PlayerComponent.UserId)
+		else
+			self.Entity.PlayerInventory:AddItem(_ItemDataEnum.DiaFree, self.ChuchuCollectionRewardDiaCount, "ChuchuCollectionReward", self.Entity.CurrentMap.Name)
+			self.ChuchuCollectionGetReward[empId] = true
+			
+			self:AfterChuchuCollectionReward(empId, self.Entity.PlayerComponent.UserId)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void AfterChuchuCollectionReward(string empId)
+		-- 츄츄 컬렉션 보상 지급 후 UI를 업데이트하는 함수
+		self.ChuchuCollectionGetReward[empId] = true
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:AfterChuchuCollectionReward(empId)
+	end
+
+	@ExecSpace("Server")
+	method void StageReward(integer stageId, integer iconNum)
+		-- 스테이지별 컬렉션 달성 보상을 지급하는 함수
+		local rewardLevel = self.StageCollectionReward[stageId]
+		
+		local gotReward = false 
+		
+		if iconNum == 1 and  rewardLevel == 1 then
+			gotReward = true
+		elseif iconNum == 2 and  rewardLevel == 2 then
+			gotReward = true
+		elseif rewardLevel == 3 then
+			gotReward = true
+		end
+		
+		if gotReward == true then
+			return
+		end
+		
+		local diaCount = self.CollectionLv1RewardDiaCount
+		if iconNum == 2 then
+			diaCount = self.CollectionLv2RewardDiaCount
+		end
+		
+		local percent = self.StageCollectionProgress[stageId][3] * 100
+		local level = 0
+		if percent >= self.CollectionLv2Percent then
+			level = 2
+		elseif percent >= self.CollectionLv1Percent then
+			level = 1
+		end
+		
+		if iconNum <= level then
+			local overCount = self.Entity.PlayerInventory:IsItemOverMaxCount(_ItemDataEnum.DiaFree, diaCount, self.Entity.PlayerComponent.UserId)
+			if overCount > 0 then
+				self:ToastItemOverMaxCount(_ItemDataEnum.DiaFree, overCount, self.Entity.PlayerComponent.UserId)
+			else
+				self.Entity.PlayerInventory:AddItem(_ItemDataEnum.DiaFree, diaCount, "ChuchuCollectionStageReward", self.Entity.CurrentMap.Name)
+				if not isvalid(self.StageCollectionReward[stageId]) then
+					self.StageCollectionReward[stageId] = 0
+				end
+				self.StageCollectionReward[stageId] += iconNum
+				
+				self:AfterCollectionLvReward(stageId, iconNum, self.Entity.PlayerComponent.UserId)
+			end
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void AfterCollectionLvReward(integer stageId, integer iconNum)
+		-- 컬렉션 레벨 보상 지급 후 UI를 업데이트하는 함수
+		if not isvalid(self.StageCollectionReward[stageId]) then
+			self.StageCollectionReward[stageId] = 0
+		end
+		self.StageCollectionReward[stageId] += iconNum
+		
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:UpdateStageCollectionReward(stageId, iconNum)
+	end
+
+	@ExecSpace("Client")
+	method void UpdateCollectionRedDot()
+		-- 컬렉션 관련 빨간점 표시를 업데이트하는 함수
+		_UIGroupManager.ChuchuCollectionGroup.UIChuchuCollection:SetRedDotOnBegin()
+	end
+
+	method boolean CheckIsRewardGroupLevelReward(integer groupId, integer level)
+		-- 그룹 레벨 보상을 이미 받았는지 확인하는 함수
+		if not isvalid(self.GroupLevelRewardTable[groupId]) then
+			self.GroupLevelRewardTable[groupId] = 0 
+		end
+		
+		---@type boolean
+		local isReward = self.GroupLevelRewardTable[groupId] & (1 << (level - 1)) ~= 0 
+		
+		return isReward
+	end
+
+	method void UpdateOnGroupLevelReward(integer groupId, integer level)
+		-- 그룹 레벨 보상 수령 상태를 업데이트하는 함수
+		if not isvalid(self.GroupLevelRewardTable[groupId]) then
+			self.GroupLevelRewardTable[groupId] = 0 
+		end
+		self.GroupLevelRewardTable[groupId] = self.GroupLevelRewardTable[groupId] | (1 << (level - 1)) 
+	end
+
+	@ExecSpace("Client")
+	method void ToastItemOverMaxCount(string itemId, integer maxCount)
+		-- 아이템 최대 보유량 초과 시 팝업을 표시하는 함수
+		_UIPurchasePopupLogic:OpenOverMaxCountPopup(itemId, _ItemDataSetLogic:GetItemData(itemId).NameKey, maxCount, nil, false, false)
+	end
+
+end

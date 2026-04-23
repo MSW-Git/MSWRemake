@@ -1,0 +1,612 @@
+@Logic
+script UI_GameResult extends Logic
+
+	property Entity LevelPanel = "5c508d49-576c-4d6c-b5eb-f5b552f4bf9e"
+
+	property integer BeforeLevel = 0
+
+	property integer BeforeEXP = 0
+
+	property integer RewardEXP = 0
+
+	property integer LevelDelta = 0
+
+	property integer RemainEXP = 0
+
+	property Entity UI_Level = "648fa0da-fe2d-4446-beb3-48458dc7c95f"
+
+	property Entity UI_EXP = "8fa15f7a-e8ea-47d9-b4ca-163f3650d2d7"
+
+	property Entity UI_EXPGuage = "817711cd-e30a-4d26-ae39-cd2943ab654d"
+
+	property Entity UI_EarnedEXP = "24d0af87-3c28-4197-9e89-2921ab629552"
+
+	property Entity UI_EarnedLevel = "1f62f7ba-d61a-4795-98f8-21aa79747403"
+
+	@ExecSpace("Client")
+	method void SetUI_GameResultPanel(string syrupRewards, string expRewards, boolean win, string expResult_str, string rankResults_str)
+		-- 게임 결과 패널의 모든 UI 요소를 설정하고 표시
+		local mainPanel = _EntityService:GetEntityByPath("/ui/Lobby_GameResult/MainPanel")
+		------------------------------------------------------------------------------
+		local user = _UserService.LocalPlayer
+		local gameManager = user.GameManager
+		local teamManager = user.TeamManager
+		local coachManager = user.CoachManager
+		local runeInfo = _DataService:GetTable("RuneInfo")
+		local colorInfo = _DataService:GetTable("GradeColor")
+		------------------------------------------------------------------------------
+		-- 게임을 클리어했는가?
+		if win then
+			mainPanel:GetChildByName("Text_Result").TextComponent.Text = _LocalizationService:GetText("GameResultTitle_Clear")
+		else
+			mainPanel:GetChildByName("Text_Result").TextComponent.Text = _LocalizationService:GetText("GameResultTitle_Fail")
+		end
+		------------------------------------------------------------------------------
+		-- "OO모드 / O단계"
+		local modeTable = _UtilLogic:Split(gameManager.ModeType, "_")
+		local mode = modeTable[1]
+		local modeSeason = modeTable[2]
+		local modeLevel = gameManager.ModeLevel
+		local ui_modeIcon = mainPanel:GetChildByName("Icon_Mode")
+		local ui_modeText = mainPanel:GetChildByName("Text_Mode")
+		local lvText = ""
+		local modeIconRUID = ""
+		if mode == "Rank" then
+			lvText = _ModeDataLogic:GetRankTierString(modeLevel)
+			modeIconRUID = _GameModeDataManager.Rank_BigIconRUID[modeLevel]
+		else
+			lvText = _LocalizationService:GetTextFormat("SingleMode_LevelText", modeLevel)
+			modeIconRUID = _GameModeDataManager.Single_BigIconRUID[modeLevel]
+		end
+		ui_modeIcon.SpriteGUIRendererComponent.ImageRUID = modeIconRUID
+		ui_modeText.TextComponent.Text = string.format("%s / %s", _LocalizationService:GetText("GameMode_"..mode), lvText) 
+		------------------------------------------------------------------------------
+		-- "Lobby > 레벨 선택 UI"의 단계를 한 단계 위로 조절합니다.
+		if win then
+			if mode == "Single" then
+				_UI_LobbyLevelSelect.SelectedSingleLevel += 1
+				if _UI_LobbyLevelSelect.SelectedSingleLevel > 8 then
+					_UI_LobbyLevelSelect.SelectedSingleLevel = 8
+				end
+			elseif mode == "Challenge" then
+				_UI_LobbyLevelSelect.SelectedChallengeLevel += 1
+				if _UI_LobbyLevelSelect.SelectedChallengeLevel > 8 then
+					_UI_LobbyLevelSelect.SelectedChallengeLevel = 8
+				end
+			end
+		end
+		------------------------------------------------------------------------------
+		-- 마지막 라운드의 정보 갱신
+		local lastRoundString = ""
+		local ui_roundText = mainPanel:GetChildByName("Text_Round")
+		if gameManager.Stage == 8 and gameManager.Round == 3 then
+			for i=5, 1, -1 do
+				lastRoundString = string.format("%d-%d-%d", gameManager.Stage, gameManager.Round, i)
+				
+				if user.TeamBattleStatistics.SetRoundResult[lastRoundString] ~= nil then
+					break
+				end
+			end
+			
+			ui_roundText.TextComponent.Text = "8-3"
+		else
+			lastRoundString = string.format("%d-%d", gameManager.Stage, gameManager.Round)
+			ui_roundText.TextComponent.Text = lastRoundString
+		end
+		
+		ui_roundText.UI_GameResultTooltipEnabler.TooltipMessage = _LocalizationService:GetText("GameResult_LastRound")
+		------------------------------------------------------------------------------
+		-- 남은 life 수
+		local ui_lifelist = _EntityService:GetEntityByPath("/ui/Lobby_GameResult/MainPanel/List_Hearts")
+		local lifeCount = teamManager.HP
+		for i=1, 5 do
+			local ui_heart = ui_lifelist:GetChildByName(string.format("Heart_%d", i))
+			if i <= lifeCount then
+				ui_heart.TextComponent.FontColor = Color.FromHexCode("#76cdff")
+			else
+				ui_heart.TextComponent.FontColor = Color.FromHexCode("#1a4a65")
+			end
+		end
+		ui_lifelist.UI_GameResultTooltipEnabler.TooltipMessage = _LocalizationService:GetText("GameResult_LeftLifes")
+		------------------------------------------------------------------------------
+		-- 남은 coin
+		local ui_leftCoins = mainPanel:GetChildByName("Text_LeftCoins")
+		ui_leftCoins.TextComponent.Text = string.format("%d", teamManager.Golds)
+		ui_leftCoins.UI_GameResultTooltipEnabler.TooltipMessage = _LocalizationService:GetText("GameResult_LeftCoins")
+		------------------------------------------------------------------------------
+		-- 마지막에 사용한 units
+		local ownUnits = teamManager.OwnUnits
+		local lastUnitInfoList = {}
+		for i=1, #ownUnits do
+			local unit = ownUnits[i]
+			
+			if unit.UnitBattleStatistics.SetCharID[lastRoundString] ~= nil then
+				local lastUnitInfo = {
+					["Level"] = unit.UnitInfo.level,
+					["CharID"] = unit.UnitInfo.charID,
+					["Items"] = unit.UnitStatus.EquippedItemIDList	
+				}
+				
+				-- 0코 이하 유닛들은 결과에 포함 x
+				---@type CharDictionaryData
+				local charData = _DictionaryDataManager.CharDataList[unit.UnitInfo.charID]
+				if isvalid(charData) == true then
+					if charData.Cost > 0 then
+						table.insert(lastUnitInfoList, lastUnitInfo)
+					end
+				end
+			end
+		end
+		local ui_lastUnits = mainPanel:GetChildByName("List_UsedUnits")
+		for i=1, #lastUnitInfoList do
+			local ui_unit = ui_lastUnits:GetChildByName(string.format("Unit_%d", i))
+			if isvalid(ui_unit) == false then
+				ui_unit = ui_lastUnits:GetChildByName("Unit"):Clone(string.format("Unit_%d", i))
+			end
+			ui_unit.Enable = true
+			
+			local unitInfo = lastUnitInfoList[i]
+			
+			-- level
+			local ui_level = ui_unit:GetChildByName("Stars")
+			for k=1, 3 do
+				local ui_star = ui_level:GetChildByName(string.format("Star_%d", k))
+				if k <= unitInfo["Level"] then
+					ui_star.Enable = true
+				else 
+					ui_star.Enable = false
+				end 
+			end
+			
+			-- portrait
+			local charID = unitInfo["CharID"]
+			
+			---@type CharDictionaryData
+			local charData = _DictionaryDataManager.CharDataList[charID]
+			local cost = charData.Cost
+			local charImageRUID = charData.IdleRUID
+			local ui_portraitOutline = ui_unit:GetChildByName("Portrait_Outline")
+			local ui_charImage = ui_unit:GetChildByName("Portrait"):GetChildByName("CharImage")
+			ui_portraitOutline.SpriteGUIRendererComponent.Color = Color.FromHexCode(colorInfo:FindRow("Key", "Cost"..cost):GetItem("Default"))
+			ui_portraitOutline.UI_GameResultTooltipEnabler.TooltipMessage = _LocalizationService:GetText(charID.."_Name")
+			ui_charImage.SpriteGUIRendererComponent.ImageRUID = charImageRUID
+			ui_charImage.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(charImageRUID)["scale"]	
+			ui_charImage.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(charImageRUID)["pos"]
+			
+			-- items
+			local ui_items = ui_unit:GetChildByName("Items")
+			for k=1, 3 do
+				local ui_item = ui_items:GetChildByName(string.format("Item_%d", k))
+				local itemID = unitInfo["Items"][k]
+				
+				if _UtilLogic:IsNilorEmptyString(itemID) == true then
+					ui_item.Enable = false
+				else
+					itemID = _UtilLogic:Split(itemID, "_")[1] -- 임시 아이템 코드 거르기 
+					
+					---@type ItemStatusDictionaryData
+					local itemData = _DictionaryDataManager.ItemDataList[itemID]
+					
+					local itemRUID = itemData.RUID
+					local ui_icon = ui_item:GetChildByName("Icon")
+					ui_item.Enable = true
+					ui_icon.SpriteGUIRendererComponent.ImageRUID = itemRUID
+					ui_icon.SpriteGUIRendererComponent.LocalPosition = itemData.RUID_LocalPos
+					ui_icon.SpriteGUIRendererComponent.LocalScale = itemData.RUID_LocalScale
+					ui_item.UI_GameResultTooltipEnabler.TooltipMessage = _LocalizationService:GetText("Item_"..itemID.."_Name")
+				end
+			end
+			
+			ui_unit.Enable = true
+		end
+		local uiUnitIndex = #lastUnitInfoList + 1
+		while true do
+			local ui_unit = ui_lastUnits:GetChildByName(string.format("Unit_%d", uiUnitIndex))
+			if isvalid(ui_unit) == false then
+				break
+			else
+				ui_unit.Enable = false
+				uiUnitIndex += 1
+			end
+		end
+		------------------------------------------------------------------------------
+		-- 마지막에 활성화된 시너지
+		local ownSynergies = teamManager.OnFieldSynergy
+		local lastSynergies = {}
+		for synergyID, count in pairs(ownSynergies) do
+			
+			---@type SynergyDictionaryData
+			local synergyInfoData = _DictionaryDataManager.SynergyDataList[synergyID]
+			
+			local synergyData = {
+				["Name"] = synergyID.."_Name",
+				["RUID"] = synergyInfoData.IconRUID,
+				["Step"] = 0
+			}
+			
+			-- 고유 시너지인 경우
+			if synergyInfoData.NeedCount_step[3] ~= "-" then
+				if count >= tonumber(synergyInfoData.NeedCount_step[3]) then
+					synergyData["Step"] = 3
+					table.insert(lastSynergies, 1, synergyData)
+				end
+			else
+				-- 전직교관 : 1 or 5만 허용
+				if synergyID == "S10024" then
+					if count == 5 then 		
+						synergyData["Step"] = 4
+					elseif count == 1 then 	
+						synergyData["Step"] = 1
+					else					
+						synergyData["Step"] = 0
+					end
+							
+				-- 일반적인 경우
+				elseif synergyInfoData.NeedCount_step[5] ~= "-" and count >= tonumber(synergyInfoData.NeedCount_step[5]) then
+					synergyData["Step"] = 5
+				elseif synergyInfoData.NeedCount_step[4] ~= "-" and count >= tonumber(synergyInfoData.NeedCount_step[4]) then
+					synergyData["Step"] = 4
+				elseif synergyInfoData.NeedCount_step[2] ~= "-" and count >= tonumber(synergyInfoData.NeedCount_step[2]) then
+					synergyData["Step"] = 2
+				elseif synergyInfoData.NeedCount_step[1] ~= "-" and count >= tonumber(synergyInfoData.NeedCount_step[1]) then
+					synergyData["Step"] = 1
+				else
+					synergyData["Step"] = 0
+					continue
+				end
+				
+				-- (수동) 정렬 : step 높은 순서대로 정렬합니다.
+				local inserted = false
+				for i=1, #lastSynergies do
+					if lastSynergies[i]["Step"] == 3 then
+						continue
+					else
+						if lastSynergies[i]["Step"] <= synergyData["Step"] then
+							table.insert(lastSynergies, i, synergyData)
+							inserted = true
+							break
+						end
+					end
+				end
+				if inserted == false then
+					table.insert(lastSynergies, synergyData)
+				end
+			end	
+		end
+		
+		local synergyMaterials = {
+			[1] = "material://f0f33c45-fa72-44f8-98dc-eab101ad0a9d",	-- Bronze
+			[2] = "material://a2ae527a-1b5e-455d-9545-352d50b1b335",	-- Silver
+			[3] = "material://e31c85c1-6715-4fcc-8a55-c3cf1ab533ac",	-- Single
+			[4] = "material://87d87f9b-943b-4052-bd1f-98600250e3f1",	-- Gold
+			[5] = "material://a662a412-9e11-4249-b8ef-02515c716e8d"		-- Prism
+		}
+		local ui_synergyList = mainPanel:GetChildByName("List_UsedSynergies")
+		for i=1, #lastSynergies do
+			local ui_synergy = ui_synergyList:GetChildByName(string.format("Synergy_%d", i))
+			if isvalid(ui_synergy) == false then
+				ui_synergy = ui_synergyList:GetChildByName("Synergy"):Clone(string.format("Synergy_%d", i))
+			end
+			
+			local synergyData = lastSynergies[i]
+			ui_synergy.SpriteGUIRendererComponent:ChangeMaterial(_UI_Color.SynergyStepMaterial[synergyData["Step"]])
+			ui_synergy:GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = synergyData["RUID"]
+			
+			ui_synergy.UI_GameResultTooltipEnabler.TooltipMessage = _LocalizationService:GetText(synergyData["Name"])
+			ui_synergy.Enable = true
+		end
+		local uiSynergyIndex = #lastSynergies + 1
+		while true do
+			local ui_synergy = ui_synergyList:GetChildByName(string.format("Synergy_%d", uiSynergyIndex))
+			
+			if isvalid(ui_synergy) == false then
+				break
+			else
+				ui_synergy.Enable = false
+				uiSynergyIndex += 1
+			end
+		end
+		------------------------------------------------------------------------------
+		-- 마지막에 사용한 룬 카드
+		local ownRunes = teamManager.OwnRunes
+		local ui_lastRunes = mainPanel:GetChildByName("List_UsedRune")
+		for i=1, 5 do
+			local runeID = ""
+			if isvalid(ownRunes[i]) then
+				runeID = _UtilLogic:Split(ownRunes[i], "_")[1]
+			end
+			local ui_rune = ui_lastRunes:GetChildByName(string.format("Rune_%d", i))
+			
+			if _UtilLogic:IsNilorEmptyString(runeID) == false then
+				---@type RuneCardDictionaryData
+				local runeData = _DictionaryDataManager.RuneDataList[runeID]
+				local runeGrade = runeData.Grade
+				local runeRUID = runeData.IconRUID
+				local ui_sprite = ui_rune:GetChildByName("Sprite")
+				ui_rune.SpriteGUIRendererComponent.Color = Color.FromHexCode(colorInfo:FindRow("Key", "Rune_"..runeGrade):GetItem("Default"))
+				ui_sprite.SpriteGUIRendererComponent.ImageRUID = runeRUID
+				ui_sprite.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(runeRUID)["scale"]
+				ui_sprite.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(runeRUID)["pos"]
+				
+				ui_rune.UI_GameResultTooltipEnabler.TooltipMessage = _LocalizationService:GetText("RuneCard_"..runeID.."_Name")
+				ui_rune.Enable = true
+			else
+				ui_rune.Enable = false
+			end
+		end
+		------------------------------------------------------------------------------
+		-- 사용한 코치
+		local usedCoaches = coachManager.PlayCoachesID
+		local ui_coaches = mainPanel:GetChildByName("List_UsedCoach")
+		for i=1, 4 do
+			local coachID = usedCoaches[i]
+			local ui_coach = ui_coaches:GetChildByName(string.format("Coach_%d", i))
+			
+			if _UtilLogic:IsNilorEmptyString(coachID) == false then
+				local coachData = _CoachService:GetCoachInfo(coachID)
+				local coachGrade = coachData.Cost
+				local coachRUID = coachData.ProfileRUID
+				local ui_iconBG = ui_coach:GetChildByName("IconBG")
+				local ui_icon = ui_iconBG:GetChildByName("Icon")
+				ui_iconBG.SpriteGUIRendererComponent.Color = Color.FromHexCode(colorInfo:FindRow("Key", "Coach_"..coachGrade):GetItem("Default"))
+				ui_icon.SpriteGUIRendererComponent.ImageRUID = coachRUID
+				ui_icon.SpriteGUIRendererComponent.LocalScale = _LoadResourcesInfo:GetUILocalPositionScale(coachRUID)["scale"]
+				ui_icon.SpriteGUIRendererComponent.LocalPosition = _LoadResourcesInfo:GetUILocalPositionScale(coachRUID)["pos"]
+				
+				ui_coach:GetChildByName("Cost").TextComponent.Text = tostring(coachGrade)
+				ui_coach.UI_GameResultTooltipEnabler.TooltipMessage = coachData.Name
+				ui_coach.Enable = true
+			else
+				ui_coach.Enable = false
+			end
+		end
+		------------------------------------------------------------------------------
+		-- 순위 변동
+		if gameManager.ModeType == "Rank" then
+			local ui_rankResult = mainPanel:GetChildByName("SubPanel_RankChanged")
+			ui_rankResult.Enable = true
+			
+			local rankResults = _UtilLogic:StringToTable(rankResults_str)
+			--[[ 
+			rankResults["Score_Default"] : 도달한 라운드 점수
+			rankResults["Score_RandomCriteria"] : 랜덤 조건 점수
+			rankResults["Rank"] : 도달한 순위
+			rankResults["Rank_Rate"] : 도달한 순위가 상위 x% 인지 
+			]]
+			
+			local getSeparatedNumber = function(num)
+				local input = tostring(math.floor(num))
+				local separate = {}
+				
+				local len = string.len(input)
+				if len < 4 then
+					return input
+				end
+				
+				local startIdx = 4
+				if len%3 == 1 then startIdx = 2 end
+				if len%3 == 2 then startIdx = 3 end
+				
+				for i=1, math.ceil(len/3) do
+					if i == 1 then
+						table.insert(separate, string.sub(input, 1, startIdx-1))
+					else
+						table.insert(separate, string.sub(input, startIdx, startIdx+2))
+						startIdx += 3
+					end
+				end
+					
+				local output = ""
+				for i=1, #separate do
+					if i ~= 1 then
+						output = output..","
+					end
+					
+					output = output..separate[i]
+				end
+				
+				return output
+			end
+			
+			local rankScoreCriterialInfo = _DataService:GetTable("RankScoreCriteriaInfo")
+			local rankScoreCriterialInfo_row = rankScoreCriterialInfo:FindRow("ID", _ModeDataLogic.RankScoreCriteriaID)
+			log("_ModeDataLogic.RankScoreCriteriaID = ", _ModeDataLogic.RankScoreCriteriaID)
+			local ui_scorePanel = ui_rankResult:GetChildByName("Panel_Score") 
+			
+			--ui_scorePanel:GetChildByName("Title_RandomCriteria").TextComponent.Text = rankScoreCriterialInfo_row:GetItem("RankUIColumn")
+			_EntityService:GetEntityByPath("/ui/Lobby_GameResult/Tooltip_RankScore").TextComponent.Text = rankScoreCriterialInfo_row:GetItem("Explain")
+			ui_scorePanel:GetChildByName("Score_ClearRounds").TextComponent.Text = getSeparatedNumber(rankResults["Score_Default"])
+			ui_scorePanel:GetChildByName("Score_RandomCriteria").TextComponent.Text = getSeparatedNumber(rankResults["Score_RandomCriteria"])
+			ui_scorePanel:GetChildByName("Score_TotalScore").TextComponent.Text = getSeparatedNumber(rankResults["Score_Default"] + rankResults["Score_RandomCriteria"])
+			
+			local ui_rankPanel = ui_rankResult:GetChildByName("Panel_Rank")
+			ui_rankPanel:GetChildByName("Rank").TextComponent.Text = string.format("%d", rankResults["Rank"])
+			ui_rankPanel:GetChildByName("Rate").TextComponent.Text = _LocalizationService:GetTextFormat("RankRate", rankResults["Rank_Rate"])
+		else
+			mainPanel:GetChildByName("SubPanel_RankChanged").Enable = false
+		end
+		------------------------------------------------------------------------------
+		-- 획득한 시럽 보상
+		local ui_reward = mainPanel:GetChildByName("Text_RewardSyrup")
+		local syrupReward = _UtilLogic:Split(syrupRewards, ",")
+		
+		ui_reward:GetChildByName("Syrup_Default").TextComponent.Text = syrupReward[1]
+		ui_reward:GetChildByName("Syrup_FC").TextComponent.Text = syrupReward[2]
+		ui_reward.TextComponent.Text = string.format("%d", tonumber(syrupReward[1]) + tonumber(syrupReward[2]))
+		
+		
+		-- 모드 해금 정보
+		local ui_unlockReward = mainPanel:GetChildByName("Text_ModeUnlockMessage")
+		local unlockRewardText = ""
+		if win then
+			if mode == "Single"then
+				if modeLevel == 8 then
+					-- 이제 "싱글모드 시즌x+1 1단계를 플레이할 수 있습니다."
+					local seasonList = _DataService:GetTable("SeasonInfo")
+					for i=1, seasonList:GetRowCount() do
+						if seasonList:GetRow(i):GetItem("Season") == modeSeason then
+							if i == seasonList:GetRowCount() then
+								unlockRewardText = ""
+							else
+								local targetSeason = seasonList:GetRow(i+1):GetItem("Season")
+								
+								unlockRewardText = _LocalizationService:GetTextFormat("GameResult_Reward2", 
+									_LocalizationService:GetText("GameMode_Single").." "..targetSeason,
+									_LocalizationService:GetTextFormat("SingleMode_LevelText", 1))
+							end
+							
+							break
+						end
+					end
+					
+				else 
+					-- 이제 "싱글모드 시즌x n+1단계를 플레이할 수 있습니다."
+					unlockRewardText = _LocalizationService:GetTextFormat("GameResult_Reward2", 
+						_LocalizationService:GetText("GameMode_Single").." "..modeSeason, 
+						_LocalizationService:GetTextFormat("SingleMode_LevelText", modeLevel+1))
+				end
+			
+			elseif mode == "Challenge" then
+				if modeLevel == 8 then
+					unlockRewardText = ""
+				else 
+					-- 이제 "챌린지 모드X n+1단계를 플레이할 수 있습니다."
+					unlockRewardText = _LocalizationService:GetTextFormat("GameResult_Reward2", 
+						_LocalizationService:GetText("GameMode_Challenge")..modeSeason, 
+						_LocalizationService:GetTextFormat("SingleMode_LevelText", modeLevel+1))
+				end
+				
+			elseif mode == "Rank" then
+				if modeLevel == 20 then
+					unlockRewardText = ""
+				else
+					unlockRewardText = _LocalizationService:GetTextFormat("GameResult_Reward2", _LocalizationService:GetText("GameMode_Rank"), _ModeDataLogic:GetRankTierString(modeLevel+1))
+				end
+			end
+			
+			ui_unlockReward.TextComponent.Text = unlockRewardText
+		else
+			ui_unlockReward.TextComponent.Text = ""
+		end
+		------------------------------------------------------------------------------
+		-- 획득한 경험치, 레벨 변동 정보
+		local expInfo = _UtilLogic:StringToTable(expResult_str)
+		--[[
+			["BeforeLevel"] = 보상 받기 전 레벨
+			["BeforeEXP"] = 보상 받기 전 경험치
+			["RewardEXP"] = 보상으로 받은 경험치
+			["LevelUpAmount"] = 보상 받은 후 변동된 레벨 량
+			["remainEXP"] = 보상 받은 후 남은 exp
+		]]
+		self.BeforeLevel = expInfo["BeforeLevel"]
+		self.BeforeEXP = expInfo["BeforeEXP"]
+		self.RewardEXP = expInfo["RewardEXP"]
+		self.LevelDelta = expInfo["LevelUpAmount"]
+		self.RemainEXP = expInfo["remainEXP"]
+		
+		self.UI_Level.TextComponent.Text = string.format("Lv. %d", self.BeforeLevel)
+		self.UI_EXP.TextComponent.Text = string.format("%d / %d", self.BeforeEXP, _PlayerLevelLogic:GetRequiredEXP(self.BeforeLevel + 1))
+		self.UI_EXPGuage.SpriteGUIRendererComponent.FillAmount = self.BeforeEXP / _PlayerLevelLogic:GetRequiredEXP(self.BeforeLevel + 1)
+		self.UI_EarnedEXP.TextComponent.Text = ""
+		self.UI_EarnedLevel.TextComponent.Text = ""
+		
+		local expReward = _UtilLogic:Split(expRewards, ",")
+		self.UI_Level.Parent:GetChildByName("EXP_Default").TextComponent.Text = expReward[1]
+		self.UI_Level.Parent:GetChildByName("EXP_FC").TextComponent.Text = expReward[2]
+	end
+
+	@ExecSpace("Client")
+	method void SetUI_LevelInfo_inGameResultPanel(integer beforeLevel, integer beforeEXP, integer curLevel, integer curEXP, integer earned)
+		--[[
+		-- 게임 결과 패널에서 레벨과 경험치 정보를 설정
+		---@type TextComponent
+		local t_level = self.LevelPanel:GetChildByName("t_Level").TextComponent
+		---@type TextComponent
+		local t_Exp = self.LevelPanel:GetChildByName("t_Exp").TextComponent
+		---@type TextComponent
+		local t_EarnedEXP = self.LevelPanel:GetChildByName("t_EarnedEXP").TextComponent
+		---@type TextComponent
+		local t_levelUP = self.LevelPanel:GetChildByName("t_levelUP").TextComponent
+		---@type SpriteGUIRendererComponent
+		local sp_expGauge = self.LevelPanel:GetChildByName("sp_expBG"):GetChildByName("sp_exp").SpriteGUIRendererComponent
+		
+		
+		------ 일단 과거 경험치/레벨 정보 반영
+		t_level.Text = "Lv. "..tostring(beforeLevel)
+		t_Exp.Text = tostring(beforeEXP).." / "..tostring(_PlayerLevelLogic:RequiredExp_forNowLevel(beforeLevel))
+		-- 게이지바 (filled)
+		sp_expGauge.FillAmount = beforeEXP / _PlayerLevelLogic:RequiredExp_forNowLevel(beforeLevel)
+		
+		-- 획득 경험치 표시
+		t_EarnedEXP.Text = "+"..tostring(earned)
+		
+		-- 오른 레벨 표시
+		if curLevel - beforeLevel > 0 then
+			t_levelUP.Text = "+"..tostring(curLevel - beforeLevel)
+		else
+			t_levelUP.Text = ""
+		end
+		
+		-------------- 연출 생략 -------------------
+		
+		-- 현재 레벨/경험치 반영
+		t_level.Text = "Lv. "..tostring(curLevel)
+		t_Exp.Text = tostring(curEXP).." / "..tostring(_PlayerLevelLogic:RequiredExp_forNowLevel(curLevel))
+		-- 게이지바 (filled)
+		sp_expGauge.FillAmount = curEXP / _PlayerLevelLogic:RequiredExp_forNowLevel(curLevel)
+		]]
+	end
+
+	@ExecSpace("Client")
+	method void PlayAnim_EXP()
+		-- 경험치 획득 애니메이션을 재생합니다.
+		------------------------------------------------------------------
+		local totalAnimTime = 0.5 * self.LevelDelta + 1.5
+		local totalFrameCount = math.ceil(totalAnimTime / 0.02)
+		------------------------------------------------------------------
+		local gainedEXP = 0
+		local currEXP = self.BeforeEXP
+		local reqEXP = _PlayerLevelLogic:GetRequiredEXP(self.BeforeLevel + 1)
+		local lvDelta = 0
+		local t = 0
+		local setEXP = function()
+			t += 1
+			local rewardEXP_tween = _TweenLogic:Ease(0, self.RewardEXP, totalFrameCount, EaseType.CircEaseOut, t)
+			local currGetEXP = rewardEXP_tween - gainedEXP
+			currEXP += currGetEXP
+			
+			-- 연출에서 레벨이 오른 것을 표현해야 하는 경우
+			if currEXP >= reqEXP then
+				currEXP -= reqEXP
+				lvDelta += 1
+				
+				local nextLevel = self.BeforeLevel + lvDelta
+				if nextLevel > 500 then
+					nextLevel = 500
+				end
+				self.UI_Level.TextComponent.Text = string.format("Lv. %d", nextLevel)
+				self.UI_EarnedLevel.TextComponent.Text = string.format("+ %d", lvDelta)
+				
+				reqEXP = _PlayerLevelLogic:GetRequiredEXP(self.BeforeLevel + 1 + lvDelta)
+			end
+			
+			self.UI_EXP.TextComponent.Text = string.format("%d / %d", currEXP, reqEXP)
+			self.UI_EXPGuage.SpriteGUIRendererComponent.FillAmount = currEXP / reqEXP
+			gainedEXP += currGetEXP
+			self.UI_EarnedEXP.TextComponent.Text = string.format("+ %d", gainedEXP)
+		end
+		
+		
+		for i=1, totalFrameCount do
+			_TimerService:SetTimerOnce(setEXP, 0.02 * i)
+		end
+		------------------------------------------------------------------
+		-- 레벨 변동이 있는 경우, 레벨 업 팝업을 활성화합니다.
+		if self.LevelDelta > 0 then	
+			_TimerService:SetTimerOnce(function()
+				_PlayerLevelLogic:EnableUI_LevelUpPopup()
+			end, totalAnimTime + 0.2)
+		end
+	end
+
+end

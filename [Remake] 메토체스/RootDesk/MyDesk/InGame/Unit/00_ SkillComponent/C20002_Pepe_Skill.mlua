@@ -1,0 +1,123 @@
+@Component
+script C20002_Pepe_Skill extends Component
+
+	property number skillAnimLength = 1.08
+
+	property table aggressiveeffect = {}
+
+	@ExecSpace("Server")
+	method void Skill(Entity targetUnit)
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		local targetInfo = targetUnit.UnitInfo
+		local targetStatus = targetUnit.UnitStatus
+		
+		-- attack RUID
+		local charRUIDRow = _DataService:GetTable("CharacterInfo"):FindRow("CharID", unitInfo.charID)
+		
+		local animComponent = myUnit.UnitAnimationComponent
+		local skillRate = self.skillAnimLength * _BTLogic_New.SSpeedValue
+		animComponent:PlayAnimation(skillRate, "Skill", targetUnit, unitInfo.OwnerId)
+		
+		unitStatus:SetProperty("state", "Skill", "")
+		
+		
+		-- Skill Set
+		_StatusChangeLogic:SetVariableStatus(myUnit, myUnit, "MP", -1000, "useskill")
+		--log(myUnit.Name .. " use Skill")
+		
+		local function GetBuff()
+			if _BTLogic_New:CheckAttackAble(myUnit, myUnit, "Skill") then
+				self:SetBuff()
+			end
+		end
+		
+		_TimerService:SetTimerOnce(GetBuff, 0.2 / skillRate)
+		
+		--사운드
+		_PlaySoundLogic:PlaySound("M0072",self.Entity.UnitInfo.OwnerId)
+		
+		--연출
+		self:PlaySkillEffect(0.2 / skillRate,unitInfo.setTile,self.Entity.UnitInfo.OwnerId)
+	end
+
+	@ExecSpace("Server")
+	method void SetBuff()
+		local myUnit = self.Entity
+		local unitInfo = myUnit.UnitInfo
+		local unitStatus = myUnit.UnitStatus
+		
+		---@type Entity
+		local user = _UserService:GetUserEntityByUserId(unitInfo.OwnerId)
+		local teamManager = user.TeamManager
+		
+		
+		---@type table<Entity>
+		local enemies = {}
+		if unitInfo.TeamType == "Enemy" then
+			enemies = _BTLogic_New:getEntities(teamManager.OwnUnits, "AttackAble")
+		elseif unitInfo.TeamType == "User" then
+			enemies = _BTLogic_New:getEntities(teamManager.EnemyUnits, "AttackAble")
+		end
+		
+		enemies = _BTLogic_New:getTargets(unitInfo.setTile, enemies, "Around_1_2")
+		
+		if isvalid(enemies) then
+			for _, enemy in pairs(enemies) do
+				_StatusChangeLogic:SetStatus(myUnit, enemy, "SE0020", 4)
+				enemy.UnitStatus.Target = myUnit
+				self:SpawnAggressiveIcon(enemy,unitInfo.OwnerId) -- 연출
+			end
+		end
+		
+		local shieldAmount = unitStatus.MaxHP * _S01_SkillDescLogic.C20002_Active_Shield_MaxHPPer[unitInfo.level] +
+							unitStatus.MagicalAttack * _S01_SkillDescLogic.C20002_Active_Shield_Magic[unitInfo.level]
+		
+		_StatusChangeLogic:SetShield(myUnit, myUnit, shieldAmount, -1, "MySkill")
+		
+		-- 페페 도전과제 
+		_AchievementService:UpdateProgress_Char(unitInfo,shieldAmount,user)
+	end
+
+	@ExecSpace("Client")
+	method void PlaySkillEffect(number time, Entity Tile)
+		--범위 표시
+		
+		local tiles = {}
+		if self.Entity.UnitInfo.TeamType == "User" then
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("User_Skill", 2, Tile)
+		else
+			tiles = _GeneralDirectorLogic:ShowSkillRangeInBattle("Enemy_Skill", 2, Tile)
+		end
+		
+		local removetile = function()
+			for i = 1, #tiles do
+				tiles[i].Enable = false
+				_GeneralDirectorLogic:InsertRangeEntity(tiles[i])
+			end
+		end
+		
+		_TimerService:SetTimerOnce(removetile, time+2)
+		
+		--각 캐릭터별 범위 공격용 이펙트
+		local destroyandparticle = function()
+			for i = 1, #self.aggressiveeffect do
+				_EffectService:RemoveEffect(self.aggressiveeffect[i])
+			end
+			
+			table.clear(self.aggressiveeffect)
+		end
+		
+		_TimerService:SetTimerOnce(destroyandparticle, time + 2)
+	end
+
+	@ExecSpace("Client")
+	method void SpawnAggressiveIcon(Entity unit)
+		local effect=_EffectService:PlayEffectAttached("27431e8a1c65431aaa0a90a42f1bb5ed",unit,Vector3(0,0,0),0,Vector3(1.5,1.5,1),true,{["SortingLayer"]="UI",["OrderInLayer"]=10,["Color"]=Color(1,1,1,_ESCMenuService.skillEffectAlpha/100)})
+		
+		table.insert(self.aggressiveeffect,effect)
+	end
+
+end

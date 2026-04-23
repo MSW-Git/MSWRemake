@@ -1,0 +1,330 @@
+@Component
+script PlayerAbilityComponent extends Component
+
+	property table ability = {}
+
+	property string userId = ""
+
+	property boolean dbLoaded = false
+
+	property table toUsePoints = {}
+
+	@TargetUserSync
+	property number expBonus = 0
+
+	@TargetUserSync
+	property number dropBonus = 0
+
+	@Sync
+	property integer level = 1
+
+	property number alertTime = 0
+
+	method void OnBeginPlay()
+		-- 컴포넌트 시작 시 초기화 수행
+		self:Init()
+	end
+
+	method void Init()
+		-- 사용자 ID 설정 및 포인트 배열 초기화
+		self.userId = self.Entity.PlayerComponent.UserId
+		self.toUsePoints = {0, 0, 0, 0}
+	end
+
+	@ExecSpace("Server")
+	method void InitAbilityData()
+		-- 능력 데이터를 초기값으로 설정하고 클라이언트에 동기화
+		
+		local data = {}
+		data["lvData"] = {}
+		data["type_1"] = {}
+		data["type_2"] = {}
+		data["type_3"] = {}
+		data["type_4"] = {}
+		
+		data["lvData"].lv = 1
+		data["lvData"].cp = 0 
+		data["lvData"].ap = 0 
+		data["lvData"].exp = 0
+		data["lvData"].baggageSlot = 100
+		
+		data["type_1"].type = "attack" 
+		data["type_1"].lv = 0 
+		
+		data["type_2"].type = "hp" 
+		data["type_2"].lv = 0 
+		
+		data["type_3"].type = "mp" 
+		data["type_3"].lv = 0 
+		
+		data["type_4"].type = "reductCooltime" 
+		data["type_4"].lv = 0 
+		
+		self.ability = data
+		self.level = 1
+		
+		_PartyLogic:SetLevelTable(self.userId, self.level)
+		self:SyncClient(self.ability, self.userId)
+	end
+
+	@ExecSpace("Client")
+	method void SyncClient(table serverData)
+		-- 클라이언트에서 능력 데이터 동기화 및 이벤트 전송
+		self.ability = serverData
+		_UserService.LocalPlayer:SendEvent(ChangePlayerAbilityData(self.ability, _UserService.LocalPlayer.PlayerComponent.UserId))
+	end
+
+	@ExecSpace("ServerOnly")
+	method boolean ExcuteAbilityLevelExpUp(integer addExp, string userId, string source, string monsterId)
+		-- 능력 레벨 경험치 증가 처리 및 레벨업 검사
+		local levelup = false
+		local beforeLv = self.ability["lvData"].lv
+		local beforeExp =  self.ability["lvData"].exp
+		local beforeCp = self.ability["lvData"].cp
+		local maxLv = false
+		
+		local partyBonus = _PartyLogic:GetPartyBonusRate(userId) 
+		if addExp < 0 then
+			partyBonus = 1
+		end
+		
+		self.ability["lvData"].exp = self.ability["lvData"].exp + (addExp * partyBonus)
+		
+		if self.ability["lvData"].exp <= 0 then
+			self.ability["lvData"].exp = 0
+		end
+		
+		if self.ability["lvData"].lv < _AbilityLogic.abilityMaxLevel then 
+			if self.ability["lvData"].exp >= _AbilityLogic.abilityExpData[self.ability["lvData"].lv].needToFillExp then 
+				local extraExp = self.ability["lvData"].exp - _AbilityLogic.abilityExpData[self.ability["lvData"].lv].needToFillExp
+		
+				self.ability["lvData"].lv += 1 
+				levelup = true
+				self:RequestIncreasePoint(1, userId, "") 
+				self.ability["lvData"].exp = extraExp
+		
+			end
+		else
+			self.ability["lvData"].exp = 0
+			maxLv = true
+		end
+		
+		self.level = self.ability["lvData"].lv
+		_PartyLogic:SetLevelTable(self.userId, self.level)
+		self:SyncClient(self.ability, userId)
+		
+		pcall(function()
+			if maxLv ~= true then 
+				if levelup == true then
+					_WorldLog:LogFieldLevelFlow(_WorldLog.FlowType_FieldLevelFlow_LevelUp, source, userId, beforeLv, 1, beforeExp, addExp, beforeCp, 1, monsterId)	
+				else
+					_WorldLog:LogFieldLevelFlow(_WorldLog.FlowType_FieldLevelFlow_ExpUp, source, userId, beforeLv, 0, beforeExp, addExp, beforeCp, 0, monsterId) 
+				end
+			end
+		end)
+		
+		if self.ability["lvData"].exp >= _AbilityLogic.abilityExpData[self.ability["lvData"].lv].needToFillExp then 
+			self:RequestAbilityLevelExpUp(0, userId, source, monsterId)
+		end
+		
+		
+		return levelup
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ExcuteIncreasePoint(integer value, string userId)
+		-- 능력 포인트를 증가시키고 클라이언트에 동기화
+		self.ability["lvData"].cp = self.ability["lvData"].cp + value
+		self:SyncClient(self.ability, userId)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void ExcuteDecreasePoint(integer value, integer typeNum, string userId)
+		-- 능력 포인트를 차감하고 특정 타입 능력 레벨 증가
+		if self.ability["lvData"].cp - value < 0 then
+			return
+		end
+		
+		local abilityData = _AbilityLogic.abilityExpData[self.ability["lvData"].lv]
+		local statusData = _AbilityLogic.abilityStatusData
+		
+		local beforeSP = self.ability["lvData"].cp
+		local beforeLv = 0
+		
+		
+		if typeNum == 1 then
+			beforeLv = self.ability["type_1"].lv
+			if self.ability["type_1"].lv + value <= abilityData.max_Attack_Level then
+				self.ability["type_1"].lv += value
+			else
+				return
+			end
+		elseif typeNum == 2 then
+			beforeLv = self.ability["type_2"].lv
+			if self.ability["type_2"].lv + value <= abilityData.max_Hp_Level then
+				self.ability["type_2"].lv += value
+			else
+				return
+			end
+		elseif typeNum == 3 then
+			beforeLv = self.ability["type_3"].lv
+			if self.ability["type_3"].lv + value <= abilityData.max_Mp_Level then
+				self.ability["type_3"].lv += value
+			else
+				return
+			end
+		elseif typeNum == 4 then
+			beforeLv = self.ability["type_4"].lv
+			if self.ability["type_4"].lv + value <= abilityData.max_ReductCooltime_Level then
+				self.ability["type_4"].lv += value
+			else
+				return
+			end
+		end
+		
+		self.ability["lvData"].cp = self.ability["lvData"].cp - value
+		self.ability["lvData"].ap = self.ability["lvData"].ap + value
+		
+		if isvalid(self.Entity.MultiBattlePlayer) then
+			self.Entity:SendEvent(ChangePlayerAbilityData(self.ability, userId))
+		end
+		
+		self:SyncClient(self.ability, userId)
+		
+		
+		if typeNum == 1 then
+			_WorldLog:LogFieldStatusFlow(_WorldLog.FlowType_FieldStatusFlow_Atk, "StatusUpgrade", userId, beforeSP, value, beforeLv, value, self.ability["type_1"].lv)
+		elseif typeNum == 2 then
+			_WorldLog:LogFieldStatusFlow(_WorldLog.FlowType_FieldStatusFlow_Hp, "StatusUpgrade", userId, beforeSP, value, beforeLv, value, self.ability["type_2"].lv)
+		elseif typeNum == 3 then
+			_WorldLog:LogFieldStatusFlow(_WorldLog.FlowType_FieldStatusFlow_Mp, "StatusUpgrade", userId, beforeSP, value, beforeLv, value, self.ability["type_3"].lv)
+		elseif typeNum == 4 then
+			_WorldLog:LogFieldStatusFlow(_WorldLog.FlowType_FieldStatusFlow_ReductCool, "StatusUpgrade", userId, beforeSP, value, beforeLv, value, self.ability["type_4"].lv)
+		end
+		
+		
+	end
+
+	@ExecSpace("Server")
+	method void RequestAbilityLevelExpUp(integer addExp, string userId, string source, string monsterId)
+		-- 능력 레벨 경험치 증가 요청 처리
+		local player = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(player) then
+			return
+		end
+		
+		self:ExcuteAbilityLevelExpUp(addExp, userId, source, monsterId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestIncreasePoint(integer value, string userId, string source)
+		-- 능력 포인트 증가 요청 처리
+		local player = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(player) then
+			return
+		end
+		self:ExcuteIncreasePoint(value, userId)
+	end
+
+	@ExecSpace("Server")
+	method void RequestDecreasePoint(integer value, integer typeNum, string userId, string source)
+		-- 능력 포인트 차감 요청 처리
+		local player = _UserService:GetUserEntityByUserId(userId)
+		
+		if not isvalid(player) then
+			return
+		end
+		
+		self:ExcuteDecreasePoint(value, typeNum, userId)
+	end
+
+	@ExecSpace("Server")
+	method void TransferToPlayerData()
+		-- 능력 데이터를 플레이어 DB에 저장
+		if self.Entity.PlayerDBComponent.dbInited == false then
+			return
+		end
+		
+		local accountData = {}
+		local playerData = self.Entity.PlayerDBComponent.playerData
+		playerData["ability"] = _HttpService:JSONEncode(self.ability)
+	end
+
+	method void ChangeToUsePoints(boolean reset, integer typeNum, integer value)
+		-- 사용할 포인트를 변경하고 UI 갱신
+		if reset then
+			self.toUsePoints = {0 , 0 , 0 , 0}
+			_UIGroupManager.abilityUI:RefreshByChangePoints(reset, self.userId)
+		else
+			local abilityData = _AbilityLogic.abilityExpData[self.ability["lvData"].lv]
+			local statusData = _AbilityLogic.abilityStatusData
+			
+			if value >= 0 then
+				if _AbilityLogic:GetToUseAbilityPoints() >= self.ability["lvData"].cp then
+					value = 0
+					_LocalizeLogic:ShowToast("toast274", self.userId)
+					return
+				else
+					if value > self.ability["lvData"].cp - _AbilityLogic:GetToUseAbilityPoints() then
+						value =  self.ability["lvData"].cp - _AbilityLogic:GetToUseAbilityPoints()
+					end
+				end
+			
+				value = _AbilityLogic:GetEnableUpgradePointByTypeNum(typeNum, self.userId, value,self.toUsePoints[typeNum])
+			
+			else
+		
+				if self.toUsePoints[typeNum] <= 0 then 
+					value = 0
+					_LocalizeLogic:ShowToast("toast275", self.userId)
+					return
+				else
+					if self.toUsePoints[typeNum] + value <= 0 then
+						value = self.toUsePoints[typeNum] * -1
+					end
+				end
+			end
+			
+			self.toUsePoints[typeNum] = self.toUsePoints[typeNum] + value		
+			_UIGroupManager.abilityUI:RefreshByChangePoints(reset, self.userId)
+		
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void RefreshBonusStat()
+		-- 액세서리 스탯에 따른 보너스 스탯 갱신
+		local statusTable = _AccessoryLogic:GetStatusTable(self.userId)
+		local temp = statusTable["25"]
+		
+		if temp ~= 0 then
+			self.expBonus = 1 + (temp / 100)
+		else
+			self.expBonus = 1
+		end
+		
+		temp = statusTable["26"]
+		
+		if temp ~= 0 then
+			self.dropBonus = 1 + (temp / 100)
+		else
+			self.dropBonus = 1
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnPlayerDeadExpPanalty()
+		-- 플레이어 사망 시 경험치 패널티 적용
+		if self.ability["lvData"].lv <= 30 then
+			return
+		end
+		local totalExpCurrentLv = _AbilityLogic.abilityExpData[self.ability["lvData"].lv].needToFillExp  
+		local loastExp = math.min(self.ability["lvData"].exp , totalExpCurrentLv * 0.05)
+		
+		self:ExcuteAbilityLevelExpUp(-1 * loastExp,self.Entity.PlayerComponent.UserId, "FieldDeath", "")
+	end
+
+end

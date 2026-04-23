@@ -1,0 +1,222 @@
+@Component
+script UIEmployeeManageList extends Component
+
+	property Entity WaitingList = nil
+
+	property string SortType = "Up"
+
+	property string FilterType = "All"
+
+	property Entity FilterBtn = "781fd0f0-bd29-4771-b797-c37be8b4cf0e"
+
+	property Entity SortBtn = "c988e139-bb94-4136-a2a6-0b1c5412e527"
+
+	property SyncTable<string, Entity> FilterOptions
+
+	property SyncTable<string, Entity> SortOptions
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		-- 게임 시작 시 직원 관리 리스트 UI를 초기화하는 함수
+		
+		self.WaitingList = self.Entity:GetChildByName("List")
+		self._T.ScrollBoundingMaxY = -400
+		local slotId =_EntryService:GetModelIdByName("Model_EmployeeListSlot") 
+		
+		local employeeMaxNum = #_DataService:GetTable("EmployeeDataSet"):GetAllRow()
+		
+		local filterPanel = self.Entity:GetChildByName("Filter"):GetChildByName("Pannel")
+		for i, child in pairs(filterPanel.Children) do
+			if isvalid(child.ButtonComponent) == false then
+				continue
+			end
+			
+			self.FilterOptions[child.Name] = child
+		end
+		
+		local sortPanel = self.Entity:GetChildByName("Sort"):GetChildByName("Pannel")
+		for i, child in pairs(sortPanel.Children) do
+			if isvalid(child.ButtonComponent) == false then
+				continue
+			end
+			
+			self.SortOptions[child.Name] = child
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void Init()
+		-- 직원 관리 리스트를 초기화하는 함수
+		for i = 1, #self.WaitingList.Children do 
+			if not _UtilLogic:Contains( self.WaitingList.Children[i].Name, "Item") then
+				continue
+			end
+			self.WaitingList.Children[i].SpriteGUIRendererComponent.Outline = false
+		end
+		self.SortType = "Up"
+		self.FilterType = "All"
+		self:OnClickFilterCategoryBtn(self.FilterType)
+		self:OnClickSortTypeBtn(self.SortType)
+		
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickFilterCategoryBtn(string filterType)
+		-- 필터 카테고리 버튼 클릭 시 필터 타입을 설정하고 리스트를 새로고침하는 함수
+		self.FilterType = filterType
+		_SelectDropDownLogic:RefreshSelected(self.FilterOptions, self.FilterType)
+		
+		self:RefreshList(true)
+		self.FilterBtn:GetChildByName("Text").TextComponent.Text = _LocalizationService:GetText(filterType)
+		
+		local icon 
+		if filterType == _EmployeeTypeEnum.Cook then
+			icon = _IconRuidEnum.SkillIcon_Cook
+		elseif filterType == _EmployeeTypeEnum.Serving then
+			icon = _IconRuidEnum.SkillIcon_Serving 
+		else
+			icon = _IconRuidEnum.Empty
+		end
+		self.FilterBtn:GetChildByName("Text"):GetChildByName("Icon").SpriteGUIRendererComponent.ImageRUID = icon
+		_UIEmployeeManageService.FilterPanel.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnClickSortTypeBtn(string type)
+		-- 정렬 타입 버튼 클릭 시 정렬 방식을 설정하고 리스트를 새로고침하는 함수
+		self.SortType = type
+		_SelectDropDownLogic:RefreshSelected(self.SortOptions, self.SortType)
+		
+		self:RefreshList(true)
+		
+		_UIEmployeeManageService.SortPanel.Enable = false
+	end
+
+	@ExecSpace("Client")
+	method void RefreshList(boolean isResetScrollPos)
+		-- 직원 리스트를 새로고침하고 스크롤 위치를 재설정하는 함수
+		local player = _UserService.LocalPlayer
+		local ownEmployees = player.EmployeeManager.EmployeeDetailTable
+		if not isvalid(ownEmployees)then  return end 
+		
+		local employeeDatas = _UIEmployeeManageService.UIManageCompo.employeesLocation
+		local sortData = _UIEmployeeManageService:StatSort(employeeDatas, self.FilterType, self.SortType) 
+		
+		self:RegisterRecycleScrollLayoutCallback()
+		
+		local count = #table.keys(sortData)
+		self.WaitingList.RecycleScrollView:SetTotalCount(count)
+		self.WaitingList.RecycleScrollView:Refresh(isResetScrollPos)
+		self.WaitingList.RecycleScrollView.BoundingMax.y = self._T.ScrollBoundingMaxY 
+		
+		
+		local waitingList = self.WaitingList.Children
+		
+		for i = 1, #waitingList do  
+			if _UtilLogic:Contains(waitingList[i].Name, "Item") then
+				local entity = waitingList[i]
+				local index = entity.UIEmployeeManageListRenderer.Index
+				if index == 1 then
+					local empId = entity.UIEmployeeManageListRenderer.EmployeeId
+					_UIEmployeeManageService:SelectEmp(empId, player)
+				end
+				if index < 1 or  index > count then
+					entity.Enable = false
+				else
+					entity.UIEmployeeManageListRenderer:OnChangeLocation()
+				end
+			end
+		end
+		
+		
+	end
+
+	@ExecSpace("Client")
+	method void UpdateSlotOutline(string empId)
+		-- 선택된 직원의 슬롯 아웃라인을 업데이트하는 함수
+		local selectedEmpId = _UIEmployeeManageService.UIManageCompo.SelectEmployeeID
+		for i=1, #self.WaitingList.Children do 
+			if not _UtilLogic:Contains( self.WaitingList.Children[i].Name, "Item") then
+				continue
+			end
+			local slotEmp = self.WaitingList.Children[i].UIEmployeeManageListRenderer
+		
+			if isvalid(slotEmp.EmployeeId) then 
+				if slotEmp.EmployeeId ~= "" and (slotEmp.EmployeeId ) == selectedEmpId then 
+					slotEmp:EnableOutline()
+				else 
+					slotEmp:DisableOutline()
+				end
+			end	
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RegisterRecycleScrollLayoutCallback()
+		-- 재활용 스크롤 레이아웃 콜백을 등록하는 함수
+		if self.WaitingList.RecycleScrollView.onUpdateCell ~= nil then
+			return
+		end
+		
+		local recycleFunc = function(index, entity)
+			self:RecycleScrollOnUpdateByIndex(index, entity)
+			
+		end
+		self.WaitingList.RecycleScrollView.onUpdateCell = recycleFunc
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RecycleScrollOnUpdateByIndex(integer index, Entity entity)
+		-- 인덱스에 따라 재활용 스크롤의 셀을 업데이트하는 함수
+		local empId = self:CalcEmpIdFromIndex(index)
+		entity.UIEmployeeManageListRenderer:Init_EmployeeManage(index, empId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string CalcEmpIdFromIndex(integer index)
+		-- 인덱스로부터 직원 ID를 계산하여 반환하는 함수
+		-----@type EmployeeDetailData
+		local employeeDatas = _UIEmployeeManageService.UIManageCompo.employeesLocation
+		local sortData = _UIEmployeeManageService:StatSort(employeeDatas, self.FilterType, self.SortType)
+		
+		local empId = sortData[index].Id
+		
+		return empId
+	end
+
+	@ExecSpace("ClientOnly")
+	method Entity FindEntityFromEmpId(string empId)
+		-- 직원 ID로부터 해당하는 엔티티를 찾아 반환하는 함수
+		local entity
+		for i=1, #self.WaitingList.Children do 
+			if not _UtilLogic:Contains( self.WaitingList.Children[i].Name, "Item") then
+				continue
+			end
+			local slotEmp = self.WaitingList.Children[i].UIEmployeeManageListRenderer
+		
+			if isvalid(slotEmp.EmployeeId) then 
+				if slotEmp.EmployeeId ~= "" and (slotEmp.EmployeeId ) == empId then 
+					entity = slotEmp.Entity
+					break 
+				end
+			end
+		end
+		
+		return entity
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateEmpSlotFromEmpId(string empId)
+		-- 직원 ID로부터 해당 슬롯을 업데이트하는 함수
+		local entity = self:FindEntityFromEmpId(empId)
+		
+		if isvalid(entity) and entity.Enable == true then 
+			local index = entity.UIEmployeeManageListRenderer.Index
+			entity.UIEmployeeManageListRenderer:Init_EmployeeManage(index, empId)
+			self:UpdateSlotOutline(empId)
+		end
+	end
+
+end

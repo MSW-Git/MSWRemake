@@ -1,0 +1,188 @@
+@Component
+script UI_SynergyDictionaryInfo extends Component
+
+	property string nowSynergyID = ""
+
+	property SpriteGUIRendererComponent sp_SynergyIcon = "f2b40cc0-0e25-4d9e-b2cc-247377d26455"
+
+	property TextComponent t_SynergyName = "f8789a9c-3028-445b-9eb4-116b5715538c"
+
+	property TextComponent t_SynergyDetail = "127e69d8-6a3c-4ec5-95b2-488da049c0ce"
+
+	property TextComponent t_stepDesc = "9aff2e79-35db-46d0-82ca-53fa9da47cfc"
+
+	property Entity SynergyCharList = "c454a712-dcca-47cd-b97d-2ec630ce2b29"
+
+	property Entity UI_LinkedSynergyList = "0cde3896-5b7e-4490-80d5-833e8741f362"
+
+	@ExecSpace("ClientOnly")
+	method void UpdateInfo(string ID)
+		-- 시너지 상세 정보 UI 업데이트 (아이콘, 설명, 연관 시너지 등)
+		if ID == "ALL" then
+			self.Entity.Enable = false
+			return
+		else
+			self.Entity.Enable = true
+			self.t_stepDesc.Entity.Parent.ScrollLayoutGroupComponent:SetScrollNormalizedPosition(UITransformAxis.Vertical, 0)
+		end
+		----------------------------------------------------------
+		if self.nowSynergyID == ID then 
+			return -- 이미 같은 시너지를 보고 있던 경우에는 업데이트 없이 종료
+		end
+		
+		self.nowSynergyID = ID
+		----------------------------------------------------------
+		-- 시너지 단계별 설명이 초기화 안 돼서 여기서 초기화
+		self.t_stepDesc.Text =""
+		
+		local data = _DictionaryDataManager.SynergyDataList[ID]
+		
+		
+		---@type table
+			-- <시너지 ID, 캐릭터 ID>
+		local synergy_charID_Table = {}
+		
+		-- 정보 갱신
+			-- 시너지 아이콘
+		local resourceinfo = _LoadResourcesInfo:GetUILocalPositionScale(data.IconRUID)
+		self.sp_SynergyIcon.ImageRUID = data.IconRUID
+		self.sp_SynergyIcon.LocalScale = resourceinfo["scale"]
+		self.sp_SynergyIcon.LocalPosition = resourceinfo["pos"]
+		----------------------------------------------------------
+		-- 시너지 이름 (로컬라이징)
+		local key = ID.."_Name"
+		self.t_SynergyName.Text = _LocalizationService:GetText(key)
+		
+		-- 시너지 설명 (로컬라이제이션 데이터 생기면 그걸로 수정해야 함)
+														--------------
+		local synergyTable = _DataService:GetTable("SynergyInfo")
+		local row = synergyTable:FindRow("SynergyID", ID)
+		
+		local desccoef = _UtilLogic:Split(row:GetItem("DescCoef"),",") -- 시너지 효과 (설명)
+		local desc = _LocalizationService:GetTextFormat(row:GetItem("Desc"),desccoef[1],desccoef[2],desccoef[3],desccoef[4],desccoef[5],desccoef[6])
+		self.t_SynergyDetail.Text = desc
+														--------------
+		 
+		-- 시너지의 단계 별 요구 카운트(NeedCount_Step)를 table에 입력
+		---@type table<string>
+		local Step = {}
+		
+		for i=1, 5 do
+			if data.NeedCount_step[i] ~= "-" then
+				table.insert(Step, data.NeedCount_step[i])
+			end
+		end
+		
+		---@type table<string>		
+		local detailDescs = {}						-- 시너지 효과 (인원수 별 설명)
+		for i=1, 4 do
+			local detailDescCoef = _UtilLogic:Split(row:GetItem(string.format("Detail_step%dCoef", i)),",")
+			
+			for j = 1, #detailDescCoef do
+				detailDescCoef[j] = _LocalizationService:GetText(detailDescCoef[j])
+			end
+			
+			local detailDesc = _LocalizationService:GetTextFormat(row:GetItem(string.format("Detail_step%d", i)),detailDescCoef[1],detailDescCoef[2],detailDescCoef[3],detailDescCoef[4],detailDescCoef[5],detailDescCoef[6])
+			if detailDesc ~= "-" then
+				table.insert(detailDescs, detailDesc)
+			end
+		end
+		
+		for i = 1, #Step, 1 do
+			self.t_stepDesc.Text = string.format("%s\n(%s) %s", self.t_stepDesc.Text, Step[i], detailDescs[i])
+		end
+		----------------------------------------------------------
+		-- 연관 시너지 표시
+		local season = _DictionaryManager.NowShowingSeason
+		local targetLinkedSynergyList = {}
+		for i=1, #table.keys(data.linkedSynergyIDs) do
+			local linkedID = data.linkedSynergyIDs[i]
+			---@type SynergyDictionaryData
+		    local linkedSynergyData = _DictionaryDataManager.SynergyDataList[linkedID]
+		    if linkedSynergyData.ContainedSeason[season] == false then
+		        continue
+		    else
+				table.insert(targetLinkedSynergyList, linkedID)
+			end
+		end
+		
+		local ui_linkedSynergyOriginSlot = self.UI_LinkedSynergyList:GetChildByName("LinkedSynergy")
+		for i=1, #targetLinkedSynergyList do
+			local ui_linkedSynergy = self.UI_LinkedSynergyList:GetChildByName(string.format("LinkedSynergy_%d", i))
+			if isvalid(ui_linkedSynergy) == false then
+				ui_linkedSynergy = ui_linkedSynergyOriginSlot:Clone(string.format("LinkedSynergy_%d", i))
+			end
+			ui_linkedSynergy.Enable = true
+			
+			-- 시너지 아이콘 및 이름
+			ui_linkedSynergy.UI_LinkedSynergy_BT:UpdateButton(targetLinkedSynergyList[i])
+			
+			-- 캐릭터 아이콘
+			local linkedCharList = self:LinkedCharacterList(targetLinkedSynergyList[i])
+			local ui_linkedCharList = ui_linkedSynergy:GetChildByName("List_Char")
+			for j=1, #linkedCharList do
+				local ui_charIcon = ui_linkedCharList:GetChildByName(string.format("CharIcon_%d", j))
+				ui_charIcon.UI_dictionary_CharacterBT:UpdateIcon(linkedCharList[j])
+				ui_charIcon.Enable = true
+			end
+			for j=#linkedCharList+1, 3 do
+				local ui_charIcon = ui_linkedCharList:GetChildByName(string.format("CharIcon_%d", j))
+				ui_charIcon.Enable = false
+			end
+		end
+		
+		for i=#targetLinkedSynergyList+1, 10 do
+			local ui_linkedSynergy = self.UI_LinkedSynergyList:GetChildByName(string.format("LinkedSynergy_%d", i))
+			if isvalid(ui_linkedSynergy) == false then
+				ui_linkedSynergy = ui_linkedSynergyOriginSlot:Clone(string.format("LinkedSynergy_%d", i))
+			end
+			
+			ui_linkedSynergy.UI_LinkedSynergy_BT:UpdateButton("")
+			
+			local ui_linkedCharList = ui_linkedSynergy:GetChildByName("List_Char")
+			for j=1, 3 do
+				local ui_charIcon = ui_linkedCharList:GetChildByName(string.format("CharIcon_%d", j))
+				ui_charIcon.Enable = false
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method table LinkedCharacterList(string linkedID)
+		-- 연관 시너지와 현재 시너지를 공유하는 캐릭터 목록 반환
+		---@type table<string>
+		
+		--local charList = _DictionaryDataManager:GetCharIDsForSynergy(self.nowSynergyID)
+		
+		
+		--[[---@type table
+			-- <시너지 ID, 캐릭터 ID>
+		local synergy_charID_Table = {}]]
+		
+		-- 현재 보고 있는 시너지의 캐릭터 목록
+		local charList = _DictionaryDataManager.SynergyDataList[self.nowSynergyID].CharIDs
+		
+		-- 연결된 시너지의 캐릭터 목록
+		local linkedSynergyChar = _DictionaryDataManager.SynergyDataList[linkedID].CharIDs
+		
+		-- 현재 시즌
+		local season = _DictionaryManager.NowShowingSeason
+		
+		local input_table = {}
+		for i=1, #linkedSynergyChar do
+			for j=1, #charList do
+				if linkedSynergyChar[i] == charList[j] then
+					---@type CharDictionaryData
+					local charData = _DictionaryDataManager.CharDataList[charList[j]]
+					
+					if charData.ContainedSeason[season] == true then
+						table.insert(input_table, charList[j])
+					end
+				end
+			end
+		end
+		
+		return input_table
+	end
+
+end
