@@ -19,13 +19,8 @@
    ```
    git clone https://github.com/MSW-Git/MSWRemake.git
    ```
-
 2. 메이플스토리 월드를 실행하고 메이커에서 새 월드를 만듭니다.
-
 3. **Workspace - WorldConfig - LocalWorkspace**를 활성화합니다.
-
 4. 로컬 워크스페이스로 지정한 폴더를 열고, 폴더에 있는 파일을 모두 삭제합니다.
-
-5. 앞서 Clone 했던 폴더에서 리메이크하고자 하는 월드의 폴더 내 파일을 모두 복사하여 로컬 워크스페이스 폴더에 붙여 넣습니다.
-
+5. 리메이크하고자 하는 월드의 파일을 모두 복사하여 로컬 워크스페이스 폴더에 붙여넣습니다.
 6. 메이커로 돌아와서 **Workspace - MyDesk 우클릭 - Reimport All**을 선택합니다.
