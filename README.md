@@ -1,26 +1,26 @@
 # MSWRemake
 
-메이플스토리 월드의 리메이크 월드를 로컬 워크스페이스 형태로 제공하는 저장소입니다.
+A repository that provides remake worlds from MapleStory Worlds as Local Workspace.
 
-## 포함된 월드
+## Included Worlds
 
-- [`[Remake] 광부 시뮬레이터`](https://maplestoryworlds.nexon.com/ko/play/bb572bfdb5cc476faea296c2f7ed8060/)
-- [`[Remake] 메소전사`](https://maplestoryworlds.nexon.com/ko/play/88418dbd531d4024956888003ca0f7c7/)
-- [`[Remake] 메이플듀얼`](https://maplestoryworlds.nexon.com/ko/play/d89013e15df64caf9cf088755c2cb32e/)
-- [`[Remake] 메토체스`](https://maplestoryworlds.nexon.com/ko/play/fdf7a8eba2394516aa94b5a0b69394e2/)
-- [`[Remake] 몬스터 농장`](https://maplestoryworlds.nexon.com/ko/play/ad9cad8b7930435dbc0a5f176fe13796/)
-- [`[Remake] 츄츄버거 1호점`](https://maplestoryworlds.nexon.com/ko/play/06c72f9a0d2f4719aca0b82297d299f7/)
+- [`[Remake] Chu Chu Burger the 1st Branch`](https://maplestoryworlds.nexon.com/play/06c72f9a0d2f4719aca0b82297d299f7/)
+- [`[Remake] Maple Auto Battler`](https://maplestoryworlds.nexon.com/play/fdf7a8eba2394516aa94b5a0b69394e2/)
+- [`[Remake] Maple Duel`](https://maplestoryworlds.nexon.com/play/d89013e15df64caf9cf088755c2cb32e/)
+- [`[Remake] Maple Soul Hero`](https://maplestoryworlds.nexon.com/play/88418dbd531d4024956888003ca0f7c7/)
+- [`[Remake] Miner Simulator`](https://maplestoryworlds.nexon.com/play/bb572bfdb5cc476faea296c2f7ed8060/)
+- [`[Remake] Monster Farm`](https://maplestoryworlds.nexon.com/play/ad9cad8b7930435dbc0a5f176fe13796/)
 
-## 사용법
+## Usage
 
-> 로컬 워크스페이스에 대한 자세한 내용은 [가이드](https://maplestoryworlds-creators.nexon.com/ko/docs?postId=1165)를 확인해 주세요.
+> For more details on Local Workspaces, please refer to the [guide](https://maplestoryworlds-creators.nexon.com/docs?postId=1165).
 
-1. 저장소를 Clone 합니다.
+1. Clone the repository.
    ```
    git clone https://github.com/MSW-Git/MSWRemake.git
    ```
-2. 메이플스토리 월드를 실행하고 메이커에서 새 월드를 만듭니다.
-3. **Workspace - WorldConfig - LocalWorkspace**를 활성화합니다.
-4. 로컬 워크스페이스로 지정한 폴더를 열고, 폴더에 있는 파일을 모두 삭제합니다.
-5. 리메이크하고자 하는 월드의 파일을 모두 복사하여 로컬 워크스페이스 폴더에 붙여넣습니다.
-6. 메이커로 돌아와서 **Workspace - MyDesk 우클릭 - Reimport All**을 선택합니다.
+2. Launch MapleStory Worlds and create a new world in the Maker.
+3. Enable **Workspace - WorldConfig - LocalWorkspace**.
+4. Open the folder selected as the local workspace and delete all files in it.
+5. Copy all files from the world you want to remake and paste them into the local workspace folder.
+6. Return to the Maker and select **Workspace - MyDesk right-click - Reimport All**.
