@@ -1,0 +1,187 @@
+@Component
+script DecoComponent extends Component
+
+	property number RefreshTime = 0
+
+	property number RefreshTimeMAX = 1
+
+	@Sync
+	property string OwnerId = ""
+
+	property boolean IsDragged = false
+
+	property number HoldTimer = 0
+
+	property number LayerSettingTimer = 0
+
+	property Entity player = nil
+
+	property boolean IsOutRange = false
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		self.player = _UserService.LocalPlayer
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		-- 엔티티를 드래그 합니다. ----------------------------------------------
+		if self.player.Name == self.OwnerId then
+			if self.IsDragged then -- 드래그 반영
+				self:EntityDragSetting(self.player)
+			end
+		end
+		
+		-- 최적화 ---------------------------------------------------------------
+		if self.RefreshTime >= self.RefreshTimeMAX then
+			self.RefreshTime = 0
+		else
+			self.RefreshTime = self.RefreshTime + delta
+			return
+		end
+		
+		-- 엔티티 동시 드래그 방지 ----------------------------------------------
+		if self.player.PlayerMove.ClickedEntity ~= self.Entity then
+			self.HoldTimer = 0
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void IsHold()
+		local player = _UserService.LocalPlayer
+		local player_Move = player.PlayerMove
+		-- 주인이 아닐 경우 -------------------
+		if player.Name ~= self.OwnerId then
+			return
+		end
+		
+		-- 동시 드래그 방지 -------------------
+		if player.PlayerMove.ClickedEntity ~= self.Entity then
+			return
+		end
+		
+		local gapPos_X = math.abs(player_Move.MousePos.x - player_Move.PanOrigin.x)
+		local gapPos_Y = math.abs(player_Move.MousePos.y - player_Move.PanOrigin.y)
+		
+		
+		if gapPos_X > 0.1 or gapPos_Y > 0.1 then
+			return
+		end
+		
+		local delay = 0.4 -- 해당 시간 동안 MousePress를 유지하면 드래그가 됨
+		
+		if player.PlayerMove.Type == "none" then
+			
+			self.HoldTimer = self.HoldTimer + 0.01
+			
+			if self.HoldTimer >= delay then
+		
+				-- 플레이어의 상태를 '엔티티 드래그 중'으로 변경합니다. -----------------------
+				if player.PlayerMove.DraggedType == "none" then
+					_SoundService:PlaySound("da48a979d2464d4ebe45c95818d04128", 1)
+					player.PlayerMove.DraggedType = "entity"
+				end
+				
+				self.HoldTimer = 0
+				self.IsDragged = true
+			end
+			
+		end
+	end
+
+	@ExecSpace("Server")
+	method void EntityDragDrop(Entity player, boolean isOutOfRange, Vector2 targetPos, Vector3 myPos)
+		log("isOutOfRange : ", isOutOfRange)
+		
+		
+		if not isOutOfRange then -- 농장 안이라면 --------------------
+			self.Entity.TransformComponent.WorldPosition = Vector3(targetPos.x, targetPos.y, 0)
+			
+		else -- 농장 밖으로 나간 상태라면 ----------------------------
+			local target_x = self.Entity.TransformComponent.Position.x
+			local target_y = self.Entity.TransformComponent.Position.y
+					
+			
+			if myPos.x <= _PlayerService.Range_X.x then
+				target_x = _PlayerService.Range_X.x
+		
+			elseif myPos.x >= _PlayerService.Range_X.y then
+				target_x = _PlayerService.Range_X.y
+			end
+					
+			if myPos.y <= _PlayerService.Range_Y.x then
+				target_y = _PlayerService.Range_Y.x
+				
+			elseif myPos.y >= _PlayerService.Range_Y.y then
+				target_y = _PlayerService.Range_Y.y
+		
+			end
+					
+			self.Entity.TransformComponent.WorldPosition = Vector3(target_x, target_y, 0)
+		
+		end
+		
+		self:EntityLayerSetting()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EntityMove(Vector2 targetPos)
+		-- 드래그 하고 있을 때는 클라 함수로 실행해서 동기화가 되지 않게 합니다.
+		self.Entity.TransformComponent.Position = Vector3(targetPos.x, targetPos.y, 0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EntityDragSetting(Entity player)
+		local entity_Transform = self.Entity.TransformComponent
+		
+		local color_value = Color(1, 1, 1, 1)
+		
+		
+		-- 드래그가 끝날 경우 되돌리기 -----------------------------------------------------------
+		if self.IsDragged then
+			if not player.PlayerMove.IsHold then
+				
+				self.IsDragged = player.PlayerMove.IsHold
+			
+				self:EntityDragDrop(player, self.IsOutRange, player.PlayerMove.MousePos, self.Entity.TransformComponent.Position)
+				
+				_SoundService:PlaySound("da48a979d2464d4ebe45c95818d04128", 1)
+		
+			
+			-- 드래그 중일 경우 마우스 좌표로 이동 ---------------------------------------------------
+			else
+				
+				self:EntityMove(player.PlayerMove.MousePos)
+		
+				if self.IsOutRange then
+					color_value = Color(1, 100/255, 100/255, 0.4)
+				else
+					color_value = Color(1, 1, 1, 0.4)
+				end
+		
+			end
+		end
+		
+		self.Entity.SpriteRendererComponent.Color = color_value
+	end
+
+	@ExecSpace("Server")
+	method void EntityLayerSetting()
+		-- Entity의 Layer를 갱신합니다. ---------------------------------------------------------------------------
+		self.Entity.SpriteRendererComponent.OrderInLayer = -(self.Entity.TransformComponent.Position.y * 200) + 800
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchHoldEvent(TouchHoldEvent event)
+		self:IsHold()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleTouchEvent(TouchEvent event)
+		local player = _UserService.LocalPlayer
+		player.PlayerMove.ClickedEntity = self.Entity
+	end
+
+end

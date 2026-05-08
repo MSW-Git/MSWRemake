@@ -1,0 +1,264 @@
+@Component
+script LeaderBoard extends Component
+
+	property string Type = ""
+
+	property Entity My_Rank = nil
+
+	property TextComponent Text_Name = nil
+
+	property TextComponent Text_Score = nil
+
+	property TextComponent Text_Rank = nil
+
+	property Entity Text_Loading = nil
+
+	property Entity List = nil
+
+	property Entity Item = nil
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		-- ===================================================
+		-- 전체 서버 리더보드라면
+		-- ===================================================
+		if self.Type == "World" then
+			local world_Function = function() 
+				self:Check_LeaderBoard_World()
+			end
+			
+			_TimerService:SetTimerRepeat(world_Function, 10, 0)
+			
+			
+		-- ===================================================
+		-- 서버 리더보드라면
+		-- ===================================================
+		elseif self.Type == "Room" then
+			local room_Function = function() 
+				self:Check_LeaderBoard_Room()
+			end	
+			
+			_TimerService:SetTimerRepeat(room_Function, 10, 0)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Check_LeaderBoard_World()
+		-- ===================================================
+		-- 월드 랭킹을 갱신합니다.
+		-- ===================================================
+		
+		local sortableDataStorage = _DataStorageService:GetSortableDataStorage("sortableStorage")
+		
+		if not isvalid(sortableDataStorage) then
+			return
+		end
+		
+		-- ===================================================
+		-- 상위 100명의 점수만 받아옵니다.
+		-- ===================================================
+		local curCount = 0
+		local maxCount = 100
+		
+		local table_Name = {}
+		local table_ID = {}
+		local table_Score = {}
+		
+		local callback = function(errorCode, pages)
+			-- ===============================================
+			-- 정상적으로 DB를 가져왔다면
+			-- ===============================================
+			if errorCode == 0 then
+				
+				while curCount < maxCount do
+				    local items = pages:GetCurrentPageDatas()
+		
+				    for _, item in pairs(items) do
+						
+						curCount = curCount + 1
+						
+						local nickName = item.KeyInfo.Tag
+						local userID = item.KeyInfo.Key
+						local score = item.Value
+		
+						if isvalid(nickName) and isvalid(userID) and isvalid(score) then
+							table.insert(table_Name, nickName)
+							table.insert(table_ID, userID)
+							table.insert(table_Score, tonumber(score))			
+						end
+						
+						-- maxCount까지 다 순회했다면 --------
+						if curCount == maxCount then
+							self:Refresh_LeaderBoard_UI(table_Name, table_ID, table_Score)
+							break
+						end
+				    end
+				 
+					-- ============================
+					-- 마지막 페이지면 리턴
+					-- ============================
+				    if pages.IsLastPage then
+						self:Refresh_LeaderBoard_UI(table_Name, table_ID, table_Score)
+				    		break
+				    end
+					-- ============================
+		
+				    pages:MoveToNextPageAndWait()
+				end
+				
+			end
+		end
+		
+		sortableDataStorage:GetSortedAsync(SortDirection.Descending, 0, 999999999, callback)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Check_LeaderBoard_Room()
+		-- ========================================================
+		-- 서버 랭킹을 갱신합니다.
+		-- ========================================================
+		local Portals = _EntityService:GetEntitiesByTag("Portal")
+		
+		local table_Name = {}
+		local table_ID = {}
+		local table_Score = {}
+		
+		
+		-----------------------------------------------------------
+		-- 인스턴스 맵에 위치한 플레이어를 가져옵니다.
+		-----------------------------------------------------------
+		for i = 1, #Portals do
+			
+			local strFindStart, strFindEnd = string.find(Portals[i].Name, _MapService.PlayerID_Seperator)
+		
+			local nickName = string.sub(Portals[i].Name, 1, strFindStart - 1)
+			local userID = string.sub(Portals[i].Name, strFindEnd + 1, #Portals[i].Name)
+		
+			local playerData = _DataStorageService:GetUserDataStorage(userID)
+			
+			if isvalid(playerData) then
+				--------------------------------------------------
+				-- GetAsync CallBack 함수입니다.
+				--------------------------------------------------
+				local callback = function(error, key, value) 
+				
+					if isvalid(value) then
+						table.insert(table_Name, nickName)
+						table.insert(table_ID, userID)
+						table.insert(table_Score, tonumber(value))
+		
+					end
+				end
+			
+				local score = playerData:GetAsync("Heart", callback)
+				
+			end
+		
+		end
+		
+		-----------------------------------------------------------
+		-- GetAsync 해오는 시간을 기다립니다.
+		-----------------------------------------------------------
+		wait(1)
+		
+		-----------------------------------------------------------
+		-- 로비에 위치한 플레이어를 가져옵니다.
+		-----------------------------------------------------------
+		local userKeys = _UserService.UserEntities.Keys
+		local userEntities = _UserService.UserEntities.Values
+		
+		for i = 1, #userKeys do
+			if isvalid(userEntities[i]) and isvalid(userKeys[i]) and userEntities[i].PlayerData.IsLoaded then
+				table.insert(table_Name, userEntities[i].PlayerComponent.Nickname)
+				table.insert(table_ID, userKeys[i])
+				table.insert(table_Score, userEntities[i].PlayerData.Heart)
+			end
+		end
+		
+		-----------------------------------------------------------
+		-- 내림차 순 정렬합니다.
+		-----------------------------------------------------------
+		for i = 1, #table_Name do
+			for x = 1, #table_Name - 1 do
+				if table_Score[x] < table_Score[x + 1] then
+					table_Score[x], table_Score[x + 1] = table_Score[x + 1], table_Score[x]
+					table_ID[x], table_ID[x + 1] = table_ID[x + 1], table_ID[x]
+					table_Name[x], table_Name[x + 1] = table_Name[x + 1], table_Name[x]
+				end
+			end	
+		end
+		
+		self:Refresh_LeaderBoard_UI(table_Name, table_ID, table_Score)
+	end
+
+	@ExecSpace("Client")
+	method void Refresh_LeaderBoard_UI(SyncTable<string> nickNames, SyncTable<string> userIDs, SyncTable<number> scores)
+		-- ===================================================
+		-- UI를 갱신합니다.
+		-- ===================================================
+		
+		-- =================================================
+		-- 내림차 순으로 1 ~ 10위 까지만 UI에 갱신합니다.
+		local length = 10
+		-- =================================================
+		
+		local list_Children = self.List.Children
+		
+		for i = #list_Children, length do
+			local newItem = self.Item:Clone("item_"..tostring(i))
+		end
+		
+		list_Children = self.List.Children
+		
+		local player = _UserService.LocalPlayer
+		local playerID = player.PlayerComponent.UserId
+		local myRank = "?"
+		
+		for i = 2, #list_Children do
+			 
+			local rankText = _EntityService:GetEntityByPath(list_Children[i].Path.."/Text_rank")
+			local nameText = _EntityService:GetEntityByPath(list_Children[i].Path.."/Text_name")
+			local scoreText = _EntityService:GetEntityByPath(list_Children[i].Path.."/Text_score")
+		 
+			if isvalid(nickNames[i-1]) and isvalid(scores[i-1]) and isvalid(userIDs[i-1]) then
+				
+				list_Children[i].Enable = true
+				
+				rankText.TextComponent.Text = tostring(math.floor(i - 1))
+				nameText.TextComponent.Text = _SystemService:StringTrimmer(nickNames[i-1], 24)
+				scoreText.TextComponent.Text = _SystemService:ThousandsSeparator(scores[i-1])
+			
+			else
+				list_Children[i].Enable = false
+			end
+			
+		end
+		
+		-- ===================================================
+		-- 플레이어의 등수를 확인합니다. (순위권 밖일 시 "?")
+		-- ===================================================
+		for i = 1, #userIDs do	
+			if userIDs[i] == playerID then
+				myRank = tostring(math.floor(i))
+				break
+			end
+		end
+		
+		-- ================================================
+		-- 하단 UI를 갱신합니다.
+		-- ================================================
+		
+		if not player.PlayerData.IsLoaded then
+			self.Text_Loading.Enable = true
+			self.My_Rank.Enable = false
+		else
+			self.Text_Loading.Enable = false
+			self.My_Rank.Enable = true
+		end
+		
+		self.Text_Name.Text = _SystemService:StringTrimmer(player.PlayerComponent.Nickname, 24)
+		self.Text_Score.Text = _SystemService:ThousandsSeparator(player.PlayerData.Heart)
+		self.Text_Rank.Text = myRank
+	end
+
+end

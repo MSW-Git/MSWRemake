@@ -1,0 +1,613 @@
+@Logic
+script TradeService extends Logic
+
+	property Entity TradeUI = "fefd7c3f-2bfd-4bec-b58f-3fe3a8d4492a"
+
+	property Entity CatpionUI = "cd4dbd5e-7da7-45bc-9ce3-a23ef34e3b3c"
+
+	property string Type = "none"
+
+	property Entity MonsterList = "0ae27029-51a3-44b6-b1d0-a62207575e30"
+
+	property string CaptionType = "Monster"
+
+	property Entity MonsterItem = "9144a24d-b1d7-43e9-8a7c-fea3dca56126"
+
+	property number CurSelectedSlotIDX = 0
+
+	property Entity PlayerSlotList = "10b84ff1-c8b6-464c-afe2-2c97ab1dd561"
+
+	property Entity PartnerSlotList = "951fa32a-0ca1-4199-823e-3cdb3695db64"
+
+	@ExecSpace("Server")
+	method void MakeTrade(Entity player, Entity partner)
+		if not isvalid(partner) or not isvalid(player) then
+			return
+		end
+		
+		-- 이미 교환 중인 상대일 경우 return합니다. ------------
+		if isvalid(player.PlayerTradeComponent.TraderID) or isvalid(partner.PlayerTradeComponent.TraderID) then
+			return
+		end
+		
+		-- 나의 데이터 불러오기가 완료된 상태가 아니라면 -------
+		if not player.PlayerData.IsLoaded then
+			return
+		end
+		
+		-- 파트너의 데이터 불러오기가 완료된 상태가 아니라면 ---
+		if not partner.PlayerData.IsLoaded then
+			return
+		end
+		
+		-- 상대방에게 거래 팝업을 띄웁니다. ------------------------------------------------------------
+		_LocalizationToastService:ShowTrade("Popup_MakeTrading", partner.PlayerComponent.Nickname, player.Name)
+		self:ShowTradePopUP(player, partner, partner.Name)
+	end
+
+	@ExecSpace("Client")
+	method void Open(Entity player, Entity partner)
+		if not isvalid(partner) or not isvalid(player) then
+			return
+		end
+		
+		local monsterUI = _EntityService:GetEntityByPath("/ui/MonsterGroup")
+		
+		if monsterUI.Enable then
+			monsterUI.Enable = false
+		end
+		
+		-- 이전에 교환할 때 UI를 초기화합니다. ----------------------------------------------------------
+		self.Type = "none"
+		self:ChangeButtonByType()
+		self:RefreshUpground("none")
+		
+		
+		self:RefreshTradeUI(player, partner)
+		
+		-- 교환 UI를 엽니다. ----------------------------------------------------------------------------
+		self.TradeUI.Enable = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Open_Caption()
+		-- 캡션 창을 엽니다. -------------------------
+		self.CatpionUI.Enable = true
+		
+		self:CreateMonsterItems()
+	end
+
+	@ExecSpace("Client")
+	method void Close(Entity target)
+		-- 교환 UI를 닫습니다. ---------------------------------------------------------------------------
+		
+		if self.TradeUI.Enable then
+			self.TradeUI.Enable = false
+		end
+		
+		self:DeleteListItems()
+		self:ResetAllSlotImage()
+		self:ResetTradeData(target)
+		self:Close_Caption()
+	end
+
+	@ExecSpace("Client")
+	method void Close_Caption()
+		-- 캡션 창을 닫습니다. ---------------------------------------------------------------------------
+		self.CatpionUI.Enable = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CreateMonsterItems()
+		local player = _UserService.LocalPlayer
+		-- 캡션 항목의 카테고리(몬스터, 아이템)를 변경하고 UI를 그에 맞게 갱신합니다. --
+		
+		
+		local monsterList_Children = self.MonsterList.Children
+		
+		---------------------------------
+		-- monster Item을 생성합니다.
+		---------------------------------
+		
+		if #monsterList_Children > 1 then
+			for i = 2, #monsterList_Children do
+				monsterList_Children[i].Trade_Monster_Item:RefreshInfo()
+			end
+			return
+		end
+			
+		for i = 1, #player.PlayerData.Minventory_Id do
+			local clonedMonsterItem = self.MonsterItem:Clone("monster"..tostring(math.floor(i)))
+			clonedMonsterItem.Trade_Monster_Item.Idx = i
+			clonedMonsterItem.Trade_Monster_Item:RefreshInfo()
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void AcceptTrade(Entity player, Entity partner)
+		if not isvalid(partner) then
+			return
+		end
+		
+		if not isvalid(player) then
+			return
+		end
+		
+		if isvalid(partner.PlayerTradeComponent.TraderID) then 
+			return
+		end
+		
+		if isvalid(player.PlayerTradeComponent.TraderID) then
+			return
+		end
+		
+		-- 파트너가 교환을 승낙했다면 -------------------------------------------------------------------
+		
+		partner.PlayerTradeComponent.TraderID = player
+		player.PlayerTradeComponent.TraderID = partner
+		
+		self:Open(player, partner, player.Name)
+		self:Open(partner, player, partner.Name)
+	end
+
+	@ExecSpace("Server")
+	method void DenyTrade(Entity player, Entity partner)
+		if not isvalid(partner) or not isvalid(player) then
+			return
+		end
+		
+		-- 파트너가 교환을 거절했다면 -------------------------------------------------------------------
+		_LocalizationToastService:ShowTrade("Popup_DenyTrading", "'"..partner.PlayerComponent.Nickname.."'", player.Name)
+	end
+
+	@ExecSpace("Client")
+	method void ShowTradePopUP(Entity player, Entity partner)
+		--===========================================
+		-- 서버 지연 대응 로직
+		--===========================================
+		local player_ = _UserService.LocalPlayer
+		
+		if player_.PlayerData.IsTransferring then
+			return
+		end
+		--===========================================
+		
+		if not isvalid(partner) or not isvalid(player) then
+			return
+		end
+		
+		-- 파트너에게 '팝업'을 띄웁니다. -----------------------------------------------------------------
+		
+		-----------------------
+		-- 교환을 승낙했다면 
+		-----------------------
+		local yes = function()
+			self:AcceptTrade(partner, player)
+		end
+		
+		
+		-----------------------
+		-- 교환을 거절했다면
+		-----------------------
+		local no = function()
+			self:DenyTrade(partner, player)
+		end	
+		
+		
+		-----------------------
+		-- 팝업을 띄웁니다.
+		-----------------------
+		
+		_UIPopup:Open(_LocalizationService.LocalTranslator:GetTextFormat("Popup_askToTrade", "'"..player.PlayerComponent.Nickname.."'"), yes, no, nil)
+		
+	end
+
+	@ExecSpace("Server")
+	method void ExitTrade(Entity player, Entity partner)
+		-- 교환 도중 거래창을 닫았다면 ------------------------------------------------------------------
+		
+		if not isvalid(player) or not isvalid(partner) then
+			return
+		end
+		
+		self:Close(partner, partner.Name)
+		
+		_LocalizationToastService:ShowTrade("Popup_CancelTrading", "'"..player.PlayerComponent.Nickname..".", partner.Name)
+	end
+
+	@ExecSpace("Server")
+	method void ExitTrade_Force(Entity player, Entity partner)
+		if not isvalid(player) or not isvalid(partner) then
+			return
+		end
+		
+		
+		self:Close(partner, partner.Name)
+		
+		_LocalizationToastService:ShowTrade("Popup_CancelTrading", "'"..player.PlayerComponent.Nickname..".", partner.Name)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshTradeUI(Entity player, Entity partner)
+		if not isvalid(player) or not isvalid(partner) then
+			return
+		end
+		
+		-- Trade UI를 플레이어의 정보에 맞게 갱신합니다. ------------------------------------------------
+		local partnerLike_Text = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Partner/UI_Player_Logo/Text_Like")
+		local partnerName_Text = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Partner/UI_Player_Logo/Player_Name")
+		local partnerLevel_Text = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Partner/UI_Player_Logo/Text_Level")
+		local partnerIcon_Image = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Partner/UI_Player_Logo/Image_Icon")
+		
+		
+		local playerLike_Text = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Player/UI_Player_Logo/Text_Like")
+		local playerName_Text = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Player/UI_Player_Logo/Player_Name")
+		local playerLevel_Text = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Player/UI_Player_Logo/Text_Level")
+		local playerIcon_Image = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Player/UI_Player_Logo/Image_Icon")
+		
+		
+		local partnerNickName = _SystemService:StringTrimmer(partner.PlayerComponent.Nickname, 24)
+		partnerLike_Text.TextComponent.Text = _SystemService:ThousandsSeparator(partner.PlayerData.Heart)
+		partnerName_Text.TextComponent.Text = partnerNickName
+		partnerLevel_Text.TextComponent.Text = tostring(math.floor(partner.PlayerData.Level))
+		partnerIcon_Image.SpriteGUIRendererComponent.ImageRUID = _DataService:GetCell("MyConDataSet", partner.PlayerData.EquippedMyConID, "ruid") 
+		
+		local playerNickName = _SystemService:StringTrimmer(player.PlayerComponent.Nickname, 24)
+		playerLike_Text.TextComponent.Text = _SystemService:ThousandsSeparator(player.PlayerData.Heart)
+		playerName_Text.TextComponent.Text = playerNickName
+		playerLevel_Text.TextComponent.Text = tostring(math.floor(player.PlayerData.Level))
+		playerIcon_Image.SpriteGUIRendererComponent.ImageRUID = _DataService:GetCell("MyConDataSet", player.PlayerData.EquippedMyConID, "ruid")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClickButton(Entity player)
+		if not isvalid(player) or not isvalid(player.PlayerTradeComponent.TraderID) then
+			return
+		end
+		
+		-- 두 플레이어 모두 교환 준비를 완료했다면 -------------------------------------------------------
+		if player.PlayerTradeComponent.TraderID.PlayerTradeComponent.IsReadyToTrade then
+			self:Trade(player, player.PlayerTradeComponent.TraderID)
+			return
+		end
+		
+		-- 교환하기 / 교환취소 버튼을 눌렀다면 ---------------------------------------------------------
+		if self.Type == "none" then
+			self:ChangePlayerTradeStatus(player, true)
+		
+		elseif self.Type =="isReady" then
+			self:ChangePlayerTradeStatus(player, false)
+		end
+		
+	end
+
+	@ExecSpace("Server")
+	method void RefreshUpgroundToPartner(Entity partner, string type)
+		if not isvalid(partner) or not isvalid(type) then
+			return
+		end
+		
+		-- 내 교환 상태를 파트너의 UI에 반영하도록 서버로 보냅니다. ------------------------------------
+		self:RefreshUpground(type, partner.Name)
+	end
+
+	@ExecSpace("Client")
+	method void RefreshUpground(string type)
+		if not isvalid(type) then
+			return
+		end
+		
+		-- 내 교환 상태를 파트너의 UI에 반영합니다. ----------------------------------------------------
+		if type == "isReady" then
+			local upground_Image = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Partner/Upground")
+			local check_Button = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Partner/Button") 
+			
+			upground_Image.Enable = true
+			check_Button.Enable = true
+			
+		elseif type == "none" then
+			local upground_Image = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Partner/Upground")
+			local check_Button = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Partner/Button") 
+			
+			upground_Image.Enable = false
+			check_Button.Enable = false
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ChangePlayerTradeStatus(Entity player, boolean status)
+		-- 플레이어의 현재 거래 상태를 변경합니다. -----------------------------------------------------
+		player.PlayerTradeComponent.IsReadyToTrade = status
+		
+		if status then
+			self:RefreshUpgroundToPartner(player.PlayerTradeComponent.TraderID, "isReady")
+		else
+			self:RefreshUpgroundToPartner(player.PlayerTradeComponent.TraderID, "none")
+		end
+	end
+
+	@ExecSpace("Server")
+	method void CloseUIByServer(Entity player)
+		-- 플레이어의 교환 UI를 닫습니다. ---------------------------------------------------------------
+		self:Close(player, player.Name)
+	end
+
+	@ExecSpace("Server")
+	method void Trade(Entity player, Entity partner)
+		if not isvalid(player) or not isvalid(partner) then
+			return
+		end
+		
+		-- 통신합니다. ================
+		_TransferService:Transfer("in", player.Name)
+		_TransferService:Transfer("in", partner.Name)
+		-- 통신합니다. ================
+		
+		
+		-----------------------
+		-- 아이템 획득
+		-----------------------
+		self:GiveItemToTrader(player, partner)
+		self:GiveItemToTrader(partner, player)
+		
+		
+		-----------------------
+		-- 아이템 제거
+		-----------------------
+		self:DeleteItemsTrader(player, partner)
+		self:DeleteItemsTrader(partner, player)
+		
+		
+		-----------------------
+		-- 상태 저장 
+		-----------------------
+		_SaveLoadService:Save_Monster(player)
+		_SaveLoadService:Save_Inventory(player)
+		
+		_SaveLoadService:Save_Monster(partner)
+		_SaveLoadService:Save_Inventory(partner)
+		
+		
+		-----------------------
+		-- UI를 닫습니다. 
+		-----------------------
+		self:Close(player, player.Name)
+		self:Close(partner, partner.Name)
+		
+		
+		-----------------------
+		-- 토스트 메세지 전송
+		-----------------------
+		_LocalizationToastService:ShowMessage("Popup_tradeClear", player.Name)
+		_LocalizationToastService:ShowMessage("Popup_tradeClear", partner.Name)
+		
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		_TransferService:Transfer("out", partner.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GiveItemToTrader(Entity player, Entity partner)
+		if not isvalid(player) or not isvalid(partner) then
+			return
+		end
+		
+		for i = 1, #player.PlayerTradeComponent.TraderItems do	
+			local itemIDX = player.PlayerTradeComponent.TraderItems[i]
+		
+			if itemIDX == 0 then
+				
+			-- 몬스터를 얻습니다. --------------------------------------------------------------------------
+			else
+				table.insert(player.PlayerData.Minventory_Exp, partner.PlayerData.Minventory_Exp[itemIDX])
+				table.insert(player.PlayerData.Minventory_Grade, partner.PlayerData.Minventory_Grade[itemIDX])
+				table.insert(player.PlayerData.Minventory_Id, partner.PlayerData.Minventory_Id[itemIDX])
+				table.insert(player.PlayerData.Minventory_Level, partner.PlayerData.Minventory_Level[itemIDX])
+				table.insert(player.PlayerData.Minventory_Mexp, partner.PlayerData.Minventory_Mexp[itemIDX])
+				table.insert(player.PlayerData.Minventory_Time, partner.PlayerData.Minventory_Time[itemIDX])
+				table.insert(player.PlayerData.Minventory_Entity, " ")
+				table.insert(player.PlayerData.Minventory_UniqueID, partner.PlayerData.Minventory_UniqueID[itemIDX])
+				table.insert(player.PlayerData.Minventory_Summoned, false)
+				table.insert(player.PlayerData.Minventory_Personality, partner.PlayerData.Minventory_Personality[itemIDX])
+				table.insert(player.PlayerData.Minventory_Skill_Id, partner.PlayerData.Minventory_Skill_Id[itemIDX])
+			end
+			
+		end
+		
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DeleteItemsTrader(Entity player, Entity partner)
+		if not isvalid(player) or not isvalid(partner) then
+			return
+		end
+		
+		local monsters = {}
+		
+		-- 아이템을 제거합니다. ------------------------------------------------------------------------
+		for i = 1, #partner.PlayerTradeComponent.TraderItems do
+			local itemIDX = partner.PlayerTradeComponent.TraderItems[i]
+				
+			if itemIDX == 0 then
+				
+			else
+				table.insert(monsters, player.PlayerData.Minventory_UniqueID[itemIDX])
+			end
+			
+		end
+		
+		-- 몬스터를 제거합니다. ------------------------------------------------------------------------
+		for i = 1, #monsters do
+			_MonsterService:ClearMonster(player, monsters[i], nil)
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ChangeButtonByType()
+		local upground_Image = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Player/Upground")
+		local button = _EntityService:GetEntityByPath("/ui/TradeGroup/Image_Board/Player/Button")
+		
+		if self.Type == "isReady" then
+			upground_Image.Enable = true
+			button.SpriteGUIRendererComponent.Color = Color(150/255, 80/255, 80/255, 1)
+			button.TextComponent.Text = "취소"
+		
+			
+		elseif self.Type == "none" then
+			upground_Image.Enable = false
+			button.SpriteGUIRendererComponent.Color = Color(133/255, 129/255, 255/255, 1)
+			button.TextComponent.Text = "교환하기"
+		
+		end
+	end
+
+	@ExecSpace("Server")
+	method void ResetTradeData(Entity player)
+		player.PlayerTradeComponent.IsReadyToTrade = false
+		player.PlayerTradeComponent.TraderID = nil
+			
+		table.clear(player.PlayerTradeComponent.TraderItems)
+		
+		for i = 1, 6 do
+			player.PlayerTradeComponent.TraderItems[i] = 0
+		end
+		
+		-- 생성된 Caption Item을 모두 Delete합니다. -----------
+		self:DeleteListItems(player.Name)
+	end
+
+	@ExecSpace("Server")
+	method void PutItem(Entity player, Entity partner, string type, number idx, number slot)
+		if type == "Monster" then -- 몬스터라면
+			partner.PlayerTradeComponent.TraderItems[slot] = idx
+			
+		elseif type == "Empty" then
+			partner.PlayerTradeComponent.TraderItems[slot] = 0
+		end
+		
+		if partner.PlayerTradeComponent.IsReadyToTrade then
+			_LocalizationToastService:ShowMessage("Popup_opponentChangeItem", partner.Name)
+			self:ChangePlayerTradeStatus(partner, false)
+		end
+		
+		self:RefreshMySlot(idx, slot, player.Name)
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+		
+	end
+
+	@ExecSpace("Client")
+	method void DeleteListItems()
+		-- 생성된 Caption Item을 모두 Delete합니다. -----------
+		local monsterList_Children = self.MonsterList.Children
+		
+		for i = 2, #monsterList_Children do
+			monsterList_Children[i]:Destroy()
+		end
+		
+	end
+
+	@ExecSpace("Client")
+	method void RefreshMySlot(number idx, number slot)
+		local player = _UserService.LocalPlayer
+		local slot_Children = self.PlayerSlotList.Children 
+		
+		local closeUI = _EntityService:GetEntityByPath(slot_Children[slot].Path.."/UI_Close")
+		local openUI = _EntityService:GetEntityByPath(slot_Children[slot].Path.."/UI_Open")
+				
+		
+		if idx == 0 then -- 빈 슬롯이라면
+			closeUI.Enable = true
+			openUI.Enable = false
+			
+		else -- 몬스터라면
+			closeUI.Enable = false
+			openUI.Enable = true
+		
+			local itemImage = _EntityService:GetEntityByPath(openUI.Path.."/UI_Mask/Image_Monster")
+			local gradeImage = _EntityService:GetEntityByPath(openUI.Path.."/UI_Grade")
+			local levelText = _EntityService:GetEntityByPath(openUI.Path.."/UI_Grade/UI_Level")
+			local text_Generation = _EntityService:GetEntityByPath(openUI.Path.."/UI_Generation")
+				
+			-- Monster의 Level을 가져옵니다. --------------------------
+			itemImage.SpriteGUIRendererComponent.ImageRUID = _DataService:GetCell("MonsterDataSet_Base", player.PlayerData.Minventory_Id[idx], "ruid")
+			levelText.TextComponent.Text = "Lv."..tostring(math.floor(player.PlayerData.Minventory_Level[idx]))	
+					
+			-- Monster의 Scale을 가져옵니다. --------------------------
+			local mon_x = tonumber(_DataService:GetCell("MonsterDataSet_UI", player.PlayerData.Minventory_Id[idx], "Thumbnail_x"))
+			local mon_y = tonumber(_DataService:GetCell("MonsterDataSet_UI", player.PlayerData.Minventory_Id[idx], "Thumbnail_y"))
+					
+			itemImage.SpriteGUIRendererComponent.EndFrameIndex = 0
+			itemImage.SpriteGUIRendererComponent.LocalScale = Vector2(mon_x, mon_y)
+					
+			-- 등급 반영 ----------------------------------------------
+			local grade = player.PlayerData.Minventory_Grade[idx]
+			
+			if grade == _MonsterService.Grade_0_Name then
+				gradeImage.SpriteGUIRendererComponent.Color = Color.FromHexCode(_MonsterService.Grade_0_Color)
+			
+			elseif grade == _MonsterService.Grade_1_Name then
+				gradeImage.SpriteGUIRendererComponent.Color = Color.FromHexCode(_MonsterService.Grade_1_Color)
+			
+			elseif grade == _MonsterService.Grade_2_Name then
+				gradeImage.SpriteGUIRendererComponent.Color = Color.FromHexCode(_MonsterService.Grade_2_Color)
+			
+			elseif grade == _MonsterService.Grade_3_Name then
+				gradeImage.SpriteGUIRendererComponent.Color = Color.FromHexCode(_MonsterService.Grade_3_Color)
+			
+			elseif grade == _MonsterService.Grade_4_Name then
+				gradeImage.SpriteGUIRendererComponent.Color = Color.FromHexCode(_MonsterService.Grade_4_Color)
+				
+			elseif grade == _MonsterService.Grade_5_Name then
+				gradeImage.SpriteGUIRendererComponent.Color = Color.FromHexCode(_MonsterService.Grade_5_Color)
+			end
+				
+			-- Monster의 세대를 반영합니다. ---------------------------
+			local MonsterGeneration = tonumber(_DataService:GetCell("MonsterDataSet_Base",  player.PlayerData.Minventory_Id[idx], "generation"))
+			
+			if MonsterGeneration == 1 then
+				text_Generation.TextComponent.Text = "★<color=#c8c8c8>★★★★</color>"
+				
+			elseif MonsterGeneration == 2 then
+				text_Generation.TextComponent.Text = "★★<color=#c8c8c8>★★★</color>"
+				
+			elseif MonsterGeneration == 3 then
+				text_Generation.TextComponent.Text = "★★★<color=#c8c8c8>★★</color>"
+				
+			elseif MonsterGeneration == 4 then
+				text_Generation.TextComponent.Text = "★★★★<color=#c8c8c8>★</color>"
+				
+			elseif MonsterGeneration == 5 then
+				text_Generation.TextComponent.Text = "★★★★★"
+			end
+		end
+	end
+
+	@ExecSpace("Client")
+	method void ResetAllSlotImage()
+		local partnerList_Children = self.PartnerSlotList.Children
+		local playerList_Children = self.PlayerSlotList.Children
+		
+		for i = 1, #partnerList_Children do
+			local openUI = _EntityService:GetEntityByPath(partnerList_Children[i].Path.."/UI_Open")
+			local closeUI = _EntityService:GetEntityByPath(partnerList_Children[i].Path.."/UI_Close")
+			
+			openUI.Enable = false
+			closeUI.Enable = true
+		end
+		
+		for i = 1, #playerList_Children do
+			local openUI = _EntityService:GetEntityByPath(playerList_Children[i].Path.."/UI_Open")
+			local closeUI = _EntityService:GetEntityByPath(playerList_Children[i].Path.."/UI_Close")
+			
+			openUI.Enable = false
+			closeUI.Enable = true
+		end
+	end
+
+end

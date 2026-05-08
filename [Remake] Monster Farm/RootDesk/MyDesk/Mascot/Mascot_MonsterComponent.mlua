@@ -1,0 +1,263 @@
+@Component
+script Mascot_MonsterComponent extends Component
+
+	@Sync
+	property Entity target = nil
+
+	@Sync
+	property number OutRange = 1.7
+
+	property number TelePortRange = 3
+
+	property number DirectionChangeRange = 0.15
+
+	@Sync
+	property boolean IsFollowing = false
+
+	property number RefreshTime = 0
+
+	property number RefreshTimeMAX = 0.5
+
+	property number Speed = 1.35
+
+	property number X_Direction = 0.2
+
+	property number Y_Direction = 0.15
+
+	property number Cur_X_Direction = 0.2
+
+	property number Cur_Y_Direction = 0.15
+
+	@Sync
+	property string Idle_RUID = "0a075016438f43b0b0cefe13720edc49"
+
+	@Sync
+	property string Walk_RUID = "2f7700012b7e49399595932f9ef8e1ac"
+
+	@Sync
+	property string ownerName = ""
+
+	@Sync
+	property number monsterID = 0
+
+	@ExecSpace("ClientOnly")
+	method void OnBeginPlay()
+		if self.Entity.Enable then
+			local function_Layer = function() self:LayerSet() end
+			_TimerService:SetTimerRepeat(function_Layer, 1, 0)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		if not isvalid(self.target) then
+			return
+		end
+		
+		if self.Entity.CurrentMapName == "lobby" or self.Entity.CurrentMapName == "farm" then
+			if self.IsFollowing then
+				self:EntityMove(delta)
+			
+			else
+				self:EntityIdle(delta, self.Cur_X_Direction, self.Cur_Y_Direction)
+			end
+		end
+		
+		
+		-------------------------------------------------------------------
+		if self.RefreshTime >= self.RefreshTimeMAX then
+			self.RefreshTime = 0
+		else
+			self.RefreshTime = self.RefreshTime + delta
+			return
+		end
+		
+		
+		self:CheckPlayerIsAway()
+		
+		self:SetMascotName()
+		
+		if self.Entity.CurrentMapName ~= "lobby" then
+			return
+		end
+		
+		
+		
+		-------------------------------------------------------------------
+		-- 플레이어가 몬스터로부터 멀어져 있는 상태인지 확인합니다. 
+		-------------------------------------------------------------------
+		
+		-------------------------------------------------------------------
+		-- 몬스터가 IDLE 상태일 경우, 랜덤하게 이동 시킵니다.
+		-------------------------------------------------------------------
+		if not self.IsFollowing then
+			local x_RandNumber = math.random(1, 10)
+			local y_RandNumber = math.random(1, 10)
+			
+			if x_RandNumber == 1 then
+				self.Cur_X_Direction = -math.abs(self.X_Direction)
+				
+			elseif x_RandNumber == 2 then
+				self.Cur_X_Direction = math.abs(self.X_Direction)
+				
+			elseif x_RandNumber <= 5 then
+				self.Cur_X_Direction = 0
+			end 
+			
+			if y_RandNumber == 1 then
+				self.Cur_X_Direction = -math.abs(self.Y_Direction)
+				
+			elseif y_RandNumber == 2 then
+				self.Cur_Y_Direction = math.abs(self.Y_Direction)
+				
+			elseif y_RandNumber <= 5 then
+				self.Cur_Y_Direction = 0
+			end
+		
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckPlayerIsAway()
+		--------------------------------------------------------------------------------
+		-- 플레이어가 마스코트 몬스터로부터 멀리 떨어져 있는 상태인지 확인합니다.
+		--------------------------------------------------------------------------------
+		
+		local myPos = self.Entity.TransformComponent.WorldPosition
+		local playerPos = self.target.TransformComponent.WorldPosition
+		
+		
+		-- 플레이어, 몬스터 간 거리 차이 -----------------------
+		local gapPos = math.abs(myPos.x - playerPos.x) + math.abs(myPos.y - playerPos.y)
+		
+		if self.Entity.CurrentMapName == "land" then
+			if not self.Entity.RigidbodyComponent:PredictFootholdEnd(0.5, true) then
+				self:EntityJump()
+				
+			elseif not self.Entity.RigidbodyComponent:PredictFootholdEnd(0.5, false) then
+				self:EntityJump()
+			end
+		end
+		
+		-- 플레이어를 따라가고 있는 중이면 실행하지 않습니다. --
+		if self.IsFollowing then
+		
+			-- 거리가 지나치게 멀어지면 플레이어 옆으로 텔레포트
+			if gapPos >= self.TelePortRange then
+				_EffectService:PlayEffect("04a798545f754abaaeee838baa93b098", self.target.CurrentMap, self.Entity.TransformComponent.Position, 0, Vector3(1,1,1), false)
+				
+				if self.Entity.CurrentMapName == "lobby" or self.Entity.CurrentMapName == "farm" then
+					self.Entity.TransformComponent.WorldPosition = self.target.TransformComponent.WorldPosition
+					
+				elseif self.Entity.CurrentMapName == "land" then
+					self.Entity.MovementComponent:SetPosition(Vector2(self.target.TransformComponent.Position.x, self.target.TransformComponent.Position.y))
+				end
+				
+				_EffectService:PlayEffect("04a798545f754abaaeee838baa93b098", self.target.CurrentMap, self.Entity.TransformComponent.Position, 0, Vector3(1,1,1), false)
+			end
+		
+		end
+		--------------------------------------------------------
+		
+		-- 일정 범위 이상으로 멀어져 있는 상태라면 -------------
+		self.IsFollowing = (gapPos >= self.OutRange) 
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LayerSet()
+		if isvalid(self.target) then
+			self.Entity.SpriteRendererComponent.SortingLayer = self.target.AvatarRendererComponent.SortingLayer
+		end
+		self.Entity.SpriteRendererComponent.OrderInLayer =  -(self.Entity.TransformComponent.Position.y * 200) + 800
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EntityMove(number delta)
+		-------------------------------------------------------------------
+		-- 플레이어를 따라가고 있는 중이라면
+		-------------------------------------------------------------------
+		
+		local myPos = self.Entity.TransformComponent.WorldPosition
+		
+		local xPos = math.abs(myPos.x - self.target.TransformComponent.WorldPosition.x)
+		local yPos = math.abs(myPos.y - self.target.TransformComponent.WorldPosition.y)
+		local gapPos = xPos + yPos
+		
+		-- 가속력 ---------------------------------------------------------
+		local xAxel = xPos > 0 and (xPos / gapPos) * 2 or 0
+		local yAxel = yPos > 0 and (yPos / gapPos) * 2 or 0
+		
+		
+		-- X축 이동 -------------------------------------------------------
+		if myPos.x > self.target.TransformComponent.WorldPosition.x then
+			self.Entity.TransformComponent.WorldPosition.x = self.Entity.TransformComponent.WorldPosition.x - (delta * xAxel * self.Speed)
+		
+		
+			if xPos >= self.DirectionChangeRange then
+				self.Entity.SpriteRendererComponent.FlipX = false
+			end
+			
+		else
+			self.Entity.TransformComponent.WorldPosition.x = self.Entity.TransformComponent.WorldPosition.x + (delta * xAxel * self.Speed)
+			
+			if xPos >= self.DirectionChangeRange then
+				self.Entity.SpriteRendererComponent.FlipX = true
+			end
+		end
+		
+		
+		-- Y축 이동 -------------------------------------------------------
+		
+		if myPos.y > self.target.TransformComponent.WorldPosition.y then
+			self.Entity.TransformComponent.WorldPosition.y = self.Entity.TransformComponent.WorldPosition.y - (delta * yAxel * self.Speed)
+		else
+			self.Entity.TransformComponent.WorldPosition.y = self.Entity.TransformComponent.WorldPosition.y + (delta * yAxel * self.Speed)
+		end
+		
+		self.Entity.SpriteRendererComponent.SpriteRUID = self.Walk_RUID
+		
+		if gapPos <= self.OutRange * 0.5 then
+			if not self.Entity.SpriteRendererComponent.FlipX then
+		 		self.Cur_X_Direction = -math.abs(self.X_Direction)
+			else
+			 	self.Cur_X_Direction = math.abs(self.X_Direction)		
+			end
+				
+			self.IsFollowing = false
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void EntityIdle(number delta, number Cur_X_Direction, number Cur_Y_Direction)
+		-- 몬스터 IDLE 모션 ---------------------------------------------------------------
+		self.Entity.TransformComponent.Position.x = self.Entity.TransformComponent.Position.x - (delta * Cur_X_Direction)
+		
+		if math.abs(Cur_X_Direction) > 0 or math.abs(Cur_Y_Direction) > 0 then
+			self.Entity.SpriteRendererComponent.SpriteRUID = self.Walk_RUID
+		else
+			self.Entity.SpriteRendererComponent.SpriteRUID = self.Idle_RUID
+		end
+		
+		if Cur_X_Direction > 0 then
+			self.Entity.SpriteRendererComponent.FlipX = false
+			
+		elseif Cur_X_Direction < 0 then
+			self.Entity.SpriteRendererComponent.FlipX = true
+		end
+		
+		self.Entity.TransformComponent.Position.y = self.Entity.TransformComponent.Position.y - (delta * Cur_Y_Direction)
+	end
+
+	@ExecSpace("Server")
+	method void EntityJump()
+		self.Entity.MovementComponent:Jump()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetMascotName()
+		local monsterDataSetName = "MonsterDataSet_Base"
+		local str_Name = "["..self.ownerName.."] ".._LocalizationService.LocalTranslator:GetText(_DataService:GetCell(monsterDataSetName, self.monsterID, "name"))
+		self.Entity.NameTagComponent.Name = str_Name
+	end
+
+end

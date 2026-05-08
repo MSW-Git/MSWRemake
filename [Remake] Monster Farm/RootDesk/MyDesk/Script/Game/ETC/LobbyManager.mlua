@@ -1,0 +1,193 @@
+@Component
+script LobbyManager extends Component
+
+	@Sync
+	property SyncTable<string> Portals
+
+	@Sync
+	@HideFromInspector
+	property number RefreshTime = 0
+
+	@Sync
+	@HideFromInspector
+	property number RefreshTimeMAX = 1
+
+	@Sync
+	property Entity RandomPortal = "462ca502-c119-4aae-ad1f-c31ac936045a"
+
+	@ExecSpace("ServerOnly")
+	method void OnBeginPlay()
+		local dataSetName = "PortalDataSet"
+		for i = 1, _DataService:GetRowCount(dataSetName) do
+			table.insert(self.Portals, "x")
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void OnUpdate(number delta)
+		if self.RefreshTime >= self.RefreshTimeMAX then
+			self.RefreshTime = 0
+		else
+			self.RefreshTime = self.RefreshTime + delta
+			return
+		end
+		
+		-- 포탈을 소환합니다. --------------
+		self:SummonPortal()
+		
+		wait(0.5)
+		-- 포탈을 제거합니다. --------------
+		self:DeletePortal()
+		
+		-- 포탈 이름을 갱신합니다. ---------
+		self:RefreshPortalName()
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SummonPortal()
+		-- 인스턴스 맵에 대응하는 포탈을 생성합니다. ----------------------------------------
+		local instanceMaps = _InstanceMapService.InstanceMaps.Keys
+		local portals = _EntityService:GetEntitiesByTag("Portal")
+		
+		local dataSetName = "PortalDataSet"
+		local dummyPortal = _EntityService:GetEntityByPath("/maps/lobby/dummyPortal")
+		
+		
+		----------------------------------------------------------------------
+		-- 생성된 농장이 두 개 이상일 때만 '무작위 이동' 포탈을 활성화 합니다.
+		----------------------------------------------------------------------
+		self.RandomPortal.Enable = (#instanceMaps >= 2)
+		
+		if self.RandomPortal.Enable then
+			table.clear(self.RandomPortal.MapPortalToRandomFarm.FarmList)
+			
+			for i = 1, #instanceMaps do
+				table.insert(self.RandomPortal.MapPortalToRandomFarm.FarmList, instanceMaps[i])
+			end
+		end
+		
+		
+		----------------------------------------------------------------------
+		-- 생성된 인스턴스 맵의 수에 맞게 포탈을 생성합니다.
+		----------------------------------------------------------------------
+		for i = 1, #instanceMaps do
+			local isFind = false
+			
+		
+			------------------------------------------------------------------------
+			-- 최대 인원 수 이상으로 농장이 생성되었을 때 예외처리 
+			------------------------------------------------------------------------
+			if i > #self.Portals then
+				break
+			end
+			------------------------------------------------------------------------
+			
+			
+			-- 기존에 이미 생성된 포탈이 있는지 확인합니다. ------------------------
+			for x = 1, #portals do
+				if portals[x].MapPortal.Destination == instanceMaps[i] then
+					isFind = true
+					break
+				end
+			end
+			
+			-- 기존에 생성된 포탈이 없다면 새로운 포탈을 생성합니다. ---------------
+			
+		
+			if not isFind then
+				for y = 1, #self.Portals do
+					
+					
+					if self.Portals[y] == 'x' then
+						self.Portals[y] = 'o'
+		
+						local clonedPortal = dummyPortal:Clone(instanceMaps[i])
+						local clonedPortalText = _EntityService:GetEntityByPath(clonedPortal.Path.."/Text_OwnerName")
+						
+						clonedPortal.Enable = false
+						
+						clonedPortal.MapPortal.Destination = instanceMaps[i]
+						clonedPortal.MapPortal.idx = y
+						clonedPortal.TagComponent.Tags[2] = "Portal"
+						
+						local xPos = tonumber(_DataService:GetCell(dataSetName, y, "posX"))
+						local yPos = tonumber(_DataService:GetCell(dataSetName, y, "posY"))
+		
+						clonedPortal.TransformComponent.Position = Vector3(xPos, yPos, 0) 
+						
+						break
+					end
+				end	
+			end
+			
+			
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void DeletePortal()
+		-- 유효하지 않은 포탈을 삭제합니다. --------------------------------------------------
+		local portals = _EntityService:GetEntitiesByTag("Portal")
+		local instanceMaps = _InstanceMapService.InstanceMaps.Keys
+		
+		local deletePortals = {}
+		for i = 1, #portals do
+			local isExist = false
+			
+			for x = 1, #instanceMaps do
+				if portals[i].MapPortal.Destination == instanceMaps[x] then
+					isExist = true
+					break
+				end
+			end
+		
+			
+			if not isExist then
+				if portals[i].MapPortal.Destination ~= '' then
+					self.Portals[portals[i].MapPortal.idx] = 'x'
+					portals[i]:Destroy()
+				end
+			end
+			
+		end
+	end
+
+	@ExecSpace("Client")
+	method void RefreshPortalName()
+		-- 마을에 생성된 포탈의 이름을 오너의 이름으로 갱신합니다. ---------------------------------
+		local Portals = _EntityService:GetEntitiesByTag("Portal")
+		
+		for i = 1, #Portals do
+			
+			Portals[i].Enable = true
+			
+			local portalNameTag = _EntityService:GetEntityByPath(Portals[i].Path.."/UI_HotKey")
+			
+			local strFindStart, strFindEnd = string.find(Portals[i].Name, _MapService.PlayerID_Seperator)
+		
+			local portalName = string.sub(Portals[i].Name, 1, strFindStart - 1)
+			
+			local farmName = _LocalizationService.LocalTranslator:GetTextFormat("Farm_name", portalName)
+			if portalNameTag.TextComponent.Text ~= farmName then
+				portalNameTag.TextComponent.Text = farmName
+				portalNameTag.UI_HotKey:RefreshHotKey()
+			end
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	@EventSender("Service", "UserService")
+	handler HandleUserLeaveEvent(UserLeaveEvent event)
+		-- Parameters
+		local UserId = event.UserId
+		--------------------------------------------------------
+		
+		local userEntity = _UserService:GetUserEntityByUserId(UserId)
+		
+		if isvalid(userEntity.PlayerTradeComponent.TraderID) then
+			_TradeService:ExitTrade_Force(userEntity, userEntity.PlayerTradeComponent.TraderID)
+		end
+		
+	end
+
+end

@@ -1,0 +1,188 @@
+@Component
+script Store_BuyButton extends Component
+
+	property Store StoreUI = "8fbf4e87-75a8-484e-98d6-3004de2ca380"
+
+	property string ButtonState = ""
+
+	@ExecSpace("ClientOnly")
+	method void OnClick()
+		--===========================================
+		-- 서버 지연 대응 로직
+		--===========================================
+		local player = _UserService.LocalPlayer
+		
+		if player.PlayerData.IsTransferring then
+			return
+		end
+		--===========================================
+		
+		local dataSetName = "ItemDataSet_Store"
+		
+		local itemType = _DataService:GetCell(dataSetName, self.StoreUI.ShowItemId, "store_type")
+		local reward_ItemID = tonumber(_DataService:GetCell(dataSetName, self.StoreUI.ShowItemId, "itemId"))
+		
+		-- 구매하기 상태라면 -------------------------------------------------------------------------------------------------
+		
+		if self.ButtonState == "isBuyPossible" then
+			-- 구매할 아이템의 RUID와 Store Type을 가져옵니다. ---------------------------------------------------------------
+		
+			-- 구매하려는 아이템의 Type에 따라 다르게 상호작용을 합니다. -----------------------------------------------------
+			if itemType == "몬스터" then
+				
+				--=======================================================================
+				-- 최대 몬스터 보유 숫자에 도달했다면
+				--=======================================================================
+				if #player.PlayerData.Minventory_Id >= _PlayerService.MaxHaveMonster then
+					_PlayerService:MonsterSpaceFullAlert()
+					return
+				end
+				--=======================================================================
+				
+				self:BuyItem(itemType) 
+				
+			elseif itemType == "소모품" then
+				
+				-- 아이템을 담을 공간이 있다면 --
+				local playerCapacity = _PlayerService:Check_Inventory(player)
+				if playerCapacity < player.PlayerData.MaxCapacity then
+					self:BuyItem(itemType)
+				else
+					_PlayerService:SpaceFullAlert()
+				end
+			
+			elseif itemType == "일꾼" then
+				self:BuyItem(itemType) 
+		
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CheckIsBuyPossible()
+		-- 필요한 아이템의 슬롯 개수를 의미합니다. ------------
+		local requireItemCount = #self.StoreUI.RequiredItemId
+		local player = _UserService.LocalPlayer
+		
+		
+		local item_ID = tonumber(_DataService:GetCell("ItemDataSet_Store", self.StoreUI.ShowItemId, "itemId")) 
+		local item_Type = _DataService:GetCell("ItemDataSet_Store", self.StoreUI.ShowItemId, "store_type")
+		
+		
+		-- 몬스터의 경우 언제나 구매가 가능합니다. ------------------------------------------------
+		if item_Type == "몬스터" then
+			self.ButtonState = "isBuyPossible" 
+			 
+		elseif item_Type == "소모품" then
+			self.ButtonState = "isBuyPossible"
+		
+		elseif item_Type == "일꾼" then
+			self.ButtonState = "isBuyPossible"
+			
+		end
+		
+		if self.ButtonState == "isBuyPossible" then
+			for i = 1, #self.StoreUI.RequiredItemId do
+				local getItemQuantity = 0 -- 인벤토리에 분할된 동일 아이템을 모두 가져오기 위함
+				
+				-- 필요한 아이템이 '재화'라면 --
+				if self.StoreUI.RequiredItemId[i] == _PlayerService.Gold_ID then
+					getItemQuantity = player.PlayerData.Gold
+				
+				elseif self.StoreUI.RequiredItemId[i] == _PlayerService.Berry_ID then
+					getItemQuantity = player.PlayerData.Berry
+					
+				elseif self.StoreUI.RequiredItemId[i] == _PlayerService.Ruby_ID then
+					getItemQuantity = player.PlayerData.Ruby
+					
+					
+				-- 필요한 아이템이 '재화'가 아니라면 --
+				else
+					for x = 1, #player.PlayerData.Inventory_Name do 
+						if self.StoreUI.RequiredItemId[i] == player.PlayerData.Inventory_Name[x] then
+							getItemQuantity = player.PlayerData.Inventory_Quantity[x]
+							break
+						end
+					end
+				end
+				
+				-- 구매하기에 충분한 아이템(재료)이 있다면 --
+				if getItemQuantity >= self.StoreUI.RequiredItemQuantity[i] then 
+					requireItemCount = requireItemCount - 1
+				end
+			end
+			
+			if requireItemCount == 0 then
+				-- 구매 가능
+			else
+				self.ButtonState = "isBuyImpossible"
+			end
+		end
+		
+		
+		-- 버튼의 상태를 변경합니다. ---------------------------------------------------------------------
+		self:ChangeButtonState() 
+			
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeButtonState()
+		-- status가 true면 = 구매 가능, false면 = 구매 불가 -------------------------------------
+		
+		-- 구매 가능한 상태라면 버튼을 활성화하고 텍스트를 변경합니다. --------------------------
+		local buttonState = self.ButtonState
+		
+		self.Entity.ButtonComponent.Enable = (buttonState ~= "isBuyImpossible")
+		self.Entity.TextComponent.FontColor.a = (buttonState ~= "isBuyImpossible") and 1 or 0.3
+		
+		if self.ButtonState == "isBuyPossible" then
+			self.Entity.ButtonComponent.Enable = true
+			self.Entity.TextComponent.Text = _LocalizationService.LocalTranslator:GetText("UI_buy")
+			self.Entity.TextComponent.FontColor.a = 1
+			
+		elseif self.ButtonState == "isBuyImpossible" then
+			self.Entity.ButtonComponent.Enable = false
+			self.Entity.TextComponent.Text = _LocalizationService.LocalTranslator:GetText("UI_lackOfGold")
+			self.Entity.TextComponent.FontColor.a = 0.3
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void BuyItem(string itemType)
+		-- 해당 아이템을 구매합니다. ---------------
+		local player = _UserService.LocalPlayer
+		
+		-- 통신합니다. ================
+		_TransferService:Transfer("in")
+		--=============================
+			
+		local reward_ItemID = tonumber(_DataService:GetCell("ItemDataSet_Store", self.StoreUI.ShowItemId, "itemId")) --아이템의 아이디
+		
+		if itemType == "몬스터" then
+			_StoreService:Buy_MonsterItem(player, self.StoreUI.RequiredItemId, self.StoreUI.RequiredItemQuantity, reward_ItemID)
+			
+		elseif itemType == "소모품" then
+			_StoreService:Buy_Item(player, self.StoreUI.RequiredItemId, self.StoreUI.RequiredItemQuantity, reward_ItemID)
+			
+		elseif itemType == "일꾼" then
+			_StoreService:Buy_Helper(player, self.StoreUI.RequiredItemId, self.StoreUI.RequiredItemQuantity, reward_ItemID)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("Self")
+	handler HandleButtonStateChangeEvent(ButtonStateChangeEvent event)
+		-- Parameters
+		local state = event.state
+		--------------------------------------------------------
+		
+		if tostring(state) == "Clicked" then
+			self:CheckIsBuyPossible()
+			
+			if self.ButtonState ~= "isBuyImpossible" then
+				self:OnClick()
+			end
+		end
+	end
+
+end

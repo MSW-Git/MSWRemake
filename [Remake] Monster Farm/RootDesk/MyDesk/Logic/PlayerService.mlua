@@ -1,0 +1,972 @@
+@Logic
+script PlayerService extends Logic
+
+	property number MaxLevel = 18
+
+	property number MaxHaveMonster = 70
+
+	property number Gold_ID = 20001
+
+	property number Berry_ID = 20002
+
+	property number Ruby_ID = 20003
+
+	property Vector2 Range_X = Vector2(-8,7.2)
+
+	property Vector2 Range_Y = Vector2(-0.4,3.65)
+
+	@ExecSpace("ServerOnly")
+	method void GetGold(Entity player, number value)
+		-- 재화를 얻습니다. -------------------------------------
+		player.PlayerData.Gold = player.PlayerData.Gold + value
+		
+		if player.PlayerData.Gold < 0 then
+			player.PlayerData.Gold = 0 
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetBerry(Entity player, number value)
+		-- 베리를 얻습니다. -------------------------------------
+		player.PlayerData.Berry = player.PlayerData.Berry + value
+		
+		if value > 0 then 
+		player.PlayerSubData.GetBerryCount = player.PlayerSubData.GetBerryCount + value --퀘스트 조건 
+		
+		end
+		
+		if player.PlayerData.Berry < 0 then
+			player.PlayerData.Berry = 0
+		end
+		
+		_GetPopupService:ShowMessage(player, self.Berry_ID, value, nil, nil, nil, player.Name)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void GetRuby(Entity player, number count, number valuePerItem)
+		player.PlayerData.Ruby = player.PlayerData.Ruby + (valuePerItem * count)
+		
+		player.PlayerSubData.GetRubyCount = player.PlayerSubData.GetRubyCount + (valuePerItem * count) -- 퀘스트 조건 
+		
+		
+		_GetPopupService:ShowMessage(player, self.Ruby_ID, valuePerItem * count, nil, nil, nil, player.Name)
+		
+		if player.PlayerData.Ruby < 0 then
+			player.PlayerData.Ruby = 0
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GetHeart(Entity giver, Entity receiver)
+		local giverName = giver.PlayerComponent.Nickname
+		local receiverName = receiver.PlayerComponent.Nickname
+		
+		
+		if not isvalid(giver) then
+			return
+		end
+		
+		if not isvalid(receiver) then
+			-- 통신 종료 ================================
+			_TransferService:Transfer("out", giver.Name)
+			-- ==========================================
+			return
+		end
+		
+		if not giver.PlayerData.IsLoaded then
+			-- 통신 종료 ================================
+			_TransferService:Transfer("out", giver.Name)
+			-- ==========================================
+			return
+		end
+		
+		if not receiver.PlayerData.IsLoaded then
+			-- 통신 종료 ================================
+			_TransferService:Transfer("out", giver.Name)
+			-- ==========================================
+			return
+		end
+		
+		-- 오늘 Receiver에게 이미 인기도를 준 상태인지 확인합니다. --------------------------
+		local isExist = false
+		
+		for i = 1, #giver.PlayerSubData.DailyGiveHeartList do
+			if giver.PlayerSubData.DailyGiveHeartList[i] == receiver.Name then
+				isExist = true
+				break
+			end
+		end
+		
+		-- 오늘 이미 Receiver에게 인기도를 준 상태라면 --------------------------------------
+		if isExist then
+			_LocalizationToastService:FailToRaiseHeart(receiverName, giver.Name)
+			-- 통신 종료 ================================
+			_TransferService:Transfer("out", giver.Name)
+			-- ==========================================
+			return
+		end
+		
+		-- 인기도 Toast Message를 띄웁니다. -------------------------------------------------
+		_LocalizationToastService:RaiseHeartMutual(giverName, receiverName, receiver.Name)
+		_LocalizationToastService:RaiseHeart(receiverName, giver.Name)
+		
+		
+		-- Receiver의 인기도를 올립니다. ----------------------------------------------------
+		receiver.PlayerData.Heart = receiver.PlayerData.Heart + 1
+		
+		
+		----------------------------------------------
+		-- 랭킹을 저장합니다.
+		----------------------------------------------
+		_SaveLoadService:Save_Rank(receiver, true)
+		
+		
+		-- 서브 퀘스트 조건: 인기도 3개 주기 ----------------------------------------------------
+		giver.PlayerSubData.GetPopularityCount = giver.PlayerSubData.GetPopularityCount + 1 
+		
+		-- Receiver의 오늘 인기도 목록에 해당 플레이어의 이름을 넣습니다. -------------------
+		table.insert(giver.PlayerSubData.DailyGiveHeartList, receiver.Name)
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", giver.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("Server")
+	method void GetItem(Entity player, number id, number quantity, boolean forceStack)
+		local playerCapacity = self:Check_Inventory(player)
+		
+		if (playerCapacity + quantity <= player.PlayerData.MaxCapacity) or forceStack then -- 아이템을 얻을 수 있는 상태라면
+			
+			player.PlayerSubData.Noti_Inv = 1
+		
+			-- 해당 아이템의 최대 보유 갯수를 받아옵니다. ---------------------------------------------------------------
+			local maxQuantity = tonumber(_DataService:GetCell("ItemDataSet_Base", (id - 20000), "max_quantity"))
+			-- 아이템의 type
+			local type = _DataService:GetCell("ItemDataSet_Base", (id - 20000), "type")
+		
+			--서브 퀘스트: 식재료 얻기 ----------------------------------------------------------------------
+			if type =="식재료" then
+				player.PlayerSubData.GetIngredient = player.PlayerSubData.GetIngredient + 1
+			end
+			
+		
+		
+		
+			-- 인벤토리에서 해당 아이템이 있나 확인합니다. ----------------------------------------------------------------
+			for i = 1, #player.PlayerData.Inventory_Name do
+				
+				-- 인벤토리에 아이템이 존재하고 최대 스택 수량까지 스택되지 않았다면 --------------------------------------
+				if player.PlayerData.Inventory_Name[i] == id and player.PlayerData.Inventory_Quantity[i] ~= maxQuantity then 
+			
+					local number = player.PlayerData.Inventory_Quantity[i] + quantity -- 더한 값
+			
+					if number > maxQuantity then -- 더한 값이 최대 스택 수량을 넘었다면 재귀함수로 넘겨 다시 더합니다. ---
+						local current_number = number - maxQuantity -- 최대 스택 수량까지 남은 개수
+						
+						player.PlayerData.Inventory_Quantity[i] = maxQuantity -- 아이템을 얻습니다.
+						self:GetItem(player, id, current_number, forceStack)
+			
+					else -- 더할 값이 최대 스택 수량을 넘기지 않았다면 ---------------------------------------------------
+						player.PlayerData.Inventory_Quantity[i] = number -- 아이템을 얻습니다
+					end
+					
+					return
+				end
+			end
+			
+			-- 플레이어의 인벤토리에 해당 아이템이 없을 경우 ----------------------------------------------------------------------
+			table.insert(player.PlayerData.Inventory_Name, id)
+			table.insert(player.PlayerData.Inventory_Quantity, quantity)
+			table.insert(player.PlayerData.Inventory_Type, type)
+		
+		
+		
+		
+			
+			return
+			
+		else -- 적재가 불가능할 경우
+			_PlayerService:SpaceFullAlert(player.Name)
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GetMonster(Entity player, number id, string grade)
+		local playerState = player.PlayerData
+		
+		local dataSetName = "MonsterDataSet_Base"
+		local dataSet_Length = _DataService:GetRowCount(dataSetName)
+		
+		-- 마스코트 인덱스를 1 올립니다. -------------------------------------------------------------------
+		if player.PlayerData.MInventory_MascotPet_Id ~= 0 then
+			player.PlayerData.MInventory_MascotPet_Id = player.PlayerData.MInventory_MascotPet_Id + 1
+		end
+		
+		-- Monster Table Generate --------------------------------------------------------------------------	
+		table.insert(playerState.Minventory_Id, 1, id)
+		table.insert(playerState.Minventory_Exp, 1, 0) 
+		table.insert(playerState.Minventory_Time, 1, 0) 
+		table.insert(playerState.Minventory_Level, 1, 1)
+		table.insert(playerState.Minventory_Entity, 1, " ")
+		table.insert(playerState.Minventory_Summoned, 1, false)
+		table.insert(playerState.Minventory_UniqueID, 1, tostring(id)..tostring(player.PlayerData.MonsterIDX).."_a")
+		
+		-- 세대를 기준으A로 다른 데이터를 넣습니다. ---------------------------------------------------------
+		local monster_Generation = tonumber(_DataService:GetCell(dataSetName, id, "generation")) 
+		
+		-- 세대에 따라 다른 몬스터 최대 경험치 공식을 적용합니다. ------------------------------------------
+		local MEXP = _MonsterService.Origin_Monster_Mexp * (_MonsterService.Origin_Monster_Mexp_Up_Multiple ^ (monster_Generation - 1))
+		
+		table.insert(playerState.Minventory_Mexp, 1, MEXP)
+		-- '1세대'
+		if monster_Generation == 1 then
+			table.insert(playerState.Minventory_Personality, 1, 0)
+			
+			table.insert(playerState.Minventory_Grade, 1, grade)
+			
+			table.insert(playerState.Minventory_Skill_Id, 1, 0)
+		
+			
+		-- '2세대'
+		elseif monster_Generation == 2 then
+			table.insert(playerState.Minventory_Personality, 1, 0)
+			
+			table.insert(playerState.Minventory_Grade, 1, grade)
+			
+			table.insert(playerState.Minventory_Skill_Id, 1, 0)
+		
+		
+		-- '3세대'
+		elseif monster_Generation == 3 then
+			table.insert(playerState.Minventory_Personality, 1, _UtilLogic:RandomIntegerRange(1, 6))
+			
+			table.insert(playerState.Minventory_Grade, 1, grade)
+			
+			table.insert(playerState.Minventory_Skill_Id, 1, 0)
+		
+		-- '4세대'
+		elseif monster_Generation == 4 then
+			table.insert(playerState.Minventory_Personality, 1, _UtilLogic:RandomIntegerRange(1, 6))
+			
+			table.insert(playerState.Minventory_Grade, 1, grade)
+			
+			table.insert(playerState.Minventory_Skill_Id, 1, 0)
+		
+			
+		
+		-- '5세대'
+		elseif monster_Generation == 5 then
+			table.insert(playerState.Minventory_Personality, 1, _UtilLogic:RandomIntegerRange(1, 6))
+		
+			table.insert(playerState.Minventory_Grade, 1, grade)
+			
+			table.insert(playerState.Minventory_Skill_Id, 1, _UtilLogic:RandomIntegerRange(1, 5))
+		
+		
+		end
+		
+		
+		player.PlayerData.MonsterIDX = player.PlayerData.MonsterIDX + 1
+		player.PlayerSubData.Noti_MInv = 1 -- 몬스터 노티를 띄움
+		
+		
+		---------------------------------------------------------------------------------------------------
+		-- ★★ 콘텐츠 관련 ★★
+		---------------------------------------------------------------------------------------------------
+		
+		
+		---------------------------------------------------------------------------
+		-- 도감 
+		---------------------------------------------------------------------------
+		-- 획득한 적 없는 몬스터라면 '도감'에 추가합니다.
+		local find = false
+		if player.PlayerSubData.GetMonsterList[id] then
+			find = true
+		end
+		
+		
+		if not find then
+			player.PlayerSubData.GetMonsterList[id] = true
+			
+			-- 해당 몬스터가 '비밀 몬스터'인지 확인하고, 맞다면 획득 날짜를 반환합니다.
+			local isRandomMonster = false
+			local isSecret = _DataService:GetCell(dataSetName, id, "isSecret")
+			
+			if isvalid(isSecret) and isSecret == "true" then
+				isRandomMonster = true
+			end
+			
+			if isRandomMonster then
+				local utcTime = _SystemService:UTCtimeToTable(_UtilLogic:GetUTCNow())
+				
+				if utcTime[2] < 10 then
+					utcTime[2] = "0"..tostring(utcTime[2])
+				end
+				
+				if utcTime[3] < 10 then
+					utcTime[3] = "0"..tostring(utcTime[3])
+				end
+				
+				player.PlayerSubData.GetFusionMonDate[id] = tostring(utcTime[1]).." / "..utcTime[2].." / "..utcTime[3]
+			end
+			----------------------------------------------------------------------------
+			
+			if player.CurrentMapName == "farm" then
+				_GetPopupService:ShowMessage(player, nil, nil, "GetPopup_book", true, "94118d2548724dbd8e06503d23df7ff7", player.Name)
+				
+				if not player.PlayerSubData.IsBookComplete then
+					_SubDataService:SetBookBlink(player, true)
+				end
+				
+			end
+		end
+		
+		----------------------------------------------------------------------------
+		-- 일감 
+		----------------------------------------------------------------------------
+		-- 몬스터 얻기 	
+		if _QuestService:CheckHaveQuest(player, 8) then -- 일반 몬스터 1회 얻기 [일감]
+			player.PlayerSubData.GetNormalMonCount = player.PlayerSubData.GetNormalMonCount + 1
+		end	
+	end
+
+	@ExecSpace("Server")
+	method void GetHelper(Entity player, number idx, string Popup_buyHelper)
+		-- 도우미를 얻을 때, 기본적으로 코스튬을 같이 제공해줍니다. ----
+		local dataSetName = "HelperDataSet"
+		
+		local curLevel = player.PlayerData.Hinventory_Level[idx]
+		
+		local ing_ID = tonumber(_DataService:GetCell("ItemDataSet_Store_Helper", idx, "ing_"..tostring(math.floor(curLevel)).."_ID"))
+		local ing_Quantity = tonumber(_DataService:GetCell("ItemDataSet_Store_Helper", idx, "ing_"..tostring(math.floor(curLevel)).."_Quantity"))
+		
+		-- 최대 레벨 이상으로 레벨 업 한 상태라면 ------------
+		if curLevel >= 3 then
+			-- 통신 종료 ====================================
+			_TransferService:Transfer("out", player.Name)
+			-- ==============================================
+			return
+		end
+		
+		-- 플레이어의 재화가 충분한지 확인
+		if ing_ID == _PlayerService.Gold_ID then
+			if player.PlayerData.Gold >= ing_Quantity then
+				self:GetGold(player, -ing_Quantity)
+				_GetPopupService:ShowMessage(player, _PlayerService.Gold_ID, -ing_Quantity, nil, nil, nil, player.Name)
+			else
+				-- 통신 종료 ================================
+				_TransferService:Transfer("out", player.Name)
+				-- ==========================================
+				return
+			end
+		elseif ing_ID == _PlayerService.Berry_ID then
+			if player.PlayerData.Berry >= ing_Quantity then
+				self:GetBerry(player, -ing_Quantity)
+			else
+				-- 통신 종료 ================================
+				_TransferService:Transfer("out", player.Name)
+				-- ==========================================
+				return
+			end
+		elseif ing_ID == _PlayerService.Ruby_ID then
+			if player.PlayerData.Ruby >= ing_Quantity then
+				self:GetRuby(player, 1, -ing_Quantity)
+			else
+				-- 통신 종료 ================================
+				_TransferService:Transfer("out", player.Name)
+				-- ==========================================
+				return
+			end
+		end
+		
+		--퀘스트 조건: 일꾼 구매 
+		if player.PlayerData.Hinventory_Level[idx] == 0 then
+			player.PlayerSubData.GetHelperCount = player.PlayerSubData.GetHelperCount +1
+		end
+		-- 퀘스트 조건: 일꾼 업그레이드 
+		if player.PlayerData.Hinventory_Level[idx] >= 1 then
+			player.PlayerSubData.GetHelperUpgrade = player.PlayerSubData.GetHelperUpgrade +1
+		end
+			
+		player.PlayerData.Hinventory_Level[idx] = player.PlayerData.Hinventory_Level[idx] + 1
+		
+		-- 일꾼 소환 --------------------------------
+		_HelperService:SummonHelper(player, idx, true)
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("Client")
+	method void SpaceFullAlert()
+		_UIToast:ShowMessage(_LocalizationService.LocalTranslator:GetText("Popup_lackOfCapacity"))
+	end
+
+	@ExecSpace("Server")
+	method void DestroyItem(Entity player, number id, number value)
+		-- 플레이어의 인벤토리에서 해당 아이템이 있나 확인 --------------------------------------------------------------------
+		for i = 1, #player.PlayerData.Inventory_Name do
+			if player.PlayerData.Inventory_Name[i] == id then -- 인벤토리에서 아이템을 발견했을 경우 
+				
+				local number = player.PlayerData.Inventory_Quantity[i] - value
+				value = math.abs(number)
+				
+				if number <= 0 then -- 뺀 아이템의 수량이 0 이하일 경우 
+					table.remove(player.PlayerData.Inventory_Name, i)
+					table.remove(player.PlayerData.Inventory_Type, i)
+					table.remove(player.PlayerData.Inventory_Quantity, i)
+					self:DestroyItem(player, id, value) -- 다시 뺍니다.
+					
+				else -- 뺀 후에 아이템 수량이 1 이상일 경우
+					player.PlayerData.Inventory_Quantity[i] = number -- 뺀 아이템 갯수 적용
+				end
+				
+				return
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void GetMyCon(Entity player, number id)
+		player.PlayerData.MyCons[id] = true
+	end
+
+	@ExecSpace("Server")
+	method void EquipMyCon(Entity player, number id)
+		player.PlayerData.EquippedMyConID = id
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("Server")
+	method void GetFusionCollection(Entity player, number id)
+		local isSecretMonster = _DataService:GetCell("MonsterDataSet_Base", id, "isSecret")
+		
+		local monsterIDX = 0
+		local randFusion_DataSet = _DataService:GetTable("MonsterDataSet_RandFusion_Base")
+		local normalFusion_DataSet =  _DataService:GetTable("MonsterDataSet_Fusion") 
+		
+		
+		if isSecretMonster == "TRUE" then
+			local length = randFusion_DataSet:GetRowCount()
+			for i = 1, length do
+				local targetID = tonumber(randFusion_DataSet:GetCell(i, "id"))
+				if id == targetID then
+					monsterIDX = i
+					break
+				end
+			end
+		else
+			local length = normalFusion_DataSet:GetRowCount()
+		
+			for i = 1, length do
+				local targetID = tonumber(normalFusion_DataSet:GetCell(i, "reward"))
+		
+				if id == targetID then
+					monsterIDX = i
+					break
+				end
+			end
+		end		
+		
+		
+		if isSecretMonster == "TRUE" then
+			if player.PlayerSubData.GetFusionMonList_Secret[monsterIDX] then
+				return
+			end
+		else
+			if player.PlayerSubData.GetFusionMonList[monsterIDX] then
+				return
+			end
+		end		
+		
+		-- 해당 조합 컬렉션을 해금하고 해금한 날짜를 기록합니다. -----------
+		
+		local utcTime = _SystemService:UTCtimeToTable(_UtilLogic:GetUTCNow())
+				
+		if utcTime[2] < 10 then
+			utcTime[2] = "0"..tostring(utcTime[2])
+		end
+				
+		if utcTime[3] < 10 then
+			utcTime[3] = "0"..tostring(utcTime[3])
+		end
+		
+		if isSecretMonster == "TRUE" then
+			player.PlayerSubData.GetFusionMonList_Secret[monsterIDX] = true
+			player.PlayerSubData.GetFusionMonDate_Secret[monsterIDX] = tostring(utcTime[1]).." / "..utcTime[2].." / "..utcTime[3]
+		else
+			player.PlayerSubData.GetFusionMonList[monsterIDX] = true
+			player.PlayerSubData.GetFusionMonDate[monsterIDX] = tostring(utcTime[1]).." / "..utcTime[2].." / "..utcTime[3]
+		
+		end		
+		
+		_GetPopupService:ShowMessage(player, nil, nil, "GetPopup_collection", true, "67c54ca3c79b4df380ba78e16b8c3c26", player.Name)
+				
+		if not player.PlayerSubData.IsCollectionComplete then
+			_SubDataService:SetCollectionBlink(player, true)
+		end
+			
+	end
+
+	@ExecSpace("Server")
+	method void GetFusionCollectionReward(Entity player, number id, string type)
+		if type == "Secret" then
+			if player.PlayerSubData.GetFusionMonReward_Secret[id] then
+				return
+			end
+			
+		elseif type == "Normal" then
+			if player.PlayerSubData.GetFusionMonReward[id] then
+				return
+			end
+		end
+		
+		
+		local monster_ID = 0
+		local generation = 0
+		
+		if type == "Secret" then
+			monster_ID = tonumber(_DataService:GetCell("MonsterDataSet_RandFusion_Base", id, "id"))
+			player.PlayerSubData.GetFusionMonReward_Secret[id] = true
+			
+		elseif type == "Normal" then
+			monster_ID = tonumber(_DataService:GetCell("MonsterDataSet_Fusion", id, "reward"))
+			player.PlayerSubData.GetFusionMonReward[id] = true
+		end
+		
+		generation = tonumber(_DataService:GetCell("MonsterDataSet_Base", monster_ID, "generation"))
+		
+		
+		self:GetHeart_By_Content(player, generation)
+		
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("Server")
+	method void GetMonsterBookReward(Entity player, number id)
+		if player.PlayerSubData.GetMonsterReward[id] then
+			return
+		end
+		
+		player.PlayerSubData.GetMonsterReward[id] = true
+		
+		local generation = tonumber(_DataService:GetCell("MonsterDataSet_Base", id, "generation"))
+		
+		self:GetHeart_By_Content(player, generation)
+		
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("Server")
+	method void GetMonsterBookAllReward(Entity player, SyncTable<number> args)
+		-- 몬스터 도감 보상 일괄 회수 --------------------------------
+		local totalHeart = 0
+		for i = 1, #args do
+			if not player.PlayerSubData.GetMonsterReward[args[i]] then
+				player.PlayerSubData.GetMonsterReward[args[i]] = true
+				totalHeart =	totalHeart + tonumber(_DataService:GetCell("MonsterDataSet_Base", args[i], "generation"))
+			end 
+		end
+		
+		self:GetHeart_By_Content(player, totalHeart)
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("Server")
+	method void GetFusionCollectionAllReward(Entity player, SyncTable<number> args, string category)
+		local totalHeart = 0
+		
+		if category == "Normal" then
+			-- 컬렉션 보상 일괄 회수 ----------------------------------------
+			for i = 1, #args do
+				if not player.PlayerSubData.GetFusionMonReward[args[i]] then
+					player.PlayerSubData.GetFusionMonReward[args[i]] = true
+					
+					local rewardMonster = tonumber(_DataService:GetCell("MonsterDataSet_Fusion", args[i], "reward"))
+					totalHeart =	totalHeart + tonumber(_DataService:GetCell("MonsterDataSet_Base", rewardMonster, "generation"))
+				end 
+			end
+			
+		elseif category == "Secret" then
+			-- 컬렉션 보상 일괄 회수 ----------------------------------------
+			for i = 1, #args do
+				if not player.PlayerSubData.GetFusionMonReward_Secret[args[i]] then
+					player.PlayerSubData.GetFusionMonReward_Secret[args[i]] = true
+					
+					local rewardMonster = tonumber(_DataService:GetCell("MonsterDataSet_RandFusion_Base", args[i], "id"))
+					totalHeart =	totalHeart + tonumber(_DataService:GetCell("MonsterDataSet_Base", rewardMonster, "generation"))
+				end 
+			end
+		end
+		
+		self:GetHeart_By_Content(player, totalHeart)
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetWalkPossible()
+		local player = _UserService.LocalPlayer
+		local button_Tour = _EntityService:GetEntityByPath("/ui/DefaultGroup/UI_Player_Stat/Button_Tour")
+		
+		-- 투어 모드가 켜져있다면 끄고, 꺼져있다면 킵니다.
+		player.PlayerData.IsPossibleWalk = not player.PlayerData.IsPossibleWalk
+		
+		if player.PlayerData.IsPossibleWalk then
+			_UIToast:ShowMessage(_LocalizationService.LocalTranslator:GetText("Popup_goodToTakeARest"))
+			player.OwnerEntity:IsClick()
+			
+		else
+			_UIToast:ShowMessage(_LocalizationService.LocalTranslator:GetText("Popup_getBackToWork"))
+		
+			local camera = _EntityService:GetEntityByPath("/maps/farm/Camera") 
+			if isvalid(camera) then
+				camera.TransformComponent.Position = player.TransformComponent.Position
+			end
+			
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void LevelUP(Entity player)
+		-- 이미 만렙에 도달했다면 ----------------------
+		if player.PlayerData.Level >= self.MaxLevel then
+			_UIPopup:Open(_LocalizationService.LocalTranslator:GetText("Popup_failToLevelUp"), nil, nil, nil)
+			return
+		end
+		
+		
+		local dataSetName = "FarmLevelDataSet"
+		
+		local cost = tonumber(_DataService:GetCell(dataSetName, player.PlayerData.Level, "cost"))
+		local curMaxSummon = tonumber(_DataService:GetCell(dataSetName, player.PlayerData.Level, "maxSummon"))
+		local nextMaxSummon = tonumber(_DataService:GetCell(dataSetName, player.PlayerData.Level + 1, "maxSummon"))
+		
+		local costText = _LocalizationService.LocalTranslator:GetText("Popup_levelUpCost").." <color=#929aff>".._SystemService:ThousandsSeparator(cost).."</color> <color=#d7d0a5>G</color>"
+		
+		local maxSummonText = "\n\n".._LocalizationService.LocalTranslator:GetText("Popup_maxMonsterCountUp").."  <color=#929aff>"..tostring(curMaxSummon).." -> "..tostring(nextMaxSummon).."</color>"
+		
+		local yes = function()
+			-- 통신 시작 ================================
+			_TransferService:Transfer("in")
+			-- ==========================================
+			self:LevelUP_Yes(player)
+		end
+		
+		local no = function() 
+		end
+		
+			
+		_UIPopup:Open(_LocalizationService.LocalTranslator:GetText("Popup_alert_LevelUp").."\n"..costText..maxSummonText, yes, no, nil)
+	end
+
+	@ExecSpace("Server")
+	method void LevelUP_Yes(Entity player)
+		local dataSetName = "FarmLevelDataSet"
+		local cost = tonumber(_DataService:GetCell(dataSetName, player.PlayerData.Level, "cost"))
+		local nextMaxSummon = tonumber(_DataService:GetCell(dataSetName, player.PlayerData.Level + 1, "maxSummon"))
+		
+		if player.PlayerData.Gold >= cost then
+			_LevelUpService:Open(player.PlayerData.Level, player.Name)
+			_PlayerService:GetGold(player, -cost) -- 돈을 뺍니다.
+			_GetPopupService:ShowMessage(player, _PlayerService.Gold_ID, -cost, nil, nil, nil, player.Name)
+					
+			player.PlayerData.Level = player.PlayerData.Level + 1
+			player.PlayerData.MaxSummon = nextMaxSummon
+		else
+			_LocalizationToastService:ShowMessage("Popup_lackOfGold", player.Name)
+		end
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out")
+		-- ==========================================
+	end
+
+	@ExecSpace("Server")
+	method void GetCookItem(Entity player, string type)
+		local imageRUID = ""
+		local maxLevel = 5
+		
+		local ingredient_ID = 0
+		local ingredient_Quantity = 0
+		
+		-- 해당 장비의 가격을 계산합니다. ----------------------------------------------------------------------
+		if type == "솥" then
+			if player.PlayerData.CurPotLevel >= maxLevel then
+				-- 통신합니다. ================
+				_TransferService:Transfer("out", player.Name)
+				--=============================
+				return
+			end
+			
+			ingredient_ID = tonumber(_DataService:GetCell("CookDataSet_Pot", player.PlayerData.CurPotLevel, "required_ItemID"))
+			ingredient_Quantity = tonumber(_DataService:GetCell("CookDataSet_Pot", player.PlayerData.CurPotLevel, "required_Quantity"))
+			
+		elseif type == "요리도구" then
+			if player.PlayerData.CurKitchenTool_Level >= maxLevel then
+				-- 통신합니다. ================
+				_TransferService:Transfer("out", player.Name)
+				--=============================
+				return
+			end
+			ingredient_ID = tonumber(_DataService:GetCell("CookDataSet_KitchenTool", player.PlayerData.CurKitchenTool_Level, "required_ItemID"))
+			ingredient_Quantity = tonumber(_DataService:GetCell("CookDataSet_KitchenTool", player.PlayerData.CurKitchenTool_Level, "required_Quantity"))
+			
+		elseif type == "요리복장" then
+			if player.PlayerData.CurSuit_Level >= maxLevel then	
+				-- 통신합니다. ================
+				_TransferService:Transfer("out", player.Name)
+				--=============================
+				return
+			end
+			ingredient_ID = tonumber(_DataService:GetCell("CookDataSet_Suit", player.PlayerData.CurSuit_Level, "required_ItemID"))
+			ingredient_Quantity = tonumber(_DataService:GetCell("CookDataSet_Suit", player.PlayerData.CurSuit_Level, "required_Quantity"))
+			
+		elseif type == "레시피" then
+			if player.PlayerData.CurRecipe_Level >= maxLevel then	
+				-- 통신합니다. ================
+				_TransferService:Transfer("out", player.Name)
+				--=============================
+				return
+			end
+			ingredient_ID = tonumber(_DataService:GetCell("CookDataSet_Recipe", player.PlayerData.CurRecipe_Level, "required_ItemID"))
+			ingredient_Quantity = tonumber(_DataService:GetCell("CookDataSet_Recipe", player.PlayerData.CurRecipe_Level, "required_Quantity"))
+		end
+		
+		-- 재화 계산 ---------------------------------------------------
+		if ingredient_ID == _PlayerService.Gold_ID then
+			if player.PlayerData.Gold < ingredient_Quantity then
+				-- 통신합니다. ================
+				_TransferService:Transfer("out", player.Name)
+				--=============================
+				return
+			else
+				_PlayerService:GetGold(player, -ingredient_Quantity)
+			end
+		elseif ingredient_ID == _PlayerService.Berry_ID then
+			if player.PlayerData.Berry < ingredient_Quantity then
+				-- 통신합니다. ================
+				_TransferService:Transfer("out", player.Name)
+				--=============================
+				return
+			else
+				_PlayerService:GetBerry(player, -ingredient_Quantity)
+			end
+		elseif ingredient_ID == _PlayerService.Ruby_ID then
+			if player.PlayerData.Ruby < ingredient_Quantity then
+				-- 통신합니다. ================
+				_TransferService:Transfer("out", player.Name)
+				--=============================
+				return
+			else
+				_PlayerService:GetRuby(player, -ingredient_Quantity, 1)
+			end
+		end
+		
+		-- 장비를 업그레이드 합니다. --------------------------------------------------------------
+		if type == "솥" then
+		
+			player.PlayerData.CurPotLevel = player.PlayerData.CurPotLevel + 1
+			imageRUID = _DataService:GetCell("CookDataSet_Pot", player.PlayerData.CurPotLevel, "ruid")
+			
+		elseif type == "요리도구" then
+		
+			player.PlayerData.CurKitchenTool_Level = player.PlayerData.CurKitchenTool_Level + 1
+			imageRUID = _DataService:GetCell("CookDataSet_KitchenTool", player.PlayerData.CurKitchenTool_Level, "ruid")
+			
+		elseif type == "요리복장" then
+			
+			player.PlayerData.CurSuit_Level = player.PlayerData.CurSuit_Level + 1
+			imageRUID = _DataService:GetCell("CookDataSet_Suit", player.PlayerData.CurSuit_Level, "ruid")
+			
+		elseif type == "레시피" then
+		
+			player.PlayerData.CurRecipe_Level = player.PlayerData.CurRecipe_Level + 1
+			imageRUID = _DataService:GetCell("CookDataSet_Recipe", player.PlayerData.CurRecipe_Level, "ruid")
+		end
+		
+		--퀘스트 조건: 요리 도구 강화 -----------------------------------------------------------------
+		player.PlayerSubData.GetCookingEquipment = player.PlayerSubData.GetCookingEquipment + 1
+		
+		
+		-- 획득 메시지를 띄웁니다. -----------------------------------------------------------------
+		_GetPopupService:ShowMessage(player, nil, nil, "GetPopup_upgrade", true, imageRUID, player.Name)
+		
+		
+		-- 효과음을 재생합니다. --------------------------------------------------------------------
+		_SoundService:PlaySound("16336dee681d482abd442d887736ac4d", 0.75, player.Name)
+		
+		-- 통신합니다. ================
+		_TransferService:Transfer("out", player.Name)
+		--=============================
+	end
+
+	@ExecSpace("Server")
+	method void GetHeart_By_Content(Entity player, number value)
+		player.PlayerData.Heart = player.PlayerData.Heart + value
+		
+		----------------------------------------------
+		-- 랭킹을 저장합니다.
+		----------------------------------------------
+		_SaveLoadService:Save_Rank(player, true)
+		
+		_GetPopupService:ShowMessage(player, nil, math.floor(value), "GetPopup_heart", true, "777deddade3a44c79c2e7fcdaa2e3919", player.Name)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MonsterSpaceFullAlert()
+		local maxMonster  = "\n\n<color=#8084b4>".._LocalizationService:GetTextFormat("Popup_maxMonster", math.floor(_PlayerService.MaxHaveMonster)).."</color>"
+		_UIPopup:Open(_LocalizationService.LocalTranslator:GetText("Popup_alert_FullMonster")..maxMonster, nil, nil, nil)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void MonsterSpaceFullAlertByTrade()
+		local maxMonster  = "\n\n<color=#8084b4>".._LocalizationService:GetTextFormat("Popup_maxMonster", math.floor(_PlayerService.MaxHaveMonster)).."</color>"
+		_UIPopup:Open(_LocalizationService.LocalTranslator:GetText("Popup_alert_Trade")..maxMonster, nil, nil, nil)
+	end
+
+	@ExecSpace("Server")
+	method void GetGoldByEvent(Entity player, number eventID)
+		-- 이벤트를 통해 재화를 얻습니다. ------------------------------
+		local rewardDataSetName = "EventDataSet_Reward"
+		
+		local rewardRatio = _DataService:GetCell("EventDataSet", eventID, "reward_Ratio")
+		local rewardQuantity = _DataService:GetCell(rewardDataSetName, player.PlayerData.Level, "reward_Quantity")
+		
+		if not isvalid(rewardRatio) or rewardRatio == '' or rewardRatio == ' ' then
+			return
+		end
+		
+		if not isvalid(rewardQuantity) then
+			return
+		end
+		
+		rewardQuantity = tonumber(rewardQuantity) * (rewardRatio * 0.01)
+		
+		-- 재화를 얻습니다. -------------------------------------
+		player.PlayerData.Gold = player.PlayerData.Gold + rewardQuantity
+		
+		if player.PlayerData.Gold < 0 then
+			player.PlayerData.Gold = 0 
+		end
+		
+		
+		_GetPopupService:ShowMessage(player, _PlayerService.Gold_ID, rewardQuantity, nil, nil, nil, player.Name)
+		
+	end
+
+	@ExecSpace("Server")
+	method void CapacityUP(Entity player)
+		local maxLevel = _DataService:GetRowCount("ItemDataSet_CapaUpCost")
+		
+		local capacityLevel = player.PlayerData.MaxCapacity_Upgrade_Level
+		
+		-- 창고를 최대 레벨까지 확장했다면 더 이상 레벨 업 못하게 합니다. --------
+		if capacityLevel > maxLevel then
+			_LocalizationToastService:ShowMessage("Popup_imPossibleToExpand", player.Name)
+			-- 통신 종료 ================================
+			_TransferService:Transfer("out", player.Name)
+			-- ==========================================
+			return
+		end
+		
+		
+		-- 금액을 제대로 받아오지 못했다면 리턴합니다. ---------------------------
+		local cost = tonumber(_DataService:GetCell("ItemDataSet_CapaUpCost", capacityLevel, "cost"))
+		
+		if not isvalid(cost) then
+			_LocalizationToastService:ShowMessage("Popup_faitToExpandCapacity", player.Name)
+			-- 통신 종료 ================================
+			_TransferService:Transfer("out", player.Name)
+			-- ==========================================
+			return
+		end
+		
+		if player.PlayerData.Gold < cost then
+			_LocalizationToastService:ShowMessage("Popup_lackOfGold", player.Name)
+			-- 통신 종료 ================================
+			_TransferService:Transfer("out", player.Name)
+			-- ==========================================
+			return
+		end
+		
+		
+		-- 재화를 뻅니다. --------------------------------------------------------
+		player.PlayerData.Gold = player.PlayerData.Gold - cost
+		_GetPopupService:ShowMessage(player, _PlayerService.Gold_ID, -cost, nil, nil, nil, player.Name)
+		
+		
+		
+		-- 창고 최대 보유량을 늘립니다 -------------------------------------------
+		player.PlayerData.MaxCapacity = tonumber(_DataService:GetCell("ItemDataSet_CapaUpCost", capacityLevel, "maxCapacity"))
+		player.PlayerData.MaxCapacity_Upgrade_Level = capacityLevel + 1
+		
+		_GetPopupService:ShowMessage(player, nil, 9, "GetPopup_capacity", true, "34f706c703cc44a39ae631384accc136", player.Name)
+		
+		
+		-- 이펙트 재생 -----------------------------------------------------------
+		_LocalizationToastService:ShowMessage("Popup_capacityUp", player.Name)
+		_SoundService:PlaySound("74222ba4b41d48dd97175fd691124a67", 0.75, player.Name)
+			
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+		
+	end
+
+	method number Check_Inventory(Entity player)
+		local capacity = 0
+		
+		for i = 1, #player.PlayerData.Inventory_Quantity do
+			capacity = capacity + player.PlayerData.Inventory_Quantity[i]
+		end
+		
+		return capacity
+	end
+
+	method number Check_Monster_Summoned(Entity player)
+		local summoned = 0
+		local playerData = player.PlayerData 
+		
+		for i = 1, #playerData.Minventory_Id do
+			if playerData.Minventory_Summoned[i] then
+				summoned = summoned + 1
+			end
+		end
+		
+		return summoned
+	end
+
+	@ExecSpace("Server")
+	method void Set_Auto_Place_Status(Entity player)
+		player.PlayerData.IsAutoPlaceOnStore = not player.PlayerData.IsAutoPlaceOnStore
+		
+		if player.PlayerData.IsAutoPlaceOnStore then
+			_LocalizationToastService:ShowMessage("Popup_enableAutoPlace", player.Name)
+		else
+			_LocalizationToastService:ShowMessage("Popup_disableAutoPlace", player.Name)
+		end
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+end

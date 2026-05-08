@@ -1,0 +1,177 @@
+@Logic
+script FusionService extends Logic
+
+	@ExecSpace("Server")
+	method void Fusion(Entity player, number firstMon_Id, string firstMon_Grade, number secondMon_Id, string secondMon_Grade, number rewardMon_Id, string rewardMon_Grade, number summonTime, number selectedSlot, number first_mon_idx, number second_mon_idx)
+		local generation = tonumber(_DataService:GetCell("MonsterDataSet_Base",firstMon_Id,"generation"))
+		local rewardMonster_Generation = tonumber(_DataService:GetCell("MonsterDataSet_Base",rewardMon_Id,"generation"))
+		
+		local cost_Gold = tonumber(_DataService:GetCell("MonsterDataSet_Fusion_Cost", generation, "gold"))
+		local cost_Berry = tonumber(_DataService:GetCell("MonsterDataSet_Fusion_Cost", generation, "berry"))    
+		local cost_Ruby = tonumber(_DataService:GetCell("MonsterDataSet_Fusion_Cost", generation, "ruby"))
+		
+		local isFusionFail = false
+		if player.PlayerData.Gold < cost_Gold then
+		    isFusionFail = true
+		end
+		if player.PlayerData.Berry < cost_Berry then
+		    isFusionFail = true
+		end
+		if player.PlayerData.Ruby < cost_Ruby then
+		    isFusionFail = true
+		end
+		
+		if not isFusionFail then
+		    -- 두 몬스터를 조합합니다. --
+		    player.PlayerData.Finventory_First_Grade[selectedSlot] = firstMon_Grade
+		    player.PlayerData.Finventory_First_Id[selectedSlot] = firstMon_Id
+		        
+		    player.PlayerData.Finventory_Second_Grade[selectedSlot] = secondMon_Grade
+		    player.PlayerData.Finventory_Second_Id[selectedSlot] = secondMon_Id
+		        
+		    player.PlayerData.Finventory_Reward_Monster_Id[selectedSlot] = rewardMon_Id
+		    player.PlayerData.Finventory_Reward_Monster_Grade[selectedSlot] = rewardMon_Grade
+		    
+		    player.PlayerData.Finventory_Remaining_Time[selectedSlot] = summonTime
+		    
+		    if cost_Gold > 0 then
+		        _PlayerService:GetGold(player, -cost_Gold)
+		        _GetPopupService:ShowMessage(player, _PlayerService.Gold_ID, -cost_Gold, nil, nil, nil, player.Name)
+		    end
+		        
+		    if cost_Berry > 0 then
+		        _PlayerService:GetBerry(player, -cost_Berry)
+		    end
+		        
+		    if cost_Ruby > 0 then
+		        _PlayerService:GetRuby(player, -cost_Ruby, 1)
+		    end
+		   
+		    
+		    self:RefreshFusionUI(first_mon_idx, second_mon_idx, player.Name)
+		
+		else
+		    -- 팝업을 재생합니다. --------------------------------------
+			_LocalizationToastService:ShowMessage("Popup_lackOfIngredient", player.Name)
+		end
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("Server")
+	method void BuySlot(Entity player, number slot)
+		local cost = tonumber(_DataService:GetCell("ItemDataSet_FusionSlotCost", slot, "Cost"))
+		
+		-- 이미 해당 슬롯을 얻은 상태면 Return합니다. ---------------------------------
+		if player.PlayerData.Finventory_Slot_Unlock[slot] then
+			-- 통신 종료 ================================
+			_TransferService:Transfer("out", player.Name)
+			-- ==========================================
+			return
+		end
+		
+		-- 해당 조합 슬롯을 구매합니다. -----------------------------------------------
+		if player.PlayerData.Gold >= cost then
+			
+			-- 슬롯을 오픈합니다. ----
+			player.PlayerData.Finventory_Slot_Unlock[slot] = true
+			
+			-- 재화를 소모합니다. ----
+			_PlayerService:GetGold(player, -cost)
+			
+			_GetPopupService:ShowMessage(player, _PlayerService.Gold_ID, -cost, nil, nil, nil, player.Name)
+			
+			-- 효과음을 재생합니다. --
+			_SoundService:PlaySound("01c2f8f1004a43b4bd16b72b1975c7f8", 1, player.Name)
+			
+			_LocalizationToastService:ShowMessage("Popup_openNewSlot", player.Name)
+			
+			-- 퀘스트 조건: 슬롯 구매 -----------------------------------------------
+			player.PlayerSubData.GetFusionSlot = player.PlayerSubData.GetFusionSlot + 1 
+		else
+			_LocalizationToastService:ShowMessage("Popup_lackOfGold", player.Name)
+		end
+		
+		
+		-- 통신 종료 ================================
+		_TransferService:Transfer("out", player.Name)
+		-- ==========================================
+	end
+
+	@ExecSpace("Server")
+	method void ClearFusionSlot(Entity player, number slot)
+		-- 해당 조합 슬롯을 초기화합니다. --------------------------------------
+		local rewardMonsterName = player.PlayerData.Finventory_Reward_Monster_Id[slot] 
+		
+		if rewardMonsterName ~= 0 then
+			player.PlayerData.Finventory_First_Id[slot] = 0
+			player.PlayerData.Finventory_First_Grade[slot] = " "
+		
+			player.PlayerData.Finventory_Second_Id[slot] = 0 
+			player.PlayerData.Finventory_Second_Grade[slot] = " "
+		
+			player.PlayerData.Finventory_Reward_Monster_Id[slot] = 0
+			player.PlayerData.Finventory_Reward_Monster_Grade[slot] = " "
+			
+			player.PlayerData.Finventory_Remaining_Time[slot] = 0
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetEggRuidFromDataSet(string name)
+		-- 소환될 몬스터의 에그 RUID를 가져옵니다. -----------------------
+		local dataSetName = "MonsterDataSet_Egg"
+		
+		
+		local RUID = _DataSetService:GetDataFromDataSet(name, "Name", "RUID", dataSetName)
+		
+		if isvalid(RUID) then
+			return RUID
+		else
+			return "f66de0a9772c462882d70e38db3aef02"
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void PreLoad()
+		local fusionUI = _EntityService:GetEntityByPath("/ui/MonsterFusionGroup")
+		fusionUI.Fusion:PreLoad()
+	end
+
+	@ExecSpace("Client")
+	method void RefreshFusionUI(number first_mon_idx, number second_mon_idx)
+		local player = _UserService.LocalPlayer
+		
+		-- 첫 번째 몬스터 삭제 --
+		local firstMonster_Entity = _EntityService:GetEntity(player.PlayerData.Minventory_Entity[first_mon_idx])
+		_MonsterService:ClearMonster(player, player.PlayerData.Minventory_UniqueID[first_mon_idx], firstMonster_Entity)
+		
+		-- 두 번째 몬스터 삭제 --
+		local secondMonster_Entity = _EntityService:GetEntity(player.PlayerData.Minventory_Entity[second_mon_idx])
+		_MonsterService:ClearMonster(player, player.PlayerData.Minventory_UniqueID[second_mon_idx], secondMonster_Entity)
+		
+		
+		-- FusionUI를 갱신합니다. ------------------------------------------------------------------
+		local fusionUI = _EntityService:GetEntityByPath("/ui/MonsterFusionGroup")
+		
+		-- 재료 몬스터 테이블을 초기화합니다. ------------------------------------------------------
+		fusionUI.Fusion:ResetMonsterIDX()
+		
+		-- List UI로 변경합니다. -------------------------------------------------------------------
+		fusionUI.Fusion:ChangeUIByType("list")
+		
+		-- 서브 퀘스트: 조합 시도하기 --------------------------------------------------------------
+		if _QuestService:CheckHaveQuest(player, 6) then -- 서브 퀘스트6
+			_SubDataService:playerFusionCountUp(player,6)
+		end
+		if _QuestService:CheckHaveQuest(player, 15) then -- 서브 퀘스트15
+			_SubDataService:playerFusionCountUp(player,15)
+		end
+		if _QuestService:CheckHaveQuest(player, 24) then -- 서브 퀘스트24
+			_SubDataService:playerFusionCountUp(player,24)
+		end
+		
+	end
+
+end
